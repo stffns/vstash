@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -45,34 +46,43 @@ mcp_server = FastMCP(
 
 _config: VstashConfig | None = None
 _store: VstashStore | None = None
+_lock = threading.Lock()
 
 
 def _get_config() -> VstashConfig:
     """Load configuration lazily (same resolution as CLI).
+
+    Thread-safe via double-checked locking pattern.
 
     Returns:
         Cached VstashConfig instance.
     """
     global _config  # noqa: PLW0603
     if _config is None:
-        _config = load_config()
+        with _lock:
+            if _config is None:
+                _config = load_config()
     return _config
 
 
 def _get_store() -> VstashStore:
     """Open the vector store lazily, reusing across tool calls.
 
+    Thread-safe via double-checked locking pattern.
+
     Returns:
         Cached VstashStore instance.
 
     Raises:
-        FileNotFoundError: If the database directory cannot be created.
+        OSError: If the database directory cannot be created (e.g. PermissionError).
     """
     global _store  # noqa: PLW0603
     if _store is None:
-        cfg = _get_config()
-        dim = get_embedding_dim(cfg.embeddings.model)
-        _store = VstashStore(cfg.db_path, embedding_dim=dim)
+        with _lock:
+            if _store is None:
+                cfg = _get_config()
+                dim = get_embedding_dim(cfg.embeddings.model)
+                _store = VstashStore(cfg.db_path, embedding_dim=dim)
     return _store
 
 
@@ -130,6 +140,11 @@ def vstash_add(path: str) -> str:
         cfg = _get_config()
         store = _get_store()
 
+        # URL → skip path resolution, go straight to ingest
+        if path.startswith(("http://", "https://")):
+            result: IngestResult = ingest(path, cfg, store, force=False)
+            return _ok(result)
+
         resolved = Path(path).expanduser().resolve()
 
         # Directory → recursive ingestion
@@ -145,8 +160,8 @@ def vstash_add(path: str) -> str:
             }
             return _ok(summary)
 
-        # Single file or URL
-        result: IngestResult = ingest(path, cfg, store, force=False)
+        # Single file
+        result: IngestResult = ingest(str(resolved), cfg, store, force=False)
         return _ok(result)
 
     except FileNotFoundError:
