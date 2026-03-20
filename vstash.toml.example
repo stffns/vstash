@@ -1,0 +1,38 @@
+# vstash configuration
+# Copy to vstash.toml and customize as needed
+
+[inference]
+# "cerebras" → fastest (~2000 tok/s) — chunks sent to Cerebras API
+# "openai"   → OpenAI API or any compatible endpoint
+# "ollama"   → fully local, nothing leaves your machine
+backend = "cerebras"
+model = "llama3.1-8b"
+
+[cerebras]
+# Set via environment variable (recommended):
+#   export CEREBRAS_API_KEY=csk-your-key-here
+# Or uncomment and set here:
+# api_key = "your-cerebras-api-key"
+
+[openai]
+# api_key = "your-openai-api-key"
+# base_url = "https://api.openai.com/v1"  # or any compatible endpoint
+# model = "gpt-4o-mini"
+
+[ollama]
+host = "http://localhost:11434"
+model = "llama3.2"
+
+[embeddings]
+# "BAAI/bge-small-en-v1.5" → fastest, 384 dims, great for most use cases
+# "nomic-ai/nomic-embed-text-v1.5" → higher quality, 768 dims, slower
+model = "BAAI/bge-small-en-v1.5"
+
+[chunking]
+size = 1024      # tokens per chunk
+overlap = 128    # token overlap between chunks
+top_k = 5        # chunks retrieved per query
+
+[storage]
+# Path to the vstash database file
+db_path = "~/.vstash/memory.db"

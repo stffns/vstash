@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vstash"
+version = "0.1.0"
+description = "Local document memory with instant semantic search. Drop any file. Ask anything. Get an answer in under a second."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+keywords = ["embeddings", "semantic-search", "rag", "local", "cerebras", "sqlite-vec", "fastembed", "vector-stash"]
+
+dependencies = [
+    "pydantic>=2.0.0",
+    "fastembed>=0.4.0",
+    "sqlite-vec>=0.1.6",
+    "markitdown[all]>=0.1.0",
+    "typer>=0.12.0",
+    "rich>=13.0.0",
+    "tiktoken>=0.7.0",
+    "cerebras-cloud-sdk>=1.0.0",
+    "ollama>=0.3.0",
+    "openai>=1.0.0",
+    "tomli>=2.0.0; python_version < '3.11'",
+]
+
+[project.scripts]
+vstash = "vstash.cli:app"
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio", "ruff"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
