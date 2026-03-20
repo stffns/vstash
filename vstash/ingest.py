@@ -272,6 +272,9 @@ def ingest_directory(
 def _parse(source: str) -> str:
     """Parse file or URL to plain text using markitdown.
 
+    For URLs, downloads content first with a proper User-Agent header
+    to avoid 403 errors from sites like Wikipedia.
+
     Args:
         source: File path or URL to parse.
 
@@ -281,10 +284,32 @@ def _parse(source: str) -> str:
     Raises:
         Exception: If markitdown fails to parse the document.
     """
+    import tempfile
+
     from markitdown import MarkItDown
 
     md = MarkItDown()
-    result = md.convert(source)
+
+    # URLs need a proper User-Agent or many sites (Wikipedia, etc.) return 403
+    if _is_url(source):
+        import urllib.request
+
+        headers = {"User-Agent": "vstash/0.1 (https://github.com/stffns/vstash)"}
+        req = urllib.request.Request(source, headers=headers)
+        with urllib.request.urlopen(req, timeout=30) as response:
+            content = response.read()
+            # Write to temp file so markitdown can detect the format
+            suffix = Path(urlparse(source).path).suffix or ".html"
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                tmp.write(content)
+                tmp_path = tmp.name
+        try:
+            result = md.convert(tmp_path)
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
+    else:
+        result = md.convert(source)
+
     # Clean excessive whitespace while preserving structure
     text: str = re.sub(r"\n{3,}", "\n\n", result.text_content)
     return text.strip()
