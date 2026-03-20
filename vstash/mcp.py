@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import threading
 from pathlib import Path
 from typing import Any
@@ -345,9 +344,20 @@ def main() -> None:
     """Run the vstash MCP server over stdio.
 
     This is the entry point registered as ``vstash-mcp`` in pyproject.toml.
+    MCP uses stdio for transport, so any stdout writes from Rich progress
+    bars would corrupt the JSON-RPC stream.  We redirect the module-level
+    Console instances in ``ingest`` (and any future modules) to stderr.
     """
-    # Suppress Rich output that would interfere with MCP stdio transport
-    os.environ.setdefault("TERM", "dumb")
+    import sys
+
+    from rich.console import Console
+
+    stderr_console = Console(file=sys.stderr, force_terminal=False)
+
+    # Patch ingest.py's module-level console so Progress bars go to stderr
+    from . import ingest
+
+    ingest.console = stderr_console
 
     mcp_server.run()
 
