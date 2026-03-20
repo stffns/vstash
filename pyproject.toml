@@ -22,11 +22,13 @@ dependencies = [
     "cerebras-cloud-sdk>=1.0.0",
     "ollama>=0.3.0",
     "openai>=1.0.0",
+    "mcp>=1.0.0",
     "tomli>=2.0.0; python_version < '3.11'",
 ]
 
 [project.scripts]
 vstash = "vstash.cli:app"
+vstash-mcp = "vstash.mcp:main"
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio", "ruff"]
