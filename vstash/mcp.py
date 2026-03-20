@@ -45,7 +45,7 @@ mcp_server = FastMCP(
 
 _config: VstashConfig | None = None
 _store: VstashStore | None = None
-_lock = threading.Lock()
+_lock = threading.RLock()
 
 
 def _get_config() -> VstashConfig:
