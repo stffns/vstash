@@ -192,8 +192,15 @@ def _query_mlx(text: str, model_name: str) -> list[float]:
 
 
 def _warmup_mlx(model_name: str) -> None:
-    """Pre-load MLX model and run a dummy embed."""
+    """Pre-load MLX model and JIT-compile GPU kernels.
+
+    Runs multiple passes with varying sequence lengths so the MLX
+    JIT compiler has cached all common kernel shapes before the
+    first real query.
+    """
     _embed_mlx(["warmup"], model_name)
+    _embed_mlx(["This is a longer warmup sentence to trigger JIT for varied lengths."], model_name)
+    _embed_mlx(["short", "another sentence of medium length for the JIT pass"], model_name)
 
 
 # ------------------------------------------------------------------ #
