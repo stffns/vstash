@@ -2,6 +2,8 @@
 
 **Local document memory with instant semantic search.**
 
+![vstash demo](demo.gif)
+
 Drop any file. Ask anything. Get an answer fast.
 
 ```
