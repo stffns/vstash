@@ -12,6 +12,7 @@ Run with:
 
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import threading
@@ -21,7 +22,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from .config import VstashConfig, load_config
-from .embed import embed_query, get_embedding_dim
+from .embed import embed_query, get_embedding_dim, warmup
 from .models import DocumentInfo, IngestResult, SearchResult, StoreStats
 from .store import VstashStore
 
@@ -82,6 +83,7 @@ def _get_store() -> VstashStore:
                 cfg = _get_config()
                 dim = get_embedding_dim(cfg.embeddings.model)
                 _store = VstashStore(cfg.db_path, embedding_dim=dim)
+                atexit.register(_store.close)
     return _store
 
 
@@ -96,8 +98,11 @@ def _ok(data: Any) -> str:
     """
     if hasattr(data, "model_dump"):
         payload = data.model_dump()
-    elif isinstance(data, list) and data and hasattr(data[0], "model_dump"):
-        payload = [item.model_dump() for item in data]
+    elif isinstance(data, list):
+        payload = [
+            item.model_dump() if hasattr(item, "model_dump") else item
+            for item in data
+        ]
     else:
         payload = data
     return json.dumps(payload, ensure_ascii=False, indent=2)
@@ -121,7 +126,7 @@ def _error(message: str) -> str:
 
 
 @mcp_server.tool()
-def vstash_add(path: str) -> str:
+def vstash_add(path: str, force: bool = False) -> str:
     """Ingest a file, directory, or URL into vstash memory.
 
     Supports PDF, DOCX, PPTX, XLSX, Markdown, plain text, code files,
@@ -129,6 +134,7 @@ def vstash_add(path: str) -> str:
 
     Args:
         path: Absolute file path, directory path, or HTTP(S) URL to ingest.
+        force: If True, re-ingest even if the document already exists.
 
     Returns:
         JSON string with ingestion result (status, chunks, timing).
@@ -136,12 +142,13 @@ def vstash_add(path: str) -> str:
     try:
         from .ingest import ingest, ingest_directory
 
+        force = bool(force)
         cfg = _get_config()
         store = _get_store()
 
         # URL → skip path resolution, go straight to ingest
         if path.startswith(("http://", "https://")):
-            result: IngestResult = ingest(path, cfg, store, force=False)
+            result: IngestResult = ingest(path, cfg, store, force=force)
             return _ok(result)
 
         resolved = Path(path).expanduser().resolve()
@@ -149,7 +156,7 @@ def vstash_add(path: str) -> str:
         # Directory → recursive ingestion
         if resolved.is_dir():
             results: list[IngestResult] = ingest_directory(
-                str(resolved), cfg, store, force=False,
+                str(resolved), cfg, store, force=force,
             )
             summary = {
                 "status": "ok",
@@ -160,7 +167,7 @@ def vstash_add(path: str) -> str:
             return _ok(summary)
 
         # Single file
-        result: IngestResult = ingest(str(resolved), cfg, store, force=False)
+        result: IngestResult = ingest(str(resolved), cfg, store, force=force)
         return _ok(result)
 
     except FileNotFoundError:
@@ -313,21 +320,30 @@ def vstash_stats() -> str:
 def vstash_forget(source: str) -> str:
     """Remove a document from vstash memory by its source path or URL.
 
-    The source must match exactly the path used during ingestion.
+    Accepts exact paths or partial matches (filename, title). If an exact
+    match is not found, a fuzzy search by filename/title is attempted.
     Use vstash_list() to see currently stored document paths.
 
     Args:
-        source: Exact file path or URL of the document to remove.
+        source: File path, URL, or partial filename/title of the document to remove.
 
     Returns:
         JSON object with deletion status.
     """
     try:
         store = _get_store()
-        deleted = store.delete_document(source)
 
+        # Try exact match first
+        deleted = store.delete_document(source)
         if deleted:
             return _ok({"status": "deleted", "source": source})
+
+        # Fallback: fuzzy match by partial path/title
+        match = store.find_document(source)
+        if match:
+            store.delete_document(match)
+            return _ok({"status": "deleted", "source": match, "matched_from": source})
+
         return _ok({"status": "not_found", "source": source})
 
     except FileNotFoundError:
@@ -349,6 +365,9 @@ def main() -> None:
     MCP uses stdio for transport, so any stdout writes from Rich progress
     bars would corrupt the JSON-RPC stream.  We redirect the module-level
     Console instances in ``ingest`` (and any future modules) to stderr.
+
+    The embedding model is warmed up in a background thread to avoid
+    blocking the first tool call with model download / JIT compilation.
     """
     import sys
 
@@ -360,6 +379,18 @@ def main() -> None:
     from . import ingest
 
     ingest.console = stderr_console
+
+    # Pre-load embedding model in background to avoid cold-start latency
+    try:
+        cfg = _get_config()
+        threading.Thread(
+            target=warmup,
+            args=(cfg.embeddings.model,),
+            daemon=True,
+        ).start()
+        logger.info("Embedding warmup started in background thread")
+    except Exception:
+        logger.warning("Background warmup failed — will load on first query")
 
     mcp_server.run()
 

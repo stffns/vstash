@@ -217,6 +217,7 @@ class TestVstashForget:
         self, mock_config: MagicMock, mock_store: MagicMock
     ) -> None:
         mock_store.return_value.delete_document.return_value = False
+        mock_store.return_value.find_document.return_value = None
 
         result = json.loads(vstash_forget("/test/nope.md"))
         assert result["status"] == "not_found"
@@ -373,6 +374,55 @@ class TestVstashAdd:
         called_source = mock_ingest.call_args[0][0]
         assert "~" not in called_source
         assert Path(called_source).is_absolute()
+
+    @patch("vstash.mcp._get_store")
+    @patch("vstash.mcp._get_config")
+    def test_add_with_force_reingests(
+        self, mock_config: MagicMock, mock_store: MagicMock, tmp_path: Path
+    ) -> None:
+        """force=True should pass through to the ingest function."""
+        test_file = tmp_path / "notes.md"
+        test_file.write_text("Some notes")
+
+        ingest_result = IngestResult(
+            status="ok", source=str(test_file), doc_id="f123",
+            title="Notes", chunks=1, chars=10, elapsed_s=0.1,
+        )
+
+        with patch("vstash.ingest.ingest", return_value=ingest_result) as mock_ingest:
+            result = json.loads(vstash_add(str(test_file), force=True))
+
+        assert result["status"] == "ok"
+        # Verify force=True was passed to ingest
+        assert mock_ingest.call_args.kwargs["force"] is True
+
+
+class TestVstashForgetFuzzy:
+    """Test vstash_forget fuzzy matching."""
+
+    @patch("vstash.mcp._get_store")
+    def test_forget_fuzzy_match(self, mock_store: MagicMock) -> None:
+        """If exact match fails, fuzzy match by partial path should work."""
+        store_instance = mock_store.return_value
+        store_instance.delete_document.side_effect = [False, True]
+        store_instance.find_document.return_value = "/full/path/to/notes.md"
+
+        result = json.loads(vstash_forget("notes.md"))
+
+        assert result["status"] == "deleted"
+        assert result["source"] == "/full/path/to/notes.md"
+        assert result["matched_from"] == "notes.md"
+
+    @patch("vstash.mcp._get_store")
+    def test_forget_fuzzy_no_match(self, mock_store: MagicMock) -> None:
+        """If neither exact nor fuzzy match, return not_found."""
+        store_instance = mock_store.return_value
+        store_instance.delete_document.return_value = False
+        store_instance.find_document.return_value = None
+
+        result = json.loads(vstash_forget("nonexistent.pdf"))
+
+        assert result["status"] == "not_found"
 
 
 # ------------------------------------------------------------------ #

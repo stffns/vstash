@@ -15,6 +15,7 @@ Models:
 from __future__ import annotations
 
 import platform
+import threading
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
@@ -90,6 +91,7 @@ def resolve_backend(backend: BackendType) -> Literal["onnx", "mlx"]:
 # ------------------------------------------------------------------ #
 
 _onnx_cache: dict[str, TextEmbedding] = {}
+_onnx_lock = threading.Lock()
 
 
 def _get_onnx_model(model_name: str) -> TextEmbedding:
@@ -102,8 +104,10 @@ def _get_onnx_model(model_name: str) -> TextEmbedding:
         Cached TextEmbedding instance.
     """
     if model_name not in _onnx_cache:
-        from fastembed import TextEmbedding
-        _onnx_cache[model_name] = TextEmbedding(model_name=model_name)
+        with _onnx_lock:
+            if model_name not in _onnx_cache:
+                from fastembed import TextEmbedding
+                _onnx_cache[model_name] = TextEmbedding(model_name=model_name)
     return _onnx_cache[model_name]
 
 
@@ -132,6 +136,7 @@ def _warmup_onnx(model_name: str) -> None:
 # ------------------------------------------------------------------ #
 
 _mlx_cache: dict[str, tuple] = {}  # (model, tokenizer)
+_mlx_lock = threading.Lock()
 
 
 def _get_mlx_model(model_name: str) -> tuple:
@@ -144,9 +149,11 @@ def _get_mlx_model(model_name: str) -> tuple:
         Tuple of (model, tokenizer).
     """
     if model_name not in _mlx_cache:
-        from mlx_embeddings.utils import load
-        mlx_name = _MLX_MODEL_MAP.get(model_name, model_name)
-        _mlx_cache[model_name] = load(mlx_name)
+        with _mlx_lock:
+            if model_name not in _mlx_cache:
+                from mlx_embeddings.utils import load
+                mlx_name = _MLX_MODEL_MAP.get(model_name, model_name)
+                _mlx_cache[model_name] = load(mlx_name)
     return _mlx_cache[model_name]
 
 

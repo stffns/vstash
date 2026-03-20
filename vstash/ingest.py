@@ -30,7 +30,7 @@ from .embed import embed_texts
 from .models import IngestResult
 from .store import VstashStore
 
-console = Console()
+console = Console(stderr=True)
 
 # Tiktoken encoder — fast, no network call
 _enc = tiktoken.get_encoding("cl100k_base")
@@ -294,7 +294,7 @@ def _parse(source: str) -> str:
     if _is_url(source):
         import urllib.request
 
-        headers = {"User-Agent": "vstash/0.1 (https://github.com/stffns/vstash)"}
+        headers = {"User-Agent": "vstash (https://github.com/stffns/vstash)"}
         req = urllib.request.Request(source, headers=headers)
         with urllib.request.urlopen(req, timeout=30) as response:
             content = response.read()

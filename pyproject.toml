@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "vstash"
-version = "0.2.1"
+version = "0.2.2"
 description = "Local document memory with instant semantic search. Drop any file. Ask anything. Get an answer in under a second."
 readme = "README.md"
 license = { text = "MIT" }
@@ -22,7 +22,7 @@ dependencies = [
     "cerebras-cloud-sdk>=1.0.0",
     "ollama>=0.3.0",
     "openai>=1.0.0",
-    "mcp>=1.0.0",
+    "mcp>=1.0.0,<2",
     "tomli>=2.0.0; python_version < '3.11'",
 ]
 
