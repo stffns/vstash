@@ -77,6 +77,10 @@ class EmbeddingsConfig(BaseModel):
         default="BAAI/bge-small-en-v1.5",
         description="FastEmbed model name",
     )
+    backend: Literal["onnx", "mlx", "auto"] = Field(
+        default="auto",
+        description="Embedding backend: 'onnx' (portable), 'mlx' (Apple Silicon), or 'auto'",
+    )
 
 
 class ChunkingConfig(BaseModel):

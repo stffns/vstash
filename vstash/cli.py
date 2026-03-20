@@ -323,10 +323,14 @@ def forget(
 def show_config() -> None:
     """Show current configuration."""
     cfg = load_config()
+    from .embed import resolve_backend
+    resolved = resolve_backend(cfg.embeddings.backend)
     console.print(Panel(
         f"[bold]Inference backend:[/bold] {cfg.inference.backend}\n"
         f"[bold]Model:[/bold] {cfg.inference.model}\n"
         f"[bold]Embedding model:[/bold] {cfg.embeddings.model}\n"
+        f"[bold]Embedding backend:[/bold] {resolved} "
+        f"({'Apple Silicon GPU' if resolved == 'mlx' else 'ONNX Runtime'})\n"
         f"[bold]Chunk size:[/bold] {cfg.chunking.size} tokens\n"
         f"[bold]Chunk overlap:[/bold] {cfg.chunking.overlap} tokens\n"
         f"[bold]Top-k retrieval:[/bold] {cfg.chunking.top_k}\n"
