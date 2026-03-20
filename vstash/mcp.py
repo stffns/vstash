@@ -189,6 +189,7 @@ def vstash_ask(query: str, top_k: int = 5) -> str:
     try:
         from .chat import ask
 
+        top_k = int(top_k)
         cfg = _get_config()
         store = _get_store()
 
@@ -248,6 +249,7 @@ def vstash_search(query: str, top_k: int = 5) -> str:
         JSON array of matching chunks with text, title, path, and score.
     """
     try:
+        top_k = int(top_k)
         cfg = _get_config()
         store = _get_store()
 
