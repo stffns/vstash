@@ -46,7 +46,7 @@ class DocumentInfo(BaseModel):
 
 
 class StoreStats(BaseModel):
-    """Aggregate statistics about the Vex memory store."""
+    """Aggregate statistics about the vstash memory store."""
 
     documents: int = Field(description="Total document count")
     chunks: int = Field(description="Total chunk count")

@@ -104,7 +104,7 @@ class StorageConfig(BaseModel):
 class VstashConfig(BaseModel):
     """Root configuration for vstash."""
 
-    model_config = ConfigDict(frozen=False)  # Allow mutation during load
+    model_config = ConfigDict(frozen=True)
 
     inference: InferenceConfig = Field(default_factory=InferenceConfig)
     cerebras: CerebrasConfig = Field(default_factory=CerebrasConfig)

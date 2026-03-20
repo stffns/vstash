@@ -58,7 +58,7 @@ class TestStoreCRUD:
             source_type="markdown",
         )
         assert isinstance(doc_id, str)
-        assert len(doc_id) == 16
+        assert len(doc_id) == 32
 
     def test_doc_exists(self, sample_store: VstashStore) -> None:
         dim = sample_store.embedding_dim

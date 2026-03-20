@@ -132,6 +132,14 @@ class VstashStore:
             USING fts5(text, content=chunks, content_rowid=id, tokenize='porter ascii');
 
             CREATE INDEX IF NOT EXISTS idx_chunks_doc ON chunks(doc_id);
+
+            -- Auto-sync FTS5 when chunks are deleted directly
+            CREATE TRIGGER IF NOT EXISTS trg_chunks_delete
+            AFTER DELETE ON chunks
+            BEGIN
+                INSERT INTO fts_chunks(fts_chunks, rowid, text)
+                VALUES('delete', OLD.id, OLD.text);
+            END;
         """)
         conn.commit()
 
@@ -148,7 +156,7 @@ class VstashStore:
         Returns:
             True if the document exists in the store.
         """
-        doc_id = hashlib.sha256(path.encode()).hexdigest()[:16]
+        doc_id = hashlib.sha256(path.encode()).hexdigest()[:32]
         row = self._conn.execute(
             "SELECT 1 FROM documents WHERE id = ?", [doc_id]
         ).fetchone()
@@ -176,7 +184,7 @@ class VstashStore:
         Returns:
             The generated document ID (16-char hex hash).
         """
-        doc_id = hashlib.sha256(path.encode()).hexdigest()[:16]
+        doc_id = hashlib.sha256(path.encode()).hexdigest()[:32]
 
         # Remove existing version if re-ingesting
         self._delete_by_doc_id(doc_id)
@@ -224,7 +232,7 @@ class VstashStore:
         Returns:
             True if the document was found and deleted.
         """
-        doc_id = hashlib.sha256(path.encode()).hexdigest()[:16]
+        doc_id = hashlib.sha256(path.encode()).hexdigest()[:32]
         deleted = self._delete_by_doc_id(doc_id)
         self._conn.commit()
         return deleted
@@ -233,7 +241,7 @@ class VstashStore:
         """Delete a document by its internal hash ID.
 
         Args:
-            doc_id: 16-char hex document hash.
+            doc_id: 32-char hex document hash.
 
         Returns:
             True if the document existed and was deleted.
@@ -246,12 +254,12 @@ class VstashStore:
         ]
         if chunk_ids:
             placeholders = ",".join("?" * len(chunk_ids))
+            # Delete vec_chunks first (no trigger involved)
             self._conn.execute(
                 f"DELETE FROM vec_chunks WHERE rowid IN ({placeholders})", chunk_ids
             )
-            self._conn.execute(
-                f"DELETE FROM fts_chunks WHERE rowid IN ({placeholders})", chunk_ids
-            )
+            # Delete chunks — trg_chunks_delete trigger auto-syncs FTS5
+            self._conn.execute("DELETE FROM chunks WHERE doc_id = ?", [doc_id])
         cursor = self._conn.execute("DELETE FROM documents WHERE id = ?", [doc_id])
         return cursor.rowcount > 0
 
@@ -382,6 +390,30 @@ class VstashStore:
             )
             for r in ranked
         ]
+
+    # ------------------------------------------------------------------ #
+    # Lookup                                                               #
+    # ------------------------------------------------------------------ #
+
+    def find_document(self, query: str) -> str | None:
+        """Find a document by partial path or title match.
+
+        Searches for documents where the path or title contains the query
+        string (case-insensitive). Returns the path of the first match.
+
+        Args:
+            query: Partial filename, path, or title to search for.
+
+        Returns:
+            The full path of the matching document, or None.
+        """
+        row = self._conn.execute(
+            """SELECT path FROM documents
+               WHERE path LIKE ? OR title LIKE ?
+               ORDER BY added_at DESC LIMIT 1""",
+            [f"%{query}%", f"%{query}%"],
+        ).fetchone()
+        return row["path"] if row else None
 
     # ------------------------------------------------------------------ #
     # Inspect                                                              #
