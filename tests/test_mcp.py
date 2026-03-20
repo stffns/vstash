@@ -330,6 +330,50 @@ class TestVstashAdd:
         assert "error" in result
         assert "not found" in result["error"].lower()
 
+    @patch("vstash.mcp._get_store")
+    @patch("vstash.mcp._get_config")
+    def test_add_url_bypasses_path_resolve(
+        self, mock_config: MagicMock, mock_store: MagicMock
+    ) -> None:
+        """URLs should go directly to ingest without Path().resolve()."""
+        url = "https://example.com/article.html"
+        ingest_result = IngestResult(
+            status="ok", source=url, doc_id="url123", title="Article",
+            chunks=5, chars=2000, elapsed_s=1.2,
+        )
+
+        with patch("vstash.ingest.ingest", return_value=ingest_result) as mock_ingest:
+            result = json.loads(vstash_add(url))
+
+        # Verify ingest received the raw URL, not a resolved path
+        mock_ingest.assert_called_once()
+        called_source = mock_ingest.call_args[0][0]
+        assert called_source == url
+        assert result["status"] == "ok"
+
+    @patch("vstash.mcp._get_store")
+    @patch("vstash.mcp._get_config")
+    def test_add_tilde_path_gets_expanded(
+        self, mock_config: MagicMock, mock_store: MagicMock, tmp_path: Path
+    ) -> None:
+        """Tilde paths should be expanded to absolute paths before ingestion."""
+        # Create a real file under a fake home to test expansion logic
+        test_file = tmp_path / "notes.md"
+        test_file.write_text("Some notes")
+
+        ingest_result = IngestResult(
+            status="ok", source=str(test_file), doc_id="tilde123",
+            title="Notes", chunks=1, chars=10, elapsed_s=0.1,
+        )
+
+        with patch("vstash.ingest.ingest", return_value=ingest_result) as mock_ingest:
+            json.loads(vstash_add(str(test_file)))
+
+        # Verify ingest received an absolute path (no ~ remaining)
+        called_source = mock_ingest.call_args[0][0]
+        assert "~" not in called_source
+        assert Path(called_source).is_absolute()
+
 
 # ------------------------------------------------------------------ #
 # Error handling                                                       #
