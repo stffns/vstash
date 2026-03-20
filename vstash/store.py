@@ -266,10 +266,16 @@ class VstashStore:
         top_k: int = 5,
         vec_weight: float = 0.6,
         fts_weight: float = 0.4,
+        distance_cutoff: float = 1.15,
     ) -> list[SearchResult]:
         """Hybrid search: vector (semantic) + FTS5 (keyword) combined with RRF.
 
         RRF score = vec_weight * 1/(k+rank_vec) + fts_weight * 1/(k+rank_fts)
+
+        Results are filtered by vector distance — chunks whose distance from
+        the query is more than ``distance_cutoff`` times the best (closest)
+        distance are discarded before RRF scoring.  This prevents irrelevant
+        noise (e.g. Art of War appearing in deep learning queries).
 
         Args:
             query_embedding: Query vector from the embedding model.
@@ -277,11 +283,15 @@ class VstashStore:
             top_k: Number of results to return.
             vec_weight: Weight for vector search contribution.
             fts_weight: Weight for keyword search contribution.
+            distance_cutoff: Maximum allowed ratio of distance to best distance.
+                Chunks with distance > best_distance * distance_cutoff are dropped.
 
         Returns:
             Ranked list of SearchResult ordered by descending RRF score.
         """
-        candidate_pool = top_k * 10  # fetch more candidates before re-ranking
+        # Adaptive candidate pool — avoid pulling half the corpus on small DBs
+        total_chunks = self._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+        candidate_pool = min(top_k * 10, max(top_k * 3, total_chunks // 3))
 
         # --- Vector search ---
         vec_rows = self._conn.execute(
@@ -296,6 +306,18 @@ class VstashStore:
             """,
             [_serialize(query_embedding), candidate_pool],
         ).fetchall()
+
+        # --- Filter by vector distance gap ---
+        # The best (closest) result has the smallest distance.
+        # Remove results that are semantically too far from the ideal match.
+        if vec_rows:
+            best_distance = float(vec_rows[0]["distance"])
+            if best_distance > 0:
+                threshold = best_distance * distance_cutoff
+                vec_rows = [r for r in vec_rows if float(r["distance"]) <= threshold]
+
+        # Track which chunk IDs passed the vector distance filter
+        relevant_chunk_ids: set[int] = {row["id"] for row in vec_rows}
 
         # --- FTS5 search ---
         safe_query = query_text.replace('"', '""')
@@ -332,10 +354,13 @@ class VstashStore:
 
         for rank, row in enumerate(fts_rows):
             chunk_id = row["id"]
+            # Only include FTS results that also passed vector relevance filter,
+            # OR that are in the top FTS results (strong keyword match).
+            is_fts_top = rank < top_k * 2
             fts_contribution = fts_weight * (1.0 / (RRF_K + rank))
             if chunk_id in scores:
                 scores[chunk_id]["rrf"] = float(scores[chunk_id]["rrf"]) + fts_contribution
-            else:
+            elif chunk_id in relevant_chunk_ids or is_fts_top:
                 scores[chunk_id] = {
                     "text": row["text"],
                     "title": row["title"],
