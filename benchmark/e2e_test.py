@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from vstash.chat import ask
 from vstash.config import load_config
-from vstash.embed import embed_query, get_embedding_dim
+from vstash.embed import embed_query, get_embedding_dim, warmup
 from vstash.store import VstashStore
 
 REPORT_PATH = Path(__file__).parent / "E2E_TEST_REPORT.md"
@@ -42,6 +42,10 @@ def main() -> None:
     cfg = load_config()
     dim = get_embedding_dim(cfg.embeddings.model)
     db_path = str(Path.home() / ".vstash" / "memory.db")
+
+    # Pre-load ONNX model to eliminate cold start on first query
+    warmup(cfg.embeddings.model)
+
     store = VstashStore(db_path, embedding_dim=dim)
 
     lines: list[str] = []

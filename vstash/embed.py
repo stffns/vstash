@@ -55,6 +55,20 @@ def _get_model(model_name: str) -> TextEmbedding:
     return _model_cache[model_name]
 
 
+def warmup(model_name: str) -> None:
+    """Pre-load the embedding model to eliminate cold start latency.
+
+    Runs a single dummy embedding so the ONNX runtime is fully
+    initialised before the first real query.
+
+    Args:
+        model_name: FastEmbed model identifier.
+    """
+    model = _get_model(model_name)
+    # Trigger ONNX session initialisation with a throwaway input
+    list(model.embed(["warmup"]))
+
+
 def embed_texts(texts: list[str], model_name: str) -> list[list[float]]:
     """Embed a batch of texts.
 

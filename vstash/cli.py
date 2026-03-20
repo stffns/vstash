@@ -23,7 +23,7 @@ from rich.table import Table
 
 from . import chat as chat_module
 from .config import VstashConfig, load_config
-from .embed import embed_query, get_embedding_dim
+from .embed import embed_query, get_embedding_dim, warmup
 from .ingest import ingest, ingest_directory
 from .store import VstashStore
 
@@ -36,17 +36,25 @@ app = typer.Typer(
 console = Console()
 
 
-def _get_store(cfg: VstashConfig | None = None) -> tuple[VstashConfig, VstashStore]:
+def _get_store(
+    cfg: VstashConfig | None = None,
+    *,
+    warm: bool = False,
+) -> tuple[VstashConfig, VstashStore]:
     """Initialize config and create a VstashStore instance.
 
     Args:
         cfg: Optional pre-loaded config. If None, loads from vstash.toml.
+        warm: If True, eagerly load the ONNX embedding model to
+            eliminate cold-start latency on the first query.
 
     Returns:
         Tuple of (config, store).
     """
     if cfg is None:
         cfg = load_config()
+    if warm:
+        warmup(cfg.embeddings.model)
     dim = get_embedding_dim(cfg.embeddings.model)
     store = VstashStore(cfg.storage.db_path, embedding_dim=dim)
     return cfg, store
@@ -113,7 +121,7 @@ def ask(
     stream: bool = typer.Option(True, "--stream/--no-stream", help="Stream the response"),
 ) -> None:
     """Ask a question about your documents."""
-    cfg, store = _get_store()
+    cfg, store = _get_store(warm=True)
 
     with store:
         k = top_k or cfg.chunking.top_k
@@ -164,7 +172,7 @@ def chat(
     top_k: int = typer.Option(0, "--top-k", "-k"),
 ) -> None:
     """Interactive chat mode. Type 'exit' or Ctrl+C to quit."""
-    cfg, store = _get_store()
+    cfg, store = _get_store(warm=True)
 
     with store:
         k = top_k or cfg.chunking.top_k
