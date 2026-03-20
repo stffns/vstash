@@ -40,7 +40,7 @@ pip install vstash
 Or from source:
 
 ```bash
-git clone https://github.com/yourusername/vstash
+git clone https://github.com/stffns/vstash
 cd vstash
 pip install -e .
 ```
@@ -97,6 +97,7 @@ vstash list                 Show all documents in memory
 vstash stats                Memory statistics (docs, chunks, DB size)
 vstash forget <file>        Remove a document from memory
 vstash config               Show current configuration
+vstash-mcp                  Start MCP server (for Claude Desktop integration)
 ```
 
 Options for `vstash ask`:
@@ -105,6 +106,59 @@ Options for `vstash ask`:
 --sources/--no-sources  Show source citations (default: show)
 --stream/--no-stream    Stream the response token by token (default: stream)
 ```
+
+---
+
+## MCP Server — Claude Desktop Integration
+
+vstash includes a built-in [MCP](https://modelcontextprotocol.io/) server that gives Claude Desktop persistent document memory across sessions.
+
+### Setup
+
+**1. Install vstash:**
+
+```bash
+pip install vstash
+```
+
+**2. Add to Claude Desktop config** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "vstash": {
+      "command": "vstash-mcp"
+    }
+  }
+}
+```
+
+> 💡 If using `pyenv`, use the full path: `"command": "/path/to/.pyenv/versions/3.x.x/bin/vstash-mcp"`
+
+**3. Restart Claude Desktop.**
+
+### Available MCP Tools
+
+| Tool | Description |
+|---|---|
+| `vstash_add(path)` | Ingest a file, directory, or URL into memory |
+| `vstash_ask(query, top_k)` | Semantic search → LLM-generated answer with sources |
+| `vstash_search(query, top_k)` | Raw retrieval without LLM — returns chunks with scores |
+| `vstash_list()` | List all ingested documents |
+| `vstash_stats()` | Database statistics (doc count, chunks, size) |
+| `vstash_forget(source)` | Remove a document from memory |
+
+### Example
+
+Once configured, Claude can use vstash directly:
+
+```
+User: What did my research notes say about transformer attention?
+Claude: [calls vstash_ask("transformer attention mechanisms")]
+       Based on your notes in paper.pdf...
+```
+
+> ⚠️ Make sure your `~/.vstash/vstash.toml` includes the API key under `[cerebras]` (or your chosen backend), since MCP servers don't inherit shell environment variables.
 
 ---
 
@@ -201,9 +255,10 @@ PDF, DOCX, PPTX, XLSX, Markdown, TXT, HTML, CSV, Python, JavaScript, TypeScript,
 
 ## Roadmap
 
-- **Phase 1 (now):** Core pipeline — ingest, embed, search, answer
-- **Phase 2:** Watch mode (auto-ingest on file change), `vstash export`, JSON output for scripting
-- **Phase 3:** Multi-agent sync via cr-sqlite (CRDT peer-to-peer, no server required)
+- **Phase 1 ✅:** Core pipeline — ingest, embed, search, answer
+- **Phase 2 ✅:** MCP server — Claude Desktop integration with persistent memory
+- **Phase 3:** Watch mode (auto-ingest on file change), `vstash export`, JSON output
+- **Phase 4:** Multi-agent sync via cr-sqlite (CRDT peer-to-peer, no server required)
 
 ---
 
