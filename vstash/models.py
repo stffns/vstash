@@ -1,5 +1,5 @@
 """
-models.py — Typed result models for Vex operations.
+models.py — Typed result models for vstash operations.
 
 All structured data flowing between modules uses Pydantic BaseModel
 instead of raw dicts. This ensures validation, type safety, and
