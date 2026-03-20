@@ -69,6 +69,7 @@ def _get_store(
 def add(
     sources: list[str] = typer.Argument(..., help="Files, directories, or URLs to ingest"),
     force: bool = typer.Option(False, "--force", "-f", help="Re-ingest even if already in memory"),
+    collection: str = typer.Option("default", "--collection", "-c", help="Collection to add to"),
 ) -> None:
     """Add documents or URLs to memory."""
     cfg, store = _get_store()
@@ -80,27 +81,34 @@ def add(
             # Directory
             if path.is_dir():
                 console.print(f"\n[bold]Scanning[/bold] {source}")
-                results = ingest_directory(source, cfg, store, force=force)
+                results = ingest_directory(
+                    source, cfg, store, force=force, collection=collection,
+                )
                 ok = [r for r in results if r.status == "ok"]
                 skipped = [r for r in results if r.status == "skipped"]
                 msg = f"\n[green]✓[/green] {len(ok)}/{len(results)} files ingested from [bold]{source}[/bold]"
                 if skipped:
                     msg += f" [dim]({len(skipped)} skipped, use --force to re-ingest)[/dim]"
+                if collection != "default":
+                    msg += f" [cyan]→ {collection}[/cyan]"
                 console.print(msg)
                 continue
 
             # File or URL
             source_str = str(path.resolve()) if path.exists() else source
-            result = ingest(source_str, cfg, store, force=force)
+            result = ingest(source_str, cfg, store, force=force, collection=collection)
 
             if result.status == "ok":
-                console.print(
+                parts = (
                     f"[green]✓[/green] [bold]{result.title}[/bold] — "
                     f"{result.chunks} chunks in {result.elapsed_s}s"
                 )
+                if collection != "default":
+                    parts += f" [cyan]→ {collection}[/cyan]"
+                console.print(parts)
             elif result.status == "skipped":
                 console.print(
-                    f"[dim]⊘ {source} already in memory (use --force to re-ingest)[/dim]"
+                    f"[dim]⊊ {source} already in memory (use --force to re-ingest)[/dim]"
                 )
             elif result.status == "empty":
                 console.print(f"[yellow]⚠[/yellow] No content extracted from {source}")
@@ -117,6 +125,7 @@ def add(
 def ask(
     query: str = typer.Argument(..., help="Your question"),
     top_k: int = typer.Option(0, "--top-k", "-k", help="Number of chunks to retrieve (0 = from config)"),
+    collection: str | None = typer.Option(None, "--collection", "-c", help="Restrict to collection"),
     sources: bool = typer.Option(True, "--sources/--no-sources", help="Show source citations"),
     stream: bool = typer.Option(True, "--stream/--no-stream", help="Stream the response"),
 ) -> None:
@@ -129,7 +138,9 @@ def ask(
         # Embed query
         with console.status("[dim]Searching memory...[/dim]", spinner="dots"):
             q_embedding = embed_query(query, cfg.embeddings.model)
-            chunks = store.search(q_embedding, query, top_k=k)
+            chunks = store.search(
+                q_embedding, query, top_k=k, collection=collection,
+            )
 
         if not chunks:
             console.print(
@@ -236,21 +247,23 @@ def chat(
 
 
 @app.command(name="list")
-def list_docs() -> None:
+def list_docs(
+    collection: str | None = typer.Option(None, "--collection", "-c", help="Filter by collection"),
+) -> None:
     """List all documents in memory."""
     cfg, store = _get_store()
 
     with store:
-        docs = store.list_documents()
+        docs = store.list_documents(collection=collection)
 
         if not docs:
-            console.print(
-                "[yellow]Memory is empty. Add documents with [bold]vstash add[/bold].[/yellow]"
-            )
+            msg = "Memory is empty." if not collection else f'No documents in collection "{collection}".'
+            console.print(f"[yellow]{msg} Add documents with [bold]vstash add[/bold].[/yellow]")
             return
 
         table = Table(show_header=True, header_style="bold cyan", border_style="dim")
         table.add_column("Title", style="bold")
+        table.add_column("Collection", style="cyan")
         table.add_column("Type", style="dim")
         table.add_column("Chunks", justify="right")
         table.add_column("Added", style="dim")
@@ -259,6 +272,7 @@ def list_docs() -> None:
             added = doc.added_at[:10]  # just the date
             table.add_row(
                 doc.title,
+                doc.collection,
                 doc.source_type,
                 str(doc.chunk_count),
                 added,
@@ -283,6 +297,7 @@ def stats() -> None:
         console.print(Panel(
             f"[bold]Documents:[/bold] {s.documents}\n"
             f"[bold]Chunks:[/bold] {s.chunks}\n"
+            f"[bold]Collections:[/bold] {s.collections}\n"
             f"[bold]Database:[/bold] {s.db_path}\n"
             f"[bold]Size:[/bold] {s.db_size_mb} MB\n"
             f"[bold]Backend:[/bold] {cfg.inference.backend} / {cfg.inference.model}\n"
@@ -340,6 +355,41 @@ def show_config() -> None:
         title="[bold cyan]vstash Config[/bold cyan]",
         border_style="cyan",
     ))
+
+
+# ------------------------------------------------------------------ #
+# vstash watch                                                         #
+# ------------------------------------------------------------------ #
+
+
+@app.command()
+def watch(
+    paths: list[str] = typer.Argument(..., help="Directories to watch"),
+    collection: str = typer.Option("default", "--collection", "-c", help="Collection for ingested files"),
+    ext: str | None = typer.Option(None, "--ext", help="Comma-separated extensions, e.g. .md,.txt,.py"),
+    debounce: float = typer.Option(2.0, "--debounce", help="Seconds to wait before re-ingesting"),
+) -> None:
+    """Watch directories for changes and auto-ingest files."""
+    from .watch import start_watch
+
+    cfg, store = _get_store()
+
+    extensions: frozenset[str] | None = None
+    if ext:
+        extensions = frozenset(
+            e.strip() if e.strip().startswith(".") else f".{e.strip()}"
+            for e in ext.split(",")
+        )
+
+    with store:
+        start_watch(
+            paths,
+            cfg,
+            store,
+            collection=collection,
+            extensions=extensions,
+            debounce_s=debounce,
+        )
 
 
 # ------------------------------------------------------------------ #
