@@ -377,8 +377,9 @@ def watch(
     extensions: frozenset[str] | None = None
     if ext:
         extensions = frozenset(
-            e.strip() if e.strip().startswith(".") else f".{e.strip()}"
-            for e in ext.split(",")
+            (part if part.startswith(".") else f".{part}")
+            for raw in ext.split(",")
+            if (part := raw.strip().lower())
         )
 
     with store:

@@ -9,8 +9,10 @@ Requires: watchdog >= 4.0.0  (install via `pip install vstash[watch]`)
 
 from __future__ import annotations
 
+import queue
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -33,9 +35,11 @@ SUPPORTED_EXTENSIONS: frozenset[str] = frozenset({
 class _DebounceTimer:
     """Debounce rapid file-change events into a single ingestion call.
 
+    Fires the callback after *delay* seconds of inactivity per path.
+    Automatically cleans up timer entries after they fire.
+
     Args:
         delay: Seconds to wait before firing the callback.
-        callback: Function to call with the file path.
     """
 
     def __init__(self, delay: float) -> None:
@@ -43,7 +47,7 @@ class _DebounceTimer:
         self._timers: dict[str, threading.Timer] = {}
         self._lock = threading.Lock()
 
-    def trigger(self, path: str, callback: callable) -> None:  # type: ignore[type-arg]
+    def trigger(self, path: str, callback: Callable[[str], None]) -> None:
         """Schedule or reschedule ingestion for *path*.
 
         Args:
@@ -55,7 +59,16 @@ class _DebounceTimer:
             if existing is not None:
                 existing.cancel()
 
-            timer = threading.Timer(self._delay, callback, args=[path])
+            def _fire_and_cleanup() -> None:
+                try:
+                    callback(path)
+                finally:
+                    with self._lock:
+                        current = self._timers.get(path)
+                        if current is timer:
+                            self._timers.pop(path, None)
+
+            timer = threading.Timer(self._delay, _fire_and_cleanup)
             timer.daemon = True
             self._timers[path] = timer
             timer.start()
@@ -97,7 +110,8 @@ def start_watch(
 ) -> None:
     """Watch directories for file changes and auto-ingest.
 
-    Blocks until interrupted with Ctrl+C.
+    Blocks until interrupted with Ctrl+C.  Ingestion is serialised
+    through a single worker thread to avoid concurrent SQLite writes.
 
     Args:
         paths: List of directory paths to watch.
@@ -111,7 +125,7 @@ def start_watch(
         ImportError: If ``watchdog`` is not installed.
     """
     try:
-        from watchdog.events import FileSystemEventHandler
+        from watchdog.events import FileSystemEvent, FileSystemEventHandler
         from watchdog.observers import Observer
     except ImportError as exc:
         raise ImportError(
@@ -122,54 +136,67 @@ def start_watch(
     from .ingest import ingest
 
     exts = extensions or SUPPORTED_EXTENSIONS
+
+    # --- Serialised ingestion via queue (thread-safe for SQLite) ---
+    ingest_queue: queue.Queue[str | None] = queue.Queue()
+
+    def _worker() -> None:
+        """Process files from the queue one at a time."""
+        while True:
+            file_path = ingest_queue.get()
+            if file_path is None:  # Poison pill → exit
+                break
+            if not Path(file_path).exists():
+                continue
+            try:
+                result = ingest(
+                    file_path, cfg, store, force=True, collection=collection,
+                )
+                ts = time.strftime("%H:%M:%S")
+                if result.status == "ok":
+                    console.print(
+                        f"[dim]{ts}[/dim] [green]✓[/green] "
+                        f"[bold]{result.title}[/bold] — "
+                        f"{result.chunks} chunks → [cyan]{collection}[/cyan]"
+                    )
+                elif result.status == "empty":
+                    console.print(
+                        f"[dim]{ts}[/dim] [yellow]⚠[/yellow] "
+                        f"No content: {Path(file_path).name}"
+                    )
+                elif result.status == "error":
+                    console.print(
+                        f"[dim]{ts}[/dim] [red]✗[/red] "
+                        f"Error: {result.error}"
+                    )
+            except Exception as exc:
+                console.print(f"[red]✗ Watch ingest error: {exc}[/red]")
+
+    worker_thread = threading.Thread(target=_worker, daemon=True)
+    worker_thread.start()
+
     debounce = _DebounceTimer(debounce_s)
 
-    def _ingest_file(file_path: str) -> None:
-        """Ingest a single file, logging the result."""
-        if not Path(file_path).exists():
-            return
-        try:
-            result = ingest(
-                file_path, cfg, store, force=True, collection=collection,
-            )
-            ts = time.strftime("%H:%M:%S")
-            if result.status == "ok":
-                console.print(
-                    f"[dim]{ts}[/dim] [green]✓[/green] "
-                    f"[bold]{result.title}[/bold] — "
-                    f"{result.chunks} chunks → [cyan]{collection}[/cyan]"
-                )
-            elif result.status == "empty":
-                console.print(
-                    f"[dim]{ts}[/dim] [yellow]⚠[/yellow] "
-                    f"No content: {Path(file_path).name}"
-                )
-            elif result.status == "error":
-                console.print(
-                    f"[dim]{ts}[/dim] [red]✗[/red] "
-                    f"Error: {result.error}"
-                )
-        except Exception as exc:
-            console.print(f"[red]✗ Watch ingest error: {exc}[/red]")
+    def _enqueue_file(file_path: str) -> None:
+        """Push a file path into the ingestion queue."""
+        ingest_queue.put(file_path)
 
     class Handler(FileSystemEventHandler):
         """React to filesystem create/modify events."""
 
-        def on_created(self, event: object) -> None:
+        def on_created(self, event: FileSystemEvent) -> None:
             """Handle file creation."""
-            if hasattr(event, "is_directory") and event.is_directory:  # type: ignore[union-attr]
+            if event.is_directory:
                 return
-            src = getattr(event, "src_path", "")
-            if _should_process(src, exts):
-                debounce.trigger(src, _ingest_file)
+            if _should_process(event.src_path, exts):
+                debounce.trigger(event.src_path, _enqueue_file)
 
-        def on_modified(self, event: object) -> None:
+        def on_modified(self, event: FileSystemEvent) -> None:
             """Handle file modification."""
-            if hasattr(event, "is_directory") and event.is_directory:  # type: ignore[union-attr]
+            if event.is_directory:
                 return
-            src = getattr(event, "src_path", "")
-            if _should_process(src, exts):
-                debounce.trigger(src, _ingest_file)
+            if _should_process(event.src_path, exts):
+                debounce.trigger(event.src_path, _enqueue_file)
 
     observer = Observer()
     handler = Handler()
@@ -195,6 +222,8 @@ def start_watch(
             time.sleep(1)
     except KeyboardInterrupt:
         debounce.cancel_all()
+        ingest_queue.put(None)  # Signal worker to exit
+        worker_thread.join(timeout=5)
         observer.stop()
         console.print("\n[dim]Watcher stopped.[/dim]")
     observer.join()
