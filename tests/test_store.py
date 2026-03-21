@@ -158,3 +158,128 @@ class TestStoreSearch:
             assert r.path
             assert isinstance(r.chunk, int)
             assert isinstance(r.score, float)
+
+
+class TestStoreCollections:
+    """Test collection-scoped operations."""
+
+    def test_add_to_named_collection(self, sample_store: VstashStore) -> None:
+        dim = sample_store.embedding_dim
+        sample_store.add_document(
+            path="/test/file.md",
+            title="Test",
+            chunks=["hello"],
+            embeddings=[[0.1] * dim],
+            collection="work",
+        )
+        docs = sample_store.list_documents(collection="work")
+        assert len(docs) == 1
+        assert docs[0].collection == "work"
+        assert docs[0].title == "Test"
+
+    def test_list_collections(self, sample_store: VstashStore) -> None:
+        dim = sample_store.embedding_dim
+        sample_store.add_document(
+            path="/a.md", title="A", chunks=["a"],
+            embeddings=[[0.1] * dim], collection="alpha",
+        )
+        sample_store.add_document(
+            path="/b.md", title="B", chunks=["b"],
+            embeddings=[[0.2] * dim], collection="beta",
+        )
+        sample_store.add_document(
+            path="/c.md", title="C", chunks=["c"],
+            embeddings=[[0.3] * dim], collection="alpha",
+        )
+        cols = sample_store.list_collections()
+        assert set(cols) == {"alpha", "beta"}
+
+    def test_list_filtered_by_collection(self, sample_store: VstashStore) -> None:
+        dim = sample_store.embedding_dim
+        sample_store.add_document(
+            path="/a.md", title="A", chunks=["a"],
+            embeddings=[[0.1] * dim], collection="proj1",
+        )
+        sample_store.add_document(
+            path="/b.md", title="B", chunks=["b"],
+            embeddings=[[0.2] * dim], collection="proj2",
+        )
+        docs_p1 = sample_store.list_documents(collection="proj1")
+        assert len(docs_p1) == 1
+        assert docs_p1[0].title == "A"
+
+        docs_all = sample_store.list_documents()
+        assert len(docs_all) == 2
+
+    def test_search_scoped_by_collection(self, sample_store: VstashStore) -> None:
+        dim = sample_store.embedding_dim
+        sample_store.add_document(
+            path="/work/a.md", title="Work Doc", chunks=["work content"],
+            embeddings=[[0.1] * dim], collection="work",
+        )
+        sample_store.add_document(
+            path="/personal/b.md", title="Personal Doc", chunks=["personal content"],
+            embeddings=[[0.2] * dim], collection="personal",
+        )
+        query_vec = [0.1] * dim
+        # Search only within "work"
+        results = sample_store.search(query_vec, "content", collection="work")
+        paths_in_results = {r.path for r in results}
+        assert "/work/a.md" in paths_in_results or len(results) == 0
+        # Ensure personal docs are NOT in work-scoped results
+        assert "/personal/b.md" not in paths_in_results
+
+    def test_find_document_scoped_by_collection(self, sample_store: VstashStore) -> None:
+        dim = sample_store.embedding_dim
+        sample_store.add_document(
+            path="/docs/readme.md", title="Readme", chunks=["text"],
+            embeddings=[[0.1] * dim], collection="docs",
+        )
+        sample_store.add_document(
+            path="/notes/readme.md", title="Notes Readme", chunks=["notes"],
+            embeddings=[[0.2] * dim], collection="notes",
+        )
+        match = sample_store.find_document("readme", collection="docs")
+        assert match is not None
+        assert "docs" in match
+
+    def test_stats_includes_collection_count(self, sample_store: VstashStore) -> None:
+        dim = sample_store.embedding_dim
+        sample_store.add_document(
+            path="/a.md", title="A", chunks=["a"],
+            embeddings=[[0.1] * dim], collection="x",
+        )
+        sample_store.add_document(
+            path="/b.md", title="B", chunks=["b"],
+            embeddings=[[0.2] * dim], collection="y",
+        )
+        s = sample_store.stats()
+        assert s.collections == 2
+
+    def test_same_path_different_collections(self, sample_store: VstashStore) -> None:
+        """Same file can exist in multiple collections (different doc_id hash)."""
+        dim = sample_store.embedding_dim
+        sample_store.add_document(
+            path="/shared/file.md", title="Shared", chunks=["shared"],
+            embeddings=[[0.1] * dim], collection="team-a",
+        )
+        sample_store.add_document(
+            path="/shared/file.md", title="Shared", chunks=["shared"],
+            embeddings=[[0.1] * dim], collection="team-b",
+        )
+        docs = sample_store.list_documents()
+        assert len(docs) == 2
+        cols = {d.collection for d in docs}
+        assert cols == {"team-a", "team-b"}
+
+    def test_default_collection(self, sample_store: VstashStore) -> None:
+        """Documents without explicit collection go to 'default'."""
+        dim = sample_store.embedding_dim
+        sample_store.add_document(
+            path="/x.md", title="X", chunks=["x"],
+            embeddings=[[0.1] * dim],
+        )
+        docs = sample_store.list_documents()
+        assert len(docs) == 1
+        assert docs[0].collection == "default"
+
