@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 import time
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 import tiktoken
@@ -127,6 +128,9 @@ def ingest(
     *,
     force: bool = False,
     collection: str = "default",
+    project: str | None = None,
+    layer: str | None = None,
+    tags: str | None = None,
 ) -> IngestResult:
     """Ingest a single file or URL into the store.
 
@@ -179,7 +183,22 @@ def ingest(
 
     char_count = len(text)
 
-    # --- Step 2: Chunk ---
+    # --- Step 2: Extract frontmatter metadata ---
+    frontmatter = _extract_frontmatter(text)
+    # Explicit params override frontmatter values
+    fm_project = project or frontmatter.get("project")
+    fm_layer = layer or frontmatter.get("layer")
+    fm_tags_raw = tags or frontmatter.get("tags")
+    fm_tags: str | None = None
+    if fm_tags_raw:
+        if isinstance(fm_tags_raw, list):
+            fm_tags = ",".join(str(t) for t in fm_tags_raw)
+        else:
+            fm_tags = str(fm_tags_raw)
+    # Strip frontmatter block from text before chunking
+    text = _strip_frontmatter(text)
+
+    # --- Step 3: Chunk ---
     with console.status("[bold cyan]Chunking...[/bold cyan]", spinner="dots"):
         chunks = chunk_text(text, cfg.chunking.size, cfg.chunking.overlap)
 
@@ -187,10 +206,10 @@ def ingest(
         console.print(f"[yellow]⚠ No chunks generated from {source}[/yellow]")
         return IngestResult(status="empty", source=source)
 
-    # --- Step 3: Embed (with progress bar — this is the slow part) ---
+    # --- Step 4: Embed (with progress bar — this is the slow part) ---
     embeddings = _embed_with_progress(chunks, cfg.embeddings.model)
 
-    # --- Step 4: Store ---
+    # --- Step 5: Store ---
     with console.status("[bold cyan]Storing...[/bold cyan]", spinner="dots"):
         doc_id = store.add_document(
             path=source_path,
@@ -199,6 +218,9 @@ def ingest(
             embeddings=embeddings,
             source_type=source_type,
             collection=collection,
+            project=fm_project,
+            layer=fm_layer,
+            tags=fm_tags,
         )
 
     elapsed = round(time.time() - start_time, 2)
@@ -267,6 +289,71 @@ def ingest_directory(
             progress.advance(task)
 
     return results
+
+
+# ------------------------------------------------------------------ #
+# Frontmatter                                                         #
+# ------------------------------------------------------------------ #
+
+_FRONTMATTER_RE = re.compile(
+    r"\A\s*---[ \t]*\n(.*?\n)---[ \t]*\n",
+    re.DOTALL,
+)
+
+
+def _extract_frontmatter(text: str) -> dict[str, Any]:
+    """Extract YAML frontmatter from document text.
+
+    Parses the YAML block between ``---`` delimiters at the start of the
+    document. Only simple key-value pairs and lists are supported.
+
+    Args:
+        text: Raw document text.
+
+    Returns:
+        Dictionary of parsed frontmatter fields, or empty dict if none found.
+    """
+    match = _FRONTMATTER_RE.match(text)
+    if not match:
+        return {}
+
+    try:
+        import yaml  # noqa: PLC0415 — optional dependency, lazy import
+
+        return dict(yaml.safe_load(match.group(1)) or {})
+    except ImportError:
+        # Fallback: parse simple `key: value` lines without pyyaml
+        result: dict[str, Any] = {}
+        for line in match.group(1).splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if ":" not in line:
+                continue
+            key, _, value = line.partition(":")
+            value = value.strip()
+            # Handle YAML lists inline: [a, b, c]
+            if value.startswith("[") and value.endswith("]"):
+                result[key.strip()] = [
+                    v.strip().strip("'\"")
+                    for v in value[1:-1].split(",")
+                    if v.strip()
+                ]
+            else:
+                result[key.strip()] = value.strip("'\"")
+        return result
+
+
+def _strip_frontmatter(text: str) -> str:
+    """Remove YAML frontmatter from document text.
+
+    Args:
+        text: Raw document text potentially starting with ``---`` block.
+
+    Returns:
+        Text with frontmatter block removed.
+    """
+    return _FRONTMATTER_RE.sub("", text, count=1)
 
 
 # ------------------------------------------------------------------ #

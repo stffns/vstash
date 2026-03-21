@@ -70,9 +70,13 @@ def add(
     sources: list[str] = typer.Argument(..., help="Files, directories, or URLs to ingest"),
     force: bool = typer.Option(False, "--force", "-f", help="Re-ingest even if already in memory"),
     collection: str = typer.Option("default", "--collection", "-c", help="Collection to add to"),
+    project: str | None = typer.Option(None, "--project", "-p", help="Project tag (overrides frontmatter)"),
+    layer: str | None = typer.Option(None, "--layer", "-l", help="Layer tag (overrides frontmatter)"),
+    tags: str | None = typer.Option(None, "--tags", "-t", help="Comma-separated tags (overrides frontmatter)"),
 ) -> None:
     """Add documents or URLs to memory."""
     cfg, store = _get_store()
+    meta = {"project": project, "layer": layer, "tags": tags}
 
     with store:
         for source in sources:
@@ -96,7 +100,9 @@ def add(
 
             # File or URL
             source_str = str(path.resolve()) if path.exists() else source
-            result = ingest(source_str, cfg, store, force=force, collection=collection)
+            result = ingest(
+                source_str, cfg, store, force=force, collection=collection, **meta,
+            )
 
             if result.status == "ok":
                 parts = (
@@ -126,6 +132,8 @@ def ask(
     query: str = typer.Argument(..., help="Your question"),
     top_k: int = typer.Option(0, "--top-k", "-k", help="Number of chunks to retrieve (0 = from config)"),
     collection: str | None = typer.Option(None, "--collection", "-c", help="Restrict to collection"),
+    project: str | None = typer.Option(None, "--project", "-p", help="Restrict to project"),
+    layer: str | None = typer.Option(None, "--layer", "-l", help="Restrict to layer"),
     sources: bool = typer.Option(True, "--sources/--no-sources", help="Show source citations"),
     stream: bool = typer.Option(True, "--stream/--no-stream", help="Stream the response"),
 ) -> None:
@@ -139,7 +147,8 @@ def ask(
         with console.status("[dim]Searching memory...[/dim]", spinner="dots"):
             q_embedding = embed_query(query, cfg.embeddings.model)
             chunks = store.search(
-                q_embedding, query, top_k=k, collection=collection,
+                q_embedding, query, top_k=k,
+                collection=collection, project=project, layer=layer,
             )
 
         if not chunks:
@@ -249,12 +258,16 @@ def chat(
 @app.command(name="list")
 def list_docs(
     collection: str | None = typer.Option(None, "--collection", "-c", help="Filter by collection"),
+    project: str | None = typer.Option(None, "--project", "-p", help="Filter by project"),
+    layer: str | None = typer.Option(None, "--layer", "-l", help="Filter by layer"),
 ) -> None:
     """List all documents in memory."""
     cfg, store = _get_store()
 
     with store:
-        docs = store.list_documents(collection=collection)
+        docs = store.list_documents(
+            collection=collection, project=project, layer=layer,
+        )
 
         if not docs:
             msg = "Memory is empty." if not collection else f'No documents in collection "{collection}".'

@@ -110,14 +110,21 @@ class VstashStore:
                 title       TEXT NOT NULL,
                 source_type TEXT NOT NULL DEFAULT 'file',
                 collection  TEXT NOT NULL DEFAULT 'default',
+                project     TEXT,
+                layer       TEXT,
+                tags        TEXT,
                 char_count  INTEGER DEFAULT 0,
                 chunk_count INTEGER DEFAULT 0,
                 added_at    TEXT NOT NULL
             );
 
-            -- Index for collection-scoped queries
+            -- Index for scoped queries
             CREATE INDEX IF NOT EXISTS idx_documents_collection
             ON documents(collection);
+            CREATE INDEX IF NOT EXISTS idx_documents_project
+            ON documents(project);
+            CREATE INDEX IF NOT EXISTS idx_documents_layer
+            ON documents(layer);
 
             -- Chunk text + position
             CREATE TABLE IF NOT EXISTS chunks (
@@ -147,18 +154,28 @@ class VstashStore:
             END;
         """)
         conn.commit()
-        self._migrate_collections(conn)
+        self._migrate_schema(conn)
 
-    def _migrate_collections(self, conn: sqlite3.Connection) -> None:
-        """Add collection column to existing databases that lack it."""
+    def _migrate_schema(self, conn: sqlite3.Connection) -> None:
+        """Add missing columns to existing databases."""
         columns = {
             row[1] for row in
             conn.execute("PRAGMA table_info(documents)").fetchall()
         }
+        migrations: list[str] = []
         if "collection" not in columns:
-            conn.execute(
+            migrations.append(
                 "ALTER TABLE documents ADD COLUMN collection TEXT NOT NULL DEFAULT 'default'"
             )
+        if "project" not in columns:
+            migrations.append("ALTER TABLE documents ADD COLUMN project TEXT")
+        if "layer" not in columns:
+            migrations.append("ALTER TABLE documents ADD COLUMN layer TEXT")
+        if "tags" not in columns:
+            migrations.append("ALTER TABLE documents ADD COLUMN tags TEXT")
+        for sql in migrations:
+            conn.execute(sql)
+        if migrations:
             conn.commit()
 
     # ------------------------------------------------------------------ #
@@ -187,6 +204,9 @@ class VstashStore:
         embeddings: list[list[float]],
         source_type: str = "file",
         collection: str = "default",
+        project: str | None = None,
+        layer: str | None = None,
+        tags: str | None = None,
     ) -> str:
         """Add a document and its chunks to the store.
 
@@ -199,6 +219,9 @@ class VstashStore:
             embeddings: Corresponding embedding vectors.
             source_type: Document type (pdf, code, url, etc.).
             collection: Named collection to group this document.
+            project: Project identifier from frontmatter.
+            layer: Layer/category from frontmatter.
+            tags: Comma-separated tags from frontmatter.
 
         Returns:
             The generated document ID (32-char hex hash).
@@ -210,10 +233,13 @@ class VstashStore:
 
         self._conn.execute(
             """INSERT INTO documents
-               (id, path, title, source_type, collection, char_count, chunk_count, added_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+               (id, path, title, source_type, collection,
+                project, layer, tags,
+                char_count, chunk_count, added_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 doc_id, path, title, source_type, collection,
+                project, layer, tags,
                 sum(len(c) for c in chunks),
                 len(chunks),
                 datetime.now(UTC).isoformat(),
@@ -306,6 +332,8 @@ class VstashStore:
         fts_weight: float = 0.4,
         distance_cutoff: float = 1.15,
         collection: str | None = None,
+        project: str | None = None,
+        layer: str | None = None,
     ) -> list[SearchResult]:
         """Hybrid search: vector (semantic) + FTS5 (keyword) combined with RRF.
 
@@ -325,6 +353,8 @@ class VstashStore:
             distance_cutoff: Maximum allowed ratio of distance to best distance.
                 Chunks with distance > best_distance * distance_cutoff are dropped.
             collection: If set, restrict search to documents in this collection.
+            project: If set, restrict search to documents with this project tag.
+            layer: If set, restrict search to documents with this layer tag.
 
         Returns:
             Ranked list of SearchResult ordered by descending RRF score.
@@ -333,20 +363,10 @@ class VstashStore:
         total_chunks = self._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
         candidate_pool = min(top_k * 10, max(top_k * 3, total_chunks // 3))
 
-        # --- Collection filter clause ---
-        col_clause = (
-            """
-            AND v.rowid IN (
-                SELECT c2.id
-                FROM chunks c2
-                JOIN documents d2 ON d2.id = c2.doc_id
-                WHERE d2.collection = ?
-            )
-            """
-            if collection
-            else ""
+        # --- Build metadata filter ---
+        vec_clause, col_clause, filter_params = self._build_doc_filter(
+            collection=collection, project=project, layer=layer,
         )
-        col_params: list[str] = [collection] if collection else []
 
         # --- Vector search ---
         vec_rows = self._conn.execute(
@@ -357,10 +377,10 @@ class VstashStore:
             JOIN documents d ON d.id = c.doc_id
             WHERE v.embedding MATCH ?
               AND k = ?
-              {col_clause}
+              {vec_clause}
             ORDER BY v.distance
             """,
-            [_serialize(query_embedding), candidate_pool, *col_params],
+            [_serialize(query_embedding), candidate_pool, *filter_params],
         ).fetchall()
 
         # --- Filter by vector distance gap ---
@@ -390,7 +410,7 @@ class VstashStore:
                 ORDER BY rank
                 LIMIT ?
                 """,
-                [safe_query, *col_params, candidate_pool],
+                [safe_query, *filter_params, candidate_pool],
             ).fetchall()
         except sqlite3.OperationalError:
             # FTS5 query syntax error (e.g. single char) — fall back to no FTS
@@ -441,11 +461,68 @@ class VstashStore:
         ]
 
     # ------------------------------------------------------------------ #
+    # Filter builder                                                       #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _build_doc_filter(
+        *,
+        collection: str | None = None,
+        project: str | None = None,
+        layer: str | None = None,
+    ) -> tuple[str, str, list[str]]:
+        """Build SQL filter clauses for document metadata.
+
+        Returns three items:
+        - **vec_clause**: ``AND v.rowid IN (…)`` for vec0 pre-filtering
+        - **col_clause**: ``AND d.collection = ? …`` for JOINed queries (FTS, list)
+        - **params**: bind-parameter values (same order for both clauses)
+
+        Args:
+            collection: Filter by collection name.
+            project: Filter by project tag.
+            layer: Filter by layer tag.
+        """
+        conditions: list[str] = []
+        params: list[str] = []
+        if collection:
+            conditions.append("d2.collection = ?")
+            params.append(collection)
+        if project:
+            conditions.append("d2.project = ?")
+            params.append(project)
+        if layer:
+            conditions.append("d2.layer = ?")
+            params.append(layer)
+
+        if not conditions:
+            return "", "", []
+
+        where = " AND ".join(conditions)
+        vec_clause = f"""
+            AND v.rowid IN (
+                SELECT c2.id
+                FROM chunks c2
+                JOIN documents d2 ON d2.id = c2.doc_id
+                WHERE {where}
+            )
+        """
+        # For JOINed queries where documents is aliased as 'd'
+        col_clause = "AND " + " AND ".join(
+            c.replace("d2.", "d.") for c in conditions
+        )
+        return vec_clause, col_clause, params
+
+    # ------------------------------------------------------------------ #
     # Lookup                                                               #
     # ------------------------------------------------------------------ #
 
     def find_document(
-        self, query: str, collection: str | None = None,
+        self,
+        query: str,
+        collection: str | None = None,
+        project: str | None = None,
+        layer: str | None = None,
     ) -> str | None:
         """Find a document by partial path or title match.
 
@@ -455,17 +532,22 @@ class VstashStore:
         Args:
             query: Partial filename, path, or title to search for.
             collection: If set, restrict search to this collection.
+            project: If set, restrict search to this project.
+            layer: If set, restrict search to this layer.
 
         Returns:
             The full path of the matching document, or None.
         """
-        col_clause = "AND collection = ?" if collection else ""
-        col_params: list[str] = [collection] if collection else []
+        _, col_clause, filter_params = self._build_doc_filter(
+            collection=collection, project=project, layer=layer,
+        )
+        # col_clause uses 'd.' alias, but here we query documents directly
+        direct_clause = col_clause.replace("d.", "")
         row = self._conn.execute(
             f"""SELECT path FROM documents
-               WHERE (path LIKE ? OR title LIKE ?) {col_clause}
+               WHERE (path LIKE ? OR title LIKE ?) {direct_clause}
                ORDER BY added_at DESC LIMIT 1""",
-            [f"%{query}%", f"%{query}%", *col_params],
+            [f"%{query}%", f"%{query}%", *filter_params],
         ).fetchone()
         return row["path"] if row else None
 
@@ -474,30 +556,34 @@ class VstashStore:
     # ------------------------------------------------------------------ #
 
     def list_documents(
-        self, collection: str | None = None,
+        self,
+        collection: str | None = None,
+        project: str | None = None,
+        layer: str | None = None,
     ) -> list[DocumentInfo]:
         """List all ingested documents.
 
         Args:
             collection: If set, filter to this collection only.
+            project: If set, filter to this project only.
+            layer: If set, filter to this layer only.
 
         Returns:
             List of DocumentInfo ordered by ingestion date (newest first).
         """
-        if collection:
-            rows = self._conn.execute(
-                """SELECT path, title, source_type, collection,
-                          chunk_count, char_count, added_at
-                   FROM documents WHERE collection = ?
-                   ORDER BY added_at DESC""",
-                [collection],
-            ).fetchall()
-        else:
-            rows = self._conn.execute(
-                """SELECT path, title, source_type, collection,
-                          chunk_count, char_count, added_at
-                   FROM documents ORDER BY added_at DESC"""
-            ).fetchall()
+        _, col_clause, filter_params = self._build_doc_filter(
+            collection=collection, project=project, layer=layer,
+        )
+        direct_clause = col_clause.replace("d.", "")
+        where = f"WHERE {direct_clause[4:]}" if direct_clause else ""
+        rows = self._conn.execute(
+            f"""SELECT path, title, source_type, collection,
+                       project, layer, tags,
+                       chunk_count, char_count, added_at
+                FROM documents {where}
+                ORDER BY added_at DESC""",
+            filter_params,
+        ).fetchall()
         return [DocumentInfo.model_validate(dict(r)) for r in rows]
 
     def list_collections(self) -> list[str]:
