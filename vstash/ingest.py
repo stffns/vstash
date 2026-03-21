@@ -126,6 +126,7 @@ def ingest(
     store: VstashStore,
     *,
     force: bool = False,
+    collection: str = "default",
 ) -> IngestResult:
     """Ingest a single file or URL into the store.
 
@@ -134,6 +135,7 @@ def ingest(
         cfg: Vex configuration.
         store: Vector store instance.
         force: If False, skip documents already in the store.
+        collection: Named collection to group this document.
 
     Returns:
         IngestResult with status, chunk count, timing, etc.
@@ -196,6 +198,7 @@ def ingest(
             chunks=chunks,
             embeddings=embeddings,
             source_type=source_type,
+            collection=collection,
         )
 
     elapsed = round(time.time() - start_time, 2)
@@ -217,6 +220,7 @@ def ingest_directory(
     store: VstashStore,
     *,
     force: bool = False,
+    collection: str = "default",
 ) -> list[IngestResult]:
     """Recursively ingest all supported files in a directory.
 
@@ -225,6 +229,7 @@ def ingest_directory(
         cfg: Vex configuration.
         store: Vector store instance.
         force: If False, skip documents already in the store.
+        collection: Named collection to group ingested documents.
 
     Returns:
         List of IngestResult for each processed file.
@@ -257,7 +262,7 @@ def ingest_directory(
         task = progress.add_task("", total=len(files))
         for f in files:
             progress.update(task, description=f.name)
-            result = ingest(str(f), cfg, store, force=force)
+            result = ingest(str(f), cfg, store, force=force, collection=collection)
             results.append(result)
             progress.advance(task)
 

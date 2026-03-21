@@ -40,6 +40,7 @@ class DocumentInfo(BaseModel):
     path: str = Field(description="Absolute file path or URL")
     title: str = Field(description="Document title")
     source_type: str = Field(description="Type: pdf, docx, code, url, etc.")
+    collection: str = Field(default="default", description="Named collection")
     chunk_count: int = Field(description="Number of stored chunks")
     char_count: int = Field(description="Total character count")
     added_at: str = Field(description="ISO timestamp of ingestion")
@@ -50,5 +51,6 @@ class StoreStats(BaseModel):
 
     documents: int = Field(description="Total document count")
     chunks: int = Field(description="Total chunk count")
+    collections: int = Field(default=0, description="Number of distinct collections")
     db_size_mb: float = Field(description="Database file size in MB")
     db_path: str = Field(description="Absolute path to database file")

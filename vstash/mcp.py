@@ -126,7 +126,7 @@ def _error(message: str) -> str:
 
 
 @mcp_server.tool()
-def vstash_add(path: str, force: bool = False) -> str:
+def vstash_add(path: str, force: bool = False, collection: str = "default") -> str:
     """Ingest a file, directory, or URL into vstash memory.
 
     Supports PDF, DOCX, PPTX, XLSX, Markdown, plain text, code files,
@@ -135,6 +135,7 @@ def vstash_add(path: str, force: bool = False) -> str:
     Args:
         path: Absolute file path, directory path, or HTTP(S) URL to ingest.
         force: If True, re-ingest even if the document already exists.
+        collection: Named collection to group this document (default: 'default').
 
     Returns:
         JSON string with ingestion result (status, chunks, timing).
@@ -148,7 +149,9 @@ def vstash_add(path: str, force: bool = False) -> str:
 
         # URL → skip path resolution, go straight to ingest
         if path.startswith(("http://", "https://")):
-            result: IngestResult = ingest(path, cfg, store, force=force)
+            result: IngestResult = ingest(
+                path, cfg, store, force=force, collection=collection,
+            )
             return _ok(result)
 
         resolved = Path(path).expanduser().resolve()
@@ -156,18 +159,21 @@ def vstash_add(path: str, force: bool = False) -> str:
         # Directory → recursive ingestion
         if resolved.is_dir():
             results: list[IngestResult] = ingest_directory(
-                str(resolved), cfg, store, force=force,
+                str(resolved), cfg, store, force=force, collection=collection,
             )
             summary = {
                 "status": "ok",
                 "path": str(resolved),
+                "collection": collection,
                 "files_processed": len(results),
                 "results": [r.model_dump() for r in results],
             }
             return _ok(summary)
 
         # Single file
-        result: IngestResult = ingest(str(resolved), cfg, store, force=force)
+        result: IngestResult = ingest(
+            str(resolved), cfg, store, force=force, collection=collection,
+        )
         return _ok(result)
 
     except FileNotFoundError:
@@ -180,7 +186,9 @@ def vstash_add(path: str, force: bool = False) -> str:
 
 
 @mcp_server.tool()
-def vstash_ask(query: str, top_k: int = 5) -> str:
+def vstash_ask(
+    query: str, top_k: int = 5, collection: str | None = None,
+) -> str:
     """Query vstash memory and get an LLM-generated answer with sources.
 
     Performs hybrid semantic + keyword search, then sends the top chunks
@@ -189,6 +197,7 @@ def vstash_ask(query: str, top_k: int = 5) -> str:
     Args:
         query: Natural language question to answer from memory.
         top_k: Number of context chunks to retrieve (default: 5).
+        collection: If set, restrict search to this collection only.
 
     Returns:
         JSON string with answer text and source documents.
@@ -206,6 +215,7 @@ def vstash_ask(query: str, top_k: int = 5) -> str:
             query_embedding=query_embedding,
             query_text=query,
             top_k=top_k,
+            collection=collection,
         )
 
         if not chunks:
@@ -242,7 +252,9 @@ def vstash_ask(query: str, top_k: int = 5) -> str:
 
 
 @mcp_server.tool()
-def vstash_search(query: str, top_k: int = 5) -> str:
+def vstash_search(
+    query: str, top_k: int = 5, collection: str | None = None,
+) -> str:
     """Search vstash memory without LLM — returns raw chunks with scores.
 
     Performs hybrid semantic + keyword search using Reciprocal Rank Fusion.
@@ -251,6 +263,7 @@ def vstash_search(query: str, top_k: int = 5) -> str:
     Args:
         query: Natural language search query.
         top_k: Number of results to return (default: 5).
+        collection: If set, restrict search to this collection only.
 
     Returns:
         JSON array of matching chunks with text, title, path, and score.
@@ -265,6 +278,7 @@ def vstash_search(query: str, top_k: int = 5) -> str:
             query_embedding=query_embedding,
             query_text=query,
             top_k=top_k,
+            collection=collection,
         )
 
         return _ok(chunks)
@@ -277,16 +291,19 @@ def vstash_search(query: str, top_k: int = 5) -> str:
 
 
 @mcp_server.tool()
-def vstash_list() -> str:
+def vstash_list(collection: str | None = None) -> str:
     """List all documents currently stored in vstash memory.
 
+    Args:
+        collection: If set, filter to this collection only.
+
     Returns:
-        JSON array of documents with path, title, type, chunk count,
-        character count, and ingestion timestamp.
+        JSON array of documents with path, title, type, collection,
+        chunk count, character count, and ingestion timestamp.
     """
     try:
         store = _get_store()
-        docs: list[DocumentInfo] = store.list_documents()
+        docs: list[DocumentInfo] = store.list_documents(collection=collection)
         return _ok(docs)
 
     except FileNotFoundError:
@@ -317,7 +334,7 @@ def vstash_stats() -> str:
 
 
 @mcp_server.tool()
-def vstash_forget(source: str) -> str:
+def vstash_forget(source: str, collection: str | None = None) -> str:
     """Remove a document from vstash memory by its source path or URL.
 
     Accepts exact paths or partial matches (filename, title). If an exact
@@ -326,6 +343,7 @@ def vstash_forget(source: str) -> str:
 
     Args:
         source: File path, URL, or partial filename/title of the document to remove.
+        collection: If set, restrict fuzzy matching to this collection.
 
     Returns:
         JSON object with deletion status.
@@ -339,7 +357,7 @@ def vstash_forget(source: str) -> str:
             return _ok({"status": "deleted", "source": source})
 
         # Fallback: fuzzy match by partial path/title
-        match = store.find_document(source)
+        match = store.find_document(source, collection=collection)
         if match:
             store.delete_document(match)
             return _ok({"status": "deleted", "source": match, "matched_from": source})
@@ -351,6 +369,23 @@ def vstash_forget(source: str) -> str:
     except Exception as exc:
         logger.exception("vstash_forget failed")
         return _error(f"Failed to delete document: {exc}")
+
+
+@mcp_server.tool()
+def vstash_collections() -> str:
+    """List all available collections in vstash memory.
+
+    Returns:
+        JSON array of collection names.
+    """
+    try:
+        store = _get_store()
+        return _ok(store.list_collections())
+    except FileNotFoundError:
+        return _error("vstash database not found.")
+    except Exception as exc:
+        logger.exception("vstash_collections failed")
+        return _error(f"Failed to list collections: {exc}")
 
 
 # ------------------------------------------------------------------ #
