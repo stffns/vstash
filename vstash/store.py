@@ -115,6 +115,10 @@ class VstashStore:
                 added_at    TEXT NOT NULL
             );
 
+            -- Index for collection-scoped queries
+            CREATE INDEX IF NOT EXISTS idx_documents_collection
+            ON documents(collection);
+
             -- Chunk text + position
             CREATE TABLE IF NOT EXISTS chunks (
                 id      INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -170,9 +174,8 @@ class VstashStore:
         Returns:
             True if the document exists in the store.
         """
-        doc_id = hashlib.sha256(path.encode()).hexdigest()[:32]
         row = self._conn.execute(
-            "SELECT 1 FROM documents WHERE id = ?", [doc_id]
+            "SELECT 1 FROM documents WHERE path = ?", [path]
         ).fetchone()
         return row is not None
 
@@ -200,7 +203,7 @@ class VstashStore:
         Returns:
             The generated document ID (32-char hex hash).
         """
-        doc_id = hashlib.sha256(path.encode()).hexdigest()[:32]
+        doc_id = hashlib.sha256(f"{collection}:{path}".encode("utf-8")).hexdigest()[:32]
 
         # Remove existing version if re-ingesting
         self._delete_by_doc_id(doc_id)
@@ -243,16 +246,26 @@ class VstashStore:
     def delete_document(self, path: str) -> bool:
         """Remove a document and all its chunks from the store.
 
+        Deletes all copies of the document regardless of collection.
+
         Args:
             path: File path or URL to remove.
 
         Returns:
-            True if the document was found and deleted.
+            True if at least one document was found and deleted.
         """
-        doc_id = hashlib.sha256(path.encode()).hexdigest()[:32]
-        deleted = self._delete_by_doc_id(doc_id)
+        doc_ids = [
+            row[0] for row in
+            self._conn.execute(
+                "SELECT id FROM documents WHERE path = ?", [path]
+            ).fetchall()
+        ]
+        if not doc_ids:
+            return False
+        for doc_id in doc_ids:
+            self._delete_by_doc_id(doc_id)
         self._conn.commit()
-        return deleted
+        return True
 
     def _delete_by_doc_id(self, doc_id: str) -> bool:
         """Delete a document by its internal hash ID.
@@ -321,7 +334,18 @@ class VstashStore:
         candidate_pool = min(top_k * 10, max(top_k * 3, total_chunks // 3))
 
         # --- Collection filter clause ---
-        col_clause = "AND d.collection = ?" if collection else ""
+        col_clause = (
+            """
+            AND v.rowid IN (
+                SELECT c2.id
+                FROM chunks c2
+                JOIN documents d2 ON d2.id = c2.doc_id
+                WHERE d2.collection = ?
+            )
+            """
+            if collection
+            else ""
+        )
         col_params: list[str] = [collection] if collection else []
 
         # --- Vector search ---
