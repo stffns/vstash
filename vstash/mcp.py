@@ -126,16 +126,29 @@ def _error(message: str) -> str:
 
 
 @mcp_server.tool()
-def vstash_add(path: str, force: bool = False, collection: str = "default") -> str:
+def vstash_add(
+    path: str,
+    force: bool = False,
+    collection: str = "default",
+    project: str | None = None,
+    layer: str | None = None,
+    tags: str | None = None,
+) -> str:
     """Ingest a file, directory, or URL into vstash memory.
 
     Supports PDF, DOCX, PPTX, XLSX, Markdown, plain text, code files,
     and HTTP(S) URLs. Directories are ingested recursively.
 
+    YAML frontmatter (---/--- block) is auto-parsed for project, layer, tags.
+    Explicit params override frontmatter values.
+
     Args:
         path: Absolute file path, directory path, or HTTP(S) URL to ingest.
         force: If True, re-ingest even if the document already exists.
         collection: Named collection to group this document (default: 'default').
+        project: Project tag for this document (overrides frontmatter).
+        layer: Layer/category for this document (overrides frontmatter).
+        tags: Comma-separated tags (overrides frontmatter).
 
     Returns:
         JSON string with ingestion result (status, chunks, timing).
@@ -146,11 +159,12 @@ def vstash_add(path: str, force: bool = False, collection: str = "default") -> s
         force = bool(force)
         cfg = _get_config()
         store = _get_store()
+        meta = {"project": project, "layer": layer, "tags": tags}
 
         # URL → skip path resolution, go straight to ingest
         if path.startswith(("http://", "https://")):
             result: IngestResult = ingest(
-                path, cfg, store, force=force, collection=collection,
+                path, cfg, store, force=force, collection=collection, **meta,
             )
             return _ok(result)
 
@@ -160,6 +174,7 @@ def vstash_add(path: str, force: bool = False, collection: str = "default") -> s
         if resolved.is_dir():
             results: list[IngestResult] = ingest_directory(
                 str(resolved), cfg, store, force=force, collection=collection,
+                **meta,
             )
             summary = {
                 "status": "ok",
@@ -171,8 +186,8 @@ def vstash_add(path: str, force: bool = False, collection: str = "default") -> s
             return _ok(summary)
 
         # Single file
-        result: IngestResult = ingest(
-            str(resolved), cfg, store, force=force, collection=collection,
+        result = ingest(
+            str(resolved), cfg, store, force=force, collection=collection, **meta,
         )
         return _ok(result)
 
@@ -187,7 +202,11 @@ def vstash_add(path: str, force: bool = False, collection: str = "default") -> s
 
 @mcp_server.tool()
 def vstash_ask(
-    query: str, top_k: int = 5, collection: str | None = None,
+    query: str,
+    top_k: int = 5,
+    collection: str | None = None,
+    project: str | None = None,
+    layer: str | None = None,
 ) -> str:
     """Query vstash memory and get an LLM-generated answer with sources.
 
@@ -198,6 +217,8 @@ def vstash_ask(
         query: Natural language question to answer from memory.
         top_k: Number of context chunks to retrieve (default: 5).
         collection: If set, restrict search to this collection only.
+        project: If set, restrict search to documents with this project tag.
+        layer: If set, restrict search to documents with this layer tag.
 
     Returns:
         JSON string with answer text and source documents.
@@ -216,6 +237,8 @@ def vstash_ask(
             query_text=query,
             top_k=top_k,
             collection=collection,
+            project=project,
+            layer=layer,
         )
 
         if not chunks:
@@ -253,7 +276,11 @@ def vstash_ask(
 
 @mcp_server.tool()
 def vstash_search(
-    query: str, top_k: int = 5, collection: str | None = None,
+    query: str,
+    top_k: int = 5,
+    collection: str | None = None,
+    project: str | None = None,
+    layer: str | None = None,
 ) -> str:
     """Search vstash memory without LLM — returns raw chunks with scores.
 
@@ -264,6 +291,8 @@ def vstash_search(
         query: Natural language search query.
         top_k: Number of results to return (default: 5).
         collection: If set, restrict search to this collection only.
+        project: If set, restrict search to documents with this project tag.
+        layer: If set, restrict search to documents with this layer tag.
 
     Returns:
         JSON array of matching chunks with text, title, path, and score.
@@ -279,6 +308,8 @@ def vstash_search(
             query_text=query,
             top_k=top_k,
             collection=collection,
+            project=project,
+            layer=layer,
         )
 
         return _ok(chunks)
@@ -291,19 +322,27 @@ def vstash_search(
 
 
 @mcp_server.tool()
-def vstash_list(collection: str | None = None) -> str:
+def vstash_list(
+    collection: str | None = None,
+    project: str | None = None,
+    layer: str | None = None,
+) -> str:
     """List all documents currently stored in vstash memory.
 
     Args:
         collection: If set, filter to this collection only.
+        project: If set, filter to documents with this project tag.
+        layer: If set, filter to documents with this layer tag.
 
     Returns:
         JSON array of documents with path, title, type, collection,
-        chunk count, character count, and ingestion timestamp.
+        project, layer, tags, chunk count, character count, and ingestion timestamp.
     """
     try:
         store = _get_store()
-        docs: list[DocumentInfo] = store.list_documents(collection=collection)
+        docs: list[DocumentInfo] = store.list_documents(
+            collection=collection, project=project, layer=layer,
+        )
         return _ok(docs)
 
     except FileNotFoundError:

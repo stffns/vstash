@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 import time
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 import tiktoken
@@ -127,6 +128,9 @@ def ingest(
     *,
     force: bool = False,
     collection: str = "default",
+    project: str | None = None,
+    layer: str | None = None,
+    tags: str | None = None,
 ) -> IngestResult:
     """Ingest a single file or URL into the store.
 
@@ -179,7 +183,33 @@ def ingest(
 
     char_count = len(text)
 
-    # --- Step 2: Chunk ---
+    # --- Step 2: Extract frontmatter metadata ---
+    frontmatter = _extract_frontmatter(text)
+    # Explicit params override frontmatter values
+    fm_project = project or frontmatter.get("project")
+    fm_layer = layer or frontmatter.get("layer")
+    # Coerce non-string scalars to str; ignore dicts/lists
+    if fm_project is not None:
+        if isinstance(fm_project, (dict, list)):
+            fm_project = None
+        else:
+            fm_project = str(fm_project)
+    if fm_layer is not None:
+        if isinstance(fm_layer, (dict, list)):
+            fm_layer = None
+        else:
+            fm_layer = str(fm_layer)
+    fm_tags_raw = tags or frontmatter.get("tags")
+    fm_tags: str | None = None
+    if fm_tags_raw:
+        if isinstance(fm_tags_raw, list):
+            fm_tags = ",".join(str(t) for t in fm_tags_raw)
+        elif not isinstance(fm_tags_raw, (dict,)):
+            fm_tags = str(fm_tags_raw)
+    # Strip frontmatter block from text before chunking
+    text = _strip_frontmatter(text)
+
+    # --- Step 3: Chunk ---
     with console.status("[bold cyan]Chunking...[/bold cyan]", spinner="dots"):
         chunks = chunk_text(text, cfg.chunking.size, cfg.chunking.overlap)
 
@@ -187,10 +217,10 @@ def ingest(
         console.print(f"[yellow]⚠ No chunks generated from {source}[/yellow]")
         return IngestResult(status="empty", source=source)
 
-    # --- Step 3: Embed (with progress bar — this is the slow part) ---
+    # --- Step 4: Embed (with progress bar — this is the slow part) ---
     embeddings = _embed_with_progress(chunks, cfg.embeddings.model)
 
-    # --- Step 4: Store ---
+    # --- Step 5: Store ---
     with console.status("[bold cyan]Storing...[/bold cyan]", spinner="dots"):
         doc_id = store.add_document(
             path=source_path,
@@ -199,6 +229,9 @@ def ingest(
             embeddings=embeddings,
             source_type=source_type,
             collection=collection,
+            project=fm_project,
+            layer=fm_layer,
+            tags=fm_tags,
         )
 
     elapsed = round(time.time() - start_time, 2)
@@ -221,6 +254,9 @@ def ingest_directory(
     *,
     force: bool = False,
     collection: str = "default",
+    project: str | None = None,
+    layer: str | None = None,
+    tags: str | None = None,
 ) -> list[IngestResult]:
     """Recursively ingest all supported files in a directory.
 
@@ -230,6 +266,9 @@ def ingest_directory(
         store: Vector store instance.
         force: If False, skip documents already in the store.
         collection: Named collection to group ingested documents.
+        project: Project tag to apply to all files (overrides frontmatter).
+        layer: Layer tag to apply to all files (overrides frontmatter).
+        tags: Comma-separated tags to apply to all files (overrides frontmatter).
 
     Returns:
         List of IngestResult for each processed file.
@@ -262,11 +301,88 @@ def ingest_directory(
         task = progress.add_task("", total=len(files))
         for f in files:
             progress.update(task, description=f.name)
-            result = ingest(str(f), cfg, store, force=force, collection=collection)
+            result = ingest(
+                str(f), cfg, store,
+                force=force, collection=collection,
+                project=project, layer=layer, tags=tags,
+            )
             results.append(result)
             progress.advance(task)
 
     return results
+
+
+# ------------------------------------------------------------------ #
+# Frontmatter                                                         #
+# ------------------------------------------------------------------ #
+
+_FRONTMATTER_RE = re.compile(
+    r"\A\s*---[ \t]*\r?\n(.*?\n)---[ \t]*\r?(?:\n|\Z)",
+    re.DOTALL,
+)
+
+
+def _extract_frontmatter(text: str) -> dict[str, Any]:
+    """Extract YAML frontmatter from document text.
+
+    Parses the YAML block between ``---`` delimiters at the start of the
+    document. Only simple key-value pairs and lists are supported.
+
+    Args:
+        text: Raw document text.
+
+    Returns:
+        Dictionary of parsed frontmatter fields, or empty dict if none found.
+    """
+    match = _FRONTMATTER_RE.match(text)
+    if not match:
+        return {}
+
+    try:
+        import yaml  # noqa: PLC0415 — optional dependency, lazy import
+
+        data = yaml.safe_load(match.group(1))
+        if not isinstance(data, dict):
+            # Non-mapping frontmatter (list, scalar) is treated as absent
+            return {}
+        return dict(data)
+    except ImportError:
+        # Fallback: parse simple `key: value` lines without pyyaml
+        result: dict[str, Any] = {}
+        for line in match.group(1).splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if ":" not in line:
+                continue
+            key, _, value = line.partition(":")
+            value = value.strip()
+            # Handle YAML lists inline: [a, b, c]
+            if value.startswith("[") and value.endswith("]"):
+                import csv  # noqa: PLC0415
+                import io  # noqa: PLC0415
+
+                s = io.StringIO(value[1:-1])
+                try:
+                    items = next(csv.reader(s, skipinitialspace=True))
+                    result[key.strip()] = [item for item in items if item]
+                except StopIteration:
+                    result[key.strip()] = []
+            else:
+                result[key.strip()] = value.strip("'\"")
+        return result
+
+
+def _strip_frontmatter(text: str) -> str:
+    """Remove YAML frontmatter from document text.
+
+    Args:
+        text: Raw document text potentially starting with ``---`` block.
+
+    Returns:
+        Text with frontmatter block removed.
+    """
+    return _FRONTMATTER_RE.sub("", text, count=1)
 
 
 # ------------------------------------------------------------------ #
