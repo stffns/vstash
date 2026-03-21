@@ -109,10 +109,15 @@ class VstashStore:
                 path        TEXT NOT NULL,
                 title       TEXT NOT NULL,
                 source_type TEXT NOT NULL DEFAULT 'file',
+                collection  TEXT NOT NULL DEFAULT 'default',
                 char_count  INTEGER DEFAULT 0,
                 chunk_count INTEGER DEFAULT 0,
                 added_at    TEXT NOT NULL
             );
+
+            -- Index for collection-scoped queries
+            CREATE INDEX IF NOT EXISTS idx_documents_collection
+            ON documents(collection);
 
             -- Chunk text + position
             CREATE TABLE IF NOT EXISTS chunks (
@@ -142,6 +147,19 @@ class VstashStore:
             END;
         """)
         conn.commit()
+        self._migrate_collections(conn)
+
+    def _migrate_collections(self, conn: sqlite3.Connection) -> None:
+        """Add collection column to existing databases that lack it."""
+        columns = {
+            row[1] for row in
+            conn.execute("PRAGMA table_info(documents)").fetchall()
+        }
+        if "collection" not in columns:
+            conn.execute(
+                "ALTER TABLE documents ADD COLUMN collection TEXT NOT NULL DEFAULT 'default'"
+            )
+            conn.commit()
 
     # ------------------------------------------------------------------ #
     # Write                                                                #
@@ -156,9 +174,8 @@ class VstashStore:
         Returns:
             True if the document exists in the store.
         """
-        doc_id = hashlib.sha256(path.encode()).hexdigest()[:32]
         row = self._conn.execute(
-            "SELECT 1 FROM documents WHERE id = ?", [doc_id]
+            "SELECT 1 FROM documents WHERE path = ?", [path]
         ).fetchone()
         return row is not None
 
@@ -169,6 +186,7 @@ class VstashStore:
         chunks: list[str],
         embeddings: list[list[float]],
         source_type: str = "file",
+        collection: str = "default",
     ) -> str:
         """Add a document and its chunks to the store.
 
@@ -180,20 +198,22 @@ class VstashStore:
             chunks: List of text chunks.
             embeddings: Corresponding embedding vectors.
             source_type: Document type (pdf, code, url, etc.).
+            collection: Named collection to group this document.
 
         Returns:
-            The generated document ID (16-char hex hash).
+            The generated document ID (32-char hex hash).
         """
-        doc_id = hashlib.sha256(path.encode()).hexdigest()[:32]
+        doc_id = hashlib.sha256(f"{collection}:{path}".encode("utf-8")).hexdigest()[:32]
 
         # Remove existing version if re-ingesting
         self._delete_by_doc_id(doc_id)
 
         self._conn.execute(
-            """INSERT INTO documents (id, path, title, source_type, char_count, chunk_count, added_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO documents
+               (id, path, title, source_type, collection, char_count, chunk_count, added_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             [
-                doc_id, path, title, source_type,
+                doc_id, path, title, source_type, collection,
                 sum(len(c) for c in chunks),
                 len(chunks),
                 datetime.now(UTC).isoformat(),
@@ -226,16 +246,26 @@ class VstashStore:
     def delete_document(self, path: str) -> bool:
         """Remove a document and all its chunks from the store.
 
+        Deletes all copies of the document regardless of collection.
+
         Args:
             path: File path or URL to remove.
 
         Returns:
-            True if the document was found and deleted.
+            True if at least one document was found and deleted.
         """
-        doc_id = hashlib.sha256(path.encode()).hexdigest()[:32]
-        deleted = self._delete_by_doc_id(doc_id)
+        doc_ids = [
+            row[0] for row in
+            self._conn.execute(
+                "SELECT id FROM documents WHERE path = ?", [path]
+            ).fetchall()
+        ]
+        if not doc_ids:
+            return False
+        for doc_id in doc_ids:
+            self._delete_by_doc_id(doc_id)
         self._conn.commit()
-        return deleted
+        return True
 
     def _delete_by_doc_id(self, doc_id: str) -> bool:
         """Delete a document by its internal hash ID.
@@ -275,6 +305,7 @@ class VstashStore:
         vec_weight: float = 0.6,
         fts_weight: float = 0.4,
         distance_cutoff: float = 1.15,
+        collection: str | None = None,
     ) -> list[SearchResult]:
         """Hybrid search: vector (semantic) + FTS5 (keyword) combined with RRF.
 
@@ -293,6 +324,7 @@ class VstashStore:
             fts_weight: Weight for keyword search contribution.
             distance_cutoff: Maximum allowed ratio of distance to best distance.
                 Chunks with distance > best_distance * distance_cutoff are dropped.
+            collection: If set, restrict search to documents in this collection.
 
         Returns:
             Ranked list of SearchResult ordered by descending RRF score.
@@ -301,18 +333,34 @@ class VstashStore:
         total_chunks = self._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
         candidate_pool = min(top_k * 10, max(top_k * 3, total_chunks // 3))
 
+        # --- Collection filter clause ---
+        col_clause = (
+            """
+            AND v.rowid IN (
+                SELECT c2.id
+                FROM chunks c2
+                JOIN documents d2 ON d2.id = c2.doc_id
+                WHERE d2.collection = ?
+            )
+            """
+            if collection
+            else ""
+        )
+        col_params: list[str] = [collection] if collection else []
+
         # --- Vector search ---
         vec_rows = self._conn.execute(
-            """
+            f"""
             SELECT c.id, c.text, d.title, d.path, c.seq, v.distance
             FROM vec_chunks v
             JOIN chunks c ON c.id = v.rowid
             JOIN documents d ON d.id = c.doc_id
             WHERE v.embedding MATCH ?
               AND k = ?
+              {col_clause}
             ORDER BY v.distance
             """,
-            [_serialize(query_embedding), candidate_pool],
+            [_serialize(query_embedding), candidate_pool, *col_params],
         ).fetchall()
 
         # --- Filter by vector distance gap ---
@@ -331,17 +379,18 @@ class VstashStore:
         safe_query = query_text.replace('"', '""')
         try:
             fts_rows = self._conn.execute(
-                """
+                f"""
                 SELECT c.id, c.text, d.title, d.path, c.seq,
                        rank as fts_rank
                 FROM fts_chunks f
                 JOIN chunks c ON c.id = f.rowid
                 JOIN documents d ON d.id = c.doc_id
                 WHERE fts_chunks MATCH ?
+                  {col_clause}
                 ORDER BY rank
                 LIMIT ?
                 """,
-                [safe_query, candidate_pool],
+                [safe_query, *col_params, candidate_pool],
             ).fetchall()
         except sqlite3.OperationalError:
             # FTS5 query syntax error (e.g. single char) — fall back to no FTS
@@ -395,7 +444,9 @@ class VstashStore:
     # Lookup                                                               #
     # ------------------------------------------------------------------ #
 
-    def find_document(self, query: str) -> str | None:
+    def find_document(
+        self, query: str, collection: str | None = None,
+    ) -> str | None:
         """Find a document by partial path or title match.
 
         Searches for documents where the path or title contains the query
@@ -403,15 +454,18 @@ class VstashStore:
 
         Args:
             query: Partial filename, path, or title to search for.
+            collection: If set, restrict search to this collection.
 
         Returns:
             The full path of the matching document, or None.
         """
+        col_clause = "AND collection = ?" if collection else ""
+        col_params: list[str] = [collection] if collection else []
         row = self._conn.execute(
-            """SELECT path FROM documents
-               WHERE path LIKE ? OR title LIKE ?
+            f"""SELECT path FROM documents
+               WHERE (path LIKE ? OR title LIKE ?) {col_clause}
                ORDER BY added_at DESC LIMIT 1""",
-            [f"%{query}%", f"%{query}%"],
+            [f"%{query}%", f"%{query}%", *col_params],
         ).fetchone()
         return row["path"] if row else None
 
@@ -419,17 +473,43 @@ class VstashStore:
     # Inspect                                                              #
     # ------------------------------------------------------------------ #
 
-    def list_documents(self) -> list[DocumentInfo]:
+    def list_documents(
+        self, collection: str | None = None,
+    ) -> list[DocumentInfo]:
         """List all ingested documents.
+
+        Args:
+            collection: If set, filter to this collection only.
 
         Returns:
             List of DocumentInfo ordered by ingestion date (newest first).
         """
-        rows = self._conn.execute(
-            """SELECT path, title, source_type, chunk_count, char_count, added_at
-               FROM documents ORDER BY added_at DESC"""
-        ).fetchall()
+        if collection:
+            rows = self._conn.execute(
+                """SELECT path, title, source_type, collection,
+                          chunk_count, char_count, added_at
+                   FROM documents WHERE collection = ?
+                   ORDER BY added_at DESC""",
+                [collection],
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                """SELECT path, title, source_type, collection,
+                          chunk_count, char_count, added_at
+                   FROM documents ORDER BY added_at DESC"""
+            ).fetchall()
         return [DocumentInfo.model_validate(dict(r)) for r in rows]
+
+    def list_collections(self) -> list[str]:
+        """List distinct collection names.
+
+        Returns:
+            Sorted list of collection names.
+        """
+        rows = self._conn.execute(
+            "SELECT DISTINCT collection FROM documents ORDER BY collection"
+        ).fetchall()
+        return [row[0] for row in rows]
 
     def stats(self) -> StoreStats:
         """Get aggregate memory statistics.
@@ -439,10 +519,14 @@ class VstashStore:
         """
         doc_count: int = self._conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
         chunk_count: int = self._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+        col_count: int = self._conn.execute(
+            "SELECT COUNT(DISTINCT collection) FROM documents"
+        ).fetchone()[0]
         db_size: int = self.db_path.stat().st_size if self.db_path.exists() else 0
         return StoreStats(
             documents=doc_count,
             chunks=chunk_count,
+            collections=col_count,
             db_size_mb=round(db_size / 1024 / 1024, 2),
             db_path=str(self.db_path),
         )

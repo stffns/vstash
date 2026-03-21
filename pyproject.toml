@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "vstash"
-version = "0.2.2"
+version = "0.2.3"
 description = "Local document memory with instant semantic search. Drop any file. Ask anything. Get an answer in under a second."
 readme = "README.md"
 license = { text = "MIT" }
@@ -32,6 +32,7 @@ vstash-mcp = "vstash.mcp:main"
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio", "ruff"]
+watch = ["watchdog>=4.0.0"]
 
 [tool.ruff]
 line-length = 100
