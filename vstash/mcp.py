@@ -174,6 +174,7 @@ def vstash_add(
         if resolved.is_dir():
             results: list[IngestResult] = ingest_directory(
                 str(resolved), cfg, store, force=force, collection=collection,
+                **meta,
             )
             summary = {
                 "status": "ok",

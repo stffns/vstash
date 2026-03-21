@@ -87,6 +87,7 @@ def add(
                 console.print(f"\n[bold]Scanning[/bold] {source}")
                 results = ingest_directory(
                     source, cfg, store, force=force, collection=collection,
+                    **meta,
                 )
                 ok = [r for r in results if r.status == "ok"]
                 skipped = [r for r in results if r.status == "skipped"]

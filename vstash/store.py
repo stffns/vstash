@@ -102,6 +102,7 @@ class VstashStore:
 
     def _create_tables(self, conn: sqlite3.Connection) -> None:
         """Initialize database schema if not present."""
+        # Create tables first (without indexes on new columns)
         conn.executescript(f"""
             -- Document metadata
             CREATE TABLE IF NOT EXISTS documents (
@@ -117,14 +118,6 @@ class VstashStore:
                 chunk_count INTEGER DEFAULT 0,
                 added_at    TEXT NOT NULL
             );
-
-            -- Index for scoped queries
-            CREATE INDEX IF NOT EXISTS idx_documents_collection
-            ON documents(collection);
-            CREATE INDEX IF NOT EXISTS idx_documents_project
-            ON documents(project);
-            CREATE INDEX IF NOT EXISTS idx_documents_layer
-            ON documents(layer);
 
             -- Chunk text + position
             CREATE TABLE IF NOT EXISTS chunks (
@@ -154,7 +147,20 @@ class VstashStore:
             END;
         """)
         conn.commit()
+
+        # Migrate first — columns must exist before creating indexes on them
         self._migrate_schema(conn)
+
+        # Create indexes on potentially-new columns (safe after migration)
+        conn.executescript("""
+            CREATE INDEX IF NOT EXISTS idx_documents_collection
+            ON documents(collection);
+            CREATE INDEX IF NOT EXISTS idx_documents_project
+            ON documents(project);
+            CREATE INDEX IF NOT EXISTS idx_documents_layer
+            ON documents(layer);
+        """)
+        conn.commit()
 
     def _migrate_schema(self, conn: sqlite3.Connection) -> None:
         """Add missing columns to existing databases."""
@@ -465,40 +471,72 @@ class VstashStore:
     # ------------------------------------------------------------------ #
 
     @staticmethod
+    def _get_filter_conditions(
+        alias: str = "",
+        *,
+        collection: str | None = None,
+        project: str | None = None,
+        layer: str | None = None,
+        tags: str | None = None,
+    ) -> tuple[list[str], list[str]]:
+        """Build filter conditions for document metadata.
+
+        Args:
+            alias: Table alias prefix (e.g. ``'d.'``, ``'d2.'``, or ``''``).
+            collection: Filter by collection name.
+            project: Filter by project tag.
+            layer: Filter by layer tag.
+            tags: Filter by tag (LIKE match within comma-separated tags).
+
+        Returns:
+            Tuple of (condition strings, bind parameters).
+        """
+        prefix = f"{alias}." if alias else ""
+        conditions: list[str] = []
+        params: list[str] = []
+        if collection:
+            conditions.append(f"{prefix}collection = ?")
+            params.append(collection)
+        if project:
+            conditions.append(f"{prefix}project = ?")
+            params.append(project)
+        if layer:
+            conditions.append(f"{prefix}layer = ?")
+            params.append(layer)
+        if tags:
+            conditions.append(f"{prefix}tags LIKE ?")
+            params.append(f"%{tags}%")
+        return conditions, params
+
+    @staticmethod
     def _build_doc_filter(
         *,
         collection: str | None = None,
         project: str | None = None,
         layer: str | None = None,
+        tags: str | None = None,
     ) -> tuple[str, str, list[str]]:
         """Build SQL filter clauses for document metadata.
 
         Returns three items:
         - **vec_clause**: ``AND v.rowid IN (…)`` for vec0 pre-filtering
-        - **col_clause**: ``AND d.collection = ? …`` for JOINed queries (FTS, list)
+        - **col_clause**: ``AND d.collection = ? …`` for JOINed queries (FTS)
         - **params**: bind-parameter values (same order for both clauses)
 
         Args:
             collection: Filter by collection name.
             project: Filter by project tag.
             layer: Filter by layer tag.
+            tags: Filter by tag (LIKE match).
         """
-        conditions: list[str] = []
-        params: list[str] = []
-        if collection:
-            conditions.append("d2.collection = ?")
-            params.append(collection)
-        if project:
-            conditions.append("d2.project = ?")
-            params.append(project)
-        if layer:
-            conditions.append("d2.layer = ?")
-            params.append(layer)
+        conditions_d2, params = VstashStore._get_filter_conditions(
+            "d2", collection=collection, project=project, layer=layer, tags=tags,
+        )
 
-        if not conditions:
+        if not conditions_d2:
             return "", "", []
 
-        where = " AND ".join(conditions)
+        where = " AND ".join(conditions_d2)
         vec_clause = f"""
             AND v.rowid IN (
                 SELECT c2.id
@@ -508,9 +546,10 @@ class VstashStore:
             )
         """
         # For JOINed queries where documents is aliased as 'd'
-        col_clause = "AND " + " AND ".join(
-            c.replace("d2.", "d.") for c in conditions
+        conditions_d, _ = VstashStore._get_filter_conditions(
+            "d", collection=collection, project=project, layer=layer, tags=tags,
         )
+        col_clause = "AND " + " AND ".join(conditions_d)
         return vec_clause, col_clause, params
 
     # ------------------------------------------------------------------ #
@@ -538,14 +577,13 @@ class VstashStore:
         Returns:
             The full path of the matching document, or None.
         """
-        _, col_clause, filter_params = self._build_doc_filter(
+        conditions, filter_params = self._get_filter_conditions(
             collection=collection, project=project, layer=layer,
         )
-        # col_clause uses 'd.' alias, but here we query documents directly
-        direct_clause = col_clause.replace("d.", "")
+        extra = ("AND " + " AND ".join(conditions)) if conditions else ""
         row = self._conn.execute(
             f"""SELECT path FROM documents
-               WHERE (path LIKE ? OR title LIKE ?) {direct_clause}
+               WHERE (path LIKE ? OR title LIKE ?) {extra}
                ORDER BY added_at DESC LIMIT 1""",
             [f"%{query}%", f"%{query}%", *filter_params],
         ).fetchone()
@@ -571,11 +609,10 @@ class VstashStore:
         Returns:
             List of DocumentInfo ordered by ingestion date (newest first).
         """
-        _, col_clause, filter_params = self._build_doc_filter(
+        conditions, filter_params = self._get_filter_conditions(
             collection=collection, project=project, layer=layer,
         )
-        direct_clause = col_clause.replace("d.", "")
-        where = f"WHERE {direct_clause[4:]}" if direct_clause else ""
+        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
         rows = self._conn.execute(
             f"""SELECT path, title, source_type, collection,
                        project, layer, tags,

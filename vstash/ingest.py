@@ -188,12 +188,23 @@ def ingest(
     # Explicit params override frontmatter values
     fm_project = project or frontmatter.get("project")
     fm_layer = layer or frontmatter.get("layer")
+    # Coerce non-string scalars to str; ignore dicts/lists
+    if fm_project is not None:
+        if isinstance(fm_project, (dict, list)):
+            fm_project = None
+        else:
+            fm_project = str(fm_project)
+    if fm_layer is not None:
+        if isinstance(fm_layer, (dict, list)):
+            fm_layer = None
+        else:
+            fm_layer = str(fm_layer)
     fm_tags_raw = tags or frontmatter.get("tags")
     fm_tags: str | None = None
     if fm_tags_raw:
         if isinstance(fm_tags_raw, list):
             fm_tags = ",".join(str(t) for t in fm_tags_raw)
-        else:
+        elif not isinstance(fm_tags_raw, (dict,)):
             fm_tags = str(fm_tags_raw)
     # Strip frontmatter block from text before chunking
     text = _strip_frontmatter(text)
@@ -243,6 +254,9 @@ def ingest_directory(
     *,
     force: bool = False,
     collection: str = "default",
+    project: str | None = None,
+    layer: str | None = None,
+    tags: str | None = None,
 ) -> list[IngestResult]:
     """Recursively ingest all supported files in a directory.
 
@@ -252,6 +266,9 @@ def ingest_directory(
         store: Vector store instance.
         force: If False, skip documents already in the store.
         collection: Named collection to group ingested documents.
+        project: Project tag to apply to all files (overrides frontmatter).
+        layer: Layer tag to apply to all files (overrides frontmatter).
+        tags: Comma-separated tags to apply to all files (overrides frontmatter).
 
     Returns:
         List of IngestResult for each processed file.
@@ -284,7 +301,11 @@ def ingest_directory(
         task = progress.add_task("", total=len(files))
         for f in files:
             progress.update(task, description=f.name)
-            result = ingest(str(f), cfg, store, force=force, collection=collection)
+            result = ingest(
+                str(f), cfg, store,
+                force=force, collection=collection,
+                project=project, layer=layer, tags=tags,
+            )
             results.append(result)
             progress.advance(task)
 
@@ -296,7 +317,7 @@ def ingest_directory(
 # ------------------------------------------------------------------ #
 
 _FRONTMATTER_RE = re.compile(
-    r"\A\s*---[ \t]*\n(.*?\n)---[ \t]*\n",
+    r"\A\s*---[ \t]*\r?\n(.*?\n)---[ \t]*\r?(?:\n|\Z)",
     re.DOTALL,
 )
 
@@ -320,7 +341,11 @@ def _extract_frontmatter(text: str) -> dict[str, Any]:
     try:
         import yaml  # noqa: PLC0415 — optional dependency, lazy import
 
-        return dict(yaml.safe_load(match.group(1)) or {})
+        data = yaml.safe_load(match.group(1))
+        if not isinstance(data, dict):
+            # Non-mapping frontmatter (list, scalar) is treated as absent
+            return {}
+        return dict(data)
     except ImportError:
         # Fallback: parse simple `key: value` lines without pyyaml
         result: dict[str, Any] = {}
@@ -334,11 +359,15 @@ def _extract_frontmatter(text: str) -> dict[str, Any]:
             value = value.strip()
             # Handle YAML lists inline: [a, b, c]
             if value.startswith("[") and value.endswith("]"):
-                result[key.strip()] = [
-                    v.strip().strip("'\"")
-                    for v in value[1:-1].split(",")
-                    if v.strip()
-                ]
+                import csv  # noqa: PLC0415
+                import io  # noqa: PLC0415
+
+                s = io.StringIO(value[1:-1])
+                try:
+                    items = next(csv.reader(s, skipinitialspace=True))
+                    result[key.strip()] = [item for item in items if item]
+                except StopIteration:
+                    result[key.strip()] = []
             else:
                 result[key.strip()] = value.strip("'\"")
         return result
