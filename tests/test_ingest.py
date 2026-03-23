@@ -4,11 +4,25 @@ from __future__ import annotations
 
 import pytest
 
-from vstash.ingest import _get_source_type, _get_title, _is_url, chunk_text
+from vstash.ingest import (
+    _fixed_window_chunks,
+    _merge_small_chunks,
+    _split_by_headers,
+    _split_by_paragraphs,
+    _get_source_type,
+    _get_title,
+    _is_url,
+    chunk_text,
+)
+
+
+# ------------------------------------------------------------------ #
+# Semantic chunk_text (high-level)                                     #
+# ------------------------------------------------------------------ #
 
 
 class TestChunkText:
-    """Test the token-level chunking function."""
+    """Test the semantic chunking function."""
 
     def test_empty_string_returns_empty(self) -> None:
         assert chunk_text("", chunk_size=1024, overlap=128) == []
@@ -29,18 +43,9 @@ class TestChunkText:
         assert len(chunks) == 0
 
     def test_long_text_produces_multiple_chunks(self) -> None:
-        # Create a text that's definitely longer than one chunk
         text = "word " * 2000  # ~2000 tokens
         chunks = chunk_text(text, chunk_size=100, overlap=10)
         assert len(chunks) > 1
-
-    def test_overlap_creates_redundancy(self) -> None:
-        # With overlap, chunks should share some content
-        text = "word " * 500
-        chunks_with_overlap = chunk_text(text, chunk_size=100, overlap=50)
-        chunks_without_overlap = chunk_text(text, chunk_size=100, overlap=0)
-        # More overlap = more chunks
-        assert len(chunks_with_overlap) > len(chunks_without_overlap)
 
     def test_chunk_size_respected(self) -> None:
         import tiktoken
@@ -52,6 +57,172 @@ class TestChunkText:
         for chunk in chunks:
             token_count = len(enc.encode(chunk))
             assert token_count <= 100 + 5  # small tolerance for decode boundaries
+
+    def test_markdown_sections_stay_together(self) -> None:
+        """A Markdown doc with small sections should keep header + body as one chunk."""
+        text = (
+            "# Introduction\n\n"
+            "This is the introduction paragraph with enough text to be meaningful.\n\n"
+            "# Methods\n\n"
+            "This is the methods paragraph with enough text to be meaningful.\n\n"
+            "# Results\n\n"
+            "This is the results paragraph with enough text to be meaningful."
+        )
+        chunks = chunk_text(text, chunk_size=1024, overlap=128)
+        # With a large chunk_size, all sections should merge into one or a few chunks
+        # but the key property is that no section header is torn from its body
+        for chunk in chunks:
+            if "# Introduction" in chunk:
+                assert "introduction paragraph" in chunk
+            if "# Methods" in chunk:
+                assert "methods paragraph" in chunk
+            if "# Results" in chunk:
+                assert "results paragraph" in chunk
+
+    def test_oversized_section_gets_split(self) -> None:
+        """A section larger than chunk_size should be split at paragraph boundaries."""
+        section = "# Big Section\n\n" + "\n\n".join(
+            f"Paragraph {i} with enough content to take up tokens. " * 10
+            for i in range(20)
+        )
+        chunks = chunk_text(section, chunk_size=200, overlap=20)
+        assert len(chunks) > 1
+        # First chunk should start with the header
+        assert chunks[0].startswith("# Big Section")
+
+    def test_plain_text_splits_by_paragraphs(self) -> None:
+        """Text without Markdown headers should split at paragraph boundaries."""
+        paragraphs = [f"Paragraph {i}. " * 20 for i in range(10)]
+        text = "\n\n".join(paragraphs)
+        chunks = chunk_text(text, chunk_size=200, overlap=20)
+        assert len(chunks) > 1
+
+
+# ------------------------------------------------------------------ #
+# _split_by_headers                                                    #
+# ------------------------------------------------------------------ #
+
+
+class TestSplitByHeaders:
+    """Test Markdown header splitting."""
+
+    def test_no_headers_returns_whole_text(self) -> None:
+        text = "Just some plain text without any headers."
+        sections = _split_by_headers(text)
+        assert len(sections) == 1
+        assert sections[0] == text
+
+    def test_single_header(self) -> None:
+        text = "# Title\n\nBody content here."
+        sections = _split_by_headers(text)
+        assert len(sections) == 1
+        assert "# Title" in sections[0]
+        assert "Body content" in sections[0]
+
+    def test_multiple_headers(self) -> None:
+        text = "# First\n\nBody 1\n\n## Second\n\nBody 2\n\n### Third\n\nBody 3"
+        sections = _split_by_headers(text)
+        assert len(sections) == 3
+        assert "# First" in sections[0]
+        assert "## Second" in sections[1]
+        assert "### Third" in sections[2]
+
+    def test_preamble_before_first_header(self) -> None:
+        text = "Some intro text.\n\n# Header\n\nBody."
+        sections = _split_by_headers(text)
+        assert len(sections) == 2
+        assert "Some intro text" in sections[0]
+        assert "# Header" in sections[1]
+
+    def test_empty_string(self) -> None:
+        sections = _split_by_headers("")
+        assert sections == [""]
+
+
+# ------------------------------------------------------------------ #
+# _split_by_paragraphs                                                 #
+# ------------------------------------------------------------------ #
+
+
+class TestSplitByParagraphs:
+    """Test paragraph-level splitting."""
+
+    def test_single_paragraph_fits(self) -> None:
+        text = "A short paragraph."
+        result = _split_by_paragraphs(text, chunk_size=1024, overlap=128)
+        assert len(result) == 1
+
+    def test_multiple_small_paragraphs_merge(self) -> None:
+        text = "Para one.\n\nPara two.\n\nPara three."
+        result = _split_by_paragraphs(text, chunk_size=1024, overlap=128)
+        # All small paragraphs should fit in one chunk
+        assert len(result) == 1
+        assert "Para one." in result[0]
+        assert "Para three." in result[0]
+
+    def test_oversized_paragraph_falls_to_fixed_window(self) -> None:
+        text = "word " * 500  # one big paragraph, ~500 tokens
+        result = _split_by_paragraphs(text, chunk_size=100, overlap=10)
+        assert len(result) > 1
+
+
+# ------------------------------------------------------------------ #
+# _merge_small_chunks                                                  #
+# ------------------------------------------------------------------ #
+
+
+class TestMergeSmallChunks:
+    """Test small chunk merging."""
+
+    def test_empty_list(self) -> None:
+        assert _merge_small_chunks([], chunk_size=1024) == []
+
+    def test_single_chunk(self) -> None:
+        result = _merge_small_chunks(["Hello world."], chunk_size=1024)
+        assert result == ["Hello world."]
+
+    def test_small_chunks_get_merged(self) -> None:
+        # Two tiny chunks should merge into one
+        chunks = ["Hi.", "Bye."]
+        result = _merge_small_chunks(chunks, chunk_size=1024)
+        assert len(result) == 1
+        assert "Hi." in result[0]
+        assert "Bye." in result[0]
+
+    def test_large_chunk_stays_alone(self) -> None:
+        big = "word " * 200  # ~200 tokens, well above _MIN_CHUNK_TOKENS
+        chunks = [big, "Small tail."]
+        result = _merge_small_chunks(chunks, chunk_size=1024)
+        assert len(result) == 2
+
+
+# ------------------------------------------------------------------ #
+# _fixed_window_chunks (legacy fallback)                               #
+# ------------------------------------------------------------------ #
+
+
+class TestFixedWindowChunks:
+    """Test the fixed-size token window fallback."""
+
+    def test_empty_returns_empty(self) -> None:
+        assert _fixed_window_chunks("", chunk_size=100, overlap=10) == []
+
+    def test_short_text_single_chunk(self) -> None:
+        result = _fixed_window_chunks(
+            "Short text that fits in one window.", chunk_size=100, overlap=10,
+        )
+        assert len(result) == 1
+
+    def test_overlap_creates_more_chunks(self) -> None:
+        text = "word " * 500
+        with_overlap = _fixed_window_chunks(text, chunk_size=100, overlap=50)
+        without_overlap = _fixed_window_chunks(text, chunk_size=100, overlap=0)
+        assert len(with_overlap) > len(without_overlap)
+
+
+# ------------------------------------------------------------------ #
+# URL + title + source type (unchanged)                                #
+# ------------------------------------------------------------------ #
 
 
 class TestIsUrl:
