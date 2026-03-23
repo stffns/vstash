@@ -1,6 +1,6 @@
 # Chunking Benchmark: Fixed Window vs Semantic
 
-**Date:** 2026-03-23 19:17
+**Date:** 2026-03-23 20:24
 **Config:** chunk_size=1024, overlap=128
 
 
@@ -19,11 +19,11 @@
 
 | File | Fixed Time | Semantic Time | Overhead |
 |------|-----------|--------------|----------|
-| climate_change_report.md | 0.29ms | 0.52ms | 79% |
-| fastapi_patterns.md | 0.24ms | 0.51ms | 112% |
-| neural_architecture_search.md | 0.4ms | 0.75ms | 88% |
-| alice_wonderland.txt | 8.8ms | 24.05ms | 173% |
-| art_of_war.txt | 16.3ms | 46.42ms | 185% |
+| climate_change_report.md | 0.39ms | 0.61ms | 56% |
+| fastapi_patterns.md | 0.29ms | 0.61ms | 110% |
+| neural_architecture_search.md | 0.43ms | 0.75ms | 74% |
+| alice_wonderland.txt | 9.5ms | 28.58ms | 201% |
+| art_of_war.txt | 19.66ms | 54.38ms | 177% |
 
 ## Sample Chunks (first chunk of each file)
 

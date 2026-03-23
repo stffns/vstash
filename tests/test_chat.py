@@ -11,9 +11,7 @@ from vstash.models import SearchResult
 
 def _make_chunk(text: str, title: str = "TestDoc") -> SearchResult:
     """Helper to create a SearchResult for testing."""
-    return SearchResult(
-        text=text, title=title, path="/test/doc.md", chunk=0, score=0.5
-    )
+    return SearchResult(text=text, title=title, path="/test/doc.md", chunk=0, score=0.5)
 
 
 class TestBuildPrompt:
@@ -80,6 +78,7 @@ class TestBackendDispatch:
 
     def test_valid_backends_have_dispatch_entries(self) -> None:
         from vstash.chat import _BACKENDS
+
         assert "cerebras" in _BACKENDS
         assert "ollama" in _BACKENDS
         assert "openai" in _BACKENDS

@@ -32,9 +32,7 @@ class TestLoadConfig:
     def test_load_explicit_path(self, tmp_path: Path) -> None:
         """Explicit path to a vstash.toml file loads correctly."""
         toml = tmp_path / "vstash.toml"
-        toml.write_text(
-            '[inference]\nbackend = "ollama"\nmodel = "test-model"\n'
-        )
+        toml.write_text('[inference]\nbackend = "ollama"\nmodel = "test-model"\n')
         cfg = _load_config_from(str(toml))
         assert cfg.inference.backend == "ollama"
         assert cfg.inference.model == "test-model"
@@ -177,10 +175,12 @@ class TestMemorySearch:
     @requires_sqlite_vec
     def test_search_top_k(self, tmp_path: Path) -> None:
         doc = tmp_path / "multi.md"
-        doc.write_text("\n\n".join(
-            f"## Section {i}\n\nContent about topic {i} with enough detail." * 5
-            for i in range(10)
-        ))
+        doc.write_text(
+            "\n\n".join(
+                f"## Section {i}\n\nContent about topic {i} with enough detail." * 5
+                for i in range(10)
+            )
+        )
         with Memory(db=tmp_path / "test.db") as mem:
             mem.add(doc)
             results = mem.search("topic", top_k=3)

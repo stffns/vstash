@@ -2,32 +2,11 @@
 
 from __future__ import annotations
 
-import sqlite3
-
-import pytest
-
+from tests.conftest import requires_sqlite_vec
 from vstash.models import DocumentInfo, SearchResult, StoreStats
 from vstash.store import VstashStore
 
-
-def _sqlite_vec_available() -> bool:
-    """Check if sqlite-vec extension loading is available."""
-    try:
-        import sqlite_vec
-        conn = sqlite3.connect(":memory:")
-        conn.enable_load_extension(True)
-        sqlite_vec.load(conn)
-        conn.execute("SELECT vec_version()")
-        conn.close()
-        return True
-    except Exception:
-        return False
-
-
-pytestmark = pytest.mark.skipif(
-    not _sqlite_vec_available(),
-    reason="sqlite-vec extension or enable_load_extension not available",
-)
+pytestmark = requires_sqlite_vec
 
 
 class TestStoreContextManager:
@@ -180,16 +159,25 @@ class TestStoreCollections:
     def test_list_collections(self, sample_store: VstashStore) -> None:
         dim = sample_store.embedding_dim
         sample_store.add_document(
-            path="/a.md", title="A", chunks=["a"],
-            embeddings=[[0.1] * dim], collection="alpha",
+            path="/a.md",
+            title="A",
+            chunks=["a"],
+            embeddings=[[0.1] * dim],
+            collection="alpha",
         )
         sample_store.add_document(
-            path="/b.md", title="B", chunks=["b"],
-            embeddings=[[0.2] * dim], collection="beta",
+            path="/b.md",
+            title="B",
+            chunks=["b"],
+            embeddings=[[0.2] * dim],
+            collection="beta",
         )
         sample_store.add_document(
-            path="/c.md", title="C", chunks=["c"],
-            embeddings=[[0.3] * dim], collection="alpha",
+            path="/c.md",
+            title="C",
+            chunks=["c"],
+            embeddings=[[0.3] * dim],
+            collection="alpha",
         )
         cols = sample_store.list_collections()
         assert set(cols) == {"alpha", "beta"}
@@ -197,12 +185,18 @@ class TestStoreCollections:
     def test_list_filtered_by_collection(self, sample_store: VstashStore) -> None:
         dim = sample_store.embedding_dim
         sample_store.add_document(
-            path="/a.md", title="A", chunks=["a"],
-            embeddings=[[0.1] * dim], collection="proj1",
+            path="/a.md",
+            title="A",
+            chunks=["a"],
+            embeddings=[[0.1] * dim],
+            collection="proj1",
         )
         sample_store.add_document(
-            path="/b.md", title="B", chunks=["b"],
-            embeddings=[[0.2] * dim], collection="proj2",
+            path="/b.md",
+            title="B",
+            chunks=["b"],
+            embeddings=[[0.2] * dim],
+            collection="proj2",
         )
         docs_p1 = sample_store.list_documents(collection="proj1")
         assert len(docs_p1) == 1
@@ -214,12 +208,18 @@ class TestStoreCollections:
     def test_search_scoped_by_collection(self, sample_store: VstashStore) -> None:
         dim = sample_store.embedding_dim
         sample_store.add_document(
-            path="/work/a.md", title="Work Doc", chunks=["work content"],
-            embeddings=[[0.1] * dim], collection="work",
+            path="/work/a.md",
+            title="Work Doc",
+            chunks=["work content"],
+            embeddings=[[0.1] * dim],
+            collection="work",
         )
         sample_store.add_document(
-            path="/personal/b.md", title="Personal Doc", chunks=["personal content"],
-            embeddings=[[0.2] * dim], collection="personal",
+            path="/personal/b.md",
+            title="Personal Doc",
+            chunks=["personal content"],
+            embeddings=[[0.2] * dim],
+            collection="personal",
         )
         query_vec = [0.1] * dim
         # Search only within "work"
@@ -232,12 +232,18 @@ class TestStoreCollections:
     def test_find_document_scoped_by_collection(self, sample_store: VstashStore) -> None:
         dim = sample_store.embedding_dim
         sample_store.add_document(
-            path="/docs/readme.md", title="Readme", chunks=["text"],
-            embeddings=[[0.1] * dim], collection="docs",
+            path="/docs/readme.md",
+            title="Readme",
+            chunks=["text"],
+            embeddings=[[0.1] * dim],
+            collection="docs",
         )
         sample_store.add_document(
-            path="/notes/readme.md", title="Notes Readme", chunks=["notes"],
-            embeddings=[[0.2] * dim], collection="notes",
+            path="/notes/readme.md",
+            title="Notes Readme",
+            chunks=["notes"],
+            embeddings=[[0.2] * dim],
+            collection="notes",
         )
         match = sample_store.find_document("readme", collection="docs")
         assert match is not None
@@ -246,12 +252,18 @@ class TestStoreCollections:
     def test_stats_includes_collection_count(self, sample_store: VstashStore) -> None:
         dim = sample_store.embedding_dim
         sample_store.add_document(
-            path="/a.md", title="A", chunks=["a"],
-            embeddings=[[0.1] * dim], collection="x",
+            path="/a.md",
+            title="A",
+            chunks=["a"],
+            embeddings=[[0.1] * dim],
+            collection="x",
         )
         sample_store.add_document(
-            path="/b.md", title="B", chunks=["b"],
-            embeddings=[[0.2] * dim], collection="y",
+            path="/b.md",
+            title="B",
+            chunks=["b"],
+            embeddings=[[0.2] * dim],
+            collection="y",
         )
         s = sample_store.stats()
         assert s.collections == 2
@@ -260,12 +272,18 @@ class TestStoreCollections:
         """Same file can exist in multiple collections (different doc_id hash)."""
         dim = sample_store.embedding_dim
         sample_store.add_document(
-            path="/shared/file.md", title="Shared", chunks=["shared"],
-            embeddings=[[0.1] * dim], collection="team-a",
+            path="/shared/file.md",
+            title="Shared",
+            chunks=["shared"],
+            embeddings=[[0.1] * dim],
+            collection="team-a",
         )
         sample_store.add_document(
-            path="/shared/file.md", title="Shared", chunks=["shared"],
-            embeddings=[[0.1] * dim], collection="team-b",
+            path="/shared/file.md",
+            title="Shared",
+            chunks=["shared"],
+            embeddings=[[0.1] * dim],
+            collection="team-b",
         )
         docs = sample_store.list_documents()
         assert len(docs) == 2
@@ -276,10 +294,11 @@ class TestStoreCollections:
         """Documents without explicit collection go to 'default'."""
         dim = sample_store.embedding_dim
         sample_store.add_document(
-            path="/x.md", title="X", chunks=["x"],
+            path="/x.md",
+            title="X",
+            chunks=["x"],
             embeddings=[[0.1] * dim],
         )
         docs = sample_store.list_documents()
         assert len(docs) == 1
         assert docs[0].collection == "default"
-
