@@ -296,6 +296,74 @@ def list_docs(
 
 
 # ------------------------------------------------------------------ #
+# vstash export                                                       #
+# ------------------------------------------------------------------ #
+
+
+@app.command()
+def export(
+    output: str = typer.Option(..., "--output", "-o", help="Output file path"),
+    fmt: str = typer.Option("jsonl", "--format", "-f", help="Output format: jsonl or csv"),
+    collection: str | None = typer.Option(None, "--collection", "-c", help="Filter by collection"),
+    project: str | None = typer.Option(None, "--project", "-p", help="Filter by project"),
+    layer: str | None = typer.Option(None, "--layer", "-l", help="Filter by layer"),
+    tags: str | None = typer.Option(None, "--tags", "-t", help="Filter by tag"),
+    include_embeddings: bool = typer.Option(False, "--include-embeddings", help="Include embedding vectors"),
+) -> None:
+    """Export chunks as JSONL or CSV for training data curation."""
+    import csv
+    import json
+
+    cfg, store = _get_store()
+
+    with store:
+        chunks = store.export_chunks(
+            collection=collection,
+            project=project,
+            layer=layer,
+            tags=tags,
+            include_embeddings=include_embeddings,
+        )
+
+    if not chunks:
+        console.print("[yellow]No chunks match the given filters.[/yellow]")
+        raise typer.Exit(1)
+
+    out_path = Path(output)
+    fmt = fmt.lower()
+
+    if fmt not in ("jsonl", "csv"):
+        console.print(f"[red]✗ Unsupported format '{fmt}'. Use 'jsonl' or 'csv'.[/red]")
+        raise typer.Exit(1)
+
+    if fmt == "csv":
+        fieldnames = ["text", "title", "path", "chunk", "collection", "project", "layer", "tags"]
+        if include_embeddings:
+            fieldnames.append("embedding")
+        with out_path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for chunk in chunks:
+                row = {}
+                for k in fieldnames:
+                    value = chunk.get(k, "")
+                    if value is None:
+                        value = ""
+                    row[k] = value
+                if include_embeddings and "embedding" in chunk:
+                    row["embedding"] = json.dumps(chunk["embedding"])
+                writer.writerow(row)
+    else:  # jsonl
+        with out_path.open("w", encoding="utf-8") as f:
+            for chunk in chunks:
+                f.write(json.dumps(chunk, ensure_ascii=False) + "\n")
+
+    console.print(
+        f"[green]✓[/green] Exported {len(chunks)} chunks → [bold]{output}[/bold] ({fmt})"
+    )
+
+
+# ------------------------------------------------------------------ #
 # vstash stats                                                        #
 # ------------------------------------------------------------------ #
 
