@@ -17,8 +17,10 @@ from __future__ import annotations
 from pathlib import Path
 from types import TracebackType
 
+# Sentinel for distinguishing "parameter not provided" from explicit None.
+_UNSET = object()
+
 from .chat import ask as _chat_ask
-from .chat import stream as _chat_stream
 from .config import VstashConfig, load_config
 from .embed import embed_query, get_embedding_dim
 from .ingest import ingest
@@ -88,8 +90,8 @@ class Memory:
         source: str | Path,
         *,
         force: bool = False,
-        collection: str | None = None,
-        project: str | None = None,
+        collection: object = _UNSET,
+        project: object = _UNSET,
         layer: str | None = None,
         tags: str | None = None,
     ) -> IngestResult:
@@ -98,21 +100,23 @@ class Memory:
         Args:
             source: File path or URL to ingest.
             force: Re-ingest even if the document already exists.
-            collection: Override the default collection.
-            project: Override the default project tag.
+            collection: Override the default collection. Pass None for no collection.
+            project: Override the default project tag. Pass None for no project.
             layer: Layer/category tag.
             tags: Comma-separated tags.
 
         Returns:
             IngestResult with status, chunk count, timing, etc.
         """
+        col = self._collection if collection is _UNSET else collection
+        proj = self._project if project is _UNSET else project
         return ingest(
             str(source),
             self._cfg,
             self._store,
             force=force,
-            collection=collection or self._collection,
-            project=project or self._project,
+            collection=col,
+            project=proj,
             layer=layer,
             tags=tags,
         )
@@ -122,8 +126,8 @@ class Memory:
         query: str,
         *,
         top_k: int = 5,
-        collection: str | None = None,
-        project: str | None = None,
+        collection: object = _UNSET,
+        project: object = _UNSET,
         layer: str | None = None,
     ) -> list[SearchResult]:
         """Semantic search without LLM inference.
@@ -134,8 +138,8 @@ class Memory:
         Args:
             query: Natural language search query.
             top_k: Number of results to return.
-            collection: Override the default collection filter.
-            project: Override the default project filter.
+            collection: Override the default collection filter. Pass None for no filter.
+            project: Override the default project filter. Pass None for no filter.
             layer: Filter by layer tag.
 
         Returns:
@@ -156,8 +160,8 @@ class Memory:
         query: str,
         *,
         top_k: int = 5,
-        collection: str | None = None,
-        project: str | None = None,
+        collection: object = _UNSET,
+        project: object = _UNSET,
         layer: str | None = None,
         history: list[dict[str, str]] | None = None,
     ) -> str:
@@ -194,26 +198,39 @@ class Memory:
     def remove(self, source: str | Path) -> bool:
         """Remove a document from memory.
 
+        Normalizes file paths the same way as ``add()`` (via ``Path.resolve()``)
+        so that relative and absolute paths match the stored document path.
+        URLs are passed through unchanged.
+
         Args:
             source: File path or URL to remove.
 
         Returns:
             True if the document was found and removed.
         """
-        return self._store.delete_document(str(source))
+        source_str = str(source)
+        # Normalize file paths to match ingest() behavior
+        if not source_str.startswith(("http://", "https://")):
+            source_str = str(Path(source_str).resolve())
+        return self._store.delete_document(source_str)
 
     def list(
         self,
         *,
-        collection: str | None = None,
-        project: str | None = None,
+        collection: object = _UNSET,
+        project: object = _UNSET,
         layer: str | None = None,
     ) -> list[DocumentInfo]:
         """List ingested documents.
 
+        When called without arguments, uses the constructor's project/collection
+        defaults. If the constructor collection is ``"default"``, no collection
+        filter is applied (returns documents from all collections). Pass an
+        explicit value to override, or pass ``None`` to clear the filter.
+
         Args:
-            collection: Filter by collection. Uses default if not provided.
-            project: Filter by project. Uses default if not provided.
+            collection: Filter by collection. Pass None for no filter.
+            project: Filter by project. Pass None for no filter.
             layer: Filter by layer tag.
 
         Returns:
@@ -246,17 +263,25 @@ class Memory:
     # Internal helpers                                                     #
     # ------------------------------------------------------------------ #
 
-    def _resolve_collection(self, override: str | None) -> str | None:
-        """Resolve collection filter: explicit override > constructor default."""
-        if override is not None:
-            return override
+    def _resolve_collection(self, override: object) -> str | None:
+        """Resolve collection filter: explicit override > constructor default.
+
+        Uses the _UNSET sentinel to distinguish "not provided" from explicit None.
+        Passing None explicitly clears the filter (cross-collection search).
+        """
+        if override is not _UNSET:
+            return override  # type: ignore[return-value]
         # Return None (no filter) if default is "default" — search everywhere
         return self._collection if self._collection != "default" else None
 
-    def _resolve_project(self, override: str | None) -> str | None:
-        """Resolve project filter: explicit override > constructor default."""
-        if override is not None:
-            return override
+    def _resolve_project(self, override: object) -> str | None:
+        """Resolve project filter: explicit override > constructor default.
+
+        Uses the _UNSET sentinel to distinguish "not provided" from explicit None.
+        Passing None explicitly clears the filter (cross-project search).
+        """
+        if override is not _UNSET:
+            return override  # type: ignore[return-value]
         return self._project
 
 
@@ -273,15 +298,22 @@ def _load_config_from(config: str | Path | None) -> VstashConfig:
 
     Returns:
         Parsed VstashConfig.
+
+    Raises:
+        FileNotFoundError: If an explicit config path is provided but doesn't exist.
     """
     if config is not None:
         path = Path(config).expanduser()
-        if path.exists():
-            try:
-                import tomllib
-            except ImportError:
-                import tomli as tomllib  # type: ignore[no-redef]
-            with open(path, "rb") as f:
-                raw = tomllib.load(f)
-            return VstashConfig.model_validate(raw)
+        if not path.exists():
+            raise FileNotFoundError(
+                f"Config file not found: {path}. "
+                "Pass config=None to use auto-detection."
+            )
+        try:
+            import tomllib
+        except ImportError:
+            import tomli as tomllib  # type: ignore[no-redef]
+        with open(path, "rb") as f:
+            raw = tomllib.load(f)
+        return VstashConfig.model_validate(raw)
     return load_config()

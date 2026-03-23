@@ -58,10 +58,9 @@ Memory(
 ```
 
 **Regla de resolución de config** (misma lógica que la CLI):
-1. Argumento `config` explícito
-2. `VSTASH_CONFIG` env var
-3. `./vstash.toml` en el directorio actual
-4. `~/.vstash/vstash.toml`
+1. Argumento `config` explícito (si no existe, lanza `FileNotFoundError`)
+2. `./vstash.toml` en el directorio actual
+3. `~/.vstash/vstash.toml`
 
 ### Métodos públicos
 

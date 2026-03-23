@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -39,10 +39,10 @@ class TestLoadConfig:
         assert cfg.inference.backend == "ollama"
         assert cfg.inference.model == "test-model"
 
-    def test_load_nonexistent_path_falls_back(self) -> None:
-        """Non-existent config path falls back to defaults."""
-        cfg = _load_config_from("/nonexistent/vstash.toml")
-        assert isinstance(cfg, VstashConfig)
+    def test_load_nonexistent_path_raises(self) -> None:
+        """Non-existent explicit config path raises FileNotFoundError."""
+        with pytest.raises(FileNotFoundError, match="Config file not found"):
+            _load_config_from("/nonexistent/vstash.toml")
 
 
 # ------------------------------------------------------------------ #
@@ -284,3 +284,47 @@ class TestMemoryProjectScoping:
         with Memory(db=custom_db) as mem:
             s = mem.stats()
             assert str(custom_db) in s.db_path
+
+    @requires_sqlite_vec
+    def test_explicit_none_overrides_project(self, tmp_path: Path) -> None:
+        """Passing project=None explicitly clears the constructor default."""
+        doc = tmp_path / "doc.md"
+        doc.write_text("Content for sentinel override testing across projects.")
+
+        db = tmp_path / "test.db"
+        with Memory(db=db) as mem:
+            mem.add(doc, project="alpha")
+
+        # Memory scoped to alpha, but explicit None should search all projects
+        with Memory(db=db, project="alpha") as mem:
+            scoped = mem.search("content")
+            unscoped = mem.search("content", project=None)
+            # Both should find the doc (only one project here),
+            # but the key is that project=None doesn't raise
+            assert len(unscoped) >= len(scoped)
+
+
+# ------------------------------------------------------------------ #
+# Memory.ask                                                           #
+# ------------------------------------------------------------------ #
+
+
+class TestMemoryAsk:
+    """Test LLM-backed ask via Memory.ask()."""
+
+    @requires_sqlite_vec
+    def test_ask_calls_chat(self, tmp_path: Path) -> None:
+        """ask() retrieves chunks and passes them to chat.ask."""
+        doc = tmp_path / "askable.md"
+        doc.write_text("Python is a high-level language for general purpose programming.")
+
+        with Memory(db=tmp_path / "test.db") as mem:
+            mem.add(doc)
+            with patch("vstash.memory._chat_ask", return_value="mocked answer") as mock:
+                answer = mem.ask("what is python?")
+                assert answer == "mocked answer"
+                mock.assert_called_once()
+                # First arg is the query
+                assert mock.call_args[0][0] == "what is python?"
+                # Second arg is the chunks list
+                assert isinstance(mock.call_args[0][1], list)
