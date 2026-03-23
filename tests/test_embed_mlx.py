@@ -12,25 +12,19 @@ class TestResolveBackendAuto:
 
     @patch("vstash.embed._mlx_available", return_value=True)
     @patch("vstash.embed._is_apple_silicon", return_value=True)
-    def test_auto_returns_mlx_on_apple_silicon_with_mlx(
-        self, mock_silicon, mock_mlx
-    ) -> None:
+    def test_auto_returns_mlx_on_apple_silicon_with_mlx(self, mock_silicon, mock_mlx) -> None:
         """auto resolves to 'mlx' when on Apple Silicon and mlx is available."""
         assert resolve_backend("auto") == "mlx"
 
     @patch("vstash.embed._mlx_available", return_value=True)
     @patch("vstash.embed._is_apple_silicon", return_value=False)
-    def test_auto_returns_onnx_when_not_apple_silicon(
-        self, mock_silicon, mock_mlx
-    ) -> None:
+    def test_auto_returns_onnx_when_not_apple_silicon(self, mock_silicon, mock_mlx) -> None:
         """auto resolves to 'onnx' when not on Apple Silicon."""
         assert resolve_backend("auto") == "onnx"
 
     @patch("vstash.embed._mlx_available", return_value=False)
     @patch("vstash.embed._is_apple_silicon", return_value=True)
-    def test_auto_returns_onnx_when_mlx_unavailable(
-        self, mock_silicon, mock_mlx
-    ) -> None:
+    def test_auto_returns_onnx_when_mlx_unavailable(self, mock_silicon, mock_mlx) -> None:
         """auto resolves to 'onnx' when on Apple Silicon but mlx is not installed."""
         assert resolve_backend("auto") == "onnx"
 

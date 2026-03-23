@@ -48,7 +48,9 @@ class CerebrasConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    api_key: str = Field(default="", description="Cerebras API key (prefer CEREBRAS_API_KEY env var)")
+    api_key: str = Field(
+        default="", description="Cerebras API key (prefer CEREBRAS_API_KEY env var)"
+    )
 
 
 class OllamaConfig(BaseModel):
@@ -141,11 +143,25 @@ class VstashConfig(BaseModel):
 
 # Canonical set of file extensions supported for ingestion.
 # Used by ingest_directory() and watch mode — defined here to avoid duplication.
-SUPPORTED_EXTENSIONS: frozenset[str] = frozenset({
-    ".pdf", ".docx", ".pptx", ".xlsx", ".md", ".txt",
-    ".py", ".js", ".ts", ".go", ".rs", ".java",
-    ".html", ".htm", ".csv",
-})
+SUPPORTED_EXTENSIONS: frozenset[str] = frozenset(
+    {
+        ".pdf",
+        ".docx",
+        ".pptx",
+        ".xlsx",
+        ".md",
+        ".txt",
+        ".py",
+        ".js",
+        ".ts",
+        ".go",
+        ".rs",
+        ".java",
+        ".html",
+        ".htm",
+        ".csv",
+    }
+)
 
 
 def load_config() -> VstashConfig:
@@ -164,10 +180,12 @@ def load_config() -> VstashConfig:
     if env_config:
         candidates.append(Path(env_config).expanduser())
 
-    candidates.extend([
-        Path.cwd() / "vstash.toml",
-        Path.home() / ".vstash" / "vstash.toml",
-    ])
+    candidates.extend(
+        [
+            Path.cwd() / "vstash.toml",
+            Path.home() / ".vstash" / "vstash.toml",
+        ]
+    )
 
     raw: dict = {}  # type: ignore[type-arg]
     for path in candidates:

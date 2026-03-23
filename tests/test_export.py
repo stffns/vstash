@@ -133,8 +133,9 @@ class TestExportCLI:
         import vstash.cli as cli_mod
         from vstash.config import load_config
 
-        cfg = load_config()
-        monkeypatch.setattr(cli_mod, "_get_store", lambda cfg=None, warm=False: (cfg or load_config(), export_store))
+        monkeypatch.setattr(
+            cli_mod, "_get_store", lambda cfg=None, warm=False: (cfg or load_config(), export_store)
+        )
 
     def test_cli_export_jsonl(self, tmp_path) -> None:
         """CLI export to JSONL creates valid file."""
@@ -210,4 +211,3 @@ class TestExportCLI:
         result = runner.invoke(app, ["export", "-o", out_file, "--project", "nonexistent"])
         assert result.exit_code == 1
         assert "No chunks match" in result.stdout
-

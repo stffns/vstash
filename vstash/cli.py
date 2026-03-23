@@ -70,9 +70,15 @@ def add(
     sources: list[str] = typer.Argument(..., help="Files, directories, or URLs to ingest"),
     force: bool = typer.Option(False, "--force", "-f", help="Re-ingest even if already in memory"),
     collection: str = typer.Option("default", "--collection", "-c", help="Collection to add to"),
-    project: str | None = typer.Option(None, "--project", "-p", help="Project tag (overrides frontmatter)"),
-    layer: str | None = typer.Option(None, "--layer", "-l", help="Layer tag (overrides frontmatter)"),
-    tags: str | None = typer.Option(None, "--tags", "-t", help="Comma-separated tags (overrides frontmatter)"),
+    project: str | None = typer.Option(
+        None, "--project", "-p", help="Project tag (overrides frontmatter)"
+    ),
+    layer: str | None = typer.Option(
+        None, "--layer", "-l", help="Layer tag (overrides frontmatter)"
+    ),
+    tags: str | None = typer.Option(
+        None, "--tags", "-t", help="Comma-separated tags (overrides frontmatter)"
+    ),
 ) -> None:
     """Add documents or URLs to memory."""
     cfg, store = _get_store()
@@ -86,7 +92,11 @@ def add(
             if path.is_dir():
                 console.print(f"\n[bold]Scanning[/bold] {source}")
                 results = ingest_directory(
-                    source, cfg, store, force=force, collection=collection,
+                    source,
+                    cfg,
+                    store,
+                    force=force,
+                    collection=collection,
                     **meta,
                 )
                 ok = [r for r in results if r.status == "ok"]
@@ -102,7 +112,12 @@ def add(
             # File or URL
             source_str = str(path.resolve()) if path.exists() else source
             result = ingest(
-                source_str, cfg, store, force=force, collection=collection, **meta,
+                source_str,
+                cfg,
+                store,
+                force=force,
+                collection=collection,
+                **meta,
             )
 
             if result.status == "ok":
@@ -114,9 +129,7 @@ def add(
                     parts += f" [cyan]→ {collection}[/cyan]"
                 console.print(parts)
             elif result.status == "skipped":
-                console.print(
-                    f"[dim]⊊ {source} already in memory (use --force to re-ingest)[/dim]"
-                )
+                console.print(f"[dim]⊊ {source} already in memory (use --force to re-ingest)[/dim]")
             elif result.status == "empty":
                 console.print(f"[yellow]⚠[/yellow] No content extracted from {source}")
             elif result.status == "error":
@@ -131,8 +144,12 @@ def add(
 @app.command()
 def ask(
     query: str = typer.Argument(..., help="Your question"),
-    top_k: int = typer.Option(0, "--top-k", "-k", help="Number of chunks to retrieve (0 = from config)"),
-    collection: str | None = typer.Option(None, "--collection", "-c", help="Restrict to collection"),
+    top_k: int = typer.Option(
+        0, "--top-k", "-k", help="Number of chunks to retrieve (0 = from config)"
+    ),
+    collection: str | None = typer.Option(
+        None, "--collection", "-c", help="Restrict to collection"
+    ),
     project: str | None = typer.Option(None, "--project", "-p", help="Restrict to project"),
     layer: str | None = typer.Option(None, "--layer", "-l", help="Restrict to layer"),
     sources: bool = typer.Option(True, "--sources/--no-sources", help="Show source citations"),
@@ -148,8 +165,12 @@ def ask(
         with console.status("[dim]Searching memory...[/dim]", spinner="dots"):
             q_embedding = embed_query(query, cfg.embeddings.model)
             chunks = store.search(
-                q_embedding, query, top_k=k,
-                collection=collection, project=project, layer=layer,
+                q_embedding,
+                query,
+                top_k=k,
+                collection=collection,
+                project=project,
+                layer=layer,
             )
 
         if not chunks:
@@ -199,14 +220,17 @@ def chat(
     with store:
         k = top_k or cfg.chunking.top_k
 
-        console.print(Panel(
-            "[bold cyan]vstash[/bold cyan] · Interactive mode\n"
-            "[dim]Type your question. 'exit' to quit.[/dim]",
-            border_style="cyan",
-        ))
+        console.print(
+            Panel(
+                "[bold cyan]vstash[/bold cyan] · Interactive mode\n"
+                "[dim]Type your question. 'exit' to quit.[/dim]",
+                border_style="cyan",
+            )
+        )
 
         history: list[dict[str, str]] = []
         import tiktoken  # noqa: PLC0415 — lazy import, only needed for chat
+
         _enc = tiktoken.get_encoding("cl100k_base")
         _MAX_HISTORY_TOKENS = 8192
 
@@ -284,11 +308,17 @@ def list_docs(
 
     with store:
         docs = store.list_documents(
-            collection=collection, project=project, layer=layer,
+            collection=collection,
+            project=project,
+            layer=layer,
         )
 
         if not docs:
-            msg = "Memory is empty." if not collection else f'No documents in collection "{collection}".'
+            msg = (
+                "Memory is empty."
+                if not collection
+                else f'No documents in collection "{collection}".'
+            )
             console.print(f"[yellow]{msg} Add documents with [bold]vstash add[/bold].[/yellow]")
             return
 
@@ -325,7 +355,9 @@ def export(
     project: str | None = typer.Option(None, "--project", "-p", help="Filter by project"),
     layer: str | None = typer.Option(None, "--layer", "-l", help="Filter by layer"),
     tags: str | None = typer.Option(None, "--tags", "-t", help="Filter by tag"),
-    include_embeddings: bool = typer.Option(False, "--include-embeddings", help="Include embedding vectors"),
+    include_embeddings: bool = typer.Option(
+        False, "--include-embeddings", help="Include embedding vectors"
+    ),
 ) -> None:
     """Export chunks as JSONL or CSV for training data curation."""
     import csv
@@ -375,9 +407,7 @@ def export(
             for chunk in chunks:
                 f.write(json.dumps(chunk, ensure_ascii=False) + "\n")
 
-    console.print(
-        f"[green]✓[/green] Exported {len(chunks)} chunks → [bold]{output}[/bold] ({fmt})"
-    )
+    console.print(f"[green]✓[/green] Exported {len(chunks)} chunks → [bold]{output}[/bold] ({fmt})")
 
 
 # ------------------------------------------------------------------ #
@@ -393,17 +423,19 @@ def stats() -> None:
     with store:
         s = store.stats()
 
-        console.print(Panel(
-            f"[bold]Documents:[/bold] {s.documents}\n"
-            f"[bold]Chunks:[/bold] {s.chunks}\n"
-            f"[bold]Collections:[/bold] {s.collections}\n"
-            f"[bold]Database:[/bold] {s.db_path}\n"
-            f"[bold]Size:[/bold] {s.db_size_mb} MB\n"
-            f"[bold]Backend:[/bold] {cfg.inference.backend} / {cfg.inference.model}\n"
-            f"[bold]Embeddings:[/bold] {cfg.embeddings.model}",
-            title="[bold cyan]vstash Memory[/bold cyan]",
-            border_style="cyan",
-        ))
+        console.print(
+            Panel(
+                f"[bold]Documents:[/bold] {s.documents}\n"
+                f"[bold]Chunks:[/bold] {s.chunks}\n"
+                f"[bold]Collections:[/bold] {s.collections}\n"
+                f"[bold]Database:[/bold] {s.db_path}\n"
+                f"[bold]Size:[/bold] {s.db_size_mb} MB\n"
+                f"[bold]Backend:[/bold] {cfg.inference.backend} / {cfg.inference.model}\n"
+                f"[bold]Embeddings:[/bold] {cfg.embeddings.model}",
+                title="[bold cyan]vstash Memory[/bold cyan]",
+                border_style="cyan",
+            )
+        )
 
 
 # ------------------------------------------------------------------ #
@@ -438,22 +470,25 @@ def show_config() -> None:
     """Show current configuration."""
     cfg = load_config()
     from .embed import resolve_backend
+
     resolved = resolve_backend(cfg.embeddings.backend)
-    console.print(Panel(
-        f"[bold]Inference backend:[/bold] {cfg.inference.backend}\n"
-        f"[bold]Model:[/bold] {cfg.inference.model}\n"
-        f"[bold]Embedding model:[/bold] {cfg.embeddings.model}\n"
-        f"[bold]Embedding backend:[/bold] {resolved} "
-        f"({'Apple Silicon GPU' if resolved == 'mlx' else 'ONNX Runtime'})\n"
-        f"[bold]Chunk size:[/bold] {cfg.chunking.size} tokens\n"
-        f"[bold]Chunk overlap:[/bold] {cfg.chunking.overlap} tokens\n"
-        f"[bold]Top-k retrieval:[/bold] {cfg.chunking.top_k}\n"
-        f"[bold]Database:[/bold] {cfg.storage.db_path}\n"
-        f"[bold]Cerebras key:[/bold] {'set ✓' if cfg.cerebras_api_key else 'not set ✗'}\n"
-        f"[bold]OpenAI key:[/bold] {'set ✓' if cfg.openai_api_key else 'not set ✗'}",
-        title="[bold cyan]vstash Config[/bold cyan]",
-        border_style="cyan",
-    ))
+    console.print(
+        Panel(
+            f"[bold]Inference backend:[/bold] {cfg.inference.backend}\n"
+            f"[bold]Model:[/bold] {cfg.inference.model}\n"
+            f"[bold]Embedding model:[/bold] {cfg.embeddings.model}\n"
+            f"[bold]Embedding backend:[/bold] {resolved} "
+            f"({'Apple Silicon GPU' if resolved == 'mlx' else 'ONNX Runtime'})\n"
+            f"[bold]Chunk size:[/bold] {cfg.chunking.size} tokens\n"
+            f"[bold]Chunk overlap:[/bold] {cfg.chunking.overlap} tokens\n"
+            f"[bold]Top-k retrieval:[/bold] {cfg.chunking.top_k}\n"
+            f"[bold]Database:[/bold] {cfg.storage.db_path}\n"
+            f"[bold]Cerebras key:[/bold] {'set ✓' if cfg.cerebras_api_key else 'not set ✗'}\n"
+            f"[bold]OpenAI key:[/bold] {'set ✓' if cfg.openai_api_key else 'not set ✗'}",
+            title="[bold cyan]vstash Config[/bold cyan]",
+            border_style="cyan",
+        )
+    )
 
 
 # ------------------------------------------------------------------ #
@@ -464,8 +499,12 @@ def show_config() -> None:
 @app.command()
 def watch(
     paths: list[str] = typer.Argument(..., help="Directories to watch"),
-    collection: str = typer.Option("default", "--collection", "-c", help="Collection for ingested files"),
-    ext: str | None = typer.Option(None, "--ext", help="Comma-separated extensions, e.g. .md,.txt,.py"),
+    collection: str = typer.Option(
+        "default", "--collection", "-c", help="Collection for ingested files"
+    ),
+    ext: str | None = typer.Option(
+        None, "--ext", help="Comma-separated extensions, e.g. .md,.txt,.py"
+    ),
     debounce: float = typer.Option(2.0, "--debounce", help="Seconds to wait before re-ingesting"),
 ) -> None:
     """Watch directories for changes and auto-ingest files."""

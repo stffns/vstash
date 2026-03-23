@@ -82,8 +82,7 @@ def benchmark_add(corpus_dir: Path, db_direct: str, db_sdk: str) -> dict:
         "direct_ms": [round(t * 1000, 1) for t in direct_times],
         "sdk_ms": [round(t * 1000, 1) for t in sdk_times],
         "overhead_pct": [
-            round((s / d - 1) * 100, 1) if d > 0 else 0
-            for d, s in zip(direct_times, sdk_times)
+            round((s / d - 1) * 100, 1) if d > 0 else 0 for d, s in zip(direct_times, sdk_times)
         ],
     }
 
@@ -117,8 +116,7 @@ def benchmark_search(db_path: str) -> dict:
         "direct_ms": [round(t * 1000, 1) for t in direct_times],
         "sdk_ms": [round(t * 1000, 1) for t in sdk_times],
         "overhead_pct": [
-            round((s / d - 1) * 100, 1) if d > 0 else 0
-            for d, s in zip(direct_times, sdk_times)
+            round((s / d - 1) * 100, 1) if d > 0 else 0 for d, s in zip(direct_times, sdk_times)
         ],
     }
 
@@ -132,13 +130,14 @@ def main() -> None:
     tmp.mkdir(exist_ok=True)
     db_direct = str(tmp / "direct.db")
     db_sdk = str(tmp / "sdk.db")
-    db_search = str(tmp / "search.db")
 
     # --- Init ---
     print("\n⏱  Memory() init time...")
     init_result = benchmark_init(str(tmp / "init.db"))
-    print(f"   avg: {init_result['avg_ms']}ms, "
-          f"min: {init_result['min_ms']}ms, max: {init_result['max_ms']}ms")
+    print(
+        f"   avg: {init_result['avg_ms']}ms, "
+        f"min: {init_result['min_ms']}ms, max: {init_result['max_ms']}ms"
+    )
 
     # --- Add ---
     if not CORPUS_DIR.exists() or not list(CORPUS_DIR.glob("*.md")):
@@ -148,27 +147,31 @@ def main() -> None:
         print("\n⏱  Memory.add() vs ingest()...")
         add_result = benchmark_add(CORPUS_DIR, db_direct, db_sdk)
         for i, f in enumerate(add_result["files"]):
-            print(f"   {f}: direct={add_result['direct_ms'][i]}ms, "
-                  f"sdk={add_result['sdk_ms'][i]}ms, "
-                  f"overhead={add_result['overhead_pct'][i]}%")
+            print(
+                f"   {f}: direct={add_result['direct_ms'][i]}ms, "
+                f"sdk={add_result['sdk_ms'][i]}ms, "
+                f"overhead={add_result['overhead_pct'][i]}%"
+            )
 
     # --- Search (use SDK db which has docs) ---
     search_db = db_sdk if add_result else db_direct
     print("\n⏱  Memory.search() vs store.search()...")
     search_result = benchmark_search(search_db)
     for i, q in enumerate(search_result["queries"]):
-        print(f"   \"{q[:50]}...\": "
-              f"direct={search_result['direct_ms'][i]}ms, "
-              f"sdk={search_result['sdk_ms'][i]}ms, "
-              f"overhead={search_result['overhead_pct'][i]}%")
+        print(
+            f'   "{q[:50]}...": '
+            f"direct={search_result['direct_ms'][i]}ms, "
+            f"sdk={search_result['sdk_ms'][i]}ms, "
+            f"overhead={search_result['overhead_pct'][i]}%"
+        )
 
     # --- Report ---
     lines = [
         "# SDK Benchmark: Memory class overhead\n",
         f"**Date:** {time.strftime('%Y-%m-%d %H:%M')}\n",
         "\n## Memory() Init\n",
-        f"| Metric | Value |",
-        f"|--------|-------|",
+        "| Metric | Value |",
+        "|--------|-------|",
         f"| Average | {init_result['avg_ms']}ms |",
         f"| Min | {init_result['min_ms']}ms |",
         f"| Max | {init_result['max_ms']}ms |",
@@ -210,6 +213,7 @@ def main() -> None:
 
     # Cleanup
     import shutil
+
     shutil.rmtree(tmp, ignore_errors=True)
 
     print("=" * 70)

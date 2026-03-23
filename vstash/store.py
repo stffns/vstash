@@ -13,7 +13,7 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 import struct
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from types import TracebackType
 
@@ -181,10 +181,7 @@ class VstashStore:
 
     def _migrate_schema(self, conn: sqlite3.Connection) -> None:
         """Add missing columns to existing databases."""
-        columns = {
-            row[1] for row in
-            conn.execute("PRAGMA table_info(documents)").fetchall()
-        }
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(documents)").fetchall()}
         migrations: list[str] = []
         if "collection" not in columns:
             migrations.append(
@@ -214,9 +211,7 @@ class VstashStore:
         Returns:
             True if the document exists in the store.
         """
-        row = self._conn.execute(
-            "SELECT 1 FROM documents WHERE path = ?", [path]
-        ).fetchone()
+        row = self._conn.execute("SELECT 1 FROM documents WHERE path = ?", [path]).fetchone()
         return row is not None
 
     def add_document(
@@ -266,11 +261,17 @@ class VstashStore:
                         char_count, chunk_count, added_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     [
-                        doc_id, path, title, source_type, collection,
-                        project, layer, tags,
+                        doc_id,
+                        path,
+                        title,
+                        source_type,
+                        collection,
+                        project,
+                        layer,
+                        tags,
                         sum(len(c) for c in chunks),
                         len(chunks),
-                        datetime.now(UTC).isoformat(),
+                        datetime.now(timezone.utc).isoformat(),
                     ],
                 )
 
@@ -313,8 +314,8 @@ class VstashStore:
         """
         with self._write_lock:
             doc_ids = [
-                row[0] for row in
-                self._conn.execute(
+                row[0]
+                for row in self._conn.execute(
                     "SELECT id FROM documents WHERE path = ?", [path]
                 ).fetchall()
             ]
@@ -340,17 +341,15 @@ class VstashStore:
             True if the document existed and was deleted.
         """
         chunk_ids = [
-            row[0] for row in
-            self._conn.execute(
+            row[0]
+            for row in self._conn.execute(
                 "SELECT id FROM chunks WHERE doc_id = ?", [doc_id]
             ).fetchall()
         ]
         if chunk_ids:
             placeholders = ",".join("?" * len(chunk_ids))
             # Delete vec_chunks first (no trigger involved)
-            self._conn.execute(
-                f"DELETE FROM vec_chunks WHERE rowid IN ({placeholders})", chunk_ids
-            )
+            self._conn.execute(f"DELETE FROM vec_chunks WHERE rowid IN ({placeholders})", chunk_ids)
             # Delete chunks — trg_chunks_delete trigger auto-syncs FTS5
             self._conn.execute("DELETE FROM chunks WHERE doc_id = ?", [doc_id])
         cursor = self._conn.execute("DELETE FROM documents WHERE id = ?", [doc_id])
@@ -402,7 +401,9 @@ class VstashStore:
 
         # --- Build metadata filter ---
         vec_clause, col_clause, filter_params = self._build_doc_filter(
-            collection=collection, project=project, layer=layer,
+            collection=collection,
+            project=project,
+            layer=layer,
         )
 
         # --- Vector search ---
@@ -563,7 +564,11 @@ class VstashStore:
             tags: Filter by tag (LIKE match).
         """
         conditions_d2, params = VstashStore._get_filter_conditions(
-            "d2", collection=collection, project=project, layer=layer, tags=tags,
+            "d2",
+            collection=collection,
+            project=project,
+            layer=layer,
+            tags=tags,
         )
 
         if not conditions_d2:
@@ -580,7 +585,11 @@ class VstashStore:
         """
         # For JOINed queries where documents is aliased as 'd'
         conditions_d, _ = VstashStore._get_filter_conditions(
-            "d", collection=collection, project=project, layer=layer, tags=tags,
+            "d",
+            collection=collection,
+            project=project,
+            layer=layer,
+            tags=tags,
         )
         col_clause = "AND " + " AND ".join(conditions_d)
         return vec_clause, col_clause, params
@@ -611,7 +620,9 @@ class VstashStore:
             The full path of the matching document, or None.
         """
         conditions, filter_params = self._get_filter_conditions(
-            collection=collection, project=project, layer=layer,
+            collection=collection,
+            project=project,
+            layer=layer,
         )
         extra = ("AND " + " AND ".join(conditions)) if conditions else ""
         row = self._conn.execute(
@@ -643,7 +654,9 @@ class VstashStore:
             List of DocumentInfo ordered by ingestion date (newest first).
         """
         conditions, filter_params = self._get_filter_conditions(
-            collection=collection, project=project, layer=layer,
+            collection=collection,
+            project=project,
+            layer=layer,
         )
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
         rows = self._conn.execute(
@@ -718,15 +731,16 @@ class VstashStore:
             includes an 'embedding' key with the float vector.
         """
         conditions, params = self._get_filter_conditions(
-            "d", collection=collection, project=project, layer=layer, tags=tags,
+            "d",
+            collection=collection,
+            project=project,
+            layer=layer,
+            tags=tags,
         )
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
         embed_col = ", v.embedding" if include_embeddings else ""
-        embed_join = (
-            "LEFT JOIN vec_chunks v ON v.rowid = c.id"
-            if include_embeddings else ""
-        )
+        embed_join = "LEFT JOIN vec_chunks v ON v.rowid = c.id" if include_embeddings else ""
 
         rows = self._conn.execute(
             f"""SELECT c.text, c.seq, d.title, d.path,

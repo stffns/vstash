@@ -124,8 +124,7 @@ def start_watch(
         from watchdog.observers import Observer
     except ImportError as exc:
         raise ImportError(
-            "watchdog is required for watch mode. "
-            "Install it with: pip install vstash[watch]"
+            "watchdog is required for watch mode. Install it with: pip install vstash[watch]"
         ) from exc
 
     from .ingest import ingest
@@ -145,7 +144,11 @@ def start_watch(
                 continue
             try:
                 result = ingest(
-                    file_path, cfg, store, force=True, collection=collection,
+                    file_path,
+                    cfg,
+                    store,
+                    force=True,
+                    collection=collection,
                 )
                 ts = time.strftime("%H:%M:%S")
                 if result.status == "ok":
@@ -156,14 +159,10 @@ def start_watch(
                     )
                 elif result.status == "empty":
                     console.print(
-                        f"[dim]{ts}[/dim] [yellow]⚠[/yellow] "
-                        f"No content: {Path(file_path).name}"
+                        f"[dim]{ts}[/dim] [yellow]⚠[/yellow] No content: {Path(file_path).name}"
                     )
                 elif result.status == "error":
-                    console.print(
-                        f"[dim]{ts}[/dim] [red]✗[/red] "
-                        f"Error: {result.error}"
-                    )
+                    console.print(f"[dim]{ts}[/dim] [red]✗[/red] Error: {result.error}")
             except Exception as exc:
                 console.print(f"[red]✗ Watch ingest error: {exc}[/red]")
 

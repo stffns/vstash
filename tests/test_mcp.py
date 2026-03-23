@@ -99,9 +99,7 @@ class TestVstashList:
 
     @patch("vstash.mcp._get_store")
     @patch("vstash.mcp._get_config")
-    def test_list_returns_documents(
-        self, mock_config: MagicMock, mock_store: MagicMock
-    ) -> None:
+    def test_list_returns_documents(self, mock_config: MagicMock, mock_store: MagicMock) -> None:
         docs = [_make_doc_info("/a.md", "A"), _make_doc_info("/b.md", "B")]
         mock_store.return_value.list_documents.return_value = docs
 
@@ -112,9 +110,7 @@ class TestVstashList:
 
     @patch("vstash.mcp._get_store")
     @patch("vstash.mcp._get_config")
-    def test_list_empty_store(
-        self, mock_config: MagicMock, mock_store: MagicMock
-    ) -> None:
+    def test_list_empty_store(self, mock_config: MagicMock, mock_store: MagicMock) -> None:
         mock_store.return_value.list_documents.return_value = []
 
         result = json.loads(vstash_list())
@@ -137,9 +133,7 @@ class TestVstashStats:
 
     @patch("vstash.mcp._get_store")
     @patch("vstash.mcp._get_config")
-    def test_stats_returns_valid_json(
-        self, mock_config: MagicMock, mock_store: MagicMock
-    ) -> None:
+    def test_stats_returns_valid_json(self, mock_config: MagicMock, mock_store: MagicMock) -> None:
         mock_store.return_value.stats.return_value = StoreStats(
             documents=10, chunks=250, db_size_mb=3.14, db_path="/test/memory.db"
         )
@@ -202,9 +196,7 @@ class TestVstashForget:
 
     @patch("vstash.mcp._get_store")
     @patch("vstash.mcp._get_config")
-    def test_forget_existing_document(
-        self, mock_config: MagicMock, mock_store: MagicMock
-    ) -> None:
+    def test_forget_existing_document(self, mock_config: MagicMock, mock_store: MagicMock) -> None:
         mock_store.return_value.delete_document.return_value = True
 
         result = json.loads(vstash_forget("/test/doc.md"))
@@ -339,8 +331,13 @@ class TestVstashAdd:
         """URLs should go directly to ingest without Path().resolve()."""
         url = "https://example.com/article.html"
         ingest_result = IngestResult(
-            status="ok", source=url, doc_id="url123", title="Article",
-            chunks=5, chars=2000, elapsed_s=1.2,
+            status="ok",
+            source=url,
+            doc_id="url123",
+            title="Article",
+            chunks=5,
+            chars=2000,
+            elapsed_s=1.2,
         )
 
         with patch("vstash.ingest.ingest", return_value=ingest_result) as mock_ingest:
@@ -363,8 +360,13 @@ class TestVstashAdd:
         test_file.write_text("Some notes")
 
         ingest_result = IngestResult(
-            status="ok", source=str(test_file), doc_id="tilde123",
-            title="Notes", chunks=1, chars=10, elapsed_s=0.1,
+            status="ok",
+            source=str(test_file),
+            doc_id="tilde123",
+            title="Notes",
+            chunks=1,
+            chars=10,
+            elapsed_s=0.1,
         )
 
         with patch("vstash.ingest.ingest", return_value=ingest_result) as mock_ingest:
@@ -385,8 +387,13 @@ class TestVstashAdd:
         test_file.write_text("Some notes")
 
         ingest_result = IngestResult(
-            status="ok", source=str(test_file), doc_id="f123",
-            title="Notes", chunks=1, chars=10, elapsed_s=0.1,
+            status="ok",
+            source=str(test_file),
+            doc_id="f123",
+            title="Notes",
+            chunks=1,
+            chars=10,
+            elapsed_s=0.1,
         )
 
         with patch("vstash.ingest.ingest", return_value=ingest_result) as mock_ingest:
@@ -460,8 +467,6 @@ class TestErrorHandling:
 
     @patch("vstash.mcp._get_config", side_effect=Exception("unexpected"))
     @patch("vstash.mcp._get_store")
-    def test_add_unexpected_error(
-        self, mock_store: MagicMock, mock_config: MagicMock
-    ) -> None:
+    def test_add_unexpected_error(self, mock_store: MagicMock, mock_config: MagicMock) -> None:
         result = json.loads(vstash_add("/test"))
         assert "error" in result

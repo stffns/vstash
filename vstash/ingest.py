@@ -43,6 +43,7 @@ def _get_enc():
     global _enc, _SEPARATOR_TOKENS  # noqa: PLW0603
     if _enc is None:
         import tiktoken
+
         _enc = tiktoken.get_encoding("cl100k_base")
         _SEPARATOR_TOKENS = len(_enc.encode("\n\n"))
     return _enc
@@ -85,9 +86,7 @@ def chunk_text(text: str, chunk_size: int, overlap: int) -> list[str]:
             sized_chunks.append(section)
         else:
             # Split oversized section by paragraphs first
-            sized_chunks.extend(
-                _split_by_paragraphs(section, chunk_size, overlap)
-            )
+            sized_chunks.extend(_split_by_paragraphs(section, chunk_size, overlap))
 
     # --- Step 4: merge small adjacent chunks ---
     merged = _merge_small_chunks(sized_chunks, chunk_size)
@@ -135,7 +134,9 @@ def _split_by_headers(text: str) -> list[str]:
 
 
 def _split_by_paragraphs(
-    text: str, chunk_size: int, overlap: int,
+    text: str,
+    chunk_size: int,
+    overlap: int,
 ) -> list[str]:
     """Split text at paragraph boundaries (``\\n\\n``), with token-window fallback.
 
@@ -182,7 +183,9 @@ def _split_by_paragraphs(
 
 
 def _fixed_window_chunks(
-    text: str, chunk_size: int, overlap: int,
+    text: str,
+    chunk_size: int,
+    overlap: int,
 ) -> list[str]:
     """Legacy fixed-size token window chunking — used as last-resort fallback.
 
@@ -278,11 +281,20 @@ def _get_source_type(source: str) -> str:
         return "url"
     suffix = Path(source).suffix.lower()
     type_map: dict[str, str] = {
-        ".pdf": "pdf", ".docx": "docx", ".pptx": "pptx",
-        ".xlsx": "xlsx", ".md": "markdown", ".txt": "text",
-        ".py": "code", ".js": "code", ".ts": "code",
-        ".go": "code", ".rs": "code", ".java": "code",
-        ".html": "html", ".htm": "html",
+        ".pdf": "pdf",
+        ".docx": "docx",
+        ".pptx": "pptx",
+        ".xlsx": "xlsx",
+        ".md": "markdown",
+        ".txt": "text",
+        ".py": "code",
+        ".js": "code",
+        ".ts": "code",
+        ".go": "code",
+        ".rs": "code",
+        ".java": "code",
+        ".html": "html",
+        ".htm": "html",
     }
     return type_map.get(suffix, "file")
 
@@ -446,8 +458,10 @@ def ingest_directory(
     """
     path = Path(directory)
     files = [
-        f for f in path.rglob("*")
-        if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS
+        f
+        for f in path.rglob("*")
+        if f.is_file()
+        and f.suffix.lower() in SUPPORTED_EXTENSIONS
         and not any(part.startswith(".") for part in f.parts)  # skip hidden
     ]
 
@@ -468,9 +482,14 @@ def ingest_directory(
         for f in files:
             progress.update(task, description=f.name)
             result = ingest(
-                str(f), cfg, store,
-                force=force, collection=collection,
-                project=project, layer=layer, tags=tags,
+                str(f),
+                cfg,
+                store,
+                force=force,
+                collection=collection,
+                project=project,
+                layer=layer,
+                tags=tags,
             )
             results.append(result)
             progress.advance(task)
@@ -631,8 +650,7 @@ def _read_url_content(url: str, max_bytes: int = _MAX_DOWNLOAD_BYTES) -> bytes:
         content_length = response.headers.get("Content-Length")
         if content_length and int(content_length) > max_bytes:
             raise ValueError(
-                f"Response too large ({int(content_length)} bytes, "
-                f"max {max_bytes} bytes)"
+                f"Response too large ({int(content_length)} bytes, max {max_bytes} bytes)"
             )
 
         # Read in chunks with size enforcement
@@ -645,8 +663,7 @@ def _read_url_content(url: str, max_bytes: int = _MAX_DOWNLOAD_BYTES) -> bytes:
             total += len(chunk)
             if total > max_bytes:
                 raise ValueError(
-                    f"Response exceeded max size ({max_bytes} bytes). "
-                    "Download aborted."
+                    f"Response exceeded max size ({max_bytes} bytes). Download aborted."
                 )
             chunks.append(chunk)
 
@@ -727,7 +744,7 @@ def _embed_with_progress(chunks: list[str], model_name: str) -> list[list[float]
         processed = 0
 
         for i in range(0, len(chunks), BATCH_SIZE):
-            batch = chunks[i:i + BATCH_SIZE]
+            batch = chunks[i : i + BATCH_SIZE]
             embeddings = embed_texts(batch, model_name)
             all_embeddings.extend(embeddings)
             processed += len(batch)

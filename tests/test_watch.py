@@ -5,8 +5,6 @@ from __future__ import annotations
 import threading
 import time
 
-import pytest
-
 from vstash.config import SUPPORTED_EXTENSIONS
 from vstash.watch import _DebounceTimer, _should_process
 

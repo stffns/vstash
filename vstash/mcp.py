@@ -23,8 +23,7 @@ try:
     from mcp.server.fastmcp import FastMCP
 except ImportError as _exc:
     raise ImportError(
-        "MCP server requires the mcp package. "
-        "Install it with: pip install vstash[mcp]"
+        "MCP server requires the mcp package. Install it with: pip install vstash[mcp]"
     ) from _exc
 
 from .config import VstashConfig, load_config
@@ -105,10 +104,7 @@ def _ok(data: Any) -> str:
     if hasattr(data, "model_dump"):
         payload = data.model_dump()
     elif isinstance(data, list):
-        payload = [
-            item.model_dump() if hasattr(item, "model_dump") else item
-            for item in data
-        ]
+        payload = [item.model_dump() if hasattr(item, "model_dump") else item for item in data]
     else:
         payload = data
     return json.dumps(payload, ensure_ascii=False, indent=2)
@@ -170,7 +166,12 @@ def vstash_add(
         # URL → skip path resolution, go straight to ingest
         if path.startswith(("http://", "https://")):
             result: IngestResult = ingest(
-                path, cfg, store, force=force, collection=collection, **meta,
+                path,
+                cfg,
+                store,
+                force=force,
+                collection=collection,
+                **meta,
             )
             return _ok(result)
 
@@ -179,7 +180,11 @@ def vstash_add(
         # Directory → recursive ingestion
         if resolved.is_dir():
             results: list[IngestResult] = ingest_directory(
-                str(resolved), cfg, store, force=force, collection=collection,
+                str(resolved),
+                cfg,
+                store,
+                force=force,
+                collection=collection,
                 **meta,
             )
             summary = {
@@ -193,7 +198,12 @@ def vstash_add(
 
         # Single file
         result = ingest(
-            str(resolved), cfg, store, force=force, collection=collection, **meta,
+            str(resolved),
+            cfg,
+            store,
+            force=force,
+            collection=collection,
+            **meta,
         )
         return _ok(result)
 
@@ -248,19 +258,18 @@ def vstash_ask(
         )
 
         if not chunks:
-            return _ok({
-                "answer": "No relevant documents found in memory.",
-                "sources": [],
-            })
+            return _ok(
+                {
+                    "answer": "No relevant documents found in memory.",
+                    "sources": [],
+                }
+            )
 
         # Get LLM answer
         answer = ask(query, chunks, cfg)
 
         # Build source list
-        sources = [
-            {"title": c.title, "path": c.path, "score": c.score}
-            for c in chunks
-        ]
+        sources = [{"title": c.title, "path": c.path, "score": c.score} for c in chunks]
         # Deduplicate sources by path
         seen: set[str] = set()
         unique_sources: list[dict[str, Any]] = []
@@ -347,7 +356,9 @@ def vstash_list(
     try:
         store = _get_store()
         docs: list[DocumentInfo] = store.list_documents(
-            collection=collection, project=project, layer=layer,
+            collection=collection,
+            project=project,
+            layer=layer,
         )
         return _ok(docs)
 
@@ -431,6 +442,7 @@ def vstash_collections() -> str:
     except Exception as exc:
         logger.exception("vstash_collections failed")
         return _error(f"Failed to list collections: {exc}")
+
 
 @mcp_server.tool()
 def vstash_export(
