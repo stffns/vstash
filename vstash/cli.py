@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import tiktoken
 import typer
 from rich.console import Console
 from rich.markdown import Markdown
@@ -207,6 +206,7 @@ def chat(
         ))
 
         history: list[dict[str, str]] = []
+        import tiktoken  # noqa: PLC0415 — lazy import, only needed for chat
         _enc = tiktoken.get_encoding("cl100k_base")
         _MAX_HISTORY_TOKENS = 8192
 

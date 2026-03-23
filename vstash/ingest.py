@@ -594,24 +594,39 @@ def _validate_url(url: str) -> None:
 
 
 def _read_url_content(url: str, max_bytes: int = _MAX_DOWNLOAD_BYTES) -> bytes:
-    """Download URL content with a size limit.
+    """Download URL content with a size limit and SSRF-safe redirect handling.
+
+    Each redirect hop is re-validated against private/reserved IPs to prevent
+    SSRF via open redirects.
 
     Args:
-        url: The URL to fetch.
+        url: The URL to fetch (must already be validated via ``_validate_url``).
         max_bytes: Maximum number of bytes to download.
 
     Returns:
         Downloaded content as bytes.
 
     Raises:
-        ValueError: If the response exceeds the size limit.
+        ValueError: If the response exceeds the size limit or a redirect
+            targets a private address.
     """
     import urllib.request
 
+    class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+        """Re-validate every redirect target to prevent SSRF via open redirects."""
+
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            new_req = super().redirect_request(req, fp, code, msg, headers, newurl)
+            if new_req is None:
+                return None
+            _validate_url(new_req.full_url)
+            return new_req
+
     headers = {"User-Agent": "vstash (https://github.com/stffns/vstash)"}
     req = urllib.request.Request(url, headers=headers)
+    opener = urllib.request.build_opener(_SafeRedirectHandler())
 
-    with urllib.request.urlopen(req, timeout=30) as response:
+    with opener.open(req, timeout=30) as response:
         # Check Content-Length header first (if available)
         content_length = response.headers.get("Content-Length")
         if content_length and int(content_length) > max_bytes:

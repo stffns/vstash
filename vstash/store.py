@@ -320,9 +320,14 @@ class VstashStore:
             ]
             if not doc_ids:
                 return False
-            for doc_id in doc_ids:
-                self._delete_by_doc_id(doc_id)
-            self._conn.commit()
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                for doc_id in doc_ids:
+                    self._delete_by_doc_id(doc_id)
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
             return True
 
     def _delete_by_doc_id(self, doc_id: str) -> bool:
