@@ -332,6 +332,10 @@ def export(
     out_path = Path(output)
     fmt = fmt.lower()
 
+    if fmt not in ("jsonl", "csv"):
+        console.print(f"[red]✗ Unsupported format '{fmt}'. Use 'jsonl' or 'csv'.[/red]")
+        raise typer.Exit(1)
+
     if fmt == "csv":
         fieldnames = ["text", "title", "path", "chunk", "collection", "project", "layer", "tags"]
         if include_embeddings:
@@ -340,7 +344,12 @@ def export(
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             for chunk in chunks:
-                row = {k: chunk.get(k, "") for k in fieldnames}
+                row = {}
+                for k in fieldnames:
+                    value = chunk.get(k, "")
+                    if value is None:
+                        value = ""
+                    row[k] = value
                 if include_embeddings and "embedding" in chunk:
                     row["embedding"] = json.dumps(chunk["embedding"])
                 writer.writerow(row)

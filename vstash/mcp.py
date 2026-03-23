@@ -434,11 +434,12 @@ def vstash_export(
     tags: str | None = None,
     include_embeddings: bool = False,
 ) -> str:
-    """Export chunks with metadata as JSONL for training data curation.
+    """Export chunks with document metadata for training data curation.
 
-    Returns all chunks matching the filters with their document metadata
-    (title, path, project, layer, tags, collection). Useful for building
-    fine-tuning datasets or importing into other vector stores.
+    Returns a JSON object containing all chunks matching the filters, with
+    their document metadata (title, path, project, layer, tags, collection).
+    Useful for building fine-tuning datasets or importing into other vector
+    stores.
 
     Args:
         collection: Filter by collection name.
@@ -448,7 +449,7 @@ def vstash_export(
         include_embeddings: Include embedding vectors (large output).
 
     Returns:
-        JSON with exported chunks array and count.
+        JSON object with 'chunks' array and 'count'.
     """
     try:
         store = _get_store()

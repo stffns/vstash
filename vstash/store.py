@@ -28,8 +28,16 @@ def _serialize(vector: list[float]) -> bytes:
 
 
 def _deserialize(data: bytes) -> list[float]:
-    """Deserialize a sqlite-vec binary blob back to a float list."""
-    count = len(data) // struct.calcsize("f")
+    """Deserialize a sqlite-vec binary blob back to a float list.
+
+    Raises:
+        ValueError: If the blob length is not a multiple of float size.
+    """
+    item_size = struct.calcsize("f")
+    if len(data) % item_size != 0:
+        msg = f"Embedding blob length {len(data)} is not a multiple of {item_size}"
+        raise ValueError(msg)
+    count = len(data) // item_size
     return list(struct.unpack(f"{count}f", data))
 
 
@@ -709,7 +717,7 @@ class VstashStore:
                 JOIN documents d ON d.id = c.doc_id
                 {embed_join}
                 {where}
-                ORDER BY d.added_at DESC, c.seq ASC""",
+                ORDER BY d.added_at DESC, d.id ASC, c.seq ASC""",
             params,
         ).fetchall()
 

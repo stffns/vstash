@@ -143,39 +143,89 @@ class TestExportChunks:
 
 
 class TestExportCLI:
-    """Test CLI export command via JSONL/CSV output."""
+    """Test CLI export command using typer CliRunner."""
 
-    def test_export_jsonl(self, export_store: VstashStore, tmp_path) -> None:
-        """Export to JSONL produces valid JSON per line."""
-        chunks = export_store.export_chunks()
-        out_path = tmp_path / "export.jsonl"
+    @pytest.fixture(autouse=True)
+    def _patch_store(self, export_store: VstashStore, monkeypatch) -> None:
+        """Monkeypatch _get_store so CLI uses the test store."""
+        import vstash.cli as cli_mod
+        from vstash.config import load_config
 
-        with out_path.open("w", encoding="utf-8") as f:
-            for chunk in chunks:
-                f.write(json.dumps(chunk, ensure_ascii=False) + "\n")
+        cfg = load_config()
+        monkeypatch.setattr(cli_mod, "_get_store", lambda cfg=None, warm=False: (cfg or load_config(), export_store))
 
-        lines = out_path.read_text().strip().split("\n")
+    def test_cli_export_jsonl(self, tmp_path) -> None:
+        """CLI export to JSONL creates valid file."""
+        from typer.testing import CliRunner
+        from vstash.cli import app
+
+        runner = CliRunner()
+        out_file = str(tmp_path / "out.jsonl")
+
+        result = runner.invoke(app, ["export", "-o", out_file])
+        assert result.exit_code == 0
+        assert "Exported 5 chunks" in result.stdout
+
+        lines = (tmp_path / "out.jsonl").read_text().strip().split("\n")
         assert len(lines) == 5
-        for line in lines:
-            parsed = json.loads(line)
-            assert "text" in parsed
-            assert "title" in parsed
+        parsed = json.loads(lines[0])
+        assert "text" in parsed
+        assert "title" in parsed
 
-    def test_export_csv(self, export_store: VstashStore, tmp_path) -> None:
-        """Export to CSV produces valid CSV with headers."""
-        chunks = export_store.export_chunks()
-        out_path = tmp_path / "export.csv"
-        fieldnames = ["text", "title", "path", "chunk", "collection", "project", "layer", "tags"]
+    def test_cli_export_csv(self, tmp_path) -> None:
+        """CLI export to CSV creates valid file with headers."""
+        from typer.testing import CliRunner
+        from vstash.cli import app
 
-        with out_path.open("w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            for chunk in chunks:
-                row = {k: chunk.get(k, "") for k in fieldnames}
-                writer.writerow(row)
+        runner = CliRunner()
+        out_file = str(tmp_path / "out.csv")
 
-        with out_path.open(encoding="utf-8") as f:
+        result = runner.invoke(app, ["export", "-o", out_file, "-f", "csv"])
+        assert result.exit_code == 0
+        assert "Exported 5 chunks" in result.stdout
+
+        with (tmp_path / "out.csv").open() as f:
             reader = csv.DictReader(f)
             rows = list(reader)
             assert len(rows) == 5
             assert "text" in rows[0]
+            # None values should be empty strings, not "None"
+            for row in rows:
+                assert row.get("tags", "") != "None"
+
+    def test_cli_export_with_filter(self, tmp_path) -> None:
+        """CLI export with --project filter exports only matching chunks."""
+        from typer.testing import CliRunner
+        from vstash.cli import app
+
+        runner = CliRunner()
+        out_file = str(tmp_path / "filtered.jsonl")
+
+        result = runner.invoke(app, ["export", "-o", out_file, "--project", "ml"])
+        assert result.exit_code == 0
+        assert "Exported 2 chunks" in result.stdout
+
+    def test_cli_export_invalid_format(self, tmp_path) -> None:
+        """CLI export with invalid format raises error."""
+        from typer.testing import CliRunner
+        from vstash.cli import app
+
+        runner = CliRunner()
+        out_file = str(tmp_path / "bad.txt")
+
+        result = runner.invoke(app, ["export", "-o", out_file, "-f", "xml"])
+        assert result.exit_code == 1
+        assert "Unsupported format" in result.stdout
+
+    def test_cli_export_no_match(self, tmp_path) -> None:
+        """CLI export with no matching chunks exits with error."""
+        from typer.testing import CliRunner
+        from vstash.cli import app
+
+        runner = CliRunner()
+        out_file = str(tmp_path / "empty.jsonl")
+
+        result = runner.invoke(app, ["export", "-o", out_file, "--project", "nonexistent"])
+        assert result.exit_code == 1
+        assert "No chunks match" in result.stdout
+
