@@ -92,6 +92,9 @@ The codebase treats all three identically — one config line changes the backen
 | **Inference (flexible)** | OpenAI API | Compatible with any OpenAI-compatible endpoint |
 | **Inference (private)** | Ollama (any model) | 100% local fallback, no data leaves the machine |
 | **Document parsing** | `markitdown` | Universal: PDF, DOCX, PPTX, HTML, code, URLs |
+| **Chunking** | Semantic-first pipeline | Headers → paragraphs → fixed-window → merge small |
+| **Python SDK** | `Memory` class | 6-method API for agents and pipelines |
+| **MCP Server** | `vstash-mcp` | Claude Desktop integration via Model Context Protocol |
 | **Configuration** | Pydantic v2 | Type-safe config with validation and defaults |
 | **CLI** | `Typer` + `Rich` | Clean, beautiful terminal interface with progress feedback |
 | **Language** | Python 3.10+ | Ecosystem, speed of development, accessibility |
@@ -175,15 +178,18 @@ Universal document parsing — one library handles everything. Don't reinvent th
                              └──────────────────────────────┘
 ```
 
-### Data flow — ingest
+### Data flow — ingest (semantic chunking)
 
 ```
 file/URL
   → markitdown → raw text
-    → chunk (1024 tokens, 128 overlap)       ← larger chunks = more context for LLM
-      → MLX/ONNX → vector (384 dim)          ← always local, ~1,200 chunks/s (MLX)
-        → store in sqlite-vec + FTS5
-          → Rich progress bar shown throughout
+    → _split_by_headers (Markdown sections)       ← preserve document structure
+      → _split_by_paragraphs (paragraph breaks)   ← respect natural boundaries
+        → _fixed_window (oversized paragraphs)     ← token-bounded fallback with overlap
+          → _merge_small (< 80 tokens)             ← bidirectional merge, avoid low-quality embeddings
+            → MLX/ONNX → vector (384 dim)          ← always local, ~1,200 chunks/s (MLX)
+              → store in sqlite-vec + FTS5
+                → Rich progress bar shown throughout
 ```
 
 ### Data flow — query (Hybrid RRF)
@@ -203,12 +209,18 @@ user question
               → display with sources cited
 ```
 
-### Chunking strategy
+### Chunking strategy — semantic-first
 
-- **Default chunk size:** 1,024 tokens with 128 token overlap
-- Larger chunks give the LLM more context per retrieved segment
-- Overlap prevents losing meaning at chunk boundaries
-- Chunks under 20 characters are filtered out
+The chunking pipeline prioritizes document structure over arbitrary token windows:
+
+1. **Headers** — split at Markdown `#` boundaries; each section becomes a candidate chunk
+2. **Paragraphs** — within each section, split at `\n\n` paragraph breaks
+3. **Fixed-window** — oversized paragraphs are split at token boundaries with configurable overlap
+4. **Merge small** — chunks under 80 tokens are merged bidirectionally with their neighbors
+5. **Token counting** — includes the `\n\n` separator cost between chunks to avoid exceeding limits
+
+Default chunk size: 1,024 tokens with 128 token overlap (fixed-window fallback only).
+Overlap is clamped to `chunk_size - 1` to prevent infinite loops.
 
 ---
 
@@ -234,29 +246,37 @@ FTS5 is the bottleneck at scale (~5× slower than vector search alone). Up to **
 ```
 vstash/
 ├── vstash/
-│   ├── __init__.py       # Package metadata
+│   ├── __init__.py       # Package metadata + SDK exports (Memory, models)
+│   ├── memory.py         # Python SDK — Memory class with 6-method public API
 │   ├── cli.py            # Typer CLI entry point (with warmup)
+│   ├── mcp.py            # MCP server for Claude Desktop integration
 │   ├── config.py         # Pydantic v2 config loader (vstash.toml)
-│   ├── models.py         # Typed result models (IngestResult, SearchResult, etc.)
-│   ├── ingest.py         # Document ingestion pipeline (with Rich progress)
+│   ├── models.py         # Typed result models (IngestResult, SearchResult, DocumentInfo, StoreStats)
+│   ├── ingest.py         # Semantic chunking pipeline (headers → paragraphs → merge)
 │   ├── chat.py           # Inference backend abstraction (Cerebras/Ollama/OpenAI)
 │   ├── embed.py          # Dual MLX/ONNX embedding backend with auto-detection
-│   └── store.py          # sqlite-vec + FTS5 hybrid store with RRF + distance cutoff
+│   ├── store.py          # sqlite-vec + FTS5 hybrid store with RRF + distance cutoff
+│   └── watch.py          # File watcher for auto-ingestion
 ├── benchmark/
-│   ├── benchmark.py      # Semantic search vs grep comparison
-│   ├── e2e_test.py       # End-to-end retrieval + LLM benchmark
-│   └── corpus/           # Test documents for benchmarking
+│   ├── benchmark.py          # Semantic search vs grep comparison
+│   ├── benchmark_chunking.py # Semantic vs fixed-window A/B comparison
+│   ├── benchmark_sdk.py      # Memory SDK overhead measurement
+│   └── e2e_test.py           # End-to-end retrieval + LLM benchmark
 ├── tests/
-│   ├── conftest.py       # Shared fixtures
-│   ├── test_config.py    # Config validation tests
-│   ├── test_ingest.py    # Chunking + source detection tests
-│   ├── test_store.py     # Store CRUD + search tests
-│   ├── test_embed.py     # Embedding dimension tests
-│   └── test_chat.py      # Prompt building + dispatch tests
-├── vstash.toml.example      # Config template
+│   ├── conftest.py           # Shared fixtures
+│   ├── test_config.py        # Config validation tests
+│   ├── test_ingest.py        # Semantic chunking + source detection tests
+│   ├── test_store.py         # Store CRUD + search tests
+│   ├── test_embed.py         # Embedding dimension tests
+│   ├── test_chat.py          # Prompt building + dispatch tests
+│   ├── test_memory.py        # Memory SDK tests (init, add, search, remove, scoping)
+│   ├── test_export.py        # Export pipeline tests
+│   └── test_frontmatter.py   # Frontmatter parsing + metadata filtering tests
+├── vstash.toml.example       # Config template
 ├── pyproject.toml
 ├── README.md
-└── VSTASH_CONSTITUTION.md   # This file
+├── SDK_PLAN.md               # SDK design document
+└── VSTASH_CONSTITUTION.md    # This file
 ```
 
 ---
@@ -269,8 +289,13 @@ vstash add report.pdf
 vstash add https://arxiv.org/abs/2310.06825
 vstash add ./src/                          # entire directory
 vstash add paper.pdf --force               # re-ingest even if already stored
+vstash add notes.md --collection research --project ml-survey --tags "attention"
 
-# Ask questions
+# Search (free, no API key — 100% local)
+vstash search "what is the proposed method?"
+vstash search "auth flow" --project backend
+
+# Ask questions (requires inference backend)
 vstash ask "What were the main conclusions of the report?"
 vstash ask "Which files handle authentication?" --top-k 10
 
@@ -279,12 +304,62 @@ vstash chat
 
 # Inspect memory
 vstash list                 # show all ingested documents
+vstash list --project work  # filter by project
 vstash stats                # memory size, chunk count, inference backend
 vstash forget report.pdf    # remove from memory
 
+# Auto-ingestion
+vstash watch ./folder       # auto-ingest on file changes
+
+# Export
+vstash export               # export chunks as JSONL for training data curation
+vstash export --project ml-survey --format jsonl
+
 # Configuration
 vstash config               # show current settings
+
+# MCP Server
+vstash-mcp                  # start MCP server for Claude Desktop
 ```
+
+---
+
+## Python SDK — `from vstash import Memory`
+
+*Added in v0.3.0.* A minimal, sync-first API for embedding vstash into agents and pipelines.
+
+```python
+from vstash import Memory
+
+# Scoped to a project — separate namespace
+mem = Memory(project="my_agent")
+
+# Ingest
+mem.add("docs/spec.pdf")
+mem.add("https://example.com/api-docs")
+
+# Search (free, no LLM)
+results = mem.search("deployment strategy", top_k=5)
+for r in results:
+    print(r.text, r.score)
+
+# Ask (requires inference backend)
+answer = mem.ask("What are the system requirements?")
+
+# Management
+docs = mem.list()          # → list[DocumentInfo]
+info = mem.stats()         # → StoreStats
+mem.remove("docs/old.pdf")
+mem.close()
+```
+
+### Design decisions
+
+- **Sync-first** — no async until a real need arises (YAGNI)
+- **Not a singleton** — multiple `Memory()` instances can coexist (WAL mode)
+- **Optional filters** — `project`, `collection`, `layer` can be set at init or per-call
+- **Zero new dependencies** — wraps existing store, ingest, embed, chat modules
+- **Context manager** — `with Memory() as mem:` for automatic cleanup
 
 ---
 
@@ -306,7 +381,7 @@ The core loop working end-to-end, honest about privacy.
 - [x] Conversation memory in `vstash chat` mode
 - [x] Rich progress bars on ingest
 - [x] Context manager for safe resource cleanup
-- [x] pytest test suite (72 tests)
+- [x] pytest test suite
 - [x] README with honest privacy table
 
 **Definition of done:** drop a PDF, ask a question, get an answer in < 1 second (Cerebras) or < 10 seconds (Ollama local).
@@ -325,26 +400,37 @@ Eliminate noise, maximize speed, prove it with benchmarks.
 - [x] End-to-end benchmark suite with timing breakdown
 - [x] Semantic search vs grep comparison benchmark
 
-### Phase 2 — Usability
+### Phase 2 — Usability ✅ Done
 Make it something people actually use daily.
 
-- [ ] Semantic chunking (split at paragraph/section boundaries)
-- [ ] `vstash watch ./folder` — auto-ingest on file changes
-- [ ] `vstash export` / `vstash import` — database portability
-- [ ] Rich source citations with file + page references
+- [x] Semantic chunking (split by headers → paragraphs → merge small)
+- [x] `vstash search` — local semantic search without LLM (free)
+- [x] `vstash watch ./folder` — auto-ingest on file changes
+- [x] `vstash export` — export chunks as JSONL for training data curation
+- [x] Collections and namespaces (`--collection`, `--project`)
+- [x] Hierarchical frontmatter metadata (project, layer, tags)
+- [x] Filtered retrieval across all commands
+- [x] MCP server for Claude Desktop integration (`vstash-mcp`)
+- [x] Benchmark: semantic vs fixed-window chunking A/B comparison
 
-### Phase 3 — Sync without a server
-Share memory across machines without compromising the no-server principle.
+### Phase 3 — Python SDK ✅ Done (v0.3.0)
+vstash as a building block for agents and pipelines.
+
+- [x] `from vstash import Memory` — 6-method public API
+- [x] Project/collection scoping at init or per-call
+- [x] Context manager support (`with Memory() as mem:`)
+- [x] WAL mode for concurrent Memory instances
+- [x] Typed return models: `DocumentInfo`, `IngestResult`, `SearchResult`, `StoreStats`
+- [x] SDK design document (`SDK_PLAN.md`)
+- [x] SDK benchmark suite
+- [x] 147 pytest tests across 9 test modules
+
+### Phase 4 — Sync & Integrations
+Share memory across machines and expose to non-Python tools.
 
 - [ ] `cr-sqlite` integration — CRDT-based SQLite sync (peer-to-peer)
 - [ ] `vstash sync` — merge two `.db` files intelligently
 - [ ] Multiple memory profiles: `vstash --profile work ask "..."`
-- [ ] Export memory as structured JSON / Markdown
-
-### Phase 4 — Agent integration
-vstash as memory layer for other tools and agents.
-
-- [ ] Python SDK — `from vstash import Memory` for external programs
 - [ ] REST API mode (opt-in, local only) for non-Python integrations
 - [ ] Web UI (optional, lightweight, localhost only)
 
@@ -355,12 +441,15 @@ vstash as memory layer for other tools and agents.
 - **Speed at every layer** — MLX GPU or ONNX + sqlite-vec + Cerebras. No compromises.
 - **Dual embedding backends** — MLX for Apple Silicon (1,200 chunks/s), ONNX for portability
 - **Hybrid search with noise filtering** — RRF + distance cutoff for precision
+- **Semantic chunking** — preserves document structure instead of arbitrary token windows
+- **Python SDK** — `from vstash import Memory` for agents and pipelines
+- **MCP server** — Claude Desktop integration out of the box
 - **Honest privacy model** — engineers respect projects that don't hide tradeoffs
 - **sqlite-vec** is new and underused — devs will want to see it in production
 - **Backend agnostic** — Cerebras for speed, OpenAI for flexibility, Ollama for privacy
 - **Dead simple** — `pip install vstash`, one config file, running in 5 minutes
-- **Typed and tested** — Pydantic v2 models + 72 pytest tests
-- **Benchmarked** — E2E timing reports, grep comparison, scalability data up to 500K chunks
+- **Typed and tested** — Pydantic v2 models + 147 pytest tests across 9 modules
+- **Benchmarked** — E2E timing, grep comparison, chunking A/B, SDK overhead, scalability to 500K chunks
 
 ---
 
