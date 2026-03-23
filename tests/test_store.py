@@ -2,32 +2,13 @@
 
 from __future__ import annotations
 
-import sqlite3
-
 import pytest
 
+from tests.conftest import requires_sqlite_vec
 from vstash.models import DocumentInfo, SearchResult, StoreStats
 from vstash.store import VstashStore
 
-
-def _sqlite_vec_available() -> bool:
-    """Check if sqlite-vec extension loading is available."""
-    try:
-        import sqlite_vec
-        conn = sqlite3.connect(":memory:")
-        conn.enable_load_extension(True)
-        sqlite_vec.load(conn)
-        conn.execute("SELECT vec_version()")
-        conn.close()
-        return True
-    except Exception:
-        return False
-
-
-pytestmark = pytest.mark.skipif(
-    not _sqlite_vec_available(),
-    reason="sqlite-vec extension or enable_load_extension not available",
-)
+pytestmark = requires_sqlite_vec
 
 
 class TestStoreContextManager:

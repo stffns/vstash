@@ -18,18 +18,13 @@ from typing import TYPE_CHECKING
 
 from rich.console import Console
 
+from .config import SUPPORTED_EXTENSIONS
+
 if TYPE_CHECKING:
     from .config import VstashConfig
     from .store import VstashStore
 
 console = Console(stderr=True)
-
-# Default supported extensions
-SUPPORTED_EXTENSIONS: frozenset[str] = frozenset({
-    ".pdf", ".docx", ".pptx", ".xlsx", ".md", ".txt",
-    ".py", ".js", ".ts", ".go", ".rs", ".java",
-    ".html", ".htm", ".csv",
-})
 
 
 class _DebounceTimer:

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import tiktoken
 import typer
 from rich.console import Console
 from rich.markdown import Markdown
@@ -173,6 +174,7 @@ def ask(
                 print()  # newline after stream
             except ConnectionError as exc:
                 console.print(f"\n[red]✗ Inference error: {exc}[/red]")
+                raise typer.Exit(1) from exc
         else:
             with console.status("[dim]Thinking...[/dim]", spinner="dots"):
                 try:
@@ -205,6 +207,20 @@ def chat(
         ))
 
         history: list[dict[str, str]] = []
+        _enc = tiktoken.get_encoding("cl100k_base")
+        _MAX_HISTORY_TOKENS = 8192
+
+        def _trim_history(hist: list[dict[str, str]]) -> list[dict[str, str]]:
+            """Keep only the most recent turns that fit within the token budget."""
+            total = 0
+            trimmed: list[dict[str, str]] = []
+            for msg in reversed(hist):
+                msg_tokens = len(_enc.encode(msg["content"]))
+                if total + msg_tokens > _MAX_HISTORY_TOKENS:
+                    break
+                trimmed.append(msg)
+                total += msg_tokens
+            return list(reversed(trimmed))
 
         try:
             while True:
@@ -230,10 +246,11 @@ def chat(
                 source_list = list({c.title for c in chunks})
                 console.print(f"[dim]Sources: {', '.join(source_list)}[/dim]\n")
 
-                # Stream with history
+                # Stream with history (trimmed to token budget)
+                trimmed = _trim_history(history)
                 full_response = ""
                 try:
-                    for token in chat_module.stream(query, chunks, cfg, history=history):
+                    for token in chat_module.stream(query, chunks, cfg, history=trimmed):
                         print(token, end="", flush=True)
                         full_response += token
                     print()

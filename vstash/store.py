@@ -17,6 +17,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
 
+import threading
+
 import sqlite_vec
 
 from .models import DocumentInfo, SearchResult, StoreStats
@@ -62,6 +64,7 @@ class VstashStore:
         self.db_path = Path(db_path).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.embedding_dim = embedding_dim
+        self._write_lock = threading.Lock()
         self._conn = self._connect()
 
     # ------------------------------------------------------------------ #
@@ -248,45 +251,53 @@ class VstashStore:
         """
         doc_id = hashlib.sha256(f"{collection}:{path}".encode("utf-8")).hexdigest()[:32]
 
-        # Remove existing version if re-ingesting
-        self._delete_by_doc_id(doc_id)
+        with self._write_lock:
+            # Explicit transaction ensures atomicity — a crash mid-way
+            # won't leave the database in an inconsistent state.
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                # Remove existing version if re-ingesting
+                self._delete_by_doc_id(doc_id)
 
-        self._conn.execute(
-            """INSERT INTO documents
-               (id, path, title, source_type, collection,
-                project, layer, tags,
-                char_count, chunk_count, added_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            [
-                doc_id, path, title, source_type, collection,
-                project, layer, tags,
-                sum(len(c) for c in chunks),
-                len(chunks),
-                datetime.now(UTC).isoformat(),
-            ],
-        )
+                self._conn.execute(
+                    """INSERT INTO documents
+                       (id, path, title, source_type, collection,
+                        project, layer, tags,
+                        char_count, chunk_count, added_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    [
+                        doc_id, path, title, source_type, collection,
+                        project, layer, tags,
+                        sum(len(c) for c in chunks),
+                        len(chunks),
+                        datetime.now(UTC).isoformat(),
+                    ],
+                )
 
-        for seq, (text, embedding) in enumerate(zip(chunks, embeddings)):
-            # Insert chunk — get rowid for linking vec + fts tables
-            cursor = self._conn.execute(
-                "INSERT INTO chunks (doc_id, seq, text) VALUES (?, ?, ?)",
-                [doc_id, seq, text],
-            )
-            rowid = cursor.lastrowid
+                for seq, (text, embedding) in enumerate(zip(chunks, embeddings)):
+                    # Insert chunk — get rowid for linking vec + fts tables
+                    cursor = self._conn.execute(
+                        "INSERT INTO chunks (doc_id, seq, text) VALUES (?, ?, ?)",
+                        [doc_id, seq, text],
+                    )
+                    rowid = cursor.lastrowid
 
-            # Vector index entry
-            self._conn.execute(
-                "INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)",
-                [rowid, _serialize(embedding)],
-            )
+                    # Vector index entry
+                    self._conn.execute(
+                        "INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)",
+                        [rowid, _serialize(embedding)],
+                    )
 
-            # FTS5 entry (rowid must match chunks.id)
-            self._conn.execute(
-                "INSERT INTO fts_chunks (rowid, text) VALUES (?, ?)",
-                [rowid, text],
-            )
+                    # FTS5 entry (rowid must match chunks.id)
+                    self._conn.execute(
+                        "INSERT INTO fts_chunks (rowid, text) VALUES (?, ?)",
+                        [rowid, text],
+                    )
 
-        self._conn.commit()
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
         return doc_id
 
     def delete_document(self, path: str) -> bool:
@@ -300,18 +311,19 @@ class VstashStore:
         Returns:
             True if at least one document was found and deleted.
         """
-        doc_ids = [
-            row[0] for row in
-            self._conn.execute(
-                "SELECT id FROM documents WHERE path = ?", [path]
-            ).fetchall()
-        ]
-        if not doc_ids:
-            return False
-        for doc_id in doc_ids:
-            self._delete_by_doc_id(doc_id)
-        self._conn.commit()
-        return True
+        with self._write_lock:
+            doc_ids = [
+                row[0] for row in
+                self._conn.execute(
+                    "SELECT id FROM documents WHERE path = ?", [path]
+                ).fetchall()
+            ]
+            if not doc_ids:
+                return False
+            for doc_id in doc_ids:
+                self._delete_by_doc_id(doc_id)
+            self._conn.commit()
+            return True
 
     def _delete_by_doc_id(self, doc_id: str) -> bool:
         """Delete a document by its internal hash ID.
@@ -416,7 +428,9 @@ class VstashStore:
         relevant_chunk_ids: set[int] = {row["id"] for row in vec_rows}
 
         # --- FTS5 search ---
-        safe_query = query_text.replace('"', '""')
+        # Wrap user input in double-quotes to force literal matching.
+        # This prevents FTS5 syntax injection (e.g. NEAR, OR, NOT operators).
+        safe_query = '"' + query_text.replace('"', '""') + '"'
         try:
             fts_rows = self._conn.execute(
                 f"""

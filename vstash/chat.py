@@ -99,7 +99,13 @@ def _ask_cerebras(
         ValueError: If API key is missing.
         ConnectionError: If the API request fails.
     """
-    from cerebras.cloud.sdk import Cerebras
+    try:
+        from cerebras.cloud.sdk import Cerebras
+    except ImportError as exc:
+        raise ImportError(
+            "Cerebras backend requires the cerebras SDK. "
+            "Install it with: pip install vstash[cerebras]"
+        ) from exc
 
     api_key = cfg.cerebras_api_key
     if not api_key:
@@ -144,7 +150,13 @@ def _stream_cerebras(
         ValueError: If API key is missing.
         ConnectionError: If the API request fails.
     """
-    from cerebras.cloud.sdk import Cerebras
+    try:
+        from cerebras.cloud.sdk import Cerebras
+    except ImportError as exc:
+        raise ImportError(
+            "Cerebras backend requires the cerebras SDK. "
+            "Install it with: pip install vstash[cerebras]"
+        ) from exc
 
     api_key = cfg.cerebras_api_key
     if not api_key:
@@ -193,7 +205,13 @@ def _ask_ollama(
     Raises:
         ConnectionError: If Ollama server is unreachable.
     """
-    import ollama
+    try:
+        import ollama
+    except ImportError as exc:
+        raise ImportError(
+            "Ollama backend requires the ollama package. "
+            "Install it with: pip install vstash[ollama]"
+        ) from exc
 
     client = ollama.Client(host=cfg.ollama.host)
     messages = _build_messages(query, chunks, history)
@@ -229,7 +247,13 @@ def _stream_ollama(
     Raises:
         ConnectionError: If Ollama server is unreachable.
     """
-    import ollama
+    try:
+        import ollama
+    except ImportError as exc:
+        raise ImportError(
+            "Ollama backend requires the ollama package. "
+            "Install it with: pip install vstash[ollama]"
+        ) from exc
 
     client = ollama.Client(host=cfg.ollama.host)
     messages = _build_messages(query, chunks, history)
@@ -274,7 +298,13 @@ def _ask_openai(
         ValueError: If API key is missing.
         ConnectionError: If the API request fails.
     """
-    from openai import OpenAI
+    try:
+        from openai import OpenAI
+    except ImportError as exc:
+        raise ImportError(
+            "OpenAI backend requires the openai package. "
+            "Install it with: pip install vstash[openai]"
+        ) from exc
 
     api_key = cfg.openai_api_key
     if not api_key:
@@ -320,7 +350,13 @@ def _stream_openai(
         ValueError: If API key is missing.
         ConnectionError: If the API request fails.
     """
-    from openai import OpenAI
+    try:
+        from openai import OpenAI
+    except ImportError as exc:
+        raise ImportError(
+            "OpenAI backend requires the openai package. "
+            "Install it with: pip install vstash[openai]"
+        ) from exc
 
     api_key = cfg.openai_api_key
     if not api_key:

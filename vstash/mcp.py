@@ -19,7 +19,13 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+try:
+    from mcp.server.fastmcp import FastMCP
+except ImportError as _exc:
+    raise ImportError(
+        "MCP server requires the mcp package. "
+        "Install it with: pip install vstash[mcp]"
+    ) from _exc
 
 from .config import VstashConfig, load_config
 from .embed import embed_query, get_embedding_dim, warmup
@@ -505,7 +511,7 @@ def main() -> None:
         ).start()
         logger.info("Embedding warmup started in background thread")
     except Exception:
-        logger.warning("Background warmup failed — will load on first query")
+        logger.warning("Background warmup failed — will load on first query", exc_info=True)
 
     mcp_server.run()
 
