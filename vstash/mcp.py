@@ -426,6 +426,47 @@ def vstash_collections() -> str:
         logger.exception("vstash_collections failed")
         return _error(f"Failed to list collections: {exc}")
 
+@mcp_server.tool()
+def vstash_export(
+    collection: str | None = None,
+    project: str | None = None,
+    layer: str | None = None,
+    tags: str | None = None,
+    include_embeddings: bool = False,
+) -> str:
+    """Export chunks with document metadata for training data curation.
+
+    Returns a JSON object containing all chunks matching the filters, with
+    their document metadata (title, path, project, layer, tags, collection).
+    Useful for building fine-tuning datasets or importing into other vector
+    stores.
+
+    Args:
+        collection: Filter by collection name.
+        project: Filter by project tag.
+        layer: Filter by layer tag.
+        tags: Filter by tag substring.
+        include_embeddings: Include embedding vectors (large output).
+
+    Returns:
+        JSON object with 'chunks' array and 'count'.
+    """
+    try:
+        store = _get_store()
+        chunks = store.export_chunks(
+            collection=collection,
+            project=project,
+            layer=layer,
+            tags=tags,
+            include_embeddings=include_embeddings,
+        )
+        return _ok({"chunks": chunks, "count": len(chunks)})
+    except FileNotFoundError:
+        return _error("vstash database not found.")
+    except Exception as exc:
+        logger.exception("vstash_export failed")
+        return _error(f"Failed to export chunks: {exc}")
+
 
 # ------------------------------------------------------------------ #
 # Entry point                                                          #

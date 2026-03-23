@@ -27,6 +27,20 @@ def _serialize(vector: list[float]) -> bytes:
     return struct.pack(f"{len(vector)}f", *vector)
 
 
+def _deserialize(data: bytes) -> list[float]:
+    """Deserialize a sqlite-vec binary blob back to a float list.
+
+    Raises:
+        ValueError: If the blob length is not a multiple of float size.
+    """
+    item_size = struct.calcsize("f")
+    if len(data) % item_size != 0:
+        msg = f"Embedding blob length {len(data)} is not a multiple of {item_size}"
+        raise ValueError(msg)
+    count = len(data) // item_size
+    return list(struct.unpack(f"{count}f", data))
+
+
 # Standard RRF constant — balances precision vs recall
 RRF_K = 60
 
@@ -653,6 +667,79 @@ class VstashStore:
             db_size_mb=round(db_size / 1024 / 1024, 2),
             db_path=str(self.db_path),
         )
+
+    # ------------------------------------------------------------------ #
+    # Export                                                                #
+    # ------------------------------------------------------------------ #
+
+    def export_chunks(
+        self,
+        *,
+        collection: str | None = None,
+        project: str | None = None,
+        layer: str | None = None,
+        tags: str | None = None,
+        include_embeddings: bool = False,
+    ) -> list[dict[str, object]]:
+        """Export chunks with document metadata for training data curation.
+
+        Each returned dict contains the chunk text plus its parent document
+        metadata (title, path, project, layer, tags, collection).
+
+        Args:
+            collection: Filter by collection name.
+            project: Filter by project tag.
+            layer: Filter by layer tag.
+            tags: Filter by tag (LIKE match).
+            include_embeddings: If True, include the raw embedding vector.
+
+        Returns:
+            List of dicts with keys: text, title, path, chunk, project,
+            layer, tags, collection. If include_embeddings is True, also
+            includes an 'embedding' key with the float vector.
+        """
+        conditions, params = self._get_filter_conditions(
+            "d", collection=collection, project=project, layer=layer, tags=tags,
+        )
+        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
+        embed_col = ", v.embedding" if include_embeddings else ""
+        embed_join = (
+            "LEFT JOIN vec_chunks v ON v.rowid = c.id"
+            if include_embeddings else ""
+        )
+
+        rows = self._conn.execute(
+            f"""SELECT c.text, c.seq, d.title, d.path,
+                       d.collection, d.project, d.layer, d.tags
+                       {embed_col}
+                FROM chunks c
+                JOIN documents d ON d.id = c.doc_id
+                {embed_join}
+                {where}
+                ORDER BY d.added_at DESC, d.id ASC, c.seq ASC""",
+            params,
+        ).fetchall()
+
+        results: list[dict[str, object]] = []
+        for row in rows:
+            entry: dict[str, object] = {
+                "text": row["text"],
+                "title": row["title"],
+                "path": row["path"],
+                "chunk": row["seq"],
+                "collection": row["collection"],
+                "project": row["project"],
+                "layer": row["layer"],
+                "tags": row["tags"],
+            }
+            if include_embeddings:
+                raw = row["embedding"]
+                if raw is not None:
+                    entry["embedding"] = _deserialize(raw)
+            results.append(entry)
+
+        return results
 
     def close(self) -> None:
         """Close the database connection."""
