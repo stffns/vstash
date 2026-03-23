@@ -16,6 +16,7 @@ def _sqlite_vec_available() -> bool:
     """Check if sqlite-vec extension loading is available."""
     try:
         import sqlite_vec
+
         conn = sqlite3.connect(":memory:")
         conn.enable_load_extension(True)
         sqlite_vec.load(conn)
