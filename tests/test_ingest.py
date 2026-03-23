@@ -189,10 +189,27 @@ class TestMergeSmallChunks:
         assert "Hi." in result[0]
         assert "Bye." in result[0]
 
-    def test_large_chunk_stays_alone(self) -> None:
+    def test_small_trailing_chunk_gets_merged(self) -> None:
+        """Bidirectional: a small trailing chunk merges into a large predecessor."""
         big = "word " * 200  # ~200 tokens, well above _MIN_CHUNK_TOKENS
         chunks = [big, "Small tail."]
         result = _merge_small_chunks(chunks, chunk_size=1024)
+        # "Small tail." is below _MIN_CHUNK_TOKENS, so it should merge
+        assert len(result) == 1
+        assert "Small tail." in result[0]
+
+    def test_two_large_chunks_stay_separate(self) -> None:
+        """Two chunks both above _MIN_CHUNK_TOKENS should not merge."""
+        big1 = "word " * 200
+        big2 = "other " * 200
+        result = _merge_small_chunks([big1, big2], chunk_size=2048)
+        assert len(result) == 2
+
+    def test_merge_respects_chunk_size_limit(self) -> None:
+        """Even if a chunk is small, don't merge if it would exceed chunk_size."""
+        big = "word " * 500  # ~500 tokens
+        small = "tail."
+        result = _merge_small_chunks([big, small], chunk_size=100)
         assert len(result) == 2
 
 
@@ -212,6 +229,18 @@ class TestFixedWindowChunks:
             "Short text that fits in one window.", chunk_size=100, overlap=10,
         )
         assert len(result) == 1
+
+    def test_overlap_equal_to_chunk_size_does_not_loop(self) -> None:
+        """overlap >= chunk_size should be clamped, not cause infinite loop."""
+        text = "word " * 500
+        # This would infinite loop without the guard
+        result = _fixed_window_chunks(text, chunk_size=100, overlap=100)
+        assert len(result) > 1
+
+    def test_overlap_greater_than_chunk_size_does_not_loop(self) -> None:
+        text = "word " * 500
+        result = _fixed_window_chunks(text, chunk_size=100, overlap=200)
+        assert len(result) > 1
 
     def test_overlap_creates_more_chunks(self) -> None:
         text = "word " * 500

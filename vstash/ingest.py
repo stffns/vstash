@@ -152,13 +152,17 @@ def _split_by_paragraphs(
             result.extend(_fixed_window_chunks(para, chunk_size, overlap))
             continue
 
+        # Account for "\n\n" separator tokens when joining paragraphs
+        separator_cost = len(_enc.encode("\n\n")) if current else 0
+
         # Would adding this paragraph overflow?
-        if current_tokens + para_tokens > chunk_size and current:
+        if current_tokens + separator_cost + para_tokens > chunk_size and current:
             result.append("\n\n".join(current))
             current, current_tokens = [], 0
+            separator_cost = 0
 
         current.append(para)
-        current_tokens += para_tokens
+        current_tokens += separator_cost + para_tokens
 
     if current:
         result.append("\n\n".join(current))
@@ -183,6 +187,9 @@ def _fixed_window_chunks(
     if not tokens:
         return []
 
+    # Guard against infinite loop: overlap must be strictly less than chunk_size
+    safe_overlap = min(overlap, chunk_size - 1) if chunk_size > 0 else 0
+
     chunks: list[str] = []
     start = 0
     while start < len(tokens):
@@ -196,7 +203,7 @@ def _fixed_window_chunks(
         if end >= len(tokens):
             break
 
-        start += chunk_size - overlap
+        start += chunk_size - safe_overlap
 
     return chunks
 
@@ -216,10 +223,13 @@ def _merge_small_chunks(chunks: list[str], chunk_size: int) -> list[str]:
     for chunk in chunks[1:]:
         chunk_tokens = len(_enc.encode(chunk))
 
-        # If current is small and merging won't overflow, merge
-        if current_tokens < _MIN_CHUNK_TOKENS and current_tokens + chunk_tokens <= chunk_size:
+        separator_cost = len(_enc.encode("\n\n"))
+        can_merge = current_tokens + separator_cost + chunk_tokens <= chunk_size
+
+        # Merge if EITHER side is small (bidirectional merging)
+        if can_merge and (current_tokens < _MIN_CHUNK_TOKENS or chunk_tokens < _MIN_CHUNK_TOKENS):
             current = current + "\n\n" + chunk
-            current_tokens += chunk_tokens
+            current_tokens += separator_cost + chunk_tokens
         else:
             merged.append(current)
             current = chunk

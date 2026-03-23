@@ -17,18 +17,9 @@ import tiktoken
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# Import the chunking functions directly to avoid store.py import chain
-# which requires Python 3.11+ for datetime.UTC
-import importlib.util
-
-_ingest_spec = importlib.util.spec_from_file_location(
-    "_ingest_chunking",
-    str(Path(__file__).parent.parent / "vstash" / "ingest.py"),
-    submodule_search_locations=[],
-)
-
-# We can't import ingest.py directly due to relative imports — extract functions inline
-# Copy the logic here to keep benchmark self-contained on Python 3.10
+# We can't import ingest.py directly due to relative imports that pull in
+# store.py (requires Python 3.11+ for datetime.UTC). Functions are inlined
+# here to keep the benchmark self-contained on Python 3.10.
 
 _HEADER_RE = re.compile(r"^(#{1,6})\s+", re.MULTILINE)
 _MIN_CHUNK_TOKENS = 80
@@ -55,6 +46,7 @@ def _fixed_window_chunks(text: str, chunk_size: int, overlap: int) -> list[str]:
     tokens = enc.encode(text)
     if not tokens:
         return []
+    safe_overlap = min(overlap, chunk_size - 1) if chunk_size > 0 else 0
     chunks: list[str] = []
     start = 0
     while start < len(tokens):
@@ -64,7 +56,7 @@ def _fixed_window_chunks(text: str, chunk_size: int, overlap: int) -> list[str]:
             chunks.append(chunk_text_str)
         if end >= len(tokens):
             break
-        start += chunk_size - overlap
+        start += chunk_size - safe_overlap
     return chunks
 
 
@@ -84,11 +76,13 @@ def _split_by_paragraphs(text: str, chunk_size: int, overlap: int) -> list[str]:
                 current, current_tokens = [], 0
             result.extend(_fixed_window_chunks(para, chunk_size, overlap))
             continue
-        if current_tokens + para_tokens > chunk_size and current:
+        separator_cost = len(enc.encode("\n\n")) if current else 0
+        if current_tokens + separator_cost + para_tokens > chunk_size and current:
             result.append("\n\n".join(current))
             current, current_tokens = [], 0
+            separator_cost = 0
         current.append(para)
-        current_tokens += para_tokens
+        current_tokens += separator_cost + para_tokens
     if current:
         result.append("\n\n".join(current))
     return result
@@ -102,9 +96,11 @@ def _merge_small_chunks(chunks: list[str], chunk_size: int) -> list[str]:
     current_tokens = len(enc.encode(current))
     for chunk in chunks[1:]:
         chunk_tokens = len(enc.encode(chunk))
-        if current_tokens < _MIN_CHUNK_TOKENS and current_tokens + chunk_tokens <= chunk_size:
+        separator_cost = len(enc.encode("\n\n"))
+        can_merge = current_tokens + separator_cost + chunk_tokens <= chunk_size
+        if can_merge and (current_tokens < _MIN_CHUNK_TOKENS or chunk_tokens < _MIN_CHUNK_TOKENS):
             current = current + "\n\n" + chunk
-            current_tokens += chunk_tokens
+            current_tokens += separator_cost + chunk_tokens
         else:
             merged.append(current)
             current = chunk

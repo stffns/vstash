@@ -1,6 +1,6 @@
 # Chunking Benchmark: Fixed Window vs Semantic
 
-**Date:** 2026-03-23 19:02
+**Date:** 2026-03-23 19:17
 **Config:** chunk_size=1024, overlap=128
 
 
@@ -8,22 +8,22 @@
 
 | File | Tokens | Fixed Chunks | Semantic Chunks | Fixed Avg Tok | Semantic Avg Tok | Headers Preserved (Semantic) |
 |------|--------|-------------|----------------|--------------|-----------------|------------------------------|
-| climate_change_report.md | 1248 | 2 | 11 | 688.0 | 113.4 | 18/18 |
-| fastapi_patterns.md | 1155 | 2 | 8 | 641.0 | 143.4 | 19/19 |
-| neural_architecture_search.md | 1652 | 2 | 13 | 890.0 | 127.0 | 18/18 |
-| alice_wonderland.txt | 41028 | 46 | 43 | 1017.2 | 953.4 | 0/0 |
-| art_of_war.txt | 82207 | 92 | 87 | 1020.2 | 942.4 | 0/0 |
-| **Total** | — | **144** | **162** | — | — | **55/55** |
+| climate_change_report.md | 1248 | 2 | 9 | 688.0 | 138.3 | 18/18 |
+| fastapi_patterns.md | 1155 | 2 | 5 | 641.0 | 230.0 | 19/19 |
+| neural_architecture_search.md | 1652 | 2 | 12 | 890.0 | 137.5 | 18/18 |
+| alice_wonderland.txt | 41028 | 46 | 44 | 1017.2 | 931.7 | 0/0 |
+| art_of_war.txt | 82207 | 92 | 89 | 1020.2 | 921.3 | 0/0 |
+| **Total** | — | **144** | **159** | — | — | **55/55** |
 
 ## Performance
 
 | File | Fixed Time | Semantic Time | Overhead |
 |------|-----------|--------------|----------|
-| climate_change_report.md | 0.28ms | 0.48ms | 71% |
-| fastapi_patterns.md | 0.28ms | 0.57ms | 104% |
-| neural_architecture_search.md | 0.3ms | 0.6ms | 100% |
-| alice_wonderland.txt | 7.61ms | 24.8ms | 226% |
-| art_of_war.txt | 20.93ms | 46.29ms | 121% |
+| climate_change_report.md | 0.29ms | 0.52ms | 79% |
+| fastapi_patterns.md | 0.24ms | 0.51ms | 112% |
+| neural_architecture_search.md | 0.4ms | 0.75ms | 88% |
+| alice_wonderland.txt | 8.8ms | 24.05ms | 173% |
+| art_of_war.txt | 16.3ms | 46.42ms | 185% |
 
 ## Sample Chunks (first chunk of each file)
 
@@ -71,5 +71,5 @@
 ## Verdict
 
 - Semantic chunking preserved **55/55** headers with their body content
-- Fixed window: **144** chunks vs Semantic: **162** chunks
-- **12% more chunks** with semantic — more granular, but each chunk is more coherent
+- Fixed window: **144** chunks vs Semantic: **159** chunks
+- **10% more chunks** with semantic — more granular, but each chunk is more coherent
