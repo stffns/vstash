@@ -1,0 +1,319 @@
+"""
+memory.py — High-level Python SDK for vstash.
+
+    from vstash import Memory
+
+    mem = Memory(project="my_agent")
+    mem.add("docs/spec.pdf")
+    answer = mem.ask("What are the system requirements?")
+
+This module wraps the low-level store, ingest, embed, and chat modules
+into a single class with a 6-method public API: add, search, ask, remove,
+list, stats.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from types import TracebackType
+
+# Sentinel for distinguishing "parameter not provided" from explicit None.
+_UNSET = object()
+
+from .chat import ask as _chat_ask
+from .config import VstashConfig, load_config
+from .embed import embed_query, get_embedding_dim
+from .ingest import ingest
+from .models import DocumentInfo, IngestResult, SearchResult, StoreStats
+from .store import VstashStore
+
+
+class Memory:
+    """High-level Python SDK for vstash.
+
+    Drop any document. Ask anything. Get an answer in under a second.
+
+    Args:
+        config: Path to vstash.toml. Auto-detected if not provided.
+        project: Default project tag for add/search operations.
+        collection: Default collection name (default: "default").
+        db: Override path to the SQLite database file.
+
+    Example::
+
+        from vstash import Memory
+
+        mem = Memory(project="my_agent")
+        mem.add("docs/spec.pdf")
+        answer = mem.ask("What are the system requirements?")
+        chunks = mem.search("deployment strategy", top_k=3)
+    """
+
+    def __init__(
+        self,
+        config: str | Path | None = None,
+        *,
+        project: str | None = None,
+        collection: str = "default",
+        db: str | Path | None = None,
+    ) -> None:
+        self._cfg = _load_config_from(config)
+        self._project = project
+        self._collection = collection
+
+        # Allow db override (useful for tests and isolated agents)
+        db_path = str(db) if db else self._cfg.db_path
+        dim = get_embedding_dim(self._cfg.embeddings.model)
+        self._store = VstashStore(db_path, embedding_dim=dim)
+
+    # ------------------------------------------------------------------ #
+    # Context manager                                                      #
+    # ------------------------------------------------------------------ #
+
+    def __enter__(self) -> Memory:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        self.close()
+
+    # ------------------------------------------------------------------ #
+    # Public API                                                           #
+    # ------------------------------------------------------------------ #
+
+    def add(
+        self,
+        source: str | Path,
+        *,
+        force: bool = False,
+        collection: object = _UNSET,
+        project: object = _UNSET,
+        layer: str | None = None,
+        tags: str | None = None,
+    ) -> IngestResult:
+        """Ingest a file or URL into memory.
+
+        Args:
+            source: File path or URL to ingest.
+            force: Re-ingest even if the document already exists.
+            collection: Override the default collection. Pass None for no collection.
+            project: Override the default project tag. Pass None for no project.
+            layer: Layer/category tag.
+            tags: Comma-separated tags.
+
+        Returns:
+            IngestResult with status, chunk count, timing, etc.
+        """
+        col = self._collection if collection is _UNSET else collection
+        proj = self._project if project is _UNSET else project
+        return ingest(
+            str(source),
+            self._cfg,
+            self._store,
+            force=force,
+            collection=col,
+            project=proj,
+            layer=layer,
+            tags=tags,
+        )
+
+    def search(
+        self,
+        query: str,
+        *,
+        top_k: int = 5,
+        collection: object = _UNSET,
+        project: object = _UNSET,
+        layer: str | None = None,
+    ) -> list[SearchResult]:
+        """Semantic search without LLM inference.
+
+        Returns ranked chunks from the most relevant documents.
+        This method is free (no API calls) — only local embeddings + SQLite.
+
+        Args:
+            query: Natural language search query.
+            top_k: Number of results to return.
+            collection: Override the default collection filter. Pass None for no filter.
+            project: Override the default project filter. Pass None for no filter.
+            layer: Filter by layer tag.
+
+        Returns:
+            Ranked list of SearchResult ordered by relevance.
+        """
+        q_embedding = embed_query(query, self._cfg.embeddings.model)
+        return self._store.search(
+            query_embedding=q_embedding,
+            query_text=query,
+            top_k=top_k,
+            collection=self._resolve_collection(collection),
+            project=self._resolve_project(project),
+            layer=layer,
+        )
+
+    def ask(
+        self,
+        query: str,
+        *,
+        top_k: int = 5,
+        collection: object = _UNSET,
+        project: object = _UNSET,
+        layer: str | None = None,
+        history: list[dict[str, str]] | None = None,
+    ) -> str:
+        """Search memory + generate an LLM answer.
+
+        Retrieves the top-k relevant chunks, then sends them along with
+        the query to the configured inference backend (Cerebras, Ollama,
+        or OpenAI).
+
+        Args:
+            query: Natural language question.
+            top_k: Number of context chunks to retrieve.
+            collection: Override the default collection filter.
+            project: Override the default project filter.
+            layer: Filter by layer tag.
+            history: Previous conversation turns for multi-turn chat.
+
+        Returns:
+            Model response text.
+
+        Raises:
+            ValueError: If no inference backend is configured.
+            ConnectionError: If the inference API fails.
+        """
+        chunks = self.search(
+            query,
+            top_k=top_k,
+            collection=collection,
+            project=project,
+            layer=layer,
+        )
+        return _chat_ask(query, chunks, self._cfg, history)
+
+    def remove(self, source: str | Path) -> bool:
+        """Remove a document from memory.
+
+        Normalizes file paths the same way as ``add()`` (via ``Path.resolve()``)
+        so that relative and absolute paths match the stored document path.
+        URLs are passed through unchanged.
+
+        Args:
+            source: File path or URL to remove.
+
+        Returns:
+            True if the document was found and removed.
+        """
+        source_str = str(source)
+        # Normalize file paths to match ingest() behavior
+        if not source_str.startswith(("http://", "https://")):
+            source_str = str(Path(source_str).resolve())
+        return self._store.delete_document(source_str)
+
+    def list(
+        self,
+        *,
+        collection: object = _UNSET,
+        project: object = _UNSET,
+        layer: str | None = None,
+    ) -> list[DocumentInfo]:
+        """List ingested documents.
+
+        When called without arguments, uses the constructor's project/collection
+        defaults. If the constructor collection is ``"default"``, no collection
+        filter is applied (returns documents from all collections). Pass an
+        explicit value to override, or pass ``None`` to clear the filter.
+
+        Args:
+            collection: Filter by collection. Pass None for no filter.
+            project: Filter by project. Pass None for no filter.
+            layer: Filter by layer tag.
+
+        Returns:
+            List of DocumentInfo ordered by ingestion date (newest first).
+        """
+        return self._store.list_documents(
+            collection=self._resolve_collection(collection),
+            project=self._resolve_project(project),
+            layer=layer,
+        )
+
+    def stats(self) -> StoreStats:
+        """Return aggregate memory statistics.
+
+        Returns:
+            StoreStats with document count, chunk count, DB size, and path.
+        """
+        return self._store.stats()
+
+    def close(self) -> None:
+        """Close the database connection.
+
+        For long-lived processes (agents, servers), call this when done.
+        When using ``Memory`` as a context manager, this is called
+        automatically.
+        """
+        self._store.close()
+
+    # ------------------------------------------------------------------ #
+    # Internal helpers                                                     #
+    # ------------------------------------------------------------------ #
+
+    def _resolve_collection(self, override: object) -> str | None:
+        """Resolve collection filter: explicit override > constructor default.
+
+        Uses the _UNSET sentinel to distinguish "not provided" from explicit None.
+        Passing None explicitly clears the filter (cross-collection search).
+        """
+        if override is not _UNSET:
+            return override  # type: ignore[return-value]
+        # Return None (no filter) if default is "default" — search everywhere
+        return self._collection if self._collection != "default" else None
+
+    def _resolve_project(self, override: object) -> str | None:
+        """Resolve project filter: explicit override > constructor default.
+
+        Uses the _UNSET sentinel to distinguish "not provided" from explicit None.
+        Passing None explicitly clears the filter (cross-project search).
+        """
+        if override is not _UNSET:
+            return override  # type: ignore[return-value]
+        return self._project
+
+
+# ------------------------------------------------------------------ #
+# Config loader                                                        #
+# ------------------------------------------------------------------ #
+
+
+def _load_config_from(config: str | Path | None) -> VstashConfig:
+    """Load config from a specific path or use the standard resolution.
+
+    Args:
+        config: Explicit path to vstash.toml, or None for auto-detection.
+
+    Returns:
+        Parsed VstashConfig.
+
+    Raises:
+        FileNotFoundError: If an explicit config path is provided but doesn't exist.
+    """
+    if config is not None:
+        path = Path(config).expanduser()
+        if not path.exists():
+            raise FileNotFoundError(
+                f"Config file not found: {path}. "
+                "Pass config=None to use auto-detection."
+            )
+        try:
+            import tomllib
+        except ImportError:
+            import tomli as tomllib  # type: ignore[no-redef]
+        with open(path, "rb") as f:
+            raw = tomllib.load(f)
+        return VstashConfig.model_validate(raw)
+    return load_config()
