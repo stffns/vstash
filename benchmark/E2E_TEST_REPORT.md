@@ -1,6 +1,6 @@
 # vstash End-to-End Test Report
 
-**Date:** 2026-03-23 19:56
+**Date:** 2026-03-23 20:24
 **Backend:** cerebras / gpt-oss-120b
 **Embedding:** BAAI/bge-small-en-v1.5
 
@@ -14,11 +14,11 @@
 
 | Phase | Time |
 |---|---|
-| Embed query | 8.1ms |
-| Vector + FTS search | 3.1ms |
-| **Total retrieval** | **11.2ms** |
-| LLM inference | 1.13s |
-| **End-to-end** | **1.14s** |
+| Embed query | 7.9ms |
+| Vector + FTS search | 3.4ms |
+| **Total retrieval** | **11.4ms** |
+| LLM inference | 0.77s |
+| **End-to-end** | **0.79s** |
 
 ### 📚 Retrieved Sources
 
@@ -30,9 +30,9 @@
 | 4 | The Architecture And Evolution Of Autonomous Llm Agents   Notebooklm (chunk 10) | 0.009524 |
 | 5 | The Architecture And Evolution Of Autonomous Llm Agents   Notebooklm (chunk 2) | 0.009375 |
 
-### 💬 Answer (31 words)
+### 💬 Answer (33 words)
 
-The provided excerpts do not contain any information about DARTS, evolutionary neural‑architecture‑search (NAS) methods, or their computational costs. Consequently, I cannot explain the differences between them based on the given context.
+The provided excerpts do not contain any information about DARTS, evolutionary neural architecture search (NAS) methods, or their computational costs. Therefore, I cannot explain the difference between them based on the given context.
 
 ---
 
@@ -42,11 +42,11 @@ The provided excerpts do not contain any information about DARTS, evolutionary n
 
 | Phase | Time |
 |---|---|
-| Embed query | 14.2ms |
-| Vector + FTS search | 2.8ms |
-| **Total retrieval** | **17.0ms** |
-| LLM inference | 1.02s |
-| **End-to-end** | **1.04s** |
+| Embed query | 9.5ms |
+| Vector + FTS search | 2.1ms |
+| **Total retrieval** | **11.6ms** |
+| LLM inference | 0.96s |
+| **End-to-end** | **0.98s** |
 
 ### 📚 Retrieved Sources
 
@@ -70,11 +70,11 @@ The provided contexts discuss autonomous LLM agents, multi‑plan generation, re
 
 | Phase | Time |
 |---|---|
-| Embed query | 14.5ms |
-| Vector + FTS search | 2.2ms |
-| **Total retrieval** | **16.7ms** |
-| LLM inference | 1.12s |
-| **End-to-end** | **1.13s** |
+| Embed query | 11.0ms |
+| Vector + FTS search | 2.5ms |
+| **Total retrieval** | **13.5ms** |
+| LLM inference | 1.24s |
+| **End-to-end** | **1.25s** |
 
 ### 📚 Retrieved Sources
 
@@ -86,9 +86,9 @@ The provided contexts discuss autonomous LLM agents, multi‑plan generation, re
 | 4 | https://en.wikipedia.org/wiki/Retrieval-augmented_generation (chunk 16) | 0.009524 |
 | 5 | The Architecture And Evolution Of Autonomous Llm Agents   Notebooklm (chunk 0) | 0.009375 |
 
-### 💬 Answer (38 words)
+### 💬 Answer (39 words)
 
-The provided contexts discuss autonomous large‑language‑model agents, their architectures, surveys, and related research. They contain no information about Alice, her emotional journey, or any character interactions in *Wonderland*. Therefore, I cannot describe those details from the given material.
+The provided contexts discuss autonomous large‑language‑model agents, their architectures, surveys, and related research. They contain no information about Alice, her emotional journey, or any character interactions in *Wonderland*. Therefore, I cannot describe those details based on the given material.
 
 ---
 
@@ -98,11 +98,11 @@ The provided contexts discuss autonomous large‑language‑model agents, their 
 
 | Phase | Time |
 |---|---|
-| Embed query | 13.1ms |
-| Vector + FTS search | 1.2ms |
-| **Total retrieval** | **14.3ms** |
-| LLM inference | 1.14s |
-| **End-to-end** | **1.16s** |
+| Embed query | 15.9ms |
+| Vector + FTS search | 1.3ms |
+| **Total retrieval** | **17.2ms** |
+| LLM inference | 0.81s |
+| **End-to-end** | **0.83s** |
 
 ### 📚 Retrieved Sources
 
@@ -126,11 +126,11 @@ The provided contexts do not contain any statement from Sun Tzu about the impo
 
 | Phase | Time |
 |---|---|
-| Embed query | 14.8ms |
-| Vector + FTS search | 0.9ms |
-| **Total retrieval** | **15.7ms** |
-| LLM inference | 1.14s |
-| **End-to-end** | **1.16s** |
+| Embed query | 10.3ms |
+| Vector + FTS search | 1.4ms |
+| **Total retrieval** | **11.7ms** |
+| LLM inference | 0.76s |
+| **End-to-end** | **0.77s** |
 
 ### 📚 Retrieved Sources
 
@@ -142,9 +142,9 @@ The provided contexts do not contain any statement from Sun Tzu about the impo
 | 4 | Readme (chunk 1) | 0.009524 |
 | 5 | Vstash Constitution (chunk 1) | 0.009375 |
 
-### 💬 Answer (20 words)
+### 💬 Answer (48 words)
 
-The provided context does not contain any information about implementing rate limiting or caching with Redis for a production API.
+The provided documents describe the vstash project’s architecture, ingestion and query pipelines, chunking strategy, configuration, roadmap, and privacy model. They do not contain any information about implementing rate limiting or caching for a production API with Redis. Therefore, I cannot answer that question based on the given context.
 
 ---
 
@@ -154,11 +154,11 @@ The provided context does not contain any information about implementing rate li
 
 | Phase | Time |
 |---|---|
-| Embed query | 11.9ms |
-| Vector + FTS search | 1.9ms |
-| **Total retrieval** | **13.8ms** |
-| LLM inference | 0.8s |
-| **End-to-end** | **0.81s** |
+| Embed query | 14.3ms |
+| Vector + FTS search | 1.5ms |
+| **Total retrieval** | **15.8ms** |
+| LLM inference | 1.89s |
+| **End-to-end** | **1.9s** |
 
 ### 📚 Retrieved Sources
 
@@ -168,34 +168,36 @@ The provided context does not contain any information about implementing rate li
 | 2 | Readme (chunk 0) | 0.009836 |
 | 3 | Vstash Constitution (chunk 0) | 0.009677 |
 
-### 💬 Answer (296 words)
+### 💬 Answer (387 words)
 
 **vstash’s technology stack**
 
 | Layer | Technology | Why it’s used |
 |-------|------------|---------------|
-| Vector store | **sqlite‑vec** | Single‑file SQLite DB, cosine similarity, no external server |
-| Keyword search | **FTS5** (SQLite) | Built‑in full‑text indexing with exact matches and stemming |
-| Hybrid ranking | **Reciprocal Rank Fusion (RRF)** | Combines semantic (vector) and keyword results for better relevance without training |
-| Embeddings | **FastEmbed** (ONNX Runtime) | Runs locally, ~700 chunks / s, no server needed |
-| Embedding model | **BAAI/bge‑small‑en‑v1.5** (384‑dim) | Fastest quality‑/‑speed ratio |
-| Inference back‑ends | **Cerebras API**, **OpenAI API**, **Ollama** (local) | Configurable; Ollama keeps everything on‑device |
-| Document parsing | **markitdown** | Handles PDF, DOCX, PPTX, HTML, Markdown, code, URLs |
-| Configuration | **Pydantic v2** | Type‑safe, validated settings |
-| CLI | **Typer + Rich** | Clean terminal UI with progress feedback |
-| Language | **Python 3.10+** | Easy ecosystem, rapid development |
+| Vector store | **sqlite‑vec** | Stores embeddings in a single SQLite file; enables fast cosine‑similarity search without a separate server. |
+| Keyword search | **FTS5 (SQLite)** | Built‑in full‑text index with exact‑match and Porter stemming; runs locally in the same DB. |
+| Hybrid ranking | **Reciprocal Rank Fusion (RRF)** | Combines the semantic scores from sqlite‑vec with the keyword scores from FTS5 to give better results without any model training. |
+| Embeddings | **FastEmbed (ONNX Runtime)** | Generates embeddings locally on CPU (~700 chunks / s) using small models like `BAAI/bge‑small‑en‑v1.5`. |
+| Embedding model | **BAAI/bge‑small‑en‑v1.5** (384‑dim) | Fastest quality‑/‑speed ratio; dimensions match the vector store. |
+| Inference back‑ends | **Cerebras API**, **OpenAI API**, **Ollama (local)** | Configurable; only the top‑k retrieved chunks are sent to a remote API, or everything stays local with Ollama. |
+| Document parsing | **markitdown** | Handles PDF, DOCX, PPTX, HTML, Markdown, code files, and URLs locally. |
+| Storage | **SQLite (single .db file)** | All metadata, chunk text, embeddings, and FTS5 indexes live in one file that can be copied or backed up. |
+| Configuration | **Pydantic v2** | Type‑safe config handling. |
+| CLI | **Typer + Rich** | Provides a clean, interactive terminal UI. |
+| Language | **Python 3.10+** | Easy ecosystem and rapid development. |
 
 **How fast local search is achieved**
 
-1. **All data lives in a single SQLite file** – vector embeddings and full‑text indexes are stored together, eliminating network latency and external services.  
-2. **Local vector search** via `sqlite‑vec` provides cosine‑similarity look‑ups directly in the DB.  
-3. **Keyword matching** uses SQLite’s native `FTS5` engine, which is highly optimized and runs entirely on‑device.  
-4. **Hybrid ranking** with Reciprocal Rank Fusion merges the two result sets, giving better relevance without extra computation or model training.  
-5. **Embedding generation** is done locally with FastEmbed (ONNX), processing ~700 chunks per second, so indexing is quick.  
+1. **All data lives in one SQLite database** – no external server, no network latency.  
+2. **Vector similarity** is performed by `sqlite‑vec`, which computes cosine similarity directly inside SQLite, giving sub‑second semantic retrieval.  
+3. **Keyword matching** uses SQLite’s built‑in `FTS5` index, which is highly optimized for fast exact‑match and stemming searches.  
+4. **Hybrid ranking with RRF** merges the two result sets efficiently, improving relevance without extra computation.  
+5. **Embeddings are generated locally** with FastEmbed (ONNX), avoiding remote calls and allowing ~700 chunks per second.  
+6. **Chunking** creates overlapping token windows (default 1024‑token size, 128‑token overlap) that keep retrieval fast and accurate.  
 
-Together, these components let vstash retrieve and rank relevant document chunks in **sub‑second** time, all without a server or cloud dependency.  
+Together, these components let vstash return semantic answers in under a second, entirely on the user’s machine.  
 
-*Sources: Context 3 “Technology Stack” table and “Hybrid ranking” description; Context 1 “Hybrid Search” and “Storage Layer”.*
+*Sources: Context 3 “Technology Stack” table and description of fast local components; Context 1 “Hybrid Search” and “Storage Layer”; Context 2 “Why vstash?” and “Embedding” sections.*
 
 ---
 
@@ -205,11 +207,11 @@ Together, these components let vstash retrieve and rank relevant document chunks
 
 | Phase | Time |
 |---|---|
-| Embed query | 11.7ms |
-| Vector + FTS search | 1.3ms |
-| **Total retrieval** | **13.0ms** |
-| LLM inference | 1.05s |
-| **End-to-end** | **1.06s** |
+| Embed query | 24.2ms |
+| Vector + FTS search | 2.0ms |
+| **Total retrieval** | **26.2ms** |
+| LLM inference | 0.63s |
+| **End-to-end** | **0.66s** |
 
 ### 📚 Retrieved Sources
 
@@ -220,9 +222,9 @@ Together, these components let vstash retrieve and rank relevant document chunks
 | 3 | The Architecture And Evolution Of Autonomous Llm Agents   Notebooklm (chunk 26) | 0.009677 |
 | 4 | https://en.wikipedia.org/wiki/Retrieval-augmented_generation (chunk 10) | 0.009524 |
 
-### 💬 Answer (29 words)
+### 💬 Answer (17 words)
 
-The provided excerpts do not contain an explanation of how Retrieval‑Augmented Generation (RAG) reduces hallucinations in language models. Therefore, I cannot answer the question based on the given context.
+The provided excerpts do not contain an explanation of how Retrieval‑Augmented Generation reduces hallucinations in language models.
 
 ---
 
@@ -231,7 +233,7 @@ The provided excerpts do not contain an explanation of how Retrieval‑Augmented
 | Metric | Value |
 |---|---|
 | Queries tested | 7 |
-| Total retrieval time | 102ms (15ms avg) |
-| Total LLM time | 7.4s (1.06s avg) |
-| Avg end-to-end | 1.07s |
+| Total retrieval time | 107ms (15ms avg) |
+| Total LLM time | 7.1s (1.01s avg) |
+| Avg end-to-end | 1.02s |
 | Corpus size | 81 chunks |

@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-import tiktoken
 from rich.console import Console
 from rich.progress import (
     BarColumn,
@@ -26,15 +25,28 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 
-from .config import VstashConfig
+from .config import SUPPORTED_EXTENSIONS, VstashConfig
 from .embed import embed_texts
 from .models import IngestResult
 from .store import VstashStore
 
 console = Console(stderr=True)
 
-# Tiktoken encoder — fast, no network call
-_enc = tiktoken.get_encoding("cl100k_base")
+# Lazy-initialized tiktoken encoder — avoids import-time cost when
+# chunking is not used (e.g. MCP vstash_list calls).
+_enc = None
+_SEPARATOR_TOKENS = None
+
+
+def _get_enc():
+    """Get or lazily initialize the tiktoken encoder."""
+    global _enc, _SEPARATOR_TOKENS  # noqa: PLW0603
+    if _enc is None:
+        import tiktoken
+
+        _enc = tiktoken.get_encoding("cl100k_base")
+        _SEPARATOR_TOKENS = len(_enc.encode("\n\n"))
+    return _enc
 
 
 # ------------------------------------------------------------------ #
@@ -69,14 +81,12 @@ def chunk_text(text: str, chunk_size: int, overlap: int) -> list[str]:
     # --- Step 2 & 3: ensure each section fits in chunk_size ---
     sized_chunks: list[str] = []
     for section in sections:
-        token_count = len(_enc.encode(section))
+        token_count = len(_get_enc().encode(section))
         if token_count <= chunk_size:
             sized_chunks.append(section)
         else:
             # Split oversized section by paragraphs first
-            sized_chunks.extend(
-                _split_by_paragraphs(section, chunk_size, overlap)
-            )
+            sized_chunks.extend(_split_by_paragraphs(section, chunk_size, overlap))
 
     # --- Step 4: merge small adjacent chunks ---
     merged = _merge_small_chunks(sized_chunks, chunk_size)
@@ -124,7 +134,9 @@ def _split_by_headers(text: str) -> list[str]:
 
 
 def _split_by_paragraphs(
-    text: str, chunk_size: int, overlap: int,
+    text: str,
+    chunk_size: int,
+    overlap: int,
 ) -> list[str]:
     """Split text at paragraph boundaries (``\\n\\n``), with token-window fallback.
 
@@ -141,7 +153,7 @@ def _split_by_paragraphs(
         if not para:
             continue
 
-        para_tokens = len(_enc.encode(para))
+        para_tokens = len(_get_enc().encode(para))
 
         # If a single paragraph exceeds chunk_size, split it with fixed window
         if para_tokens > chunk_size:
@@ -153,7 +165,7 @@ def _split_by_paragraphs(
             continue
 
         # Account for "\n\n" separator tokens when joining paragraphs
-        separator_cost = len(_enc.encode("\n\n")) if current else 0
+        separator_cost = _SEPARATOR_TOKENS if current else 0
 
         # Would adding this paragraph overflow?
         if current_tokens + separator_cost + para_tokens > chunk_size and current:
@@ -171,7 +183,9 @@ def _split_by_paragraphs(
 
 
 def _fixed_window_chunks(
-    text: str, chunk_size: int, overlap: int,
+    text: str,
+    chunk_size: int,
+    overlap: int,
 ) -> list[str]:
     """Legacy fixed-size token window chunking — used as last-resort fallback.
 
@@ -183,7 +197,8 @@ def _fixed_window_chunks(
     Returns:
         List of non-empty text chunks.
     """
-    tokens = _enc.encode(text)
+    enc = _get_enc()
+    tokens = enc.encode(text)
     if not tokens:
         return []
 
@@ -195,7 +210,7 @@ def _fixed_window_chunks(
     while start < len(tokens):
         end = min(start + chunk_size, len(tokens))
         chunk_tokens = tokens[start:end]
-        chunk_text_str = _enc.decode(chunk_tokens).strip()
+        chunk_text_str = enc.decode(chunk_tokens).strip()
 
         if chunk_text_str and len(chunk_text_str) > 20:
             chunks.append(chunk_text_str)
@@ -218,18 +233,17 @@ def _merge_small_chunks(chunks: list[str], chunk_size: int) -> list[str]:
 
     merged: list[str] = []
     current = chunks[0]
-    current_tokens = len(_enc.encode(current))
+    current_tokens = len(_get_enc().encode(current))
 
     for chunk in chunks[1:]:
-        chunk_tokens = len(_enc.encode(chunk))
+        chunk_tokens = len(_get_enc().encode(chunk))
 
-        separator_cost = len(_enc.encode("\n\n"))
-        can_merge = current_tokens + separator_cost + chunk_tokens <= chunk_size
+        can_merge = current_tokens + _SEPARATOR_TOKENS + chunk_tokens <= chunk_size
 
         # Merge if EITHER side is small (bidirectional merging)
         if can_merge and (current_tokens < _MIN_CHUNK_TOKENS or chunk_tokens < _MIN_CHUNK_TOKENS):
             current = current + "\n\n" + chunk
-            current_tokens += separator_cost + chunk_tokens
+            current_tokens += _SEPARATOR_TOKENS + chunk_tokens
         else:
             merged.append(current)
             current = chunk
@@ -249,7 +263,7 @@ def _is_url(source: str) -> bool:
     try:
         result = urlparse(source)
         return result.scheme in ("http", "https")
-    except Exception:
+    except ValueError:
         return False
 
 
@@ -267,11 +281,20 @@ def _get_source_type(source: str) -> str:
         return "url"
     suffix = Path(source).suffix.lower()
     type_map: dict[str, str] = {
-        ".pdf": "pdf", ".docx": "docx", ".pptx": "pptx",
-        ".xlsx": "xlsx", ".md": "markdown", ".txt": "text",
-        ".py": "code", ".js": "code", ".ts": "code",
-        ".go": "code", ".rs": "code", ".java": "code",
-        ".html": "html", ".htm": "html",
+        ".pdf": "pdf",
+        ".docx": "docx",
+        ".pptx": "pptx",
+        ".xlsx": "xlsx",
+        ".md": "markdown",
+        ".txt": "text",
+        ".py": "code",
+        ".js": "code",
+        ".ts": "code",
+        ".go": "code",
+        ".rs": "code",
+        ".java": "code",
+        ".html": "html",
+        ".htm": "html",
     }
     return type_map.get(suffix, "file")
 
@@ -433,15 +456,12 @@ def ingest_directory(
     Returns:
         List of IngestResult for each processed file.
     """
-    SUPPORTED: set[str] = {
-        ".pdf", ".docx", ".pptx", ".xlsx", ".md", ".txt",
-        ".py", ".js", ".ts", ".go", ".rs", ".java",
-        ".html", ".htm", ".csv",
-    }
     path = Path(directory)
     files = [
-        f for f in path.rglob("*")
-        if f.is_file() and f.suffix.lower() in SUPPORTED
+        f
+        for f in path.rglob("*")
+        if f.is_file()
+        and f.suffix.lower() in SUPPORTED_EXTENSIONS
         and not any(part.startswith(".") for part in f.parts)  # skip hidden
     ]
 
@@ -462,9 +482,14 @@ def ingest_directory(
         for f in files:
             progress.update(task, description=f.name)
             result = ingest(
-                str(f), cfg, store,
-                force=force, collection=collection,
-                project=project, layer=layer, tags=tags,
+                str(f),
+                cfg,
+                store,
+                force=force,
+                collection=collection,
+                project=project,
+                layer=layer,
+                tags=tags,
             )
             results.append(result)
             progress.advance(task)
@@ -550,11 +575,106 @@ def _strip_frontmatter(text: str) -> str:
 # ------------------------------------------------------------------ #
 
 
+# Maximum download size for URL ingestion (50 MB default)
+_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
+
+
+def _validate_url(url: str) -> None:
+    """Validate that a URL does not target internal/private network addresses.
+
+    Prevents SSRF attacks by blocking loopback, link-local, and RFC 1918 addresses.
+
+    Args:
+        url: The URL to validate.
+
+    Raises:
+        ValueError: If the URL resolves to a private or restricted address.
+    """
+    import ipaddress
+    import socket
+
+    parsed = urlparse(url)
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError(f"Invalid URL (no hostname): {url}")
+
+    try:
+        addr_info = socket.getaddrinfo(hostname, None)
+    except socket.gaierror as exc:
+        raise ValueError(f"Cannot resolve hostname '{hostname}': {exc}") from exc
+
+    for _family, _type, _proto, _canonname, sockaddr in addr_info:
+        ip = ipaddress.ip_address(sockaddr[0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            raise ValueError(
+                f"URL '{url}' resolves to private/reserved address {ip}. "
+                "Ingesting from internal networks is not allowed."
+            )
+
+
+def _read_url_content(url: str, max_bytes: int = _MAX_DOWNLOAD_BYTES) -> bytes:
+    """Download URL content with a size limit and SSRF-safe redirect handling.
+
+    Each redirect hop is re-validated against private/reserved IPs to prevent
+    SSRF via open redirects.
+
+    Args:
+        url: The URL to fetch (must already be validated via ``_validate_url``).
+        max_bytes: Maximum number of bytes to download.
+
+    Returns:
+        Downloaded content as bytes.
+
+    Raises:
+        ValueError: If the response exceeds the size limit or a redirect
+            targets a private address.
+    """
+    import urllib.request
+
+    class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+        """Re-validate every redirect target to prevent SSRF via open redirects."""
+
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            new_req = super().redirect_request(req, fp, code, msg, headers, newurl)
+            if new_req is None:
+                return None
+            _validate_url(new_req.full_url)
+            return new_req
+
+    headers = {"User-Agent": "vstash (https://github.com/stffns/vstash)"}
+    req = urllib.request.Request(url, headers=headers)
+    opener = urllib.request.build_opener(_SafeRedirectHandler())
+
+    with opener.open(req, timeout=30) as response:
+        # Check Content-Length header first (if available)
+        content_length = response.headers.get("Content-Length")
+        if content_length and int(content_length) > max_bytes:
+            raise ValueError(
+                f"Response too large ({int(content_length)} bytes, max {max_bytes} bytes)"
+            )
+
+        # Read in chunks with size enforcement
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = response.read(1024 * 1024)  # 1 MB chunks
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_bytes:
+                raise ValueError(
+                    f"Response exceeded max size ({max_bytes} bytes). Download aborted."
+                )
+            chunks.append(chunk)
+
+    return b"".join(chunks)
+
+
 def _parse(source: str) -> str:
     """Parse file or URL to plain text using markitdown.
 
-    For URLs, downloads content first with a proper User-Agent header
-    to avoid 403 errors from sites like Wikipedia.
+    For URLs, validates the target address (preventing SSRF), downloads
+    content with a size limit, and converts to text.
 
     Args:
         source: File path or URL to parse.
@@ -563,6 +683,7 @@ def _parse(source: str) -> str:
         Cleaned plain text content.
 
     Raises:
+        ValueError: If the URL targets a private address or exceeds size limits.
         Exception: If markitdown fails to parse the document.
     """
     import tempfile
@@ -571,19 +692,19 @@ def _parse(source: str) -> str:
 
     md = MarkItDown()
 
-    # URLs need a proper User-Agent or many sites (Wikipedia, etc.) return 403
     if _is_url(source):
-        import urllib.request
+        _validate_url(source)
+        content = _read_url_content(source)
 
-        headers = {"User-Agent": "vstash (https://github.com/stffns/vstash)"}
-        req = urllib.request.Request(source, headers=headers)
-        with urllib.request.urlopen(req, timeout=30) as response:
-            content = response.read()
-            # Write to temp file so markitdown can detect the format
-            suffix = Path(urlparse(source).path).suffix or ".html"
-            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-                tmp.write(content)
-                tmp_path = tmp.name
+        suffix = Path(urlparse(source).path).suffix or ".html"
+        # Sanitize suffix to prevent path traversal
+        suffix = "." + suffix.lstrip(".").split("/")[-1].split("\\")[-1]
+        if not suffix or suffix == ".":
+            suffix = ".html"
+
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(content)
+            tmp_path = tmp.name
         try:
             result = md.convert(tmp_path)
         finally:
@@ -623,7 +744,7 @@ def _embed_with_progress(chunks: list[str], model_name: str) -> list[list[float]
         processed = 0
 
         for i in range(0, len(chunks), BATCH_SIZE):
-            batch = chunks[i:i + BATCH_SIZE]
+            batch = chunks[i : i + BATCH_SIZE]
             embeddings = embed_texts(batch, model_name)
             all_embeddings.extend(embeddings)
             processed += len(batch)

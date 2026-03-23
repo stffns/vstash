@@ -65,6 +65,7 @@ def _mlx_available() -> bool:
     try:
         import mlx  # noqa: F401
         import mlx_embeddings  # noqa: F401
+
         return True
     except ImportError:
         return False
@@ -107,6 +108,7 @@ def _get_onnx_model(model_name: str) -> TextEmbedding:
         with _onnx_lock:
             if model_name not in _onnx_cache:
                 from fastembed import TextEmbedding
+
                 _onnx_cache[model_name] = TextEmbedding(model_name=model_name)
     return _onnx_cache[model_name]
 
@@ -152,6 +154,7 @@ def _get_mlx_model(model_name: str) -> tuple:
         with _mlx_lock:
             if model_name not in _mlx_cache:
                 from mlx_embeddings.utils import load
+
                 mlx_name = _MLX_MODEL_MAP.get(model_name, model_name)
                 _mlx_cache[model_name] = load(mlx_name)
     return _mlx_cache[model_name]
@@ -168,9 +171,7 @@ def _embed_mlx(texts: list[str], model_name: str) -> list[list[float]]:
 
     input_ids = mx.array(encoded["input_ids"])
     attention_mask = mx.array(encoded["attention_mask"])
-    token_type_ids = mx.array(
-        encoded.get("token_type_ids", np.zeros_like(encoded["input_ids"]))
-    )
+    token_type_ids = mx.array(encoded.get("token_type_ids", np.zeros_like(encoded["input_ids"])))
 
     output = model(
         input_ids=input_ids,

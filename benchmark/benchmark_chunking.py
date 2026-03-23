@@ -123,6 +123,7 @@ def chunk_text(text: str, chunk_size: int, overlap: int) -> list[str]:
     merged = _merge_small_chunks(sized_chunks, chunk_size)
     return [c for c in merged if c.strip() and len(c.strip()) > 20]
 
+
 enc = tiktoken.get_encoding("cl100k_base")
 
 CORPUS_DIR = Path(__file__).parent / "corpus"
@@ -140,8 +141,14 @@ def token_count(text: str) -> int:
 def analyze_chunks(chunks: list[str]) -> dict:
     """Compute quality metrics for a list of chunks."""
     if not chunks:
-        return {"count": 0, "avg_tokens": 0, "min_tokens": 0, "max_tokens": 0,
-                "header_preserved": 0, "header_torn": 0}
+        return {
+            "count": 0,
+            "avg_tokens": 0,
+            "min_tokens": 0,
+            "max_tokens": 0,
+            "header_preserved": 0,
+            "header_torn": 0,
+        }
 
     token_counts = [token_count(c) for c in chunks]
     # Count headers that appear with their body content
@@ -209,10 +216,14 @@ def main() -> None:
         print(f"\n  Processing: {f.name}")
         r = benchmark_file(f)
         results.append(r)
-        print(f"    Fixed:    {r['fixed']['count']} chunks, "
-              f"avg {r['fixed']['avg_tokens']} tok, {r['fixed']['time_ms']}ms")
-        print(f"    Semantic: {r['semantic']['count']} chunks, "
-              f"avg {r['semantic']['avg_tokens']} tok, {r['semantic']['time_ms']}ms")
+        print(
+            f"    Fixed:    {r['fixed']['count']} chunks, "
+            f"avg {r['fixed']['avg_tokens']} tok, {r['fixed']['time_ms']}ms"
+        )
+        print(
+            f"    Semantic: {r['semantic']['count']} chunks, "
+            f"avg {r['semantic']['avg_tokens']} tok, {r['semantic']['time_ms']}ms"
+        )
 
     # --- Generate report ---
     lines: list[str] = []
@@ -222,8 +233,12 @@ def main() -> None:
 
     # Summary table
     lines.append("\n## Summary\n")
-    lines.append("| File | Tokens | Fixed Chunks | Semantic Chunks | Fixed Avg Tok | Semantic Avg Tok | Headers Preserved (Semantic) |")
-    lines.append("|------|--------|-------------|----------------|--------------|-----------------|------------------------------|")
+    lines.append(
+        "| File | Tokens | Fixed Chunks | Semantic Chunks | Fixed Avg Tok | Semantic Avg Tok | Headers Preserved (Semantic) |"
+    )
+    lines.append(
+        "|------|--------|-------------|----------------|--------------|-----------------|------------------------------|"
+    )
 
     total_fixed = 0
     total_semantic = 0
@@ -270,15 +285,23 @@ def main() -> None:
 
     # Verdict
     lines.append("\n## Verdict\n")
-    lines.append(f"- Semantic chunking preserved **{total_preserved}/{total_preserved + total_torn}** "
-                 f"headers with their body content")
-    lines.append(f"- Fixed window: **{total_fixed}** chunks vs Semantic: **{total_semantic}** chunks")
+    lines.append(
+        f"- Semantic chunking preserved **{total_preserved}/{total_preserved + total_torn}** "
+        f"headers with their body content"
+    )
+    lines.append(
+        f"- Fixed window: **{total_fixed}** chunks vs Semantic: **{total_semantic}** chunks"
+    )
     if total_semantic < total_fixed:
         pct = round((1 - total_semantic / total_fixed) * 100)
-        lines.append(f"- **{pct}% fewer chunks** with semantic — less noise, better context per embedding")
+        lines.append(
+            f"- **{pct}% fewer chunks** with semantic — less noise, better context per embedding"
+        )
     elif total_semantic > total_fixed:
         pct = round((total_semantic / total_fixed - 1) * 100)
-        lines.append(f"- **{pct}% more chunks** with semantic — more granular, but each chunk is more coherent")
+        lines.append(
+            f"- **{pct}% more chunks** with semantic — more granular, but each chunk is more coherent"
+        )
 
     report = "\n".join(lines)
     REPORT_PATH.write_text(report)

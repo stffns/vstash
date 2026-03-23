@@ -8,13 +8,15 @@ clear contracts between layers.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
 class IngestResult(BaseModel):
     """Result of ingesting a single document."""
 
-    status: str = Field(description="'ok', 'empty', or 'error'")
+    status: Literal["ok", "empty", "skipped", "error"] = Field(description="Ingestion outcome")
     source: str = Field(description="Original file path or URL")
     doc_id: str | None = Field(default=None, description="Hash-based document ID")
     title: str | None = Field(default=None, description="Derived document title")

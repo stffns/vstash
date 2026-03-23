@@ -49,6 +49,7 @@ class TestChunkText:
 
     def test_chunk_size_respected(self) -> None:
         import tiktoken
+
         enc = tiktoken.get_encoding("cl100k_base")
 
         text = "word " * 1000
@@ -82,8 +83,7 @@ class TestChunkText:
     def test_oversized_section_gets_split(self) -> None:
         """A section larger than chunk_size should be split at paragraph boundaries."""
         section = "# Big Section\n\n" + "\n\n".join(
-            f"Paragraph {i} with enough content to take up tokens. " * 10
-            for i in range(20)
+            f"Paragraph {i} with enough content to take up tokens. " * 10 for i in range(20)
         )
         chunks = chunk_text(section, chunk_size=200, overlap=20)
         assert len(chunks) > 1
@@ -226,7 +226,9 @@ class TestFixedWindowChunks:
 
     def test_short_text_single_chunk(self) -> None:
         result = _fixed_window_chunks(
-            "Short text that fits in one window.", chunk_size=100, overlap=10,
+            "Short text that fits in one window.",
+            chunk_size=100,
+            overlap=10,
         )
         assert len(result) == 1
 

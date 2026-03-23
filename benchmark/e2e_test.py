@@ -55,7 +55,9 @@ def main() -> None:
     lines.append(f"**Embedding:** {cfg.embeddings.model}\n")
 
     stats = store.stats()
-    lines.append(f"**Corpus:** {stats.documents} documents, {stats.chunks} chunks, {stats.db_size_mb} MB\n")
+    lines.append(
+        f"**Corpus:** {stats.documents} documents, {stats.chunks} chunks, {stats.db_size_mb} MB\n"
+    )
     lines.append("---\n")
 
     total_retrieval = 0.0
@@ -63,9 +65,9 @@ def main() -> None:
 
     with store:
         for i, query in enumerate(QUERIES, 1):
-            print(f"\n{'='*70}")
+            print(f"\n{'=' * 70}")
             print(f"  Query {i}/{len(QUERIES)}: {query}")
-            print(f"{'='*70}")
+            print(f"{'=' * 70}")
 
             # Phase 1: Embedding + retrieval
             t0 = time.time()
@@ -79,8 +81,12 @@ def main() -> None:
             retrieval_ms = round((t_embed + t_search) * 1000, 1)
             total_retrieval += t_embed + t_search
 
-            print(f"  Retrieval: {retrieval_ms}ms ({round(t_embed*1000,1)}ms embed + {round(t_search*1000,1)}ms search)")
-            print(f"  Results: {len(results)} chunks from: {', '.join(set(r.title for r in results))}")
+            print(
+                f"  Retrieval: {retrieval_ms}ms ({round(t_embed * 1000, 1)}ms embed + {round(t_search * 1000, 1)}ms search)"
+            )
+            print(
+                f"  Results: {len(results)} chunks from: {', '.join(set(r.title for r in results))}"
+            )
 
             # Phase 2: LLM answer
             t0 = time.time()
@@ -93,14 +99,14 @@ def main() -> None:
             print(f"  Answer preview: {answer[:200]}...")
 
             # Write to report
-            lines.append(f"## Query {i}: \"{query}\"\n")
+            lines.append(f'## Query {i}: "{query}"\n')
 
             # Timing
             lines.append("### ⏱️ Timing\n")
             lines.append("| Phase | Time |")
             lines.append("|---|---|")
-            lines.append(f"| Embed query | {round(t_embed*1000,1)}ms |")
-            lines.append(f"| Vector + FTS search | {round(t_search*1000,1)}ms |")
+            lines.append(f"| Embed query | {round(t_embed * 1000, 1)}ms |")
+            lines.append(f"| Vector + FTS search | {round(t_search * 1000, 1)}ms |")
             lines.append(f"| **Total retrieval** | **{retrieval_ms}ms** |")
             lines.append(f"| LLM inference | {round(t_llm, 2)}s |")
             lines.append(f"| **End-to-end** | **{round(t_embed + t_search + t_llm, 2)}s** |\n")
@@ -122,9 +128,13 @@ def main() -> None:
     lines.append("| Metric | Value |")
     lines.append("|---|---|")
     lines.append(f"| Queries tested | {len(QUERIES)} |")
-    lines.append(f"| Total retrieval time | {round(total_retrieval*1000)}ms ({round(total_retrieval*1000/len(QUERIES))}ms avg) |")
-    lines.append(f"| Total LLM time | {round(total_llm, 1)}s ({round(total_llm/len(QUERIES), 2)}s avg) |")
-    lines.append(f"| Avg end-to-end | {round((total_retrieval+total_llm)/len(QUERIES), 2)}s |")
+    lines.append(
+        f"| Total retrieval time | {round(total_retrieval * 1000)}ms ({round(total_retrieval * 1000 / len(QUERIES))}ms avg) |"
+    )
+    lines.append(
+        f"| Total LLM time | {round(total_llm, 1)}s ({round(total_llm / len(QUERIES), 2)}s avg) |"
+    )
+    lines.append(f"| Avg end-to-end | {round((total_retrieval + total_llm) / len(QUERIES), 2)}s |")
     lines.append(f"| Corpus size | {stats.chunks} chunks |")
 
     report = "\n".join(lines)

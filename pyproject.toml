@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "vstash"
-version = "0.3.0"
+dynamic = ["version"]
 description = "Local document memory with instant semantic search. Drop any file. Ask anything. Get an answer in under a second."
 readme = "README.md"
 license = { text = "MIT" }
@@ -12,17 +12,14 @@ requires-python = ">=3.10"
 keywords = ["embeddings", "semantic-search", "rag", "local", "cerebras", "sqlite-vec", "fastembed", "vector-stash"]
 
 dependencies = [
-    "pydantic>=2.0.0",
-    "fastembed>=0.4.0",
+    "pydantic>=2.0.0,<3",
+    "fastembed>=0.4.0,<1",
     "sqlite-vec>=0.1.6",
-    "markitdown[all]>=0.1.0",
+    "markitdown>=0.1.0",
     "typer>=0.12.0",
     "rich>=13.0.0",
     "tiktoken>=0.7.0",
-    "cerebras-cloud-sdk>=1.0.0",
-    "ollama>=0.3.0",
-    "openai>=1.0.0",
-    "mcp>=1.0.0,<2",
+    "pyyaml>=6.0",
     "tomli>=2.0.0; python_version < '3.11'",
 ]
 
@@ -31,12 +28,32 @@ vstash = "vstash.cli:app"
 vstash-mcp = "vstash.mcp:main"
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "ruff"]
+cerebras = ["cerebras-cloud-sdk>=1.0.0,<2"]
+ollama = ["ollama>=0.3.0,<1"]
+openai = ["openai>=1.0.0,<3"]
+mcp = ["mcp>=1.0.0,<2"]
 watch = ["watchdog>=4.0.0"]
+all = [
+    "vstash[cerebras]",
+    "vstash[ollama]",
+    "vstash[openai]",
+    "vstash[mcp]",
+]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+    "mypy",
+    "pre-commit",
+    "ruff",
+]
+
+[tool.hatch.version]
+path = "vstash/__init__.py"
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py310"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
