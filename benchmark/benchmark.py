@@ -8,7 +8,6 @@ compares results against grep, and generates a markdown report.
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 import time
@@ -29,6 +28,7 @@ REPORT_PATH = Path(__file__).parent / "BENCHMARK_REPORT.md"
 # ------------------------------------------------------------------ #
 # 1. Generate additional test files                                    #
 # ------------------------------------------------------------------ #
+
 
 def generate_ml_paper() -> None:
     """Generate a synthetic ML research paper (~50KB)."""
@@ -540,7 +540,8 @@ def run_grep(corpus_dir: Path, terms: list[str]) -> dict:
     for term in terms:
         result = subprocess.run(
             ["grep", "-ril", "--include=*.txt", "--include=*.md", term, str(corpus_dir)],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         for line in result.stdout.strip().split("\n"):
             if line:
@@ -639,10 +640,14 @@ def main() -> None:
             # grep
             grep_result = run_grep(CORPUS_DIR, q["grep_terms"])
 
-            print(f"   vstash: {len(vstash_result['results'])} results in {vstash_result['elapsed_s']}s")
-            print(f"   grep:   {len(grep_result['files'])} files matched in {grep_result['elapsed_s']}s")
+            print(
+                f"   vstash: {len(vstash_result['results'])} results in {vstash_result['elapsed_s']}s"
+            )
+            print(
+                f"   grep:   {len(grep_result['files'])} files matched in {grep_result['elapsed_s']}s"
+            )
 
-            report_lines.append(f"### Query {i}: \"{q['question']}\"")
+            report_lines.append(f'### Query {i}: "{q["question"]}"')
             report_lines.append(f"*{q['description']}*\n")
 
             # vstash results
@@ -654,7 +659,9 @@ def main() -> None:
                 report_lines.append(f"| {j} | {r['title']} | {r['score']} | {snippet}... |")
 
             # grep results
-            report_lines.append(f"\n**grep** ({grep_result['elapsed_s']}s) — terms: `{', '.join(q['grep_terms'])}`:\n")
+            report_lines.append(
+                f"\n**grep** ({grep_result['elapsed_s']}s) — terms: `{', '.join(q['grep_terms'])}`:\n"
+            )
             if grep_result["files"]:
                 report_lines.append("| File | Matched Terms |")
                 report_lines.append("|---|---|")
@@ -667,24 +674,40 @@ def main() -> None:
             vstash_sources = {r["title"] for r in vstash_result["results"]}
             grep_files = set(grep_result["files"].keys())
 
-            vstash_only = vstash_sources - {Path(g).stem.replace("_", " ").title() for g in grep_files}
+            vstash_only = vstash_sources - {
+                Path(g).stem.replace("_", " ").title() for g in grep_files
+            }
             if vstash_only:
-                report_lines.append(f"\n> **vstash advantage:** Found relevant content in sources grep missed: *{', '.join(vstash_only)}*\n")
+                report_lines.append(
+                    f"\n> **vstash advantage:** Found relevant content in sources grep missed: *{', '.join(vstash_only)}*\n"
+                )
             report_lines.append("---\n")
 
         # Summary
         report_lines.append("\n## Summary\n")
         report_lines.append("| Capability | vstash | grep |")
         report_lines.append("|---|---|---|")
-        report_lines.append("| Semantic understanding | ✅ Finds conceptually related content | ❌ Exact keyword match only |")
-        report_lines.append("| Cross-document reasoning | ✅ Ranks by relevance across all docs | ⚠️ Returns all matching files equally |")
-        report_lines.append("| Synonym recognition | ✅ \"invasion\" matches \"military campaign\" | ❌ Only literal matches |")
+        report_lines.append(
+            "| Semantic understanding | ✅ Finds conceptually related content | ❌ Exact keyword match only |"
+        )
+        report_lines.append(
+            "| Cross-document reasoning | ✅ Ranks by relevance across all docs | ⚠️ Returns all matching files equally |"
+        )
+        report_lines.append(
+            '| Synonym recognition | ✅ "invasion" matches "military campaign" | ❌ Only literal matches |'
+        )
         report_lines.append("| Speed | ~50-100ms per query | ~5-10ms per query |")
         report_lines.append("| Setup cost | Requires ingestion (embeddings) | Zero setup |")
         report_lines.append("| Works offline | ✅ Embeddings are fully local | ✅ |")
-        report_lines.append("\n> **Conclusion:** grep excels at fast exact-match searches. vstash excels when you need ")
-        report_lines.append("> to find *conceptually related* content — the kind of search where you'd otherwise ")
-        report_lines.append("> need to manually read through documents to find relevant passages.\n")
+        report_lines.append(
+            "\n> **Conclusion:** grep excels at fast exact-match searches. vstash excels when you need "
+        )
+        report_lines.append(
+            "> to find *conceptually related* content — the kind of search where you'd otherwise "
+        )
+        report_lines.append(
+            "> need to manually read through documents to find relevant passages.\n"
+        )
 
     # Write report
     report_text = "\n".join(report_lines)

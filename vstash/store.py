@@ -13,9 +13,11 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 import struct
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from types import TracebackType
+
+import threading
 
 import sqlite_vec
 
@@ -62,6 +64,7 @@ class VstashStore:
         self.db_path = Path(db_path).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.embedding_dim = embedding_dim
+        self._write_lock = threading.Lock()
         self._conn = self._connect()
 
     # ------------------------------------------------------------------ #
@@ -178,10 +181,7 @@ class VstashStore:
 
     def _migrate_schema(self, conn: sqlite3.Connection) -> None:
         """Add missing columns to existing databases."""
-        columns = {
-            row[1] for row in
-            conn.execute("PRAGMA table_info(documents)").fetchall()
-        }
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(documents)").fetchall()}
         migrations: list[str] = []
         if "collection" not in columns:
             migrations.append(
@@ -211,9 +211,7 @@ class VstashStore:
         Returns:
             True if the document exists in the store.
         """
-        row = self._conn.execute(
-            "SELECT 1 FROM documents WHERE path = ?", [path]
-        ).fetchone()
+        row = self._conn.execute("SELECT 1 FROM documents WHERE path = ?", [path]).fetchone()
         return row is not None
 
     def add_document(
@@ -248,45 +246,59 @@ class VstashStore:
         """
         doc_id = hashlib.sha256(f"{collection}:{path}".encode("utf-8")).hexdigest()[:32]
 
-        # Remove existing version if re-ingesting
-        self._delete_by_doc_id(doc_id)
+        with self._write_lock:
+            # Explicit transaction ensures atomicity — a crash mid-way
+            # won't leave the database in an inconsistent state.
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                # Remove existing version if re-ingesting
+                self._delete_by_doc_id(doc_id)
 
-        self._conn.execute(
-            """INSERT INTO documents
-               (id, path, title, source_type, collection,
-                project, layer, tags,
-                char_count, chunk_count, added_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            [
-                doc_id, path, title, source_type, collection,
-                project, layer, tags,
-                sum(len(c) for c in chunks),
-                len(chunks),
-                datetime.now(UTC).isoformat(),
-            ],
-        )
+                self._conn.execute(
+                    """INSERT INTO documents
+                       (id, path, title, source_type, collection,
+                        project, layer, tags,
+                        char_count, chunk_count, added_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    [
+                        doc_id,
+                        path,
+                        title,
+                        source_type,
+                        collection,
+                        project,
+                        layer,
+                        tags,
+                        sum(len(c) for c in chunks),
+                        len(chunks),
+                        datetime.now(timezone.utc).isoformat(),
+                    ],
+                )
 
-        for seq, (text, embedding) in enumerate(zip(chunks, embeddings)):
-            # Insert chunk — get rowid for linking vec + fts tables
-            cursor = self._conn.execute(
-                "INSERT INTO chunks (doc_id, seq, text) VALUES (?, ?, ?)",
-                [doc_id, seq, text],
-            )
-            rowid = cursor.lastrowid
+                for seq, (text, embedding) in enumerate(zip(chunks, embeddings)):
+                    # Insert chunk — get rowid for linking vec + fts tables
+                    cursor = self._conn.execute(
+                        "INSERT INTO chunks (doc_id, seq, text) VALUES (?, ?, ?)",
+                        [doc_id, seq, text],
+                    )
+                    rowid = cursor.lastrowid
 
-            # Vector index entry
-            self._conn.execute(
-                "INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)",
-                [rowid, _serialize(embedding)],
-            )
+                    # Vector index entry
+                    self._conn.execute(
+                        "INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)",
+                        [rowid, _serialize(embedding)],
+                    )
 
-            # FTS5 entry (rowid must match chunks.id)
-            self._conn.execute(
-                "INSERT INTO fts_chunks (rowid, text) VALUES (?, ?)",
-                [rowid, text],
-            )
+                    # FTS5 entry (rowid must match chunks.id)
+                    self._conn.execute(
+                        "INSERT INTO fts_chunks (rowid, text) VALUES (?, ?)",
+                        [rowid, text],
+                    )
 
-        self._conn.commit()
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
         return doc_id
 
     def delete_document(self, path: str) -> bool:
@@ -300,18 +312,24 @@ class VstashStore:
         Returns:
             True if at least one document was found and deleted.
         """
-        doc_ids = [
-            row[0] for row in
-            self._conn.execute(
-                "SELECT id FROM documents WHERE path = ?", [path]
-            ).fetchall()
-        ]
-        if not doc_ids:
-            return False
-        for doc_id in doc_ids:
-            self._delete_by_doc_id(doc_id)
-        self._conn.commit()
-        return True
+        with self._write_lock:
+            doc_ids = [
+                row[0]
+                for row in self._conn.execute(
+                    "SELECT id FROM documents WHERE path = ?", [path]
+                ).fetchall()
+            ]
+            if not doc_ids:
+                return False
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                for doc_id in doc_ids:
+                    self._delete_by_doc_id(doc_id)
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+            return True
 
     def _delete_by_doc_id(self, doc_id: str) -> bool:
         """Delete a document by its internal hash ID.
@@ -323,17 +341,15 @@ class VstashStore:
             True if the document existed and was deleted.
         """
         chunk_ids = [
-            row[0] for row in
-            self._conn.execute(
+            row[0]
+            for row in self._conn.execute(
                 "SELECT id FROM chunks WHERE doc_id = ?", [doc_id]
             ).fetchall()
         ]
         if chunk_ids:
             placeholders = ",".join("?" * len(chunk_ids))
             # Delete vec_chunks first (no trigger involved)
-            self._conn.execute(
-                f"DELETE FROM vec_chunks WHERE rowid IN ({placeholders})", chunk_ids
-            )
+            self._conn.execute(f"DELETE FROM vec_chunks WHERE rowid IN ({placeholders})", chunk_ids)
             # Delete chunks — trg_chunks_delete trigger auto-syncs FTS5
             self._conn.execute("DELETE FROM chunks WHERE doc_id = ?", [doc_id])
         cursor = self._conn.execute("DELETE FROM documents WHERE id = ?", [doc_id])
@@ -385,7 +401,9 @@ class VstashStore:
 
         # --- Build metadata filter ---
         vec_clause, col_clause, filter_params = self._build_doc_filter(
-            collection=collection, project=project, layer=layer,
+            collection=collection,
+            project=project,
+            layer=layer,
         )
 
         # --- Vector search ---
@@ -416,7 +434,9 @@ class VstashStore:
         relevant_chunk_ids: set[int] = {row["id"] for row in vec_rows}
 
         # --- FTS5 search ---
-        safe_query = query_text.replace('"', '""')
+        # Wrap user input in double-quotes to force literal matching.
+        # This prevents FTS5 syntax injection (e.g. NEAR, OR, NOT operators).
+        safe_query = '"' + query_text.replace('"', '""') + '"'
         try:
             fts_rows = self._conn.execute(
                 f"""
@@ -544,7 +564,11 @@ class VstashStore:
             tags: Filter by tag (LIKE match).
         """
         conditions_d2, params = VstashStore._get_filter_conditions(
-            "d2", collection=collection, project=project, layer=layer, tags=tags,
+            "d2",
+            collection=collection,
+            project=project,
+            layer=layer,
+            tags=tags,
         )
 
         if not conditions_d2:
@@ -561,7 +585,11 @@ class VstashStore:
         """
         # For JOINed queries where documents is aliased as 'd'
         conditions_d, _ = VstashStore._get_filter_conditions(
-            "d", collection=collection, project=project, layer=layer, tags=tags,
+            "d",
+            collection=collection,
+            project=project,
+            layer=layer,
+            tags=tags,
         )
         col_clause = "AND " + " AND ".join(conditions_d)
         return vec_clause, col_clause, params
@@ -592,7 +620,9 @@ class VstashStore:
             The full path of the matching document, or None.
         """
         conditions, filter_params = self._get_filter_conditions(
-            collection=collection, project=project, layer=layer,
+            collection=collection,
+            project=project,
+            layer=layer,
         )
         extra = ("AND " + " AND ".join(conditions)) if conditions else ""
         row = self._conn.execute(
@@ -624,7 +654,9 @@ class VstashStore:
             List of DocumentInfo ordered by ingestion date (newest first).
         """
         conditions, filter_params = self._get_filter_conditions(
-            collection=collection, project=project, layer=layer,
+            collection=collection,
+            project=project,
+            layer=layer,
         )
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
         rows = self._conn.execute(
@@ -699,15 +731,16 @@ class VstashStore:
             includes an 'embedding' key with the float vector.
         """
         conditions, params = self._get_filter_conditions(
-            "d", collection=collection, project=project, layer=layer, tags=tags,
+            "d",
+            collection=collection,
+            project=project,
+            layer=layer,
+            tags=tags,
         )
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
         embed_col = ", v.embedding" if include_embeddings else ""
-        embed_join = (
-            "LEFT JOIN vec_chunks v ON v.rowid = c.id"
-            if include_embeddings else ""
-        )
+        embed_join = "LEFT JOIN vec_chunks v ON v.rowid = c.id" if include_embeddings else ""
 
         rows = self._conn.execute(
             f"""SELECT c.text, c.seq, d.title, d.path,

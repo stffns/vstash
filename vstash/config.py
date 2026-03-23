@@ -39,11 +39,18 @@ class InferenceConfig(BaseModel):
 
 
 class CerebrasConfig(BaseModel):
-    """Cerebras API configuration."""
+    """Cerebras API configuration.
+
+    **Security note**: Prefer setting the ``CEREBRAS_API_KEY`` environment
+    variable instead of storing the key in ``vstash.toml``, which may be
+    accidentally committed to version control.
+    """
 
     model_config = ConfigDict(frozen=True)
 
-    api_key: str = Field(default="", description="Cerebras API key (or set CEREBRAS_API_KEY)")
+    api_key: str = Field(
+        default="", description="Cerebras API key (prefer CEREBRAS_API_KEY env var)"
+    )
 
 
 class OllamaConfig(BaseModel):
@@ -56,11 +63,15 @@ class OllamaConfig(BaseModel):
 
 
 class OpenAIConfig(BaseModel):
-    """OpenAI API configuration."""
+    """OpenAI API configuration.
+
+    **Security note**: Prefer setting the ``OPENAI_API_KEY`` environment
+    variable instead of storing the key in ``vstash.toml``.
+    """
 
     model_config = ConfigDict(frozen=True)
 
-    api_key: str = Field(default="", description="OpenAI API key (or set OPENAI_API_KEY)")
+    api_key: str = Field(default="", description="OpenAI API key (prefer OPENAI_API_KEY env var)")
     model: str = Field(default="gpt-4o-mini", description="OpenAI model name")
     base_url: str | None = Field(
         default=None,
@@ -130,18 +141,51 @@ class VstashConfig(BaseModel):
         return self.storage.db_path
 
 
+# Canonical set of file extensions supported for ingestion.
+# Used by ingest_directory() and watch mode — defined here to avoid duplication.
+SUPPORTED_EXTENSIONS: frozenset[str] = frozenset(
+    {
+        ".pdf",
+        ".docx",
+        ".pptx",
+        ".xlsx",
+        ".md",
+        ".txt",
+        ".py",
+        ".js",
+        ".ts",
+        ".go",
+        ".rs",
+        ".java",
+        ".html",
+        ".htm",
+        ".csv",
+    }
+)
+
+
 def load_config() -> VstashConfig:
     """Load config from vstash.toml, falling back to defaults.
 
     Resolution order:
+        0. ``VSTASH_CONFIG`` environment variable (if set)
         1. ``./vstash.toml`` in the current directory
         2. ``~/.vstash/vstash.toml`` (global)
         3. Built-in defaults
     """
-    candidates: list[Path] = [
-        Path.cwd() / "vstash.toml",
-        Path.home() / ".vstash" / "vstash.toml",
-    ]
+    candidates: list[Path] = []
+
+    # Allow explicit config path via env var (useful for MCP server)
+    env_config = os.getenv("VSTASH_CONFIG")
+    if env_config:
+        candidates.append(Path(env_config).expanduser())
+
+    candidates.extend(
+        [
+            Path.cwd() / "vstash.toml",
+            Path.home() / ".vstash" / "vstash.toml",
+        ]
+    )
 
     raw: dict = {}  # type: ignore[type-arg]
     for path in candidates:

@@ -17,15 +17,15 @@ from __future__ import annotations
 from pathlib import Path
 from types import TracebackType
 
-# Sentinel for distinguishing "parameter not provided" from explicit None.
-_UNSET = object()
-
 from .chat import ask as _chat_ask
 from .config import VstashConfig, load_config
 from .embed import embed_query, get_embedding_dim
 from .ingest import ingest
 from .models import DocumentInfo, IngestResult, SearchResult, StoreStats
 from .store import VstashStore
+
+# Sentinel for distinguishing "parameter not provided" from explicit None.
+_UNSET = object()
 
 
 class Memory:
@@ -306,8 +306,7 @@ def _load_config_from(config: str | Path | None) -> VstashConfig:
         path = Path(config).expanduser()
         if not path.exists():
             raise FileNotFoundError(
-                f"Config file not found: {path}. "
-                "Pass config=None to use auto-detection."
+                f"Config file not found: {path}. Pass config=None to use auto-detection."
             )
         try:
             import tomllib
