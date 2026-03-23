@@ -3,7 +3,7 @@ ingest.py — Document ingestion pipeline.
 
 Flow: file/URL → markitdown → chunk → FastEmbed → sqlite-vec + FTS5
 
-Chunking: fixed-size token windows with overlap.
+Chunking: semantic-first (Markdown headers / paragraphs) with token-bounded fallback.
 Progress: Rich bars at every stage — never looks frozen.
 """
 
@@ -43,9 +43,137 @@ _enc = tiktoken.get_encoding("cl100k_base")
 
 
 def chunk_text(text: str, chunk_size: int, overlap: int) -> list[str]:
-    """Split text into token-bounded chunks with overlap.
+    """Split text into semantically coherent, token-bounded chunks.
 
-    Tries to break at sentence boundaries when possible.
+    Strategy (in order of priority):
+      1. Split at Markdown headers (``#``, ``##``, etc.) — keeps sections intact.
+      2. Within oversized sections, split at paragraph boundaries (``\\n\\n``).
+      3. Within oversized paragraphs, fall back to fixed-token sliding window.
+      4. Merge adjacent chunks that are too small (< ``_MIN_CHUNK_TOKENS``).
+
+    Args:
+        text: Raw text to chunk.
+        chunk_size: Maximum tokens per chunk.
+        overlap: Token overlap between consecutive chunks (used only in
+            the fixed-window fallback for oversized paragraphs).
+
+    Returns:
+        List of non-empty text chunks.
+    """
+    if not text or not text.strip():
+        return []
+
+    # --- Step 1: split by Markdown headers ---
+    sections = _split_by_headers(text)
+
+    # --- Step 2 & 3: ensure each section fits in chunk_size ---
+    sized_chunks: list[str] = []
+    for section in sections:
+        token_count = len(_enc.encode(section))
+        if token_count <= chunk_size:
+            sized_chunks.append(section)
+        else:
+            # Split oversized section by paragraphs first
+            sized_chunks.extend(
+                _split_by_paragraphs(section, chunk_size, overlap)
+            )
+
+    # --- Step 4: merge small adjacent chunks ---
+    merged = _merge_small_chunks(sized_chunks, chunk_size)
+
+    # --- Filter empty / tiny results ---
+    return [c for c in merged if c.strip() and len(c.strip()) > 20]
+
+
+# Minimum chunk size in tokens — chunks smaller than this get merged
+# with their neighbour to avoid low-quality embeddings.
+_MIN_CHUNK_TOKENS = 80
+
+# Pattern that matches Markdown header lines (# through ######)
+_HEADER_RE = re.compile(r"^(#{1,6})\s+", re.MULTILINE)
+
+
+def _split_by_headers(text: str) -> list[str]:
+    """Split text at Markdown header lines, keeping each header with its body.
+
+    Returns a list where each element is one Markdown section (header + body).
+    Leading content before the first header is its own element.
+    """
+    positions = [m.start() for m in _HEADER_RE.finditer(text)]
+
+    if not positions:
+        # No headers — return the whole text as a single section
+        return [text]
+
+    sections: list[str] = []
+
+    # Content before the first header (if any)
+    if positions[0] > 0:
+        preamble = text[: positions[0]].strip()
+        if preamble:
+            sections.append(preamble)
+
+    # Each header + everything until the next header
+    for i, start in enumerate(positions):
+        end = positions[i + 1] if i + 1 < len(positions) else len(text)
+        section = text[start:end].strip()
+        if section:
+            sections.append(section)
+
+    return sections
+
+
+def _split_by_paragraphs(
+    text: str, chunk_size: int, overlap: int,
+) -> list[str]:
+    """Split text at paragraph boundaries (``\\n\\n``), with token-window fallback.
+
+    Paragraphs that individually exceed *chunk_size* tokens are further
+    split using the fixed-size sliding window (``_fixed_window_chunks``).
+    """
+    paragraphs = re.split(r"\n{2,}", text)
+    result: list[str] = []
+    current: list[str] = []
+    current_tokens = 0
+
+    for para in paragraphs:
+        para = para.strip()
+        if not para:
+            continue
+
+        para_tokens = len(_enc.encode(para))
+
+        # If a single paragraph exceeds chunk_size, split it with fixed window
+        if para_tokens > chunk_size:
+            # Flush accumulator first
+            if current:
+                result.append("\n\n".join(current))
+                current, current_tokens = [], 0
+            result.extend(_fixed_window_chunks(para, chunk_size, overlap))
+            continue
+
+        # Account for "\n\n" separator tokens when joining paragraphs
+        separator_cost = len(_enc.encode("\n\n")) if current else 0
+
+        # Would adding this paragraph overflow?
+        if current_tokens + separator_cost + para_tokens > chunk_size and current:
+            result.append("\n\n".join(current))
+            current, current_tokens = [], 0
+            separator_cost = 0
+
+        current.append(para)
+        current_tokens += separator_cost + para_tokens
+
+    if current:
+        result.append("\n\n".join(current))
+
+    return result
+
+
+def _fixed_window_chunks(
+    text: str, chunk_size: int, overlap: int,
+) -> list[str]:
+    """Legacy fixed-size token window chunking — used as last-resort fallback.
 
     Args:
         text: Raw text to chunk.
@@ -59,6 +187,9 @@ def chunk_text(text: str, chunk_size: int, overlap: int) -> list[str]:
     if not tokens:
         return []
 
+    # Guard against infinite loop: overlap must be strictly less than chunk_size
+    safe_overlap = min(overlap, chunk_size - 1) if chunk_size > 0 else 0
+
     chunks: list[str] = []
     start = 0
     while start < len(tokens):
@@ -66,17 +197,46 @@ def chunk_text(text: str, chunk_size: int, overlap: int) -> list[str]:
         chunk_tokens = tokens[start:end]
         chunk_text_str = _enc.decode(chunk_tokens).strip()
 
-        # Only add non-empty, non-whitespace chunks
         if chunk_text_str and len(chunk_text_str) > 20:
             chunks.append(chunk_text_str)
 
         if end >= len(tokens):
             break
 
-        # Slide forward by (chunk_size - overlap)
-        start += chunk_size - overlap
+        start += chunk_size - safe_overlap
 
     return chunks
+
+
+def _merge_small_chunks(chunks: list[str], chunk_size: int) -> list[str]:
+    """Merge adjacent chunks that are below ``_MIN_CHUNK_TOKENS`` tokens.
+
+    Merging stops when adding the next chunk would exceed *chunk_size*.
+    """
+    if not chunks:
+        return []
+
+    merged: list[str] = []
+    current = chunks[0]
+    current_tokens = len(_enc.encode(current))
+
+    for chunk in chunks[1:]:
+        chunk_tokens = len(_enc.encode(chunk))
+
+        separator_cost = len(_enc.encode("\n\n"))
+        can_merge = current_tokens + separator_cost + chunk_tokens <= chunk_size
+
+        # Merge if EITHER side is small (bidirectional merging)
+        if can_merge and (current_tokens < _MIN_CHUNK_TOKENS or chunk_tokens < _MIN_CHUNK_TOKENS):
+            current = current + "\n\n" + chunk
+            current_tokens += separator_cost + chunk_tokens
+        else:
+            merged.append(current)
+            current = chunk
+            current_tokens = chunk_tokens
+
+    merged.append(current)
+    return merged
 
 
 # ------------------------------------------------------------------ #
