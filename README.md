@@ -114,6 +114,37 @@ The `Memory` class supports project/collection scoping, context managers, and wo
 
 ---
 
+## LangChain Integration
+
+*New in v0.4.0.* Use vstash as a retriever in any LangChain chain or agent:
+
+```bash
+pip install vstash[langchain]
+```
+
+```python
+from vstash import Memory
+from vstash.langchain import VstashRetriever
+from langchain_openai import ChatOpenAI
+from langchain.chains import RetrievalQA
+
+mem = Memory(project="my_docs")
+mem.add("report.pdf")
+
+retriever = VstashRetriever(memory=mem, top_k=5)
+chain = RetrievalQA.from_chain_type(
+    llm=ChatOpenAI(),
+    retriever=retriever,
+)
+answer = chain.invoke("What are the key findings?")
+```
+
+The retriever uses vstash's hybrid search (vector + keyword RRF) and returns standard LangChain `Document` objects with metadata (source, title, score). Compatible with LangSmith tracing automatically.
+
+Supports filtering: `VstashRetriever(memory=mem, project="alpha", collection="research", layer="summaries")`.
+
+---
+
 ## Commands
 
 ```
@@ -298,7 +329,8 @@ PDF, DOCX, PPTX, XLSX, Markdown, TXT, HTML, CSV, Python, JavaScript, TypeScript,
 - **Phase 1 ✅:** Core — ingest, embed, hybrid search, answer
 - **Phase 2 ✅:** Usability — MCP server, collections/namespaces, watch mode, frontmatter metadata, export, semantic chunking
 - **Phase 3 ✅:** Python SDK — `from vstash import Memory`
-- **Phase 4:** Sync — cr-sqlite CRDT peer-to-peer sync, multiple profiles, REST API
+- **Phase 4 ✅:** LangChain integration — `VstashRetriever` for chains and agents
+- **Phase 5:** Sync — cr-sqlite CRDT peer-to-peer sync, multiple profiles, REST API
 
 ---
 
