@@ -15,7 +15,6 @@ dependencies = [
     "pydantic>=2.0.0,<3",
     "fastembed>=0.4.0,<1",
     "sqlite-vec>=0.1.6",
-    "markitdown>=0.1.0",
     "typer>=0.12.0",
     "rich>=13.0.0",
     "tiktoken>=0.7.0",
@@ -32,6 +31,7 @@ cerebras = ["cerebras-cloud-sdk>=1.0.0,<2"]
 ollama = ["ollama>=0.3.0,<1"]
 openai = ["openai>=1.0.0,<3"]
 mcp = ["mcp>=1.0.0,<2"]
+ingest = ["markitdown>=0.1.0"]
 langchain = ["langchain-core>=0.2.0,<1"]
 watch = ["watchdog>=4.0.0"]
 all = [
@@ -39,6 +39,7 @@ all = [
     "vstash[ollama]",
     "vstash[openai]",
     "vstash[mcp]",
+    "vstash[ingest]",
     "vstash[langchain]",
     "vstash[watch]",
 ]
