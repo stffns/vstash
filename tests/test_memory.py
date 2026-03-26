@@ -102,10 +102,12 @@ class TestMemoryAdd:
         doc.write_text("# Hello\n\nThis is a test document with enough content to chunk.")
 
         with Memory(db=tmp_path / "test.db") as mem:
-            result = mem.add(doc)
-            assert isinstance(result, IngestResult)
-            assert result.status == "ok"
-            assert result.chunks > 0
+            results = mem.add(doc)
+            assert isinstance(results, list)
+            assert len(results) == 1
+            assert isinstance(results[0], IngestResult)
+            assert results[0].status == "ok"
+            assert results[0].chunks > 0
 
     @requires_sqlite_vec
     def test_add_with_project(self, tmp_path: Path) -> None:
@@ -114,7 +116,7 @@ class TestMemoryAdd:
         doc.write_text("Meeting notes about the project requirements and deadlines.")
 
         with Memory(db=tmp_path / "test.db") as mem:
-            result = mem.add(doc, project="my_project")
+            [result] = mem.add(doc, project="my_project")
             assert result.status == "ok"
             docs = mem.list(project="my_project")
             assert len(docs) >= 1
@@ -126,9 +128,9 @@ class TestMemoryAdd:
         doc.write_text("Some content that should only be ingested once for testing.")
 
         with Memory(db=tmp_path / "test.db") as mem:
-            r1 = mem.add(doc)
+            [r1] = mem.add(doc)
             assert r1.status == "ok"
-            r2 = mem.add(doc)
+            [r2] = mem.add(doc)
             assert r2.status == "skipped"
 
     @requires_sqlite_vec
@@ -139,7 +141,7 @@ class TestMemoryAdd:
 
         with Memory(db=tmp_path / "test.db") as mem:
             mem.add(doc)
-            r2 = mem.add(doc, force=True)
+            [r2] = mem.add(doc, force=True)
             assert r2.status == "ok"
 
 

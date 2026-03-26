@@ -134,28 +134,53 @@ def _error(message: str) -> str:
 # ------------------------------------------------------------------ #
 
 
+_MAX_JOBS = 100  # Cap job store to prevent unbounded growth
+
+
+def _cleanup_jobs() -> None:
+    """Remove oldest completed/errored jobs when store exceeds _MAX_JOBS."""
+    with _jobs_lock:
+        if len(_jobs) <= _MAX_JOBS:
+            return
+        # Remove completed/errored jobs first (oldest first by insertion order)
+        to_remove = []
+        for jid, job in _jobs.items():
+            if job["status"] in ("completed", "error"):
+                to_remove.append(jid)
+        for jid in to_remove[: len(_jobs) - _MAX_JOBS]:
+            del _jobs[jid]
+
+
 def _run_directory_job(
     job_id: str,
     directory: str,
     cfg: VstashConfig,
-    store: VstashStore,
     *,
     force: bool,
     collection: str,
     meta: dict[str, Any],
 ) -> None:
-    """Background worker for directory ingestion."""
+    """Background worker for directory ingestion.
+
+    Opens its own VstashStore connection to avoid sharing SQLite across threads.
+    """
     try:
+        from .embed import get_embedding_dim
         from .ingest import ingest_directory
 
-        results = ingest_directory(
-            directory,
-            cfg,
-            store,
-            force=force,
-            collection=collection,
-            **meta,
-        )
+        dim = get_embedding_dim(cfg.embeddings.model)
+        store = VstashStore(cfg.db_path, embedding_dim=dim)
+        try:
+            results = ingest_directory(
+                directory,
+                cfg,
+                store,
+                force=force,
+                collection=collection,
+                **meta,
+            )
+        finally:
+            store.close()
         with _jobs_lock:
             _jobs[job_id].update(
                 {
@@ -164,6 +189,7 @@ def _run_directory_job(
                     "results": [r.model_dump() for r in results],
                 }
             )
+        _cleanup_jobs()
     except Exception as exc:
         logger.exception("Background ingestion failed for job %s", job_id)
         with _jobs_lock:
@@ -237,7 +263,7 @@ def vstash_add(
                 }
             threading.Thread(
                 target=_run_directory_job,
-                args=(job_id, str(resolved), cfg, store),
+                args=(job_id, str(resolved), cfg),
                 kwargs={
                     "force": force,
                     "collection": collection,
