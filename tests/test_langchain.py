@@ -10,7 +10,7 @@ import pytest
 from tests.conftest import requires_sqlite_vec
 
 # Skip the entire module if langchain-core is not installed.
-langchain_core = pytest.importorskip("langchain_core")
+pytest.importorskip("langchain_core")
 
 from langchain_core.documents import Document  # noqa: E402
 
@@ -116,6 +116,19 @@ class TestVstashRetrieverUnit:
         assert "project" not in call_kwargs.kwargs
         assert "collection" not in call_kwargs.kwargs
         assert "layer" not in call_kwargs.kwargs
+
+    def test_none_filter_overrides_memory_defaults(self) -> None:
+        """Passing filter=None should be forwarded to search to clear scoping."""
+        retriever = self._make_retriever(project=None, collection=None, layer=None)
+        retriever.invoke("query")
+
+        call_kwargs = retriever.memory.search.call_args.kwargs
+        assert "project" in call_kwargs
+        assert call_kwargs["project"] is None
+        assert "collection" in call_kwargs
+        assert call_kwargs["collection"] is None
+        assert "layer" in call_kwargs
+        assert call_kwargs["layer"] is None
 
     def test_empty_results(self) -> None:
         """Returns empty list when Memory.search returns no results."""

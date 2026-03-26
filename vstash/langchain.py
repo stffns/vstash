@@ -87,14 +87,14 @@ class VstashRetriever(BaseRetriever):
         Returns:
             List of LangChain Document objects with chunk text and metadata.
         """
-        # Build kwargs for Memory.search(), only passing overrides that are set
+        # Build kwargs for Memory.search(), only passing overrides explicitly set
+        # by the caller. Using exclude_unset=True means passing project=None
+        # will correctly override a Memory scoped to a project.
         search_kwargs: dict[str, Any] = {"top_k": self.top_k}
-        if self.project is not None:
-            search_kwargs["project"] = self.project
-        if self.collection is not None:
-            search_kwargs["collection"] = self.collection
-        if self.layer is not None:
-            search_kwargs["layer"] = self.layer
+        retriever_filters = self.model_dump(
+            include={"project", "collection", "layer"}, exclude_unset=True
+        )
+        search_kwargs.update(retriever_filters)
 
         results = self.memory.search(query, **search_kwargs)
 
