@@ -94,12 +94,12 @@ class Memory:
         project: object = _UNSET,
         layer: str | None = None,
         tags: str | None = None,
-    ) -> IngestResult | list[IngestResult]:
+    ) -> list[IngestResult]:
         """Ingest a file, URL, or directory into memory.
 
         For directories, recursively ingests all supported files while
-        respecting .gitignore patterns and excluding common non-content
-        directories (__pycache__, node_modules, .venv, etc.).
+        respecting top-level .gitignore patterns and excluding common
+        non-content directories (__pycache__, node_modules, .venv, etc.).
 
         Args:
             source: File path, URL, or directory to ingest.
@@ -110,28 +110,34 @@ class Memory:
             tags: Comma-separated tags.
 
         Returns:
-            IngestResult for a single file/URL, or list[IngestResult] for directories.
+            List of IngestResult (one per file, even for single-file ingestion).
         """
         col = self._collection if collection is _UNSET else collection
         proj = self._project if project is _UNSET else project
 
-        resolved = Path(source).expanduser().resolve()
-        if resolved.is_dir():
-            from .ingest import ingest_directory
+        source_str = str(source)
 
-            return ingest_directory(
-                str(resolved),
-                self._cfg,
-                self._store,
-                force=force,
-                collection=col,
-                project=proj,
-                layer=layer,
-                tags=tags,
-            )
+        # URLs: skip Path.resolve() which can fail or be meaningless
+        is_url = source_str.startswith(("http://", "https://"))
 
-        return ingest(
-            str(source),
+        if not is_url:
+            resolved = Path(source).expanduser().resolve()
+            if resolved.is_dir():
+                from .ingest import ingest_directory
+
+                return ingest_directory(
+                    str(resolved),
+                    self._cfg,
+                    self._store,
+                    force=force,
+                    collection=col,
+                    project=proj,
+                    layer=layer,
+                    tags=tags,
+                )
+
+        result = ingest(
+            source_str,
             self._cfg,
             self._store,
             force=force,
@@ -140,6 +146,7 @@ class Memory:
             layer=layer,
             tags=tags,
         )
+        return [result]
 
     def search(
         self,
