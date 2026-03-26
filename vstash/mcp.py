@@ -212,7 +212,8 @@ def vstash_add(
 
     For directories: ingestion runs in background to avoid timeouts.
     Returns a job_id — poll with vstash_job(job_id) to check progress.
-    Excludes __pycache__, node_modules, .venv, .git, and .gitignore patterns.
+    Excludes __pycache__, node_modules, .venv, .git, and basic patterns from
+    a top-level .gitignore (no nested files or negation rules).
 
     YAML frontmatter (---/--- block) is auto-parsed for project, layer, tags.
     Explicit params override frontmatter values.
