@@ -32,12 +32,15 @@ cerebras = ["cerebras-cloud-sdk>=1.0.0,<2"]
 ollama = ["ollama>=0.3.0,<1"]
 openai = ["openai>=1.0.0,<3"]
 mcp = ["mcp>=1.0.0,<2"]
+langchain = ["langchain-core>=0.2.0,<1"]
 watch = ["watchdog>=4.0.0"]
 all = [
     "vstash[cerebras]",
     "vstash[ollama]",
     "vstash[openai]",
     "vstash[mcp]",
+    "vstash[langchain]",
+    "vstash[watch]",
 ]
 dev = [
     "pytest",
