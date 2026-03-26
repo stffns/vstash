@@ -53,6 +53,13 @@ _config: VstashConfig | None = None
 _store: VstashStore | None = None
 _lock = threading.RLock()
 
+# ------------------------------------------------------------------ #
+# Background job tracking for async directory ingestion                #
+# ------------------------------------------------------------------ #
+
+_jobs: dict[str, dict[str, Any]] = {}
+_jobs_lock = threading.Lock()
+
 
 def _get_config() -> VstashConfig:
     """Load configuration lazily (same resolution as CLI).
@@ -127,6 +134,42 @@ def _error(message: str) -> str:
 # ------------------------------------------------------------------ #
 
 
+def _run_directory_job(
+    job_id: str,
+    directory: str,
+    cfg: VstashConfig,
+    store: VstashStore,
+    *,
+    force: bool,
+    collection: str,
+    meta: dict[str, Any],
+) -> None:
+    """Background worker for directory ingestion."""
+    try:
+        from .ingest import ingest_directory
+
+        results = ingest_directory(
+            directory,
+            cfg,
+            store,
+            force=force,
+            collection=collection,
+            **meta,
+        )
+        with _jobs_lock:
+            _jobs[job_id].update(
+                {
+                    "status": "completed",
+                    "files_processed": len(results),
+                    "results": [r.model_dump() for r in results],
+                }
+            )
+    except Exception as exc:
+        logger.exception("Background ingestion failed for job %s", job_id)
+        with _jobs_lock:
+            _jobs[job_id].update({"status": "error", "error": str(exc)})
+
+
 @mcp_server.tool()
 def vstash_add(
     path: str,
@@ -139,7 +182,11 @@ def vstash_add(
     """Ingest a file, directory, or URL into vstash memory.
 
     Supports PDF, DOCX, PPTX, XLSX, Markdown, plain text, code files,
-    and HTTP(S) URLs. Directories are ingested recursively.
+    and HTTP(S) URLs.
+
+    For directories: ingestion runs in background to avoid timeouts.
+    Returns a job_id — poll with vstash_job(job_id) to check progress.
+    Excludes __pycache__, node_modules, .venv, .git, and .gitignore patterns.
 
     YAML frontmatter (---/--- block) is auto-parsed for project, layer, tags.
     Explicit params override frontmatter values.
@@ -153,10 +200,10 @@ def vstash_add(
         tags: Comma-separated tags (overrides frontmatter).
 
     Returns:
-        JSON string with ingestion result (status, chunks, timing).
+        JSON string with ingestion result, or job_id for directories.
     """
     try:
-        from .ingest import ingest, ingest_directory
+        from .ingest import ingest
 
         force = bool(force)
         cfg = _get_config()
@@ -177,24 +224,36 @@ def vstash_add(
 
         resolved = Path(path).expanduser().resolve()
 
-        # Directory → recursive ingestion
+        # Directory → launch background job
         if resolved.is_dir():
-            results: list[IngestResult] = ingest_directory(
-                str(resolved),
-                cfg,
-                store,
-                force=force,
-                collection=collection,
-                **meta,
+            import uuid
+
+            job_id = uuid.uuid4().hex[:12]
+            with _jobs_lock:
+                _jobs[job_id] = {
+                    "status": "running",
+                    "path": str(resolved),
+                    "collection": collection,
+                }
+            threading.Thread(
+                target=_run_directory_job,
+                args=(job_id, str(resolved), cfg, store),
+                kwargs={
+                    "force": force,
+                    "collection": collection,
+                    "meta": meta,
+                },
+                daemon=True,
+            ).start()
+            return _ok(
+                {
+                    "status": "accepted",
+                    "job_id": job_id,
+                    "path": str(resolved),
+                    "message": "Directory ingestion started in background. "
+                    "Use vstash_job(job_id) to check progress.",
+                }
             )
-            summary = {
-                "status": "ok",
-                "path": str(resolved),
-                "collection": collection,
-                "files_processed": len(results),
-                "results": [r.model_dump() for r in results],
-            }
-            return _ok(summary)
 
         # Single file
         result = ingest(
@@ -211,9 +270,31 @@ def vstash_add(
         return _error(f"Path not found: {path}")
     except PermissionError:
         return _error(f"Permission denied: {path}")
+    except ValueError as exc:
+        return _error(str(exc))
     except Exception as exc:
         logger.exception("vstash_add failed")
         return _error(f"Ingestion failed: {exc}")
+
+
+@mcp_server.tool()
+def vstash_job(job_id: str) -> str:
+    """Check the status of a background ingestion job.
+
+    Directory ingestion runs in the background to avoid timeouts.
+    Use this tool to poll for completion.
+
+    Args:
+        job_id: The job ID returned by vstash_add for directory ingestion.
+
+    Returns:
+        JSON object with job status (running, completed, or error).
+    """
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+    if job is None:
+        return _error(f"Job not found: {job_id}")
+    return _ok(job)
 
 
 @mcp_server.tool()

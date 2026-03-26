@@ -25,7 +25,7 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 
-from .config import SUPPORTED_EXTENSIONS, VstashConfig
+from .config import EXCLUDED_DIRS, MAX_DIR_BYTES, MAX_DIR_FILES, SUPPORTED_EXTENSIONS, VstashConfig
 from .embed import embed_texts
 from .models import IngestResult
 from .store import VstashStore
@@ -430,6 +430,65 @@ def ingest(
     )
 
 
+def _load_gitignore(directory: Path) -> list[str]:
+    """Load .gitignore patterns from directory, returns list of patterns."""
+    gitignore = directory / ".gitignore"
+    if not gitignore.is_file():
+        return []
+    patterns: list[str] = []
+    for line in gitignore.read_text(errors="ignore").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            patterns.append(line)
+    return patterns
+
+
+def _is_gitignored(file_path: Path, root: Path, patterns: list[str]) -> bool:
+    """Check if a file matches any .gitignore pattern (simple matching)."""
+    import fnmatch
+
+    rel = str(file_path.relative_to(root))
+    for pattern in patterns:
+        # Match against full relative path and filename
+        if fnmatch.fnmatch(rel, pattern) or fnmatch.fnmatch(file_path.name, pattern):
+            return True
+        # Handle directory patterns like "dist/"
+        if pattern.endswith("/"):
+            dir_pattern = pattern.rstrip("/")
+            if any(part == dir_pattern for part in file_path.relative_to(root).parts):
+                return True
+    return False
+
+
+def _should_exclude_dir(name: str) -> bool:
+    """Check if a directory name should be excluded from ingestion."""
+    import fnmatch
+
+    if name.startswith("."):
+        return True
+    return any(fnmatch.fnmatch(name, pat) for pat in EXCLUDED_DIRS)
+
+
+def _collect_files(directory: Path) -> list[Path]:
+    """Collect files for ingestion, respecting exclusions and .gitignore."""
+    gitignore_patterns = _load_gitignore(directory)
+
+    files: list[Path] = []
+    for f in directory.rglob("*"):
+        if not f.is_file():
+            continue
+        if f.suffix.lower() not in SUPPORTED_EXTENSIONS:
+            continue
+        # Check excluded directories in the path
+        if any(_should_exclude_dir(part) for part in f.relative_to(directory).parts[:-1]):
+            continue
+        # Check .gitignore patterns
+        if gitignore_patterns and _is_gitignored(f, directory, gitignore_patterns):
+            continue
+        files.append(f)
+    return files
+
+
 def ingest_directory(
     directory: str,
     cfg: VstashConfig,
@@ -443,6 +502,12 @@ def ingest_directory(
 ) -> list[IngestResult]:
     """Recursively ingest all supported files in a directory.
 
+    Respects .gitignore patterns and excludes common non-content directories
+    (__pycache__, node_modules, .venv, dist, build, etc.).
+
+    Safety limits: raises ValueError if the directory exceeds MAX_DIR_FILES
+    or MAX_DIR_BYTES to prevent accidental resource exhaustion.
+
     Args:
         directory: Path to directory to scan.
         cfg: Vex configuration.
@@ -455,19 +520,36 @@ def ingest_directory(
 
     Returns:
         List of IngestResult for each processed file.
+
+    Raises:
+        ValueError: If file count or total size exceeds safety limits.
     """
     path = Path(directory)
-    files = [
-        f
-        for f in path.rglob("*")
-        if f.is_file()
-        and f.suffix.lower() in SUPPORTED_EXTENSIONS
-        and not any(part.startswith(".") for part in f.parts)  # skip hidden
-    ]
+    files = _collect_files(path)
 
     if not files:
         console.print(f"[yellow]No supported files found in {directory}[/yellow]")
         return []
+
+    # Safety limits
+    if len(files) > MAX_DIR_FILES:
+        raise ValueError(
+            f"Directory has {len(files)} files (limit: {MAX_DIR_FILES}). "
+            f"Use a subdirectory or increase MAX_DIR_FILES in config."
+        )
+
+    total_bytes = sum(f.stat().st_size for f in files)
+    if total_bytes > MAX_DIR_BYTES:
+        mb = total_bytes / (1024 * 1024)
+        limit_mb = MAX_DIR_BYTES / (1024 * 1024)
+        raise ValueError(
+            f"Directory is {mb:.0f} MB (limit: {limit_mb:.0f} MB). "
+            f"Use a subdirectory or increase MAX_DIR_BYTES in config."
+        )
+
+    console.print(
+        f"[dim]Found {len(files)} files ({total_bytes / 1024:.0f} KB) in {directory}[/dim]"
+    )
 
     results: list[IngestResult] = []
     with Progress(
@@ -688,7 +770,12 @@ def _parse(source: str) -> str:
     """
     import tempfile
 
-    from markitdown import MarkItDown
+    try:
+        from markitdown import MarkItDown
+    except ImportError as exc:
+        raise ImportError(
+            "File ingestion requires markitdown. Install it with: pip install vstash[ingest]"
+        ) from exc
 
     md = MarkItDown()
 

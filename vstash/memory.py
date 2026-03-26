@@ -94,11 +94,15 @@ class Memory:
         project: object = _UNSET,
         layer: str | None = None,
         tags: str | None = None,
-    ) -> IngestResult:
-        """Ingest a file or URL into memory.
+    ) -> IngestResult | list[IngestResult]:
+        """Ingest a file, URL, or directory into memory.
+
+        For directories, recursively ingests all supported files while
+        respecting .gitignore patterns and excluding common non-content
+        directories (__pycache__, node_modules, .venv, etc.).
 
         Args:
-            source: File path or URL to ingest.
+            source: File path, URL, or directory to ingest.
             force: Re-ingest even if the document already exists.
             collection: Override the default collection. Pass None for no collection.
             project: Override the default project tag. Pass None for no project.
@@ -106,10 +110,26 @@ class Memory:
             tags: Comma-separated tags.
 
         Returns:
-            IngestResult with status, chunk count, timing, etc.
+            IngestResult for a single file/URL, or list[IngestResult] for directories.
         """
         col = self._collection if collection is _UNSET else collection
         proj = self._project if project is _UNSET else project
+
+        resolved = Path(source).expanduser().resolve()
+        if resolved.is_dir():
+            from .ingest import ingest_directory
+
+            return ingest_directory(
+                str(resolved),
+                self._cfg,
+                self._store,
+                force=force,
+                collection=col,
+                project=proj,
+                layer=layer,
+                tags=tags,
+            )
+
         return ingest(
             str(source),
             self._cfg,

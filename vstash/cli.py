@@ -27,6 +27,15 @@ from .embed import embed_query, get_embedding_dim, warmup
 from .ingest import ingest, ingest_directory
 from .store import VstashStore
 
+from . import __version__
+
+
+def _version_callback(value: bool) -> None:
+    if value:
+        print(f"vstash {__version__}")
+        raise typer.Exit()
+
+
 app = typer.Typer(
     name="vstash",
     help="Local document memory with instant semantic search.",
@@ -34,6 +43,20 @@ app = typer.Typer(
     rich_markup_mode="rich",
 )
 console = Console()
+
+
+@app.callback()
+def _app_callback(
+    version: bool = typer.Option(
+        False,
+        "--version",
+        "-V",
+        callback=_version_callback,
+        is_eager=True,
+        help="Show version and exit.",
+    ),
+) -> None:
+    """Local document memory with instant semantic search."""
 
 
 def _get_store(

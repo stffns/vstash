@@ -163,6 +163,29 @@ SUPPORTED_EXTENSIONS: frozenset[str] = frozenset(
     }
 )
 
+# Directories always excluded from recursive ingestion and watch mode.
+EXCLUDED_DIRS: frozenset[str] = frozenset(
+    {
+        "__pycache__",
+        "node_modules",
+        ".venv",
+        "venv",
+        ".env",
+        ".tox",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        "dist",
+        "build",
+        ".eggs",
+        "*.egg-info",
+    }
+)
+
+# Safety limits for directory ingestion.
+MAX_DIR_FILES = 500
+MAX_DIR_BYTES = 200 * 1024 * 1024  # 200 MB
+
 
 def load_config() -> VstashConfig:
     """Load config from vstash.toml, falling back to defaults.
