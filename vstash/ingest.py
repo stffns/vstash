@@ -431,23 +431,30 @@ def ingest(
 
 
 def _load_gitignore(directory: Path) -> list[str]:
-    """Load .gitignore patterns from directory, returns list of patterns."""
+    """Load top-level .gitignore patterns from directory.
+
+    Only reads the root .gitignore — nested .gitignore files and global
+    git config are not supported. Negation patterns (!) are ignored.
+    """
     gitignore = directory / ".gitignore"
     if not gitignore.is_file():
         return []
     patterns: list[str] = []
     for line in gitignore.read_text(errors="ignore").splitlines():
         line = line.strip()
-        if line and not line.startswith("#"):
+        if line and not line.startswith("#") and not line.startswith("!"):
             patterns.append(line)
     return patterns
 
 
 def _is_gitignored(file_path: Path, root: Path, patterns: list[str]) -> bool:
-    """Check if a file matches any .gitignore pattern (simple matching)."""
+    """Check if a file matches any .gitignore pattern (simplified matching).
+
+    Uses POSIX-normalized relative paths for cross-platform compatibility.
+    """
     import fnmatch
 
-    rel = str(file_path.relative_to(root))
+    rel = file_path.relative_to(root).as_posix()
     for pattern in patterns:
         # Match against full relative path and filename
         if fnmatch.fnmatch(rel, pattern) or fnmatch.fnmatch(file_path.name, pattern):
@@ -470,22 +477,28 @@ def _should_exclude_dir(name: str) -> bool:
 
 
 def _collect_files(directory: Path) -> list[Path]:
-    """Collect files for ingestion, respecting exclusions and .gitignore."""
+    """Collect files for ingestion using os.walk with directory pruning.
+
+    Prunes excluded directories in-place so they are never descended into,
+    which is significantly faster than rglob + post-filtering for large trees.
+    Applies top-level .gitignore patterns (simplified matching, no negation).
+    """
+    import os
+
     gitignore_patterns = _load_gitignore(directory)
 
     files: list[Path] = []
-    for f in directory.rglob("*"):
-        if not f.is_file():
-            continue
-        if f.suffix.lower() not in SUPPORTED_EXTENSIONS:
-            continue
-        # Check excluded directories in the path
-        if any(_should_exclude_dir(part) for part in f.relative_to(directory).parts[:-1]):
-            continue
-        # Check .gitignore patterns
-        if gitignore_patterns and _is_gitignored(f, directory, gitignore_patterns):
-            continue
-        files.append(f)
+    for dirpath, dirnames, filenames in os.walk(directory):
+        # Prune excluded directories in-place — os.walk won't descend into them
+        dirnames[:] = [d for d in dirnames if not _should_exclude_dir(d)]
+
+        for fname in filenames:
+            fpath = Path(dirpath) / fname
+            if fpath.suffix.lower() not in SUPPORTED_EXTENSIONS:
+                continue
+            if gitignore_patterns and _is_gitignored(fpath, directory, gitignore_patterns):
+                continue
+            files.append(fpath)
     return files
 
 
@@ -535,7 +548,7 @@ def ingest_directory(
     if len(files) > MAX_DIR_FILES:
         raise ValueError(
             f"Directory has {len(files)} files (limit: {MAX_DIR_FILES}). "
-            f"Use a subdirectory or increase MAX_DIR_FILES in config."
+            f"Use a subdirectory or ingest files individually."
         )
 
     total_bytes = sum(f.stat().st_size for f in files)
@@ -544,7 +557,7 @@ def ingest_directory(
         limit_mb = MAX_DIR_BYTES / (1024 * 1024)
         raise ValueError(
             f"Directory is {mb:.0f} MB (limit: {limit_mb:.0f} MB). "
-            f"Use a subdirectory or increase MAX_DIR_BYTES in config."
+            f"Use a subdirectory or ingest files individually."
         )
 
     console.print(
