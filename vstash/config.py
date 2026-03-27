@@ -185,6 +185,8 @@ SUPPORTED_EXTENSIONS: frozenset[str] = frozenset(
         ".py",
         ".js",
         ".ts",
+        ".tsx",
+        ".jsx",
         ".go",
         ".rs",
         ".java",

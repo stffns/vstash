@@ -92,12 +92,13 @@ def chunk_text(text: str, chunk_size: int, overlap: int) -> list[str]:
     merged = _merge_small_chunks(sized_chunks, chunk_size)
 
     # --- Filter empty / tiny results ---
-    return [c for c in merged if c.strip() and len(c.strip()) > 20]
+    return [c for c in merged if c.strip() and len(c.strip()) > _MIN_CHUNK_CHARS]
 
 
 # Minimum chunk size in tokens — chunks smaller than this get merged
 # with their neighbour to avoid low-quality embeddings.
 _MIN_CHUNK_TOKENS = 80
+_MIN_CHUNK_CHARS = 20
 
 # Pattern that matches Markdown header lines (# through ######)
 _HEADER_RE = re.compile(r"^(#{1,6})\s+", re.MULTILINE)
@@ -169,15 +170,12 @@ def _split_code_blocks(text: str, language: str) -> list[str]:
         if block:
             blocks.append(block)
 
-    # Post-process: attach trailing decorator lines from previous block
-    # to the next block (Python-specific, but harmless for other languages).
-    if language == "python" and len(blocks) > 1:
+    # Post-process: attach trailing @decorator / @annotation lines from
+    # previous block to the next block (Python decorators, Java annotations).
+    if language in ("python", "java") and len(blocks) > 1:
         blocks = _attach_decorators(blocks)
 
     return blocks
-
-
-_DECORATOR_RE = re.compile(r"^@\w+", re.MULTILINE)
 
 
 def _attach_decorators(blocks: list[str]) -> list[str]:
@@ -189,7 +187,9 @@ def _attach_decorators(blocks: list[str]) -> list[str]:
         decorator_start = len(lines)
         for j in range(len(lines) - 1, -1, -1):
             stripped = lines[j].strip()
-            if stripped.startswith("@") and not stripped.startswith("@="):
+            if stripped.startswith("@") and not stripped.startswith(
+                "@="
+            ):  # exclude @= (matrix mul operator)
                 decorator_start = j
             elif stripped:
                 break
@@ -244,7 +244,7 @@ def chunk_code(text: str, chunk_size: int, overlap: int, language: str) -> list[
     # Step 3: merge small adjacent chunks
     merged = _merge_small_chunks(sized_chunks, chunk_size)
 
-    return [c for c in merged if c.strip() and len(c.strip()) > 20]
+    return [c for c in merged if c.strip() and len(c.strip()) > _MIN_CHUNK_CHARS]
 
 
 def _split_by_headers(text: str) -> list[str]:
@@ -356,7 +356,7 @@ def _fixed_window_chunks(
         chunk_tokens = tokens[start:end]
         chunk_text_str = enc.decode(chunk_tokens).strip()
 
-        if chunk_text_str and len(chunk_text_str) > 20:
+        if chunk_text_str and len(chunk_text_str) > _MIN_CHUNK_CHARS:
             chunks.append(chunk_text_str)
 
         if end >= len(tokens):
@@ -445,6 +445,8 @@ def _get_source_type(source: str) -> str:
         ".go": "code",
         ".rs": "code",
         ".java": "code",
+        ".tsx": "code",
+        ".jsx": "code",
         ".html": "html",
         ".htm": "html",
     }
