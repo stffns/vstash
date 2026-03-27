@@ -384,7 +384,7 @@ La simulación debe:
 **Mitigaciones:**
 1. **Decay temporal** rompe el ciclo — un chunk con `access_count` alto pero sin acceso en 60 días decae significativamente, cediendo espacio a contexto nuevo relevante.
 2. **`log(1 + freq_score)`** satura el boost — la diferencia entre 100 y 1000 accesos es mucho menor que entre 0 y 10.
-3. **α=0.5** (post-experimento) balancea semántica y memoria — el NDCG óptimo se alcanza con peso equitativo, no dominancia semántica.
+3. **α=0.8** (post-experimento con PDFs completos) da prioridad a la semántica — con corpus ruidosos, la similitud necesita dominar para filtrar antes de que la memoria ajuste.
 
 ### Over-fetch vs Latencia
 
@@ -407,89 +407,124 @@ temporal dan una ventana de competitividad inicial que decae naturalmente.
 
 ### Configuración del Experimento
 
-- **Corpus:** 24 papers de arXiv (2023–2026), 251 chunks
+- **Corpus:** 24 papers de arXiv (2023–2026), **786 chunks** (PDFs completos, no abstracts)
 - **Queries:** 10 queries con relevance judgments manuales (NDCG@10)
 - **Escenarios:** 5 patrones de acceso (uniform, recent_heavy_use, stale_favorites, mixed_recency, benchmark_focused)
 - **Grid:** 16 configuraciones (α: 0.4–0.9, β: 0.1–0.6, λ: 0.01–0.20, over_fetch: 20–100)
+- **Baseline NDCG@10:** 0.6081 (RRF puro, sin scoring)
 
 ### Defaults Óptimos (validados por grid search — PDFs completos)
 
 ```toml
 [scoring]
 enabled = true
-alpha = 0.8           # NDCG 0.6357 (+4.5% avg, +18.8% benchmark_focused)
+alpha = 0.8           # avg NDCG 0.6357 (+4.5% vs baseline 0.6081)
 beta = 0.2
 decay_lambda = 0.05   # decay conservador — semanas, no días
 over_fetch = 50
 track_access = true
 ```
 
-> **Nota:** Resultados re-validados con corpus completo (786 chunks de 24 PDFs)
-> vs corpus anterior de abstracts (251 chunks). Con contenido real, la semántica
-> necesita mayor peso (α=0.8) para filtrar ruido de tablas/referencias en PDFs.
+> **Metodología:** Defaults seleccionados por **avg NDCG across 5 scenarios**
+> (uniform, recent_heavy_use, stale_favorites, mixed_recency, benchmark_focused),
+> no por el mejor escenario individual. El +4.5% avg es la métrica principal.
+>
+> **Corpus:** 786 chunks de 24 PDFs completos de arXiv (no abstracts).
+> El baseline es más bajo (0.6081 vs 0.8225 con abstracts) porque PDFs
+> completos incluyen tablas, referencias y headers que agregan ruido.
+> Con más ruido, la semántica necesita mayor peso (α=0.8) para filtrar
+> antes de que la memoria ajuste.
+>
+> **Caso especial — benchmark_focused:** Cuando los papers con access_count
+> elevado coinciden con los relevance judgments, el lift puede alcanzar +18.8%.
+> Este escenario es partly circular (frequency boost alineado con ground truth)
+> y no debe usarse como métrica principal para elegir defaults.
 
 ### Comportamiento en los Bordes — Guía de Configuración
+
+> **Nota:** Los valores de NDCG a continuación provienen del grid search con PDFs
+> completos (baseline 0.6081). Los valores cualitativos (comportamiento, cuándo
+> elegir) se mantienen válidos independientemente del corpus.
 
 El espectro α/β controla el equilibrio entre **"qué es relevante"** (semántica)
 y **"qué ha sido útil"** (memoria). Cada extremo tiene un perfil de usuario distinto:
 
-#### α → 1.0, β → 0.0 — Modo Semántico Puro
+#### α = 0.9, β = 0.1 — Modo Semántico Casi Puro
 
 ```
-final_score ≈ normalized_rrf     (la memoria no influye)
+final_score = 0.9 · sim + 0.1 · memory
 ```
 
-| Métrica | Valor observado |
-|---------|----------------|
-| NDCG@10 | 0.8225 (≈ baseline) |
-| Displacement | 0.77 (mínimo) |
-| Recency corr. | +0.418 (bajo) |
+| Métrica | Valor observado (avg 5 scenarios) |
+|---------|-----------------------------------|
+| Avg NDCG@10 | 0.6273 (+3.2% vs baseline) |
+| Displacement | 1.25–1.51 |
+| Recency corr. | +0.549–0.670 |
 
-**Comportamiento:** La búsqueda es determinista y reproducible — misma query,
-mismos resultados siempre. El scoring existe pero es efectivamente inerte.
-Chunks viejos con alta relevancia semántica dominan permanentemente.
+**Comportamiento:** La semántica domina. La memoria es un desempate muy sutil.
+Resultados casi idénticos a RRF puro, pero chunks con uso reciente ganan en
+empates semánticos.
 
-**Cuándo elegir:** Corpus estático que no cambia (docs legales, referencia técnica).
-O cuando la reproducibilidad de resultados es crítica (auditoría, debugging).
+**Cuándo elegir:** Corpus estático o cuando la reproducibilidad importa.
 
-#### α = 0.7, β = 0.3 — Modo Semántica Dominante (default original)
+#### α = 0.8, β = 0.2 — Modo Semántica Dominante (default óptimo) ★
+
+```
+final_score = 0.8 · sim + 0.2 · memory
+```
+
+| Métrica | Valor observado (avg 5 scenarios) |
+|---------|-----------------------------------|
+| Avg NDCG@10 | 0.6357 (+4.5% vs baseline) |
+| Min NDCG | 0.5910 (mixed_recency) |
+| Max NDCG | 0.7220 (benchmark_focused) |
+| Displacement | 1.34–1.96 |
+| Recency corr. | +0.576–0.740 |
+
+**Comportamiento:** La semántica determina el ranking base. La memoria actúa
+como boost moderado — suficiente para subir chunks frecuentemente accedidos
+1-2 posiciones, pero no para enterrar resultados semánticamente relevantes.
+
+**Cuándo elegir:** Default recomendado. Equilibrio robusto entre relevancia
+semántica y señal de uso, validado con corpus ruidoso de PDFs completos.
+
+#### α = 0.7, β = 0.3 — Modo Balanceado
 
 ```
 final_score = 0.7 · sim + 0.3 · memory
 ```
 
-| Métrica | Valor observado |
-|---------|----------------|
-| NDCG@10 | 0.8890 (+6.81%) |
-| Displacement | 0.89 |
-| Recency corr. | +0.488 |
+| Métrica | Valor observado (avg 5 scenarios) |
+|---------|-----------------------------------|
+| Avg NDCG@10 | 0.5990–0.6393 (varía por λ y scenario) |
+| Displacement | 1.37–2.30 |
+| Recency corr. | +0.575–0.704 |
 
-**Comportamiento:** La semántica determina el ranking base. La memoria
-actúa como desempate sutil — entre dos chunks igualmente relevantes, sube
-el más reciente o frecuente. Cambios de ranking son de 1-2 posiciones.
+**Comportamiento:** Equilibrio entre semántica y memoria. Más sensible a
+patrones de acceso que α=0.8. Funciona bien con historial de uso maduro,
+pero puede empeorar vs baseline en uniform scenario.
 
-**Cuándo elegir:** Usuarios conservadores que quieren scoring pero con cambios
-mínimos vs RRF puro. Bases de conocimiento donde la relevancia temática
-importa más que la frescura.
+**Cuándo elegir:** Usuarios activos cuyo patrón de acceso es señal confiable.
 
-#### α = 0.5, β = 0.5 — Modo Balanceado (default óptimo) ★
+#### α = 0.5, β = 0.5 — Modo Memoria Fuerte
 
 ```
 final_score = 0.5 · sim + 0.5 · memory
 ```
 
-| Métrica | Valor observado |
-|---------|----------------|
-| NDCG@10 | 0.9044 (+8.35%) |
-| Displacement | 1.24 |
-| Recency corr. | +0.547 |
+| Métrica | Valor observado (avg 5 scenarios) |
+|---------|-----------------------------------|
+| Avg NDCG@10 | 0.5478–0.6410 (alta varianza por scenario) |
+| Displacement | 1.57–2.57 |
+| Recency corr. | +0.614–0.796 |
 
-**Comportamiento:** Ni la semántica ni la memoria dominan unilateralmente.
-Papers recientes con baja frecuencia compiten con papers populares antiguos.
-El sistema "aprende" del uso real del usuario sin sacrificar relevancia.
+**Comportamiento:** La memoria compite de igual a igual con la semántica.
+Papers recientes con uso frecuente dominan. Riesgo de confirmation bias
+significativo en corpus ruidosos.
 
-**Cuándo elegir:** Default recomendado. Usuarios activos cuyo corpus crece y
-cuyo patrón de acceso refleja lo que realmente necesitan.
+**Cuándo elegir:** Solo con historial de uso maduro y corpus limpio.
+**No recomendado** como default con PDFs — el ruido del contenido necesita
+más filtrado semántico.
 
 #### α = 0.4, β = 0.6 — Modo Memoria Dominante
 
@@ -497,21 +532,19 @@ cuyo patrón de acceso refleja lo que realmente necesitan.
 final_score = 0.4 · sim + 0.6 · memory
 ```
 
-| Métrica | Valor observado |
-|---------|----------------|
-| NDCG@10 | 0.8677 (+4.68%) |
-| Displacement | 1.53 (máximo) |
-| Recency corr. | +0.650 (máximo) |
+| Métrica | Valor observado (avg 5 scenarios) |
+|---------|-----------------------------------|
+| Avg NDCG@10 | 0.5523 (-9.2% vs baseline) |
+| Displacement | 1.92 (máximo) |
+| Recency corr. | +0.764 (máximo) |
 
-**Comportamiento:** Los resultados reflejan fuertemente los hábitos del usuario.
-Chunks accedidos recientemente suben agresivamente. El riesgo de confirmation
-bias es real — papers populares pueden enterrar papers relevantes pero no consultados.
-La correlación con recencia es máxima (+0.65), lo que significa que papers viejos
-quedan sistemáticamente deprimidos.
+**Comportamiento:** La memoria domina el ranking. Papers populares enterran
+papers relevantes no consultados. Con corpus ruidoso esto **empeora** vs
+baseline — el ruido semántico no se filtra y el frequency boost amplifica
+chunks irrelevantes pero frecuentes.
 
-**Cuándo elegir:** Flujos de trabajo donde la recencia es señal fuerte de
-relevancia (noticias, investigación activa de un tema acotado). **No recomendado**
-como default — requiere historial de uso maduro para funcionar bien.
+**Cuándo elegir:** Flujos donde recencia es señal fuerte (noticias, notas
+de investigación acotada). **No recomendado** como default.
 
 #### Efecto de λ (decay rate)
 
@@ -654,7 +687,7 @@ de α/β/λ.
 - [x] Ingestar 24 papers con `publication_date` → `created_at` + `last_accessed_at`
 - [x] Correr queries baseline (RRF puro) vs frequency+decay — comparar rankings
 - [x] Grid search: 16 configs × 5 escenarios × 10 queries = 800 evaluaciones
-- [x] Actualizar defaults a α=0.5, β=0.5, λ=0.05, enabled=true
+- [x] Actualizar defaults a α=0.8, β=0.2, λ=0.05, enabled=true (re-validado con PDFs)
 - [ ] PR a vstash + publicar findings
 - [ ] v2: importance scoring (weighted access types)
 - [ ] v2: per-collection scoring params
