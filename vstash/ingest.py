@@ -110,7 +110,7 @@ _HEADER_RE = re.compile(r"^(#{1,6})\s+", re.MULTILINE)
 # Uses MULTILINE so ^ anchors to start-of-line; indented methods don't match.
 _CODE_SPLIT_PATTERNS: dict[str, re.Pattern[str]] = {
     "python": re.compile(
-        r"^(?=@\w|class |def |async def )", re.MULTILINE
+        r"^(?=class |def |async def )", re.MULTILINE
     ),
     "javascript": re.compile(
         r"^(?=function |class |const \w+ = (?:async )?\(|export (?:default )?(?:function |class |const ))",
@@ -175,7 +175,43 @@ def _split_code_blocks(text: str, language: str) -> list[str]:
         if block:
             blocks.append(block)
 
+    # Post-process: attach trailing decorator lines from previous block
+    # to the next block (Python-specific, but harmless for other languages).
+    if language == "python" and len(blocks) > 1:
+        blocks = _attach_decorators(blocks)
+
     return blocks
+
+
+_DECORATOR_RE = re.compile(r"^@\w+", re.MULTILINE)
+
+
+def _attach_decorators(blocks: list[str]) -> list[str]:
+    """Move trailing @decorator lines from each block to the next block."""
+    result: list[str] = []
+    for i, block in enumerate(blocks):
+        lines = block.split("\n")
+        # Find trailing decorator lines
+        decorator_start = len(lines)
+        for j in range(len(lines) - 1, -1, -1):
+            stripped = lines[j].strip()
+            if stripped.startswith("@") and not stripped.startswith("@="):
+                decorator_start = j
+            elif stripped:
+                break
+
+        if decorator_start < len(lines) and i + 1 < len(blocks):
+            # Split: keep non-decorator part, move decorators to next block
+            main_part = "\n".join(lines[:decorator_start]).strip()
+            decorator_part = "\n".join(lines[decorator_start:]).strip()
+            if main_part:
+                result.append(main_part)
+            # Prepend decorators to next block
+            blocks[i + 1] = decorator_part + "\n" + blocks[i + 1]
+        else:
+            result.append(block)
+
+    return result
 
 
 def chunk_code(text: str, chunk_size: int, overlap: int, language: str) -> list[str]:
