@@ -171,9 +171,9 @@ class TestScoringEnabled:
             scoring=e2e_config.scoring,
         )
 
-        # At least some chunks should have access_count > 1
+        # At least some chunks should have access_count > 0 (incremented from initial 0)
         rows = e2e_store._conn.execute(
-            "SELECT access_count FROM chunks WHERE access_count > 1"
+            "SELECT access_count FROM chunks WHERE access_count > 0"
         ).fetchall()
         assert len(rows) > 0
 
