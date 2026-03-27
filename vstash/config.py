@@ -124,16 +124,17 @@ class ScoringConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     enabled: bool = Field(default=True, description="Enable frequency+decay re-ranking")
-    alpha: float = Field(default=0.8, ge=0, le=1, description="Weight for semantic similarity (RRF)")
-    beta: float = Field(default=0.2, ge=0, le=1, description="Weight for access history")
-    decay_lambda: float = Field(
-        default=0.05, gt=0, description="Decay rate (0.05=weeks, 0.1=days)"
+    alpha: float = Field(
+        default=0.8, ge=0, le=1, description="Weight for semantic similarity (RRF)"
     )
+    beta: float = Field(default=0.2, ge=0, le=1, description="Weight for access history")
+    decay_lambda: float = Field(default=0.05, gt=0, description="Decay rate (0.05=weeks, 0.1=days)")
     over_fetch: int = Field(
         default=50, gt=0, description="Candidates to retrieve before re-ranking"
     )
     track_access: bool = Field(
-        default=True, description="Record access counts on search (enabled by default when scoring is on)"
+        default=True,
+        description="Record access counts on search (enabled by default when scoring is on)",
     )
 
 
