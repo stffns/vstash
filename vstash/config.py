@@ -112,6 +112,31 @@ class StorageConfig(BaseModel):
     db_path: str = Field(default="~/.vstash/memory.db", description="Path to SQLite database file")
 
 
+class ScoringConfig(BaseModel):
+    """Frequency + decay memory scoring configuration.
+
+    When enabled, search results are re-ranked post-RRF using a formula
+    that combines semantic relevance with access frequency and temporal decay:
+
+        final_score = alpha * normalized_rrf + beta * log(1 + access_count * e^(-lambda * days_ago))
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    enabled: bool = Field(default=True, description="Enable frequency+decay re-ranking")
+    alpha: float = Field(default=0.5, ge=0, le=1, description="Weight for semantic similarity (RRF)")
+    beta: float = Field(default=0.5, ge=0, le=1, description="Weight for access history")
+    decay_lambda: float = Field(
+        default=0.05, gt=0, description="Decay rate (0.05=weeks, 0.1=days)"
+    )
+    over_fetch: int = Field(
+        default=50, gt=0, description="Candidates to retrieve before re-ranking"
+    )
+    track_access: bool = Field(
+        default=True, description="Record access counts on search (opt-in side effect)"
+    )
+
+
 class VstashConfig(BaseModel):
     """Root configuration for vstash."""
 
@@ -124,6 +149,7 @@ class VstashConfig(BaseModel):
     embeddings: EmbeddingsConfig = Field(default_factory=EmbeddingsConfig)
     chunking: ChunkingConfig = Field(default_factory=ChunkingConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
+    scoring: ScoringConfig = Field(default_factory=ScoringConfig)
 
     @property
     def cerebras_api_key(self) -> str:

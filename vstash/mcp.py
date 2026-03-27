@@ -363,6 +363,7 @@ def vstash_ask(
             collection=collection,
             project=project,
             layer=layer,
+            scoring=cfg.scoring,
         )
 
         if not chunks:
@@ -433,6 +434,7 @@ def vstash_search(
             collection=collection,
             project=project,
             layer=layer,
+            scoring=cfg.scoring,
         )
 
         return _ok(chunks)
