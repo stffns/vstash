@@ -20,7 +20,6 @@ from __future__ import annotations
 import argparse
 import copy
 import math
-import shutil
 import sqlite3
 import tempfile
 import time
@@ -617,7 +616,7 @@ def main() -> None:
     # Recommended config
     best_name = ranked[0][0]
     best_variant = next(v for v in GRID if v.name == best_name)
-    print(f"\n  ★ Recommended default config:")
+    print("\n  ★ Recommended default config:")
     print(f"    alpha = {best_variant.alpha}")
     print(f"    beta = {best_variant.beta}")
     print(f"    decay_lambda = {best_variant.decay_lambda}")
