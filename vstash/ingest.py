@@ -102,6 +102,81 @@ _MIN_CHUNK_TOKENS = 80
 # Pattern that matches Markdown header lines (# through ######)
 _HEADER_RE = re.compile(r"^(#{1,6})\s+", re.MULTILINE)
 
+# ------------------------------------------------------------------ #
+# Code-aware splitting (Phase 1 — regex, zero deps)                   #
+# ------------------------------------------------------------------ #
+
+# Language-specific patterns matching top-level definitions at column 0.
+# Uses MULTILINE so ^ anchors to start-of-line; indented methods don't match.
+_CODE_SPLIT_PATTERNS: dict[str, re.Pattern[str]] = {
+    "python": re.compile(
+        r"^(?=@\w|class |def |async def )", re.MULTILINE
+    ),
+    "javascript": re.compile(
+        r"^(?=function |class |const \w+ = (?:async )?\(|export (?:default )?(?:function |class |const ))",
+        re.MULTILINE,
+    ),
+    "typescript": re.compile(
+        r"^(?=function |class |const \w+ = (?:async )?\(|export (?:default )?(?:function |class |const )|interface |type \w+ )",
+        re.MULTILINE,
+    ),
+    "go": re.compile(
+        r"^(?=func |type \w+ (?:struct|interface))", re.MULTILINE
+    ),
+    "rust": re.compile(
+        r"^(?=(?:pub\s+)?(?:fn |struct |enum |impl |trait |mod ))", re.MULTILINE
+    ),
+    "java": re.compile(
+        r"^(?=(?:public |private |protected |static |abstract |final )*(?:class |interface |enum |void |int |String |boolean |long |double |float )\w)",
+        re.MULTILINE,
+    ),
+}
+
+# Map file extensions to language keys for _CODE_SPLIT_PATTERNS
+_EXT_TO_LANG: dict[str, str] = {
+    ".py": "python",
+    ".js": "javascript",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".jsx": "javascript",
+    ".go": "go",
+    ".rs": "rust",
+    ".java": "java",
+}
+
+
+def _split_code_blocks(text: str, language: str) -> list[str]:
+    """Split source code at top-level definition boundaries.
+
+    Uses regex lookahead to find function/class/method starts for the
+    given language.  Falls back to returning the whole text as a single
+    block if no patterns match.
+    """
+    pattern = _CODE_SPLIT_PATTERNS.get(language)
+    if pattern is None:
+        return [text]
+
+    positions = [m.start() for m in pattern.finditer(text)]
+    if not positions:
+        return [text]
+
+    blocks: list[str] = []
+
+    # Preamble (imports, module-level code before first definition)
+    if positions[0] > 0:
+        preamble = text[: positions[0]].strip()
+        if preamble:
+            blocks.append(preamble)
+
+    # Each definition block runs until the next definition starts
+    for i, start in enumerate(positions):
+        end = positions[i + 1] if i + 1 < len(positions) else len(text)
+        block = text[start:end].strip()
+        if block:
+            blocks.append(block)
+
+    return blocks
+
 
 def _split_by_headers(text: str) -> list[str]:
     """Split text at Markdown header lines, keeping each header with its body.
