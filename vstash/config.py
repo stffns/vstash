@@ -133,7 +133,7 @@ class ScoringConfig(BaseModel):
         default=50, gt=0, description="Candidates to retrieve before re-ranking"
     )
     track_access: bool = Field(
-        default=True, description="Record access counts on search (opt-in side effect)"
+        default=True, description="Record access counts on search (enabled by default when scoring is on)"
     )
 
 

@@ -30,7 +30,7 @@ final_score = α · rrf_score + β · log(1 + access_count · e^(−λ · days_a
 enabled = true        # habilitado por defecto — NDCG +8.35% vs RRF puro
 alpha = 0.5           # peso de similitud semántica (RRF normalizado)
 beta = 0.5            # peso del historial de uso (frecuencia × decay)
-lambda = 0.05         # velocidad de decay (0.05 = semanas, 0.1 = días)
+decay_lambda = 0.05   # velocidad de decay (0.05 = semanas, 0.1 = días)
 over_fetch = 50       # candidatos a recuperar antes del re-rank (ver Paso 4)
 track_access = true   # si false, scoring usa datos existentes sin registrar nuevos accesos
 ```

@@ -1,10 +1,10 @@
 # vstash End-to-End Test Report
 
-**Date:** 2026-03-23 20:24
+**Date:** 2026-03-27 10:18
 **Backend:** cerebras / gpt-oss-120b
 **Embedding:** BAAI/bge-small-en-v1.5
 
-**Corpus:** 8 documents, 81 chunks, 3.09 MB
+**Corpus:** 47 documents, 401 chunks, 3.86 MB
 
 ---
 
@@ -15,24 +15,32 @@
 | Phase | Time |
 |---|---|
 | Embed query | 7.9ms |
-| Vector + FTS search | 3.4ms |
-| **Total retrieval** | **11.4ms** |
-| LLM inference | 0.77s |
-| **End-to-end** | **0.79s** |
+| Vector + FTS search | 6.1ms |
+| **Total retrieval** | **14.0ms** |
+| LLM inference | 2.1s |
+| **End-to-end** | **2.11s** |
 
 ### 📚 Retrieved Sources
 
 | # | Source | Score |
 |---|---|---|
-| 1 | The Architecture And Evolution Of Autonomous Llm Agents   Notebooklm (chunk 23) | 0.01 |
-| 2 | The Architecture And Evolution Of Autonomous Llm Agents   Notebooklm (chunk 21) | 0.009836 |
-| 3 | Vstash Constitution (chunk 1) | 0.009677 |
-| 4 | The Architecture And Evolution Of Autonomous Llm Agents   Notebooklm (chunk 10) | 0.009524 |
-| 5 | The Architecture And Evolution Of Autonomous Llm Agents   Notebooklm (chunk 2) | 0.009375 |
+| 1 | E2E Test Report (chunk 1) | 0.01 |
+| 2 | Neural Architecture Search (chunk 7) | 0.009836 |
+| 3 | Benchmark (chunk 8) | 0.009677 |
+| 4 | E2E Test Report (chunk 0) | 0.006667 |
+| 5 | E2E Test (chunk 0) | 0.006557 |
 
-### 💬 Answer (33 words)
+### 💬 Answer (98 words)
 
-The provided excerpts do not contain any information about DARTS, evolutionary neural architecture search (NAS) methods, or their computational costs. Therefore, I cannot explain the difference between them based on the given context.
+**DARTS (Differentiable Architecture Search)**  
+- Treats the discrete NAS search space as a continuous one, so the architecture parameters can be optimized with gradient descent.  
+- This approach “dramatically reduces search cost from thousands of GPU‑days to just a few GPU‑days”【3†L1-L4】.  
+
+**Evolutionary NAS methods**  
+- The provided excerpts contain no description of evolutionary NAS, nor any information about their computational cost.  
+
+**Summary**  
+Based on the available context, DARTS is a gradient‑based, continuous‑relaxation method that cuts search time to a few GPU‑days. The context does not provide details on how evolutionary NAS works or how its computational cost compares.
 
 ---
 
@@ -42,25 +50,32 @@ The provided excerpts do not contain any information about DARTS, evolutionary n
 
 | Phase | Time |
 |---|---|
-| Embed query | 9.5ms |
-| Vector + FTS search | 2.1ms |
-| **Total retrieval** | **11.6ms** |
-| LLM inference | 0.96s |
-| **End-to-end** | **0.98s** |
+| Embed query | 11.4ms |
+| Vector + FTS search | 2.9ms |
+| **Total retrieval** | **14.3ms** |
+| LLM inference | 0.83s |
+| **End-to-end** | **0.84s** |
 
 ### 📚 Retrieved Sources
 
 | # | Source | Score |
 |---|---|---|
-| 1 | The Architecture And Evolution Of Autonomous Llm Agents   Notebooklm (chunk 10) | 0.01 |
-| 2 | https://en.wikipedia.org/wiki/Model_context_protocol (chunk 10) | 0.009836 |
-| 3 | https://en.wikipedia.org/wiki/Model_context_protocol (chunk 6) | 0.009677 |
-| 4 | https://en.wikipedia.org/wiki/Model_context_protocol (chunk 20) | 0.009524 |
-| 5 | The Architecture And Evolution Of Autonomous Llm Agents   Notebooklm (chunk 20) | 0.009375 |
+| 1 | E2E Test Report (chunk 1) | 0.016344 |
+| 2 | Climate Change Report (chunk 6) | 0.01 |
+| 3 | Benchmark (chunk 19) | 0.009836 |
+| 4 | E2E Test (chunk 0) | 0.006557 |
 
-### 💬 Answer (43 words)
+### 💬 Answer (113 words)
 
-The provided contexts discuss autonomous LLM agents, multi‑plan generation, reflection, and the Model Context Protocol. They do not contain any information about arguments for renewable energy or cost comparisons with fossil fuels. Therefore, I cannot answer that question based on the given material.
+**Main arguments for renewable energy (from the provided context)**  
+- The cost of renewable energy has fallen dramatically over the past decade.  
+  - Solar photovoltaic (PV) costs are down ≈ 89 % since 2010.  
+  - On‑shore wind costs are down ≈ 70 % since 2010.【Context 2†L3-L7】  
+- Renewable sources now provide the majority of new power‑capacity additions worldwide.【Context 2†L7-L9】  
+- These trends make renewables increasingly competitive and attractive for future power systems.  
+
+**Cost comparison to fossil fuels**  
+The excerpts mention the steep decline in renewable‑energy costs, but they do **not** provide any specific numbers or direct comparison of renewable costs versus fossil‑fuel costs. Therefore, a cost‑comparison cannot be derived from the given context.
 
 ---
 
@@ -70,25 +85,51 @@ The provided contexts discuss autonomous LLM agents, multi‑plan generation, re
 
 | Phase | Time |
 |---|---|
-| Embed query | 11.0ms |
-| Vector + FTS search | 2.5ms |
-| **Total retrieval** | **13.5ms** |
-| LLM inference | 1.24s |
-| **End-to-end** | **1.25s** |
+| Embed query | 8.4ms |
+| Vector + FTS search | 3.1ms |
+| **Total retrieval** | **11.5ms** |
+| LLM inference | 1.16s |
+| **End-to-end** | **1.17s** |
 
 ### 📚 Retrieved Sources
 
 | # | Source | Score |
 |---|---|---|
-| 1 | The Architecture And Evolution Of Autonomous Llm Agents   Notebooklm (chunk 22) | 0.01 |
-| 2 | The Architecture And Evolution Of Autonomous Llm Agents   Notebooklm (chunk 26) | 0.009836 |
-| 3 | The Architecture And Evolution Of Autonomous Llm Agents   Notebooklm (chunk 25) | 0.009677 |
-| 4 | https://en.wikipedia.org/wiki/Retrieval-augmented_generation (chunk 16) | 0.009524 |
-| 5 | The Architecture And Evolution Of Autonomous Llm Agents   Notebooklm (chunk 0) | 0.009375 |
+| 1 | Benchmark Report (chunk 2) | 0.01 |
+| 2 | Alice Wonderland (chunk 13) | 0.009836 |
+| 3 | Alice Wonderland (chunk 4) | 0.009677 |
+| 4 | Alice Wonderland (chunk 38) | 0.009524 |
+| 5 | Alice Wonderland (chunk 10) | 0.009375 |
 
-### 💬 Answer (39 words)
+### 💬 Answer (434 words)
 
-The provided contexts discuss autonomous large‑language‑model agents, their architectures, surveys, and related research. They contain no information about Alice, her emotional journey, or any character interactions in *Wonderland*. Therefore, I cannot describe those details based on the given material.
+**Alice’s emotional arc in Wonderland**
+
+1. **Confusion and irritation with the Caterpillar** –  
+   Alice becomes annoyed by the Caterpillar’s short, contemptuous remarks and the endless questioning of “Who are you?” She feels “a little irritated” and later “melancholy” when she cannot remember things as she used to and when her speech comes out “different” (Context 2).  
+
+2. **Self‑doubt and identity crisis** –  
+   While holding a fan she wonders whether she has been “changed in the night” and asks herself “Who in the world am I?” She tries to match herself to other children (Ada, Mabel) and feels “puzzling” and “very tired of being all alone” (Context 3).  
+
+3. **Fear and relief after shrinking** –  
+   When the fan makes her shrink, Alice is “frightened” and then relieved that she “still [is] in existence,” calling the near‑miss a “narrow escape” (Context 3).  
+
+4. **Nostalgia and yearning for home** –  
+   After the chaotic adventures she longs for the stability of home, thinking it would be “much pleasanter … when one wasn’t always growing larger and smaller” (Context 5). She worries she may “never get any older” and laments the lack of “room … for any lesson‑books.”  
+
+5. **Comfort in the sister’s dream** –  
+   When she recounts her dream to her sister, the sister’s own dreaming creates a gentle, reflective mood. The sister imagines Alice’s future as a grown woman who keeps “the simple and loving heart of her childhood,” offering a hopeful, soothing closure (Context 4).  
+
+**Key character interactions**
+
+| Character | Interaction & Effect on Alice |
+|-----------|------------------------------|
+| **Caterpillar** | Questions her identity (“Who are you?”), calls her “changed,” and critiques her speech, provoking irritation, confusion, and a sense of being “old” or “different.” (Context 2) |
+| **Rabbit** | Appears as a frantic, large figure; Alice’s fear of the Rabbit’s size leads to frantic attempts to reach the window, producing anxiety and a feeling of helplessness. (Context 5) |
+| **Sister** | Listens to Alice’s story, kisses her, and later dreams of Alice, providing a comforting, nostalgic frame that ends the narrative on a tender note. (Context 4) |
+| **Other Wonderland figures** (e.g., Gryphon, Mock Turtle, Queen) | Mentioned in the sister’s dream, they reinforce the chaotic, ever‑changing world that Alice must navigate, underscoring her emotional turbulence. (Context 4) |
+
+**Overall journey** – Alice moves from irritation and confusion (Caterpillar) → deep identity doubt (fan, “who am I?”) → fear of physical change (shrinking) → yearning for normalcy (home) → gentle reassurance through her sister’s dream. This progression is driven by repeated encounters with bizarre characters who constantly challenge her sense of self.
 
 ---
 
@@ -98,25 +139,27 @@ The provided contexts discuss autonomous large‑language‑model agents, their 
 
 | Phase | Time |
 |---|---|
-| Embed query | 15.9ms |
-| Vector + FTS search | 1.3ms |
-| **Total retrieval** | **17.2ms** |
-| LLM inference | 0.81s |
-| **End-to-end** | **0.83s** |
+| Embed query | 11.9ms |
+| Vector + FTS search | 3.4ms |
+| **Total retrieval** | **15.3ms** |
+| LLM inference | 2.09s |
+| **End-to-end** | **2.11s** |
 
 ### 📚 Retrieved Sources
 
 | # | Source | Score |
 |---|---|---|
-| 1 | The Architecture And Evolution Of Autonomous Llm Agents   Notebooklm (chunk 20) | 0.01 |
-| 2 | The Architecture And Evolution Of Autonomous Llm Agents   Notebooklm (chunk 6) | 0.009836 |
-| 3 | The Architecture And Evolution Of Autonomous Llm Agents   Notebooklm (chunk 24) | 0.009677 |
-| 4 | The Architecture And Evolution Of Autonomous Llm Agents   Notebooklm (chunk 1) | 0.009524 |
-| 5 | The Architecture And Evolution Of Autonomous Llm Agents   Notebooklm (chunk 13) | 0.009375 |
+| 1 | Art Of War (chunk 31) | 0.01 |
+| 2 | Art Of War (chunk 25) | 0.009836 |
+| 3 | Art Of War (chunk 73) | 0.009677 |
+| 4 | Art Of War (chunk 52) | 0.009524 |
+| 5 | Art Of War (chunk 83) | 0.009375 |
 
-### 💬 Answer (20 words)
+### 💬 Answer (121 words)
 
-The provided contexts do not contain any statement from Sun Tzu about the importance of knowing your enemy and terrain.
+Sun Tzu stresses that success in war depends first on knowledge.  He writes that **“If you know the enemy and know yourself, you need not fear the result of a hundred battles… If you know neither the enemy nor yourself, you will succumb in every battle.”**【Context 1】.  
+
+He also treats the ground on which a force fights as a vital source of information.  In the passages on terrain he advises that any **hilly country, ponds, hollow basins, woods, or narrow passes near the camp must be carefully searched and cleared**, because such places are where ambushes or spies may be hidden【Context 4】.  Thus, for Sun Tzu, both the enemy’s intentions and the character of the terrain are essential to secure victory.
 
 ---
 
@@ -126,25 +169,45 @@ The provided contexts do not contain any statement from Sun Tzu about the impo
 
 | Phase | Time |
 |---|---|
-| Embed query | 10.3ms |
-| Vector + FTS search | 1.4ms |
-| **Total retrieval** | **11.7ms** |
-| LLM inference | 0.76s |
-| **End-to-end** | **0.77s** |
+| Embed query | 12.1ms |
+| Vector + FTS search | 3.3ms |
+| **Total retrieval** | **15.5ms** |
+| LLM inference | 0.92s |
+| **End-to-end** | **0.93s** |
 
 ### 📚 Retrieved Sources
 
 | # | Source | Score |
 |---|---|---|
-| 1 | Vstash Constitution (chunk 2) | 0.01 |
-| 2 | Vstash Constitution (chunk 3) | 0.009836 |
-| 3 | The Architecture And Evolution Of Autonomous Llm Agents   Notebooklm (chunk 18) | 0.009677 |
-| 4 | Readme (chunk 1) | 0.009524 |
-| 5 | Vstash Constitution (chunk 1) | 0.009375 |
+| 1 | Benchmark (chunk 26) | 0.01 |
+| 2 | Fastapi Patterns (chunk 4) | 0.009836 |
+| 3 | E2E Test Report (chunk 4) | 0.006667 |
+| 4 | E2E Test (chunk 0) | 0.006557 |
 
-### 💬 Answer (48 words)
+### 💬 Answer (176 words)
 
-The provided documents describe the vstash project’s architecture, ingestion and query pipelines, chunking strategy, configuration, roadmap, and privacy model. They do not contain any information about implementing rate limiting or caching for a production API with Redis. Therefore, I cannot answer that question based on the given context.
+A production FastAPI service can use Redis to enforce rate limits by storing a counter for each client/key and expiring it after a fixed window. The pattern shown in the context is:
+
+```python
+async def rate_limit(key: str, limit: int, window: int) -> bool:
+    # Increment the request count for the given key
+    current = await redis.incr(key)
+    # On the first request, set the TTL for the window
+    if current == 1:
+        await redis.expire(key, window)
+    # Allow the request only while the count stays ≤ limit
+    return current <= limit
+```
+
+This function:
+
+1. Calls `INCR` on a Redis key (e.g., a user‑ID or IP address) to count requests.  
+2. Sets an expiration (`EXPIRE`) for the key on the first increment, defining the time window (seconds).  
+3. Returns `True` while the count is within the allowed limit, otherwise `False`.
+
+You would call `rate_limit` at the start of each endpoint (or via a dependency) and reject requests that exceed the limit.
+
+**Caching** is not described in the provided contexts, so no specific Redis‑based caching pattern is available there.
 
 ---
 
@@ -154,50 +217,50 @@ The provided documents describe the vstash project’s architecture, ingesti
 
 | Phase | Time |
 |---|---|
-| Embed query | 14.3ms |
-| Vector + FTS search | 1.5ms |
-| **Total retrieval** | **15.8ms** |
-| LLM inference | 1.89s |
-| **End-to-end** | **1.9s** |
+| Embed query | 10.0ms |
+| Vector + FTS search | 2.8ms |
+| **Total retrieval** | **12.7ms** |
+| LLM inference | 1.0s |
+| **End-to-end** | **1.01s** |
 
 ### 📚 Retrieved Sources
 
 | # | Source | Score |
 |---|---|---|
-| 1 | Vstash Test Frontmatter (chunk 0) | 0.01 |
-| 2 | Readme (chunk 0) | 0.009836 |
-| 3 | Vstash Constitution (chunk 0) | 0.009677 |
+| 1 | E2E Test Report (chunk 5) | 0.01619 |
+| 2 | E2E Test (chunk 0) | 0.015648 |
+| 3 | Vstash Test Frontmatter (chunk 0) | 0.01 |
+| 4 | E2E Test Report (chunk 6) | 0.009836 |
+| 5 | Readme (chunk 0) | 0.009677 |
 
-### 💬 Answer (387 words)
+### 💬 Answer (351 words)
 
 **vstash’s technology stack**
 
-| Layer | Technology | Why it’s used |
-|-------|------------|---------------|
-| Vector store | **sqlite‑vec** | Stores embeddings in a single SQLite file; enables fast cosine‑similarity search without a separate server. |
-| Keyword search | **FTS5 (SQLite)** | Built‑in full‑text index with exact‑match and Porter stemming; runs locally in the same DB. |
-| Hybrid ranking | **Reciprocal Rank Fusion (RRF)** | Combines the semantic scores from sqlite‑vec with the keyword scores from FTS5 to give better results without any model training. |
-| Embeddings | **FastEmbed (ONNX Runtime)** | Generates embeddings locally on CPU (~700 chunks / s) using small models like `BAAI/bge‑small‑en‑v1.5`. |
-| Embedding model | **BAAI/bge‑small‑en‑v1.5** (384‑dim) | Fastest quality‑/‑speed ratio; dimensions match the vector store. |
+| Layer | Technology | Reason it’s used |
+|-------|------------|------------------|
+| Vector store | **sqlite‑vec** | Stores embeddings in a single SQLite file and performs cosine‑similarity search directly inside SQLite. |
+| Keyword search | **FTS5 (SQLite)** | Built‑in full‑text index with exact‑match and Porter‑stemming; runs locally in the same DB. |
+| Hybrid ranking | **Reciprocal Rank Fusion (RRF)** | Merges the semantic scores from sqlite‑vec with the keyword scores from FTS5 for better relevance without extra training. |
+| Embeddings | **FastEmbed (ONNX Runtime)** | Generates embeddings locally on CPU (~700 chunks / s) using small models. |
+| Embedding model | **BAAI/bge‑small‑en‑v1.5** (384‑dim) | Fast quality‑/‑speed trade‑off; dimensions match the vector store. |
 | Inference back‑ends | **Cerebras API**, **OpenAI API**, **Ollama (local)** | Configurable; only the top‑k retrieved chunks are sent to a remote API, or everything stays local with Ollama. |
 | Document parsing | **markitdown** | Handles PDF, DOCX, PPTX, HTML, Markdown, code files, and URLs locally. |
 | Storage | **SQLite (single .db file)** | All metadata, chunk text, embeddings, and FTS5 indexes live in one file that can be copied or backed up. |
-| Configuration | **Pydantic v2** | Type‑safe config handling. |
-| CLI | **Typer + Rich** | Provides a clean, interactive terminal UI. |
-| Language | **Python 3.10+** | Easy ecosystem and rapid development. |
+| Configuration | **Pydantic v2** | Type‑safe config handling. |
+| CLI | **Typer + Rich** | Clean, interactive terminal UI. |
+| Language | **Python 3.10+** | Easy ecosystem and rapid development. |【Context 4】
 
 **How fast local search is achieved**
 
-1. **All data lives in one SQLite database** – no external server, no network latency.  
-2. **Vector similarity** is performed by `sqlite‑vec`, which computes cosine similarity directly inside SQLite, giving sub‑second semantic retrieval.  
-3. **Keyword matching** uses SQLite’s built‑in `FTS5` index, which is highly optimized for fast exact‑match and stemming searches.  
-4. **Hybrid ranking with RRF** merges the two result sets efficiently, improving relevance without extra computation.  
+1. **All data in one SQLite database** – no external server, so there is no network latency.  
+2. **Vector similarity** is computed by `sqlite‑vec` inside SQLite, giving sub‑second semantic retrieval.  
+3. **Keyword matching** uses SQLite’s highly optimized `FTS5` index for rapid exact‑match and stemming searches.  
+4. **Hybrid ranking with RRF** efficiently merges the two result sets, improving relevance without extra computation.  
 5. **Embeddings are generated locally** with FastEmbed (ONNX), avoiding remote calls and allowing ~700 chunks per second.  
-6. **Chunking** creates overlapping token windows (default 1024‑token size, 128‑token overlap) that keep retrieval fast and accurate.  
+6. **Chunking** creates overlapping token windows (default 1024‑token size, 128‑token overlap) that keep retrieval both fast and accurate.  
 
-Together, these components let vstash return semantic answers in under a second, entirely on the user’s machine.  
-
-*Sources: Context 3 “Technology Stack” table and description of fast local components; Context 1 “Hybrid Search” and “Storage Layer”; Context 2 “Why vstash?” and “Embedding” sections.*
+These components together let vstash return semantic answers in under a second, entirely on the user’s machine【Context 4】【Context 3】.
 
 ---
 
@@ -207,24 +270,23 @@ Together, these components let vstash return semantic answers in under a second,
 
 | Phase | Time |
 |---|---|
-| Embed query | 24.2ms |
-| Vector + FTS search | 2.0ms |
-| **Total retrieval** | **26.2ms** |
-| LLM inference | 0.63s |
-| **End-to-end** | **0.66s** |
+| Embed query | 9.5ms |
+| Vector + FTS search | 2.5ms |
+| **Total retrieval** | **12.0ms** |
+| LLM inference | 0.67s |
+| **End-to-end** | **0.68s** |
 
 ### 📚 Retrieved Sources
 
 | # | Source | Score |
 |---|---|---|
-| 1 | The Architecture And Evolution Of Autonomous Llm Agents   Notebooklm (chunk 21) | 0.01 |
-| 2 | The Architecture And Evolution Of Autonomous Llm Agents   Notebooklm (chunk 23) | 0.009836 |
-| 3 | The Architecture And Evolution Of Autonomous Llm Agents   Notebooklm (chunk 26) | 0.009677 |
-| 4 | https://en.wikipedia.org/wiki/Retrieval-augmented_generation (chunk 10) | 0.009524 |
+| 1 | E2E Test Report (chunk 7) | 0.01 |
+| 2 | E2E Test Report (chunk 6) | 0.006667 |
+| 3 | E2E Test (chunk 0) | 0.006557 |
 
-### 💬 Answer (17 words)
+### 💬 Answer (28 words)
 
-The provided excerpts do not contain an explanation of how Retrieval‑Augmented Generation reduces hallucinations in language models.
+The provided excerpts do not contain an explanation of how Retrieval‑Augmented Generation reduces hallucinations in language models. (See Context 1, which notes that the excerpts lack this information.)
 
 ---
 
@@ -233,7 +295,7 @@ The provided excerpts do not contain an explanation of how Retrieval‑Augmented
 | Metric | Value |
 |---|---|
 | Queries tested | 7 |
-| Total retrieval time | 107ms (15ms avg) |
-| Total LLM time | 7.1s (1.01s avg) |
-| Avg end-to-end | 1.02s |
-| Corpus size | 81 chunks |
+| Total retrieval time | 95ms (14ms avg) |
+| Total LLM time | 8.8s (1.25s avg) |
+| Avg end-to-end | 1.27s |
+| Corpus size | 401 chunks |

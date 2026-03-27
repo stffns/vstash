@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from tests.conftest import requires_sqlite_vec
 from vstash.config import ScoringConfig, VstashConfig
-from vstash.models import SearchResult
 from vstash.store import VstashStore
 
 pytestmark = requires_sqlite_vec
@@ -77,27 +75,65 @@ class TestScoringMigration:
         assert all(row["last_accessed_at"] is None for row in rows)
 
     def test_migration_on_existing_db(self, tmp_path) -> None:
-        """Opening an old DB should add scoring columns via migration."""
+        """Opening an old DB (pre-scoring schema) should add scoring columns via migration."""
+        import sqlite3 as _sqlite3
+
+        import sqlite_vec
+
         db_path = str(tmp_path / "old.db")
 
-        # Create a store, add data, close — simulates old schema
-        store1 = VstashStore(db_path, embedding_dim=4)
-        store1.add_document(
-            path="/test/old.md",
-            title="Old Doc",
-            chunks=["old content"],
-            embeddings=[[0.1, 0.2, 0.3, 0.4]],
-        )
-        store1.close()
+        # Manually create an old-style DB without scoring columns
+        conn = _sqlite3.connect(db_path)
+        conn.row_factory = _sqlite3.Row
+        try:
+            conn.enable_load_extension(True)
+            sqlite_vec.load(conn)
+            conn.enable_load_extension(False)
+        except AttributeError:
+            conn.close()
+            conn = sqlite_vec.Connection(db_path)
+            conn.row_factory = _sqlite3.Row
 
-        # Re-open — migration should add columns
-        store2 = VstashStore(db_path, embedding_dim=4)
-        row = store2._conn.execute(
+        conn.executescript("""
+            CREATE TABLE documents (
+                id TEXT PRIMARY KEY, path TEXT NOT NULL, title TEXT NOT NULL,
+                source_type TEXT NOT NULL DEFAULT 'file',
+                collection TEXT NOT NULL DEFAULT 'default',
+                project TEXT, layer TEXT, tags TEXT,
+                char_count INTEGER DEFAULT 0, chunk_count INTEGER DEFAULT 0,
+                added_at TEXT NOT NULL
+            );
+            CREATE TABLE chunks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                doc_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                seq INTEGER NOT NULL, text TEXT NOT NULL
+            );
+            CREATE VIRTUAL TABLE vec_chunks USING vec0(embedding float[4]);
+            CREATE VIRTUAL TABLE fts_chunks
+            USING fts5(text, content=chunks, content_rowid=id, tokenize='porter ascii');
+        """)
+        conn.execute(
+            "INSERT INTO documents (id, path, title, source_type, added_at) "
+            "VALUES ('d1', '/test/old.md', 'Old Doc', 'file', '2026-01-01T00:00:00+00:00')"
+        )
+        conn.execute(
+            "INSERT INTO chunks (doc_id, seq, text) VALUES ('d1', 0, 'old content')"
+        )
+        conn.commit()
+
+        # Verify scoring columns do NOT exist yet
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(chunks)").fetchall()}
+        assert "access_count" not in cols
+        conn.close()
+
+        # Re-open via VstashStore — migration should add columns + backfill
+        store = VstashStore(db_path, embedding_dim=4)
+        row = store._conn.execute(
             "SELECT access_count, created_at FROM chunks LIMIT 1"
         ).fetchone()
-        assert row["access_count"] is not None
-        assert row["created_at"] is not None
-        store2.close()
+        assert row["access_count"] == 1
+        assert row["created_at"] == "2026-01-01T00:00:00+00:00"  # backfilled from added_at
+        store.close()
 
 
 # ------------------------------------------------------------------ #
@@ -129,7 +165,7 @@ class TestTrackAccess:
         scoring_store.track_access(chunk_ids)
 
         row = scoring_store._conn.execute(
-            "SELECT last_accessed_at FROM chunks WHERE id = ?", chunk_ids
+            "SELECT last_accessed_at FROM chunks WHERE id = ?", [chunk_ids[0]]
         ).fetchone()
         assert row["last_accessed_at"] is not None
 
@@ -142,7 +178,7 @@ class TestTrackAccess:
             scoring_store.track_access(chunk_ids)
 
         row = scoring_store._conn.execute(
-            "SELECT access_count FROM chunks WHERE id = ?", chunk_ids
+            "SELECT access_count FROM chunks WHERE id = ?", [chunk_ids[0]]
         ).fetchone()
         assert row["access_count"] == 6  # 1 (initial) + 5
 

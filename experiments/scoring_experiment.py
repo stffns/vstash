@@ -197,7 +197,6 @@ def main() -> None:
     banner("Phase 1: Baseline (RRF) vs Scoring (frequency+decay)")
     print("  All papers have access_count=1 — scoring should only reflect temporal decay.")
 
-    cfg_baseline = VstashConfig()
     cfg_scoring = VstashConfig.model_validate({
         "scoring": {
             "enabled": True,
@@ -210,7 +209,7 @@ def main() -> None:
     })
 
     print("\n--- Baseline (RRF puro) ---")
-    baseline_results = run_queries(store, QUERIES, cfg_baseline.scoring, "BASELINE")
+    baseline_results = run_queries(store, QUERIES, None, "BASELINE")
 
     print("\n--- Scoring (freq+decay, uniform access) ---")
     scored_results = run_queries(store, QUERIES, cfg_scoring.scoring, "SCORED")

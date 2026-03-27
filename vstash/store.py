@@ -507,7 +507,7 @@ class VstashStore:
             chunk_id = row["id"]
             # Only include FTS results that also passed vector relevance filter,
             # OR that are in the top FTS results (strong keyword match).
-            is_fts_top = rank < top_k * 2
+            is_fts_top = rank < effective_k * 2
             fts_contribution = fts_weight * (1.0 / (RRF_K + rank))
             if chunk_id in scores:
                 scores[chunk_id]["rrf"] = float(scores[chunk_id]["rrf"]) + fts_contribution
@@ -529,9 +529,9 @@ class VstashStore:
             ranked = ranked[:effective_k]
             ranked = self.rerank_with_decay(
                 ranked,
-                alpha=getattr(scoring, "alpha", 0.7),
-                beta=getattr(scoring, "beta", 0.3),
-                decay_lambda=getattr(scoring, "decay_lambda", 0.07),
+                alpha=getattr(scoring, "alpha", 0.5),
+                beta=getattr(scoring, "beta", 0.5),
+                decay_lambda=getattr(scoring, "decay_lambda", 0.05),
             )
 
         ranked = ranked[:top_k]
@@ -547,11 +547,14 @@ class VstashStore:
             for r in ranked
         ]
 
-        # Track access for returned chunks (opt-in side effect)
+        # Track access for returned chunks (best-effort, failures don't affect results)
         if scoring_enabled and getattr(scoring, "track_access", True):
-            result_ids = [int(r["id"]) for r in ranked if "id" in r]
-            if result_ids:
-                self.track_access(result_ids)
+            try:
+                result_ids = [int(r["id"]) for r in ranked if "id" in r]
+                if result_ids:
+                    self.track_access(result_ids)
+            except Exception:
+                pass  # Access tracking is non-critical; never break search
 
         return results
 
@@ -837,9 +840,9 @@ class VstashStore:
         self,
         candidates: list[dict[str, object]],
         *,
-        alpha: float = 0.7,
-        beta: float = 0.3,
-        decay_lambda: float = 0.07,
+        alpha: float = 0.5,
+        beta: float = 0.5,
+        decay_lambda: float = 0.05,
     ) -> list[dict[str, object]]:
         """Re-rank candidates post-RRF with frequency + temporal decay.
 
@@ -917,7 +920,7 @@ class VstashStore:
         placeholders = ",".join("?" * len(chunk_ids))
         with self._write_lock:
             self._conn.execute(
-                f"UPDATE chunks SET access_count = access_count + 1, "
+                f"UPDATE chunks SET access_count = COALESCE(access_count, 1) + 1, "
                 f"last_accessed_at = ? WHERE id IN ({placeholders})",
                 [now_iso, *chunk_ids],
             )

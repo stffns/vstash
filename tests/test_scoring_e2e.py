@@ -327,6 +327,6 @@ class TestOverFetch:
         assert len(with_scoring) > 0
 
         # Scores should differ (scoring adds final_score based on frequency)
-        if len(no_scoring) > 0 and len(with_scoring) > 0:
-            # The scored version uses normalized RRF + decay, so scores will differ
-            assert no_scoring[0].score != with_scoring[0].score or len(no_scoring) != len(with_scoring) or True
+        no_scores = [r.score for r in no_scoring]
+        with_scores = [r.score for r in with_scoring]
+        assert no_scores != with_scores, "Scoring should change at least one result score"
