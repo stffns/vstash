@@ -28,27 +28,31 @@ pytestmark = requires_sqlite_vec
 @pytest.fixture
 def e2e_config() -> VstashConfig:
     """Config with scoring enabled."""
-    return VstashConfig.model_validate({
-        "scoring": {
-            "enabled": True,
-            "alpha": 0.5,
-            "beta": 0.5,
-            "decay_lambda": 0.05,
-            "over_fetch": 20,
-            "track_access": True,
+    return VstashConfig.model_validate(
+        {
+            "scoring": {
+                "enabled": True,
+                "alpha": 0.5,
+                "beta": 0.5,
+                "decay_lambda": 0.05,
+                "over_fetch": 20,
+                "track_access": True,
+            }
         }
-    })
+    )
 
 
 @pytest.fixture
 def e2e_config_no_tracking() -> VstashConfig:
     """Config with scoring enabled but tracking disabled."""
-    return VstashConfig.model_validate({
-        "scoring": {
-            "enabled": True,
-            "track_access": False,
+    return VstashConfig.model_validate(
+        {
+            "scoring": {
+                "enabled": True,
+                "track_access": False,
+            }
         }
-    })
+    )
 
 
 @pytest.fixture
@@ -59,7 +63,10 @@ def e2e_store(tmp_path, e2e_config: VstashConfig) -> VstashStore:
 
     # Ingest several docs with real embeddings
     docs = [
-        ("Python decorators simplify function wrapping and metaprogramming.", "python_decorators.md"),
+        (
+            "Python decorators simplify function wrapping and metaprogramming.",
+            "python_decorators.md",
+        ),
         ("Rust ownership model prevents memory leaks at compile time.", "rust_ownership.md"),
         ("Machine learning requires large datasets for training models.", "ml_basics.md"),
         ("Database indexing improves query performance significantly.", "db_indexing.md"),
@@ -228,9 +235,7 @@ class TestScoringEnabled:
             # It should rank relatively high due to access frequency
             assert db_idx < 3, f"db_indexing.md ranked at {db_idx}, expected top 3"
 
-    def test_old_accesses_decay(
-        self, e2e_store: VstashStore, e2e_config: VstashConfig
-    ) -> None:
+    def test_old_accesses_decay(self, e2e_store: VstashStore, e2e_config: VstashConfig) -> None:
         """Chunks accessed long ago should have diminished boost."""
         cfg = e2e_config
 
