@@ -2,6 +2,22 @@
 
 All notable changes to vstash are documented here.
 
+## [0.5.1] — 2026-03-27
+
+### Added
+- **Code-aware chunking** — source code files now split at function/class boundaries instead of markdown headers
+  - Regex-based splitting for Python, JavaScript/TypeScript, Go, Rust, Java (zero new deps)
+  - Code files read as raw text, bypassing markitdown which destroyed code structure
+  - Decorator/annotation post-processing keeps `@decorator` attached to its function/class
+  - Configurable via `code_aware = true/false` in `[chunking]` config
+  - Added `.tsx`/`.jsx` support to ingestion pipeline
+- `_MIN_CHUNK_CHARS` constant replaces magic number across chunking functions
+
+### Fixed
+- Ruff lint and formatting cleanup from v0.5.0
+
+---
+
 ## [0.5.0] — 2026-03-27
 
 ### Added
