@@ -412,17 +412,21 @@ temporal dan una ventana de competitividad inicial que decae naturalmente.
 - **Escenarios:** 5 patrones de acceso (uniform, recent_heavy_use, stale_favorites, mixed_recency, benchmark_focused)
 - **Grid:** 16 configuraciones (α: 0.4–0.9, β: 0.1–0.6, λ: 0.01–0.20, over_fetch: 20–100)
 
-### Defaults Óptimos (validados por grid search)
+### Defaults Óptimos (validados por grid search — PDFs completos)
 
 ```toml
 [scoring]
-enabled = true        # scoring nunca empeoró vs baseline en ningún escenario
-alpha = 0.5           # NDCG 0.9044 (+8.35% vs baseline)
-beta = 0.5
-lambda = 0.05         # decay conservador — semanas, no días
+enabled = true
+alpha = 0.8           # NDCG 0.6357 (+4.5% avg, +18.8% benchmark_focused)
+beta = 0.2
+decay_lambda = 0.05   # decay conservador — semanas, no días
 over_fetch = 50
 track_access = true
 ```
+
+> **Nota:** Resultados re-validados con corpus completo (786 chunks de 24 PDFs)
+> vs corpus anterior de abstracts (251 chunks). Con contenido real, la semántica
+> necesita mayor peso (α=0.8) para filtrar ruido de tablas/referencias en PDFs.
 
 ### Comportamiento en los Bordes — Guía de Configuración
 

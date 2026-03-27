@@ -304,8 +304,8 @@ class TestScoringConfig:
     def test_defaults(self) -> None:
         cfg = ScoringConfig()
         assert cfg.enabled is True
-        assert cfg.alpha == 0.5
-        assert cfg.beta == 0.5
+        assert cfg.alpha == 0.8
+        assert cfg.beta == 0.2
         assert cfg.decay_lambda == 0.05
         assert cfg.over_fetch == 50
         assert cfg.track_access is True

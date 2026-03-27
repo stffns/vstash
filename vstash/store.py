@@ -529,8 +529,8 @@ class VstashStore:
             ranked = ranked[:effective_k]
             ranked = self.rerank_with_decay(
                 ranked,
-                alpha=getattr(scoring, "alpha", 0.5),
-                beta=getattr(scoring, "beta", 0.5),
+                alpha=getattr(scoring, "alpha", 0.8),
+                beta=getattr(scoring, "beta", 0.2),
                 decay_lambda=getattr(scoring, "decay_lambda", 0.05),
             )
 
@@ -840,8 +840,8 @@ class VstashStore:
         self,
         candidates: list[dict[str, object]],
         *,
-        alpha: float = 0.5,
-        beta: float = 0.5,
+        alpha: float = 0.8,
+        beta: float = 0.2,
         decay_lambda: float = 0.05,
     ) -> list[dict[str, object]]:
         """Re-rank candidates post-RRF with frequency + temporal decay.

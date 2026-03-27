@@ -42,30 +42,30 @@ MODEL = "BAAI/bge-small-en-v1.5"
 # All matching (NDCG, frequency_response, etc.) uses URL-based lookup.
 
 PAPERS: list[dict[str, str]] = [
-    {"title": "MemGPT", "url": "https://arxiv.org/abs/2310.08560", "year": "2023"},
-    {"title": "Generative Agents", "url": "https://arxiv.org/abs/2304.03442", "year": "2023"},
-    {"title": "RET-LLM", "url": "https://arxiv.org/abs/2305.14322", "year": "2023"},
-    {"title": "SCM", "url": "https://arxiv.org/abs/2304.13343", "year": "2023"},
-    {"title": "LoCoMo", "url": "https://arxiv.org/abs/2402.17753", "year": "2024"},
-    {"title": "SORT", "url": "https://arxiv.org/abs/2410.08133", "year": "2024"},
-    {"title": "Episodic Memories Benchmark", "url": "https://arxiv.org/abs/2501.13121", "year": "2025"},
-    {"title": "MemoryBank", "url": "https://arxiv.org/abs/2305.10250", "year": "2024"},
-    {"title": "Dynamic Tree Memory", "url": "https://arxiv.org/abs/2410.14052", "year": "2024"},
-    {"title": "A-MEM", "url": "https://arxiv.org/abs/2502.12110", "year": "2025"},
-    {"title": "Mem0", "url": "https://arxiv.org/abs/2504.19413", "year": "2025"},
-    {"title": "Memoria", "url": "https://arxiv.org/abs/2512.12686", "year": "2025"},
-    {"title": "Memori", "url": "https://arxiv.org/abs/2603.19935", "year": "2025"},
-    {"title": "Nemori", "url": "https://arxiv.org/abs/2508.03341", "year": "2025"},
-    {"title": "SeCom", "url": "https://arxiv.org/abs/2502.05589", "year": "2025"},
-    {"title": "R³Mem", "url": "https://arxiv.org/abs/2502.15957", "year": "2025"},
-    {"title": "Zep", "url": "https://arxiv.org/abs/2501.13956", "year": "2025"},
-    {"title": "MaRS", "url": "https://arxiv.org/abs/2512.12856", "year": "2025"},
-    {"title": "PAM", "url": "https://arxiv.org/abs/2602.11322", "year": "2026"},
-    {"title": "E-mem", "url": "https://arxiv.org/abs/2601.21714", "year": "2026"},
-    {"title": "Beyond Fact Retrieval (GSW)", "url": "https://arxiv.org/abs/2511.07587", "year": "2026"},
-    {"title": "MAGMA", "url": "https://arxiv.org/abs/2601.03236", "year": "2026"},
-    {"title": "EverMemOS", "url": "https://arxiv.org/abs/2601.02163", "year": "2026"},
-    {"title": "AI PERSONA", "url": "https://arxiv.org/abs/2412.13103", "year": "2024"},
+    {"title": "MemGPT", "url": "https://arxiv.org/pdf/2310.08560", "year": "2023"},
+    {"title": "Generative Agents", "url": "https://arxiv.org/pdf/2304.03442", "year": "2023"},
+    {"title": "RET-LLM", "url": "https://arxiv.org/pdf/2305.14322", "year": "2023"},
+    {"title": "SCM", "url": "https://arxiv.org/pdf/2304.13343", "year": "2023"},
+    {"title": "LoCoMo", "url": "https://arxiv.org/pdf/2402.17753", "year": "2024"},
+    {"title": "SORT", "url": "https://arxiv.org/pdf/2410.08133", "year": "2024"},
+    {"title": "Episodic Memories Benchmark", "url": "https://arxiv.org/pdf/2501.13121", "year": "2025"},
+    {"title": "MemoryBank", "url": "https://arxiv.org/pdf/2305.10250", "year": "2024"},
+    {"title": "Dynamic Tree Memory", "url": "https://arxiv.org/pdf/2410.14052", "year": "2024"},
+    {"title": "A-MEM", "url": "https://arxiv.org/pdf/2502.12110", "year": "2025"},
+    {"title": "Mem0", "url": "https://arxiv.org/pdf/2504.19413", "year": "2025"},
+    {"title": "Memoria", "url": "https://arxiv.org/pdf/2512.12686", "year": "2025"},
+    {"title": "Memori", "url": "https://arxiv.org/pdf/2603.19935", "year": "2025"},
+    {"title": "Nemori", "url": "https://arxiv.org/pdf/2508.03341", "year": "2025"},
+    {"title": "SeCom", "url": "https://arxiv.org/pdf/2502.05589", "year": "2025"},
+    {"title": "R³Mem", "url": "https://arxiv.org/pdf/2502.15957", "year": "2025"},
+    {"title": "Zep", "url": "https://arxiv.org/pdf/2501.13956", "year": "2025"},
+    {"title": "MaRS", "url": "https://arxiv.org/pdf/2512.12856", "year": "2025"},
+    {"title": "PAM", "url": "https://arxiv.org/pdf/2602.11322", "year": "2026"},
+    {"title": "E-mem", "url": "https://arxiv.org/pdf/2601.21714", "year": "2026"},
+    {"title": "Beyond Fact Retrieval (GSW)", "url": "https://arxiv.org/pdf/2511.07587", "year": "2026"},
+    {"title": "MAGMA", "url": "https://arxiv.org/pdf/2601.03236", "year": "2026"},
+    {"title": "EverMemOS", "url": "https://arxiv.org/pdf/2601.02163", "year": "2026"},
+    {"title": "AI PERSONA", "url": "https://arxiv.org/pdf/2412.13103", "year": "2024"},
 ]
 
 # Name → URL lookup for matching results (vstash stores URL as title/path)
@@ -348,11 +348,12 @@ def apply_scenario(
     for paper_name, (count, days_ago) in scenario.patterns.items():
         access_date = (now - timedelta(days=days_ago)).isoformat()
 
-        # Find chunks matching this paper
+        # Find chunks matching this paper (vstash stores URL as path when ingesting from URL)
+        url = NAME_TO_URL.get(paper_name, "")
         rows = store._conn.execute(
             "SELECT c.id FROM chunks c JOIN documents d ON d.id = c.doc_id "
-            "WHERE d.title LIKE ? OR d.path LIKE ?",
-            [f"%{paper_name}%", f"%{paper_name}%"],
+            "WHERE d.path = ? OR d.title LIKE ? OR d.path LIKE ?",
+            [url, f"%{paper_name}%", f"%{paper_name}%"],
         ).fetchall()
 
         if rows:

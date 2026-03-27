@@ -124,8 +124,8 @@ class ScoringConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     enabled: bool = Field(default=True, description="Enable frequency+decay re-ranking")
-    alpha: float = Field(default=0.5, ge=0, le=1, description="Weight for semantic similarity (RRF)")
-    beta: float = Field(default=0.5, ge=0, le=1, description="Weight for access history")
+    alpha: float = Field(default=0.8, ge=0, le=1, description="Weight for semantic similarity (RRF)")
+    beta: float = Field(default=0.2, ge=0, le=1, description="Weight for access history")
     decay_lambda: float = Field(
         default=0.05, gt=0, description="Decay rate (0.05=weeks, 0.1=days)"
     )

@@ -26,34 +26,34 @@ from vstash.store import VstashStore
 
 PAPERS: list[dict[str, str]] = [
     # Foundational (2023)
-    {"title": "MemGPT: Towards LLMs as Operating Systems", "url": "https://arxiv.org/abs/2310.08560", "year": "2023"},
-    {"title": "Generative Agents: Interactive Simulacra of Human Behavior", "url": "https://arxiv.org/abs/2304.03442", "year": "2023"},
-    {"title": "RET-LLM: Towards a General Read-Write Memory for LLMs", "url": "https://arxiv.org/abs/2305.14322", "year": "2023"},
-    {"title": "SCM: Self-Controlled Memory Framework", "url": "https://arxiv.org/abs/2304.13343", "year": "2023"},
+    {"title": "MemGPT: Towards LLMs as Operating Systems", "url": "https://arxiv.org/pdf/2310.08560", "year": "2023"},
+    {"title": "Generative Agents: Interactive Simulacra of Human Behavior", "url": "https://arxiv.org/pdf/2304.03442", "year": "2023"},
+    {"title": "RET-LLM: Towards a General Read-Write Memory for LLMs", "url": "https://arxiv.org/pdf/2305.14322", "year": "2023"},
+    {"title": "SCM: Self-Controlled Memory Framework", "url": "https://arxiv.org/pdf/2304.13343", "year": "2023"},
     # Benchmarks & Evaluation (2024–2025)
-    {"title": "LoCoMo: Evaluating Very Long-Term Conversational Memory", "url": "https://arxiv.org/abs/2402.17753", "year": "2024"},
-    {"title": "SORT: Sequence Order Recall Tasks for Episodic Memory", "url": "https://arxiv.org/abs/2410.08133", "year": "2024"},
-    {"title": "Episodic Memories Generation and Evaluation Benchmark", "url": "https://arxiv.org/abs/2501.13121", "year": "2025"},
+    {"title": "LoCoMo: Evaluating Very Long-Term Conversational Memory", "url": "https://arxiv.org/pdf/2402.17753", "year": "2024"},
+    {"title": "SORT: Sequence Order Recall Tasks for Episodic Memory", "url": "https://arxiv.org/pdf/2410.08133", "year": "2024"},
+    {"title": "Episodic Memories Generation and Evaluation Benchmark", "url": "https://arxiv.org/pdf/2501.13121", "year": "2025"},
     # Memory Architectures (2024–2025)
-    {"title": "MemoryBank: Enhancing LLMs with Long-Term Memory", "url": "https://arxiv.org/abs/2305.10250", "year": "2024"},
-    {"title": "Dynamic Tree Memory Representation for LLMs", "url": "https://arxiv.org/abs/2410.14052", "year": "2024"},
-    {"title": "A-MEM: Agentic Memory for LLM Agents", "url": "https://arxiv.org/abs/2502.12110", "year": "2025"},
-    {"title": "Mem0: Production-Ready AI Agents with Scalable Long-Term Memory", "url": "https://arxiv.org/abs/2504.19413", "year": "2025"},
-    {"title": "Memoria: Scalable Agentic Memory for Personalized Conversational AI", "url": "https://arxiv.org/abs/2512.12686", "year": "2025"},
-    {"title": "Memori: Persistent Memory Layer for Context-Aware LLM Agents", "url": "https://arxiv.org/abs/2603.19935", "year": "2025"},
-    {"title": "Nemori: Self-Organizing Agent Memory Inspired by Cognitive Science", "url": "https://arxiv.org/abs/2508.03341", "year": "2025"},
-    {"title": "SeCom: Memory Construction for Personalized Conversational Agents", "url": "https://arxiv.org/abs/2502.05589", "year": "2025"},
-    {"title": "R³Mem: Memory Retention and Retrieval via Reversible Compression", "url": "https://arxiv.org/abs/2502.15957", "year": "2025"},
+    {"title": "MemoryBank: Enhancing LLMs with Long-Term Memory", "url": "https://arxiv.org/pdf/2305.10250", "year": "2024"},
+    {"title": "Dynamic Tree Memory Representation for LLMs", "url": "https://arxiv.org/pdf/2410.14052", "year": "2024"},
+    {"title": "A-MEM: Agentic Memory for LLM Agents", "url": "https://arxiv.org/pdf/2502.12110", "year": "2025"},
+    {"title": "Mem0: Production-Ready AI Agents with Scalable Long-Term Memory", "url": "https://arxiv.org/pdf/2504.19413", "year": "2025"},
+    {"title": "Memoria: Scalable Agentic Memory for Personalized Conversational AI", "url": "https://arxiv.org/pdf/2512.12686", "year": "2025"},
+    {"title": "Memori: Persistent Memory Layer for Context-Aware LLM Agents", "url": "https://arxiv.org/pdf/2603.19935", "year": "2025"},
+    {"title": "Nemori: Self-Organizing Agent Memory Inspired by Cognitive Science", "url": "https://arxiv.org/pdf/2508.03341", "year": "2025"},
+    {"title": "SeCom: Memory Construction for Personalized Conversational Agents", "url": "https://arxiv.org/pdf/2502.05589", "year": "2025"},
+    {"title": "R³Mem: Memory Retention and Retrieval via Reversible Compression", "url": "https://arxiv.org/pdf/2502.15957", "year": "2025"},
     # Temporal & Decay (2025–2026)
-    {"title": "Zep: Temporal Knowledge Graph Architecture for Agent Memory", "url": "https://arxiv.org/abs/2501.13956", "year": "2025"},
-    {"title": "MaRS: Forgetful but Faithful — Cognitive Memory Architecture", "url": "https://arxiv.org/abs/2512.12856", "year": "2025"},
-    {"title": "PAM: Predictive Associative Memory via Temporal Co-occurrence", "url": "https://arxiv.org/abs/2602.11322", "year": "2026"},
+    {"title": "Zep: Temporal Knowledge Graph Architecture for Agent Memory", "url": "https://arxiv.org/pdf/2501.13956", "year": "2025"},
+    {"title": "MaRS: Forgetful but Faithful — Cognitive Memory Architecture", "url": "https://arxiv.org/pdf/2512.12856", "year": "2025"},
+    {"title": "PAM: Predictive Associative Memory via Temporal Co-occurrence", "url": "https://arxiv.org/pdf/2602.11322", "year": "2026"},
     # Advanced Systems (2025–2026)
-    {"title": "E-mem: Multi-agent Episodic Context Reconstruction", "url": "https://arxiv.org/abs/2601.21714", "year": "2026"},
-    {"title": "Beyond Fact Retrieval: Episodic Memory for RAG with GSW", "url": "https://arxiv.org/abs/2511.07587", "year": "2026"},
-    {"title": "MAGMA: Multi-Graph based Agentic Memory Architecture", "url": "https://arxiv.org/abs/2601.03236", "year": "2026"},
-    {"title": "EverMemOS: Self-Organizing Memory OS for Long-Horizon Reasoning", "url": "https://arxiv.org/abs/2601.02163", "year": "2026"},
-    {"title": "AI PERSONA: Towards Life-long Personalization of LLMs", "url": "https://arxiv.org/abs/2412.13103", "year": "2024"},
+    {"title": "E-mem: Multi-agent Episodic Context Reconstruction", "url": "https://arxiv.org/pdf/2601.21714", "year": "2026"},
+    {"title": "Beyond Fact Retrieval: Episodic Memory for RAG with GSW", "url": "https://arxiv.org/pdf/2511.07587", "year": "2026"},
+    {"title": "MAGMA: Multi-Graph based Agentic Memory Architecture", "url": "https://arxiv.org/pdf/2601.03236", "year": "2026"},
+    {"title": "EverMemOS: Self-Organizing Memory OS for Long-Horizon Reasoning", "url": "https://arxiv.org/pdf/2601.02163", "year": "2026"},
+    {"title": "AI PERSONA: Towards Life-long Personalization of LLMs", "url": "https://arxiv.org/pdf/2412.13103", "year": "2024"},
     # WMR uses frontiersin — skip for now (not arxiv PDF)
 ]
 
@@ -221,19 +221,16 @@ def main() -> None:
     # ============================================================== #
     banner("Phase 2: Differential access simulation")
 
-    # Find chunk IDs for key papers
-    locomo_chunks = store._conn.execute(
-        "SELECT c.id FROM chunks c JOIN documents d ON d.id = c.doc_id "
-        "WHERE d.title LIKE '%LoCoMo%'"
-    ).fetchall()
-    memgpt_chunks = store._conn.execute(
-        "SELECT c.id FROM chunks c JOIN documents d ON d.id = c.doc_id "
-        "WHERE d.title LIKE '%MemGPT%'"
-    ).fetchall()
-    pam_chunks = store._conn.execute(
-        "SELECT c.id FROM chunks c JOIN documents d ON d.id = c.doc_id "
-        "WHERE d.title LIKE '%PAM%'"
-    ).fetchall()
+    # Find chunk IDs for key papers (vstash stores URL as path when ingesting from URL)
+    def _find_chunks(url: str):
+        return store._conn.execute(
+            "SELECT c.id FROM chunks c JOIN documents d ON d.id = c.doc_id "
+            "WHERE d.path = ?", [url]
+        ).fetchall()
+
+    locomo_chunks = _find_chunks("https://arxiv.org/pdf/2402.17753")
+    memgpt_chunks = _find_chunks("https://arxiv.org/pdf/2310.08560")
+    pam_chunks = _find_chunks("https://arxiv.org/pdf/2602.11322")
 
     # LoCoMo: simulate 10 recent accesses (heavily used benchmark)
     if locomo_chunks:
