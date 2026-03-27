@@ -114,7 +114,7 @@ class StorageConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     db_path: str = Field(
-        default_factory=lambda: os.getenv("VSTASH_DB_PATH", "~/.vstash/memory.db"),
+        default_factory=lambda: os.getenv("VSTASH_DB_PATH") or "~/.vstash/memory.db",
         description="Path to SQLite database file",
     )
 

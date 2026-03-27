@@ -11,6 +11,7 @@ Single .db file. WAL mode for safe concurrent reads.
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
 import sqlite3
 import struct
@@ -47,6 +48,10 @@ def _deserialize(data: bytes) -> list[float]:
 
 # Standard RRF constant — balances precision vs recall
 RRF_K = 60
+
+# Frequency score saturation point — access counts above this
+# produce diminishing returns in the log1p normalization.
+FREQ_SATURATION = 100
 
 
 class VstashStore:
@@ -216,6 +221,15 @@ class VstashStore:
                 UPDATE chunks SET created_at = (
                     SELECT d.added_at FROM documents d WHERE d.id = chunks.doc_id
                 ) WHERE created_at IS NULL
+            """)
+            conn.commit()
+
+        # Fix v0.5.0 data: ingestion set access_count=1 for chunks that were
+        # never actually searched. Detect by access_count=1 + no last_accessed_at.
+        if "access_count" in chunk_columns:
+            conn.execute("""
+                UPDATE chunks SET access_count = 0
+                WHERE access_count = 1 AND last_accessed_at IS NULL
             """)
             conn.commit()
 
@@ -424,9 +438,8 @@ class VstashStore:
             Ranked list of SearchResult ordered by descending score.
         """
         # Determine effective pool size — over-fetch when scoring is enabled
-        scoring_enabled = scoring is not None and scoring.enabled
         effective_k = top_k
-        if scoring_enabled:
+        if scoring is not None and scoring.enabled:
             effective_k = max(top_k, scoring.over_fetch)
 
         # Adaptive candidate pool — avoid pulling half the corpus on small DBs
@@ -526,7 +539,7 @@ class VstashStore:
         ranked = sorted(scores.values(), key=lambda x: float(x["rrf"]), reverse=True)
 
         # Apply frequency+decay re-ranking if scoring is enabled
-        if scoring_enabled:
+        if scoring is not None and scoring.enabled:
             ranked = ranked[:effective_k]
             ranked = self.rerank_with_decay(
                 ranked,
@@ -549,13 +562,12 @@ class VstashStore:
         ]
 
         # Track access for returned chunks (best-effort, failures don't affect results)
-        if scoring_enabled and scoring.track_access:
+        if scoring is not None and scoring.enabled and scoring.track_access:
             try:
                 result_ids = [int(r["id"]) for r in ranked if "id" in r]
                 if result_ids:
                     self.track_access(result_ids)
             except Exception:
-                import logging
                 logging.getLogger(__name__).debug("Access tracking failed", exc_info=True)
 
         return results
@@ -904,7 +916,7 @@ class VstashStore:
             # +1 baseline so zero-access chunks still get a small nonzero score
             freq_score = (1 + access_count) * math.exp(-decay_lambda * days_ago)
             # Normalize frequency component to [0, 1] via log1p, capped at 1.0
-            freq_normalized = min(1.0, math.log1p(freq_score) / math.log1p(100))
+            freq_normalized = min(1.0, math.log1p(freq_score) / math.log1p(FREQ_SATURATION))
             c["final_score"] = alpha * normalized_rrf + beta * freq_normalized
 
         candidates.sort(key=lambda c: float(c["final_score"]), reverse=True)
