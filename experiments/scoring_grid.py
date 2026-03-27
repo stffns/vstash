@@ -20,7 +20,6 @@ from __future__ import annotations
 import argparse
 import copy
 import math
-import shutil
 import sqlite3
 import tempfile
 import time
@@ -48,7 +47,11 @@ PAPERS: list[dict[str, str]] = [
     {"title": "SCM", "url": "https://arxiv.org/pdf/2304.13343", "year": "2023"},
     {"title": "LoCoMo", "url": "https://arxiv.org/pdf/2402.17753", "year": "2024"},
     {"title": "SORT", "url": "https://arxiv.org/pdf/2410.08133", "year": "2024"},
-    {"title": "Episodic Memories Benchmark", "url": "https://arxiv.org/pdf/2501.13121", "year": "2025"},
+    {
+        "title": "Episodic Memories Benchmark",
+        "url": "https://arxiv.org/pdf/2501.13121",
+        "year": "2025",
+    },
     {"title": "MemoryBank", "url": "https://arxiv.org/pdf/2305.10250", "year": "2024"},
     {"title": "Dynamic Tree Memory", "url": "https://arxiv.org/pdf/2410.14052", "year": "2024"},
     {"title": "A-MEM", "url": "https://arxiv.org/pdf/2502.12110", "year": "2025"},
@@ -62,7 +65,11 @@ PAPERS: list[dict[str, str]] = [
     {"title": "MaRS", "url": "https://arxiv.org/pdf/2512.12856", "year": "2025"},
     {"title": "PAM", "url": "https://arxiv.org/pdf/2602.11322", "year": "2026"},
     {"title": "E-mem", "url": "https://arxiv.org/pdf/2601.21714", "year": "2026"},
-    {"title": "Beyond Fact Retrieval (GSW)", "url": "https://arxiv.org/pdf/2511.07587", "year": "2026"},
+    {
+        "title": "Beyond Fact Retrieval (GSW)",
+        "url": "https://arxiv.org/pdf/2511.07587",
+        "year": "2026",
+    },
     {"title": "MAGMA", "url": "https://arxiv.org/pdf/2601.03236", "year": "2026"},
     {"title": "EverMemOS", "url": "https://arxiv.org/pdf/2601.02163", "year": "2026"},
     {"title": "AI PERSONA", "url": "https://arxiv.org/pdf/2412.13103", "year": "2024"},
@@ -125,6 +132,7 @@ EVAL_QUERIES = [
 # Configuration grid                                                    #
 # ------------------------------------------------------------------ #
 
+
 @dataclass
 class ScoringVariant:
     name: str
@@ -133,27 +141,28 @@ class ScoringVariant:
     decay_lambda: float
     over_fetch: int
 
+
 GRID: list[ScoringVariant] = [
     # Baseline weights, varying lambda
-    ScoringVariant("α.7_β.3_λ.01_of50",  0.7, 0.3, 0.01, 50),
-    ScoringVariant("α.7_β.3_λ.03_of50",  0.7, 0.3, 0.03, 50),
-    ScoringVariant("α.7_β.3_λ.05_of50",  0.7, 0.3, 0.05, 50),
-    ScoringVariant("α.7_β.3_λ.07_of50",  0.7, 0.3, 0.07, 50),
-    ScoringVariant("α.7_β.3_λ.10_of50",  0.7, 0.3, 0.10, 50),
-    ScoringVariant("α.7_β.3_λ.20_of50",  0.7, 0.3, 0.20, 50),
+    ScoringVariant("α.7_β.3_λ.01_of50", 0.7, 0.3, 0.01, 50),
+    ScoringVariant("α.7_β.3_λ.03_of50", 0.7, 0.3, 0.03, 50),
+    ScoringVariant("α.7_β.3_λ.05_of50", 0.7, 0.3, 0.05, 50),
+    ScoringVariant("α.7_β.3_λ.07_of50", 0.7, 0.3, 0.07, 50),
+    ScoringVariant("α.7_β.3_λ.10_of50", 0.7, 0.3, 0.10, 50),
+    ScoringVariant("α.7_β.3_λ.20_of50", 0.7, 0.3, 0.20, 50),
     # Higher memory weight
-    ScoringVariant("α.5_β.5_λ.05_of50",  0.5, 0.5, 0.05, 50),
-    ScoringVariant("α.5_β.5_λ.07_of50",  0.5, 0.5, 0.07, 50),
-    ScoringVariant("α.5_β.5_λ.10_of50",  0.5, 0.5, 0.10, 50),
+    ScoringVariant("α.5_β.5_λ.05_of50", 0.5, 0.5, 0.05, 50),
+    ScoringVariant("α.5_β.5_λ.07_of50", 0.5, 0.5, 0.07, 50),
+    ScoringVariant("α.5_β.5_λ.10_of50", 0.5, 0.5, 0.10, 50),
     # Lower memory weight (subtle boost)
-    ScoringVariant("α.8_β.2_λ.05_of50",  0.8, 0.2, 0.05, 50),
-    ScoringVariant("α.8_β.2_λ.07_of50",  0.8, 0.2, 0.07, 50),
-    ScoringVariant("α.8_β.2_λ.10_of50",  0.8, 0.2, 0.10, 50),
+    ScoringVariant("α.8_β.2_λ.05_of50", 0.8, 0.2, 0.05, 50),
+    ScoringVariant("α.8_β.2_λ.07_of50", 0.8, 0.2, 0.07, 50),
+    ScoringVariant("α.8_β.2_λ.10_of50", 0.8, 0.2, 0.10, 50),
     # Extreme: semantic only vs memory heavy
-    ScoringVariant("α.9_β.1_λ.07_of50",  0.9, 0.1, 0.07, 50),
-    ScoringVariant("α.4_β.6_λ.07_of50",  0.4, 0.6, 0.07, 50),
+    ScoringVariant("α.9_β.1_λ.07_of50", 0.9, 0.1, 0.07, 50),
+    ScoringVariant("α.4_β.6_λ.07_of50", 0.4, 0.6, 0.07, 50),
     # Over-fetch variations
-    ScoringVariant("α.7_β.3_λ.07_of20",  0.7, 0.3, 0.07, 20),
+    ScoringVariant("α.7_β.3_λ.07_of20", 0.7, 0.3, 0.07, 20),
     ScoringVariant("α.7_β.3_λ.07_of100", 0.7, 0.3, 0.07, 100),
 ]
 
@@ -161,9 +170,11 @@ GRID: list[ScoringVariant] = [
 # Access pattern scenarios                                             #
 # ------------------------------------------------------------------ #
 
+
 @dataclass
 class AccessScenario:
     """Defines a simulated usage pattern to apply before evaluation."""
+
     name: str
     description: str
     # {paper_short_name: (access_count, days_ago_of_last_access)}
@@ -226,6 +237,7 @@ SCENARIOS: list[AccessScenario] = [
 # Metrics                                                              #
 # ------------------------------------------------------------------ #
 
+
 def dcg_at_k(relevance: list[float], k: int) -> float:
     """Discounted Cumulative Gain at position k."""
     return sum(rel / math.log2(i + 2) for i, rel in enumerate(relevance[:k]))
@@ -255,9 +267,7 @@ def ndcg_at_k(result_titles: list[str], expected_top: list[str], k: int = 5) -> 
     return actual_dcg / ideal_dcg if ideal_dcg > 0 else 0.0
 
 
-def avg_rank_displacement(
-    baseline_titles: list[str], scored_titles: list[str]
-) -> float:
+def avg_rank_displacement(baseline_titles: list[str], scored_titles: list[str]) -> float:
     """Average absolute position change for shared results."""
     displacements = []
     for i, title in enumerate(scored_titles):
@@ -320,6 +330,7 @@ def frequency_response(
 # DB snapshot/restore for clean scenario evaluation                    #
 # ------------------------------------------------------------------ #
 
+
 def snapshot_access_data(conn: sqlite3.Connection) -> list[tuple]:
     """Save current access_count and last_accessed_at for all chunks."""
     return conn.execute(
@@ -331,16 +342,13 @@ def restore_access_data(conn: sqlite3.Connection, snapshot: list[tuple]) -> None
     """Restore access data from snapshot."""
     for row in snapshot:
         conn.execute(
-            "UPDATE chunks SET access_count = ?, last_accessed_at = ?, created_at = ? "
-            "WHERE id = ?",
+            "UPDATE chunks SET access_count = ?, last_accessed_at = ?, created_at = ? WHERE id = ?",
             [row["access_count"], row["last_accessed_at"], row["created_at"], row["id"]],
         )
     conn.commit()
 
 
-def apply_scenario(
-    store: VstashStore, scenario: AccessScenario
-) -> list[str]:
+def apply_scenario(store: VstashStore, scenario: AccessScenario) -> list[str]:
     """Apply access pattern scenario. Returns list of boosted paper names."""
     now = datetime.now(timezone.utc)
     boosted = []
@@ -373,6 +381,7 @@ def apply_scenario(
 # ------------------------------------------------------------------ #
 # Main grid evaluation                                                 #
 # ------------------------------------------------------------------ #
+
 
 @dataclass
 class EvalResult:
@@ -416,7 +425,10 @@ def evaluate_variant(
 
         emb = embed_query(q, MODEL)
         results = store.search(
-            query_embedding=emb, query_text=q, top_k=top_k, scoring=scoring,
+            query_embedding=emb,
+            query_text=q,
+            top_k=top_k,
+            scoring=scoring,
         )
 
         result_titles = [r.title for r in results]
@@ -526,7 +538,10 @@ def main() -> None:
         q = eq["query"]
         emb = embed_query(q, MODEL)
         results = store.search(
-            query_embedding=emb, query_text=q, top_k=args.top_k, scoring=None,
+            query_embedding=emb,
+            query_text=q,
+            top_k=args.top_k,
+            scoring=None,
         )
         baseline_results[q] = results
 
@@ -558,7 +573,12 @@ def main() -> None:
 
         for variant in GRID:
             result = evaluate_variant(
-                store, variant, scenario, baseline_results, boosted, args.top_k,
+                store,
+                variant,
+                scenario,
+                baseline_results,
+                boosted,
+                args.top_k,
             )
             all_results.append(result)
             ndcg_delta = result.avg_ndcg - avg_baseline_ndcg
@@ -588,7 +608,9 @@ def main() -> None:
         worst = scenario_results[-1]
         delta_best = best.avg_ndcg - avg_baseline_ndcg
         print(f"  [{scenario.name}]")
-        print(f"    Best:  {best.variant:<25} NDCG={best.avg_ndcg:.4f} ({'+' if delta_best >= 0 else ''}{delta_best:.4f} vs baseline)")
+        print(
+            f"    Best:  {best.variant:<25} NDCG={best.avg_ndcg:.4f} ({'+' if delta_best >= 0 else ''}{delta_best:.4f} vs baseline)"
+        )
         print(f"    Worst: {worst.variant:<25} NDCG={worst.avg_ndcg:.4f}")
         print(f"    Best freq response: {best.avg_freq_response:+.2f}")
         print()
@@ -603,13 +625,15 @@ def main() -> None:
 
     ranked = sorted(variant_scores.items(), key=lambda x: sum(x[1]) / len(x[1]), reverse=True)
 
-    print(f"\n  {'Rank':<5} {'Config':<27} {'Avg NDCG':<10} {'vs Baseline':<12} {'Min NDCG':<10} {'Max NDCG':<10}")
+    print(
+        f"\n  {'Rank':<5} {'Config':<27} {'Avg NDCG':<10} {'vs Baseline':<12} {'Min NDCG':<10} {'Max NDCG':<10}"
+    )
     print(f"  {'─' * 74}")
     for i, (name, ndcgs) in enumerate(ranked[:10]):
         avg = sum(ndcgs) / len(ndcgs)
         delta = avg - avg_baseline_ndcg
         print(
-            f"  {i+1:<5} {name:<27} {avg:.4f}     "
+            f"  {i + 1:<5} {name:<27} {avg:.4f}     "
             f"{'+' if delta >= 0 else ''}{delta:.4f}       "
             f"{min(ndcgs):.4f}     {max(ndcgs):.4f}"
         )
@@ -617,7 +641,7 @@ def main() -> None:
     # Recommended config
     best_name = ranked[0][0]
     best_variant = next(v for v in GRID if v.name == best_name)
-    print(f"\n  ★ Recommended default config:")
+    print("\n  ★ Recommended default config:")
     print(f"    alpha = {best_variant.alpha}")
     print(f"    beta = {best_variant.beta}")
     print(f"    decay_lambda = {best_variant.decay_lambda}")
@@ -676,13 +700,17 @@ def main() -> None:
 
             # Warmup runs (discard)
             for _ in range(WARMUP_RUNS):
-                store.search(query_embedding=emb, query_text=q, top_k=args.top_k, scoring=cfg_scoring)
+                store.search(
+                    query_embedding=emb, query_text=q, top_k=args.top_k, scoring=cfg_scoring
+                )
 
             # Timed runs
             query_times: list[float] = []
             for _ in range(BENCH_RUNS):
                 t0 = time.perf_counter()
-                store.search(query_embedding=emb, query_text=q, top_k=args.top_k, scoring=cfg_scoring)
+                store.search(
+                    query_embedding=emb, query_text=q, top_k=args.top_k, scoring=cfg_scoring
+                )
                 elapsed = (time.perf_counter() - t0) * 1000  # ms
                 query_times.append(elapsed)
 
@@ -691,7 +719,9 @@ def main() -> None:
         latency_results[label] = times_ms
 
     # Report
-    print(f"\n  {'Config':<35} {'Median':>8} {'P95':>8} {'P99':>8} {'Mean':>8} {'Min':>8} {'Max':>8}")
+    print(
+        f"\n  {'Config':<35} {'Median':>8} {'P95':>8} {'P99':>8} {'Mean':>8} {'Min':>8} {'Max':>8}"
+    )
     print(f"  {'─' * 83}")
 
     baseline_median = None
@@ -728,14 +758,22 @@ def main() -> None:
 
     # Get candidates by running search without scoring
     raw_results = store.search(
-        query_embedding=sample_emb, query_text=sample_q,
-        top_k=best_variant.over_fetch, scoring=None,
+        query_embedding=sample_emb,
+        query_text=sample_q,
+        top_k=best_variant.over_fetch,
+        scoring=None,
     )
 
     # Build candidate dicts like search() does internally
     candidates = [
-        {"id": i, "rrf": r.score, "text": r.text, "title": r.title,
-         "path": r.path, "chunk": r.chunk}
+        {
+            "id": i,
+            "rrf": r.score,
+            "text": r.text,
+            "title": r.title,
+            "path": r.path,
+            "chunk": r.chunk,
+        }
         for i, r in enumerate(raw_results, 1)
     ]
 
@@ -746,8 +784,12 @@ def main() -> None:
     for _ in range(BENCH_RUNS * 5):
         c = copy.deepcopy(candidates)
         t0 = time.perf_counter()
-        store.rerank_with_decay(c, alpha=best_variant.alpha, beta=best_variant.beta,
-                                decay_lambda=best_variant.decay_lambda)
+        store.rerank_with_decay(
+            c,
+            alpha=best_variant.alpha,
+            beta=best_variant.beta,
+            decay_lambda=best_variant.decay_lambda,
+        )
         rerank_times.append((time.perf_counter() - t0) * 1000)
     rerank_times.sort()
 
