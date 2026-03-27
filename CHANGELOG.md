@@ -2,6 +2,21 @@
 
 All notable changes to vstash are documented here.
 
+## [0.5.3] — 2026-03-27
+
+### Added
+- **Relevance signal** — search results now include a `relevance` field (`high`, `low`, `none`) based on score spread
+  - CLI: shows `⚠ Results may not be relevant` warning when spread < 0.15
+  - CLI `--json`: includes `relevance` field in output
+  - MCP: `vstash_search` returns `relevance` + `hint` so LLM clients can filter noise
+- **MCP server instructions** — explicit guidance for LLM clients on when to use/skip vstash tools
+- **Claude Code integration** — hook, skills, and setup guide
+  - `vstash-context.sh` hook: auto-injects document context on knowledge questions
+  - `/memory` and `/remember` slash commands
+  - `docs/claude-integration.md` — setup guide for Claude Code (hook) and Claude Desktop (MCP)
+
+---
+
 ## [0.5.2] — 2026-03-27
 
 ### Added
