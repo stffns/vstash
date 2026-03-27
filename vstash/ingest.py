@@ -178,6 +178,45 @@ def _split_code_blocks(text: str, language: str) -> list[str]:
     return blocks
 
 
+def chunk_code(text: str, chunk_size: int, overlap: int, language: str) -> list[str]:
+    """Split source code into structurally coherent, token-bounded chunks.
+
+    Strategy (in order of priority):
+      1. Split at top-level definitions (functions, classes) using regex.
+      2. Oversized blocks fall back to paragraph splitting, then fixed window.
+      3. Merge adjacent small blocks.
+
+    Args:
+        text: Raw source code text.
+        chunk_size: Maximum tokens per chunk.
+        overlap: Token overlap for fixed-window fallback.
+        language: Language key (python, javascript, go, rust, java).
+
+    Returns:
+        List of non-empty code chunks.
+    """
+    if not text or not text.strip():
+        return []
+
+    # Step 1: split by code structure
+    blocks = _split_code_blocks(text, language)
+
+    # Step 2: ensure each block fits in chunk_size
+    sized_chunks: list[str] = []
+    for block in blocks:
+        token_count = len(_get_enc().encode(block))
+        if token_count <= chunk_size:
+            sized_chunks.append(block)
+        else:
+            # Fall back to paragraph/window splitting for oversized blocks
+            sized_chunks.extend(_split_by_paragraphs(block, chunk_size, overlap))
+
+    # Step 3: merge small adjacent chunks
+    merged = _merge_small_chunks(sized_chunks, chunk_size)
+
+    return [c for c in merged if c.strip() and len(c.strip()) > 20]
+
+
 def _split_by_headers(text: str) -> list[str]:
     """Split text at Markdown header lines, keeping each header with its body.
 
