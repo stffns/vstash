@@ -10,7 +10,18 @@ readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
 keywords = ["embeddings", "semantic-search", "rag", "local", "cerebras", "sqlite-vec", "fastembed", "vector-stash"]
-
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Database",
+]
 dependencies = [
     "pydantic>=2.0.0,<3",
     "fastembed>=0.4.0,<1",
@@ -21,6 +32,13 @@ dependencies = [
     "pyyaml>=6.0",
     "tomli>=2.0.0; python_version < '3.11'",
 ]
+
+[project.urls]
+Homepage = "https://github.com/stffns/vstash"
+Documentation = "https://github.com/stffns/vstash/tree/main/docs"
+Repository = "https://github.com/stffns/vstash"
+Changelog = "https://github.com/stffns/vstash/blob/main/CHANGELOG.md"
+Issues = "https://github.com/stffns/vstash/issues"
 
 [project.scripts]
 vstash = "vstash.cli:app"
@@ -54,6 +72,17 @@ dev = [
 
 [tool.hatch.version]
 path = "vstash/__init__.py"
+
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "demo.gif",
+    "demo.tape",
+    "benchmark/",
+    "experiments/",
+    "docs/",
+    ".github/",
+    ".claude/",
+]
 
 [tool.ruff]
 line-length = 100

@@ -3,7 +3,8 @@ cli.py — vstash command line interface.
 
 Commands:
   vstash add <file/url>   → ingest document
-  vstash ask "<query>"    → single question
+  vstash search "<query>" → semantic search (no LLM, free)
+  vstash ask "<query>"    → single question (requires LLM)
   vstash chat             → interactive mode
   vstash list             → show ingested documents
   vstash stats            → memory statistics
@@ -226,6 +227,75 @@ def ask(
                     console.print(f"[red]✗ Inference error: {exc}[/red]")
                     raise typer.Exit(1) from exc
             console.print(Markdown(response))
+
+
+# ------------------------------------------------------------------ #
+# vstash search                                                       #
+# ------------------------------------------------------------------ #
+
+
+@app.command()
+def search(
+    query: str = typer.Argument(..., help="Your search query"),
+    top_k: int = typer.Option(
+        0, "--top-k", "-k", help="Number of chunks to retrieve (0 = from config)"
+    ),
+    collection: str | None = typer.Option(
+        None, "--collection", "-c", help="Restrict to collection"
+    ),
+    project: str | None = typer.Option(None, "--project", "-p", help="Restrict to project"),
+    layer: str | None = typer.Option(None, "--layer", "-l", help="Restrict to layer"),
+) -> None:
+    """Semantic search without LLM (free, local)."""
+    cfg, store = _get_store(warm=True)
+
+    with store:
+        k = top_k or cfg.chunking.top_k
+
+        with console.status("[dim]Searching memory...[/dim]", spinner="dots"):
+            q_embedding = embed_query(query, cfg.embeddings.model)
+            chunks = store.search(
+                q_embedding,
+                query,
+                top_k=k,
+                collection=collection,
+                project=project,
+                layer=layer,
+            )
+
+        if not chunks:
+            console.print(
+                "[yellow]No relevant documents found. "
+                "Try adding some with [bold]vstash add[/bold].[/yellow]"
+            )
+            raise typer.Exit()
+
+        # Normalize scores to [0, 1] for display
+        max_score = max(c.score for c in chunks) if chunks else 1.0
+        min_score = min(c.score for c in chunks) if len(chunks) > 1 else 0.0
+        score_range = max_score - min_score
+
+        table = Table(show_header=True, header_style="bold cyan", padding=(0, 1))
+        table.add_column("#", style="dim", width=3)
+        table.add_column("Score", width=6)
+        table.add_column("Source", style="green", max_width=30)
+        table.add_column("Text", max_width=80)
+
+        for i, c in enumerate(chunks, 1):
+            display_score = (
+                (c.score - min_score) / score_range if score_range > 0 else 1.0
+            )
+            text_preview = c.text.replace("\n", " ").strip()
+            if len(text_preview) > 120:
+                text_preview = text_preview[:120] + "..."
+            table.add_row(
+                str(i),
+                f"{display_score:.2f}",
+                c.title,
+                text_preview,
+            )
+
+        console.print(table)
 
 
 # ------------------------------------------------------------------ #
