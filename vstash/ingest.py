@@ -372,6 +372,14 @@ def _merge_small_chunks(chunks: list[str], chunk_size: int) -> list[str]:
 # ------------------------------------------------------------------ #
 
 
+def _read_raw_code(source: str) -> str | None:
+    """Read source code file as raw text, returning None if unreadable."""
+    try:
+        return Path(source).read_text(encoding="utf-8", errors="replace")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
 def _is_url(source: str) -> bool:
     """Check if a source string is an HTTP(S) URL."""
     try:
@@ -455,6 +463,9 @@ def ingest(
             title=title,
         )
 
+    # Should we try code-aware chunking?
+    is_code = source_type == "code" and not _is_url(source)
+
     # --- Step 1: Parse ---
     with Progress(
         SpinnerColumn(),
@@ -465,7 +476,13 @@ def ingest(
     ) as progress:
         progress.add_task(Path(source).name if not _is_url(source) else source)
         try:
-            text = _parse(source)
+            if is_code:
+                text = _read_raw_code(source_path)
+                if text is None:
+                    text = _parse(source)
+                    is_code = False
+            else:
+                text = _parse(source)
         except Exception as exc:
             console.print(f"[red]✗ Error parsing {source}: {exc}[/red]")
             return IngestResult(
@@ -508,7 +525,12 @@ def ingest(
 
     # --- Step 3: Chunk ---
     with console.status("[bold cyan]Chunking...[/bold cyan]", spinner="dots"):
-        chunks = chunk_text(text, cfg.chunking.size, cfg.chunking.overlap)
+        if is_code:
+            ext = Path(source).suffix.lower()
+            language = _EXT_TO_LANG.get(ext, "")
+            chunks = chunk_code(text, cfg.chunking.size, cfg.chunking.overlap, language)
+        else:
+            chunks = chunk_text(text, cfg.chunking.size, cfg.chunking.overlap)
 
     if not chunks:
         console.print(f"[yellow]⚠ No chunks generated from {source}[/yellow]")
