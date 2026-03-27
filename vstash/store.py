@@ -11,6 +11,7 @@ Single .db file. WAL mode for safe concurrent reads.
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
 import sqlite3
 import struct
@@ -22,6 +23,7 @@ import threading
 
 import sqlite_vec
 
+from .config import ScoringConfig
 from .models import DocumentInfo, SearchResult, StoreStats
 
 
@@ -46,6 +48,10 @@ def _deserialize(data: bytes) -> list[float]:
 
 # Standard RRF constant — balances precision vs recall
 RRF_K = 60
+
+# Frequency score saturation point — access counts above this
+# produce diminishing returns in the log1p normalization.
+FREQ_SATURATION = 100
 
 
 class VstashStore:
@@ -198,7 +204,7 @@ class VstashStore:
         # Frequency + decay scoring columns on chunks
         chunk_columns = {row[1] for row in conn.execute("PRAGMA table_info(chunks)").fetchall()}
         if "access_count" not in chunk_columns:
-            migrations.append("ALTER TABLE chunks ADD COLUMN access_count INTEGER DEFAULT 1")
+            migrations.append("ALTER TABLE chunks ADD COLUMN access_count INTEGER DEFAULT 0")
         if "last_accessed_at" not in chunk_columns:
             migrations.append("ALTER TABLE chunks ADD COLUMN last_accessed_at TEXT")
         if "created_at" not in chunk_columns:
@@ -215,6 +221,15 @@ class VstashStore:
                 UPDATE chunks SET created_at = (
                     SELECT d.added_at FROM documents d WHERE d.id = chunks.doc_id
                 ) WHERE created_at IS NULL
+            """)
+            conn.commit()
+
+        # Fix v0.5.0 data: ingestion set access_count=1 for chunks that were
+        # never actually searched. Detect by access_count=1 + no last_accessed_at.
+        if "access_count" in chunk_columns:
+            conn.execute("""
+                UPDATE chunks SET access_count = 0
+                WHERE access_count = 1 AND last_accessed_at IS NULL
             """)
             conn.commit()
 
@@ -299,9 +314,9 @@ class VstashStore:
                 for seq, (text, embedding) in enumerate(zip(chunks, embeddings)):
                     # Insert chunk — get rowid for linking vec + fts tables
                     cursor = self._conn.execute(
-                        "INSERT INTO chunks (doc_id, seq, text, access_count, created_at)"
-                        " VALUES (?, ?, ?, 1, ?)",
-                        [doc_id, seq, text, now_iso],
+                        "INSERT INTO chunks (doc_id, seq, text, access_count, created_at, last_accessed_at)"
+                        " VALUES (?, ?, ?, 0, ?, ?)",
+                        [doc_id, seq, text, now_iso, now_iso],
                     )
                     rowid = cursor.lastrowid
 
@@ -392,7 +407,7 @@ class VstashStore:
         collection: str | None = None,
         project: str | None = None,
         layer: str | None = None,
-        scoring: object | None = None,
+        scoring: ScoringConfig | None = None,
     ) -> list[SearchResult]:
         """Hybrid search: vector (semantic) + FTS5 (keyword) combined with RRF.
 
@@ -423,10 +438,9 @@ class VstashStore:
             Ranked list of SearchResult ordered by descending score.
         """
         # Determine effective pool size — over-fetch when scoring is enabled
-        scoring_enabled = scoring is not None and getattr(scoring, "enabled", False)
         effective_k = top_k
-        if scoring_enabled:
-            effective_k = max(top_k, getattr(scoring, "over_fetch", 50))
+        if scoring is not None and scoring.enabled:
+            effective_k = max(top_k, scoring.over_fetch)
 
         # Adaptive candidate pool — avoid pulling half the corpus on small DBs
         total_chunks = self._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
@@ -525,13 +539,13 @@ class VstashStore:
         ranked = sorted(scores.values(), key=lambda x: float(x["rrf"]), reverse=True)
 
         # Apply frequency+decay re-ranking if scoring is enabled
-        if scoring_enabled:
+        if scoring is not None and scoring.enabled:
             ranked = ranked[:effective_k]
             ranked = self.rerank_with_decay(
                 ranked,
-                alpha=getattr(scoring, "alpha", 0.8),
-                beta=getattr(scoring, "beta", 0.2),
-                decay_lambda=getattr(scoring, "decay_lambda", 0.05),
+                alpha=scoring.alpha,
+                beta=scoring.beta,
+                decay_lambda=scoring.decay_lambda,
             )
 
         ranked = ranked[:top_k]
@@ -548,13 +562,13 @@ class VstashStore:
         ]
 
         # Track access for returned chunks (best-effort, failures don't affect results)
-        if scoring_enabled and getattr(scoring, "track_access", True):
+        if scoring is not None and scoring.enabled and scoring.track_access:
             try:
                 result_ids = [int(r["id"]) for r in ranked if "id" in r]
                 if result_ids:
                     self.track_access(result_ids)
             except Exception:
-                pass  # Access tracking is non-critical; never break search
+                logging.getLogger(__name__).debug("Access tracking failed", exc_info=True)
 
         return results
 
@@ -882,7 +896,7 @@ class VstashStore:
         for c in candidates:
             chunk_id = int(c["id"])
             info = meta.get(chunk_id, {})
-            access_count = info.get("access_count", 1) or 1
+            access_count = info.get("access_count", 0) or 0
             last_accessed = info.get("last_accessed_at")
             created = info.get("created_at")
 
@@ -899,8 +913,11 @@ class VstashStore:
                     ref_dt = ref_dt.replace(tzinfo=timezone.utc)
                 days_ago = max(0.0, (now - ref_dt).total_seconds() / 86400)
 
-            freq_score = access_count * math.exp(-decay_lambda * days_ago)
-            c["final_score"] = alpha * normalized_rrf + beta * math.log(1 + freq_score)
+            # +1 baseline so zero-access chunks still get a small nonzero score
+            freq_score = (1 + access_count) * math.exp(-decay_lambda * days_ago)
+            # Normalize frequency component to [0, 1] via log1p, capped at 1.0
+            freq_normalized = min(1.0, math.log1p(freq_score) / math.log1p(FREQ_SATURATION))
+            c["final_score"] = alpha * normalized_rrf + beta * freq_normalized
 
         candidates.sort(key=lambda c: float(c["final_score"]), reverse=True)
         return candidates
@@ -920,7 +937,7 @@ class VstashStore:
         placeholders = ",".join("?" * len(chunk_ids))
         with self._write_lock:
             self._conn.execute(
-                f"UPDATE chunks SET access_count = COALESCE(access_count, 1) + 1, "
+                f"UPDATE chunks SET access_count = COALESCE(access_count, 0) + 1, "
                 f"last_accessed_at = ? WHERE id IN ({placeholders})",
                 [now_iso, *chunk_ids],
             )
