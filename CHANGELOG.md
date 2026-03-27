@@ -2,6 +2,28 @@
 
 All notable changes to vstash are documented here.
 
+## [0.5.2] — 2026-03-27
+
+### Added
+- **`vstash search` CLI command** — semantic search without LLM, free and fully local
+  - Table output with normalized scores, source, and text preview
+  - `--json` flag for programmatic output
+  - Supports `--collection`, `--project`, `--layer` filters
+- **PyPI metadata** — project.urls, classifiers, sdist exclusions (~1MB → 70KB)
+- **docs/ directory** — 9 standalone guides (configuration, scoring, MCP, LangChain, how-it-works, embedding models, future improvements)
+- Demo GIF re-recorded with full flow (add → search → add URL → ask → stats)
+
+### Fixed
+- **CLI scoring passthrough** — `search`, `ask`, and `chat` now pass `scoring=cfg.scoring` to `store.search()` (was silently disabled for all CLI users)
+- **access_count default 0** — ingestion is not an access; chunks start at 0 instead of 1
+- **Capped frequency score** — normalized to [0,1] via `log1p(freq) / log1p(100)` to prevent heavily-accessed chunks from dominating semantic relevance
+- **Type safety** — `scoring` param typed as `ScoringConfig | None` instead of `object`
+- **Config validation** — `model_validator` enforcing `alpha + beta <= 1.0`
+- **track_access logging** — failures now log at DEBUG instead of silent `pass`
+- **last_accessed_at initialized** on chunk insert to avoid NULL propagation
+
+---
+
 ## [0.5.1] — 2026-03-27
 
 ### Added
@@ -27,7 +49,7 @@ All notable changes to vstash are documented here.
   - Configurable via `[scoring]` section in `vstash.toml`
 - Schema migration adds `access_count`, `last_accessed_at`, `created_at` columns to chunks table
   - Automatic backfill on existing databases (created_at from document's added_at)
-  - Cold start: new chunks get `access_count = 1` (ingestion counts as first access)
+  - Cold start: new chunks get `access_count = 0` (fixed in v0.5.2 — ingestion is not an access)
 - `rerank_with_decay()` method on `VstashStore` with min-max normalization of RRF scores
 - `track_access()` records access frequency and recency on each search
 - `ScoringConfig` with Pydantic validation in `vstash.toml`
