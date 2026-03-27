@@ -464,7 +464,7 @@ def ingest(
         )
 
     # Should we try code-aware chunking?
-    is_code = source_type == "code" and not _is_url(source)
+    is_code = source_type == "code" and not _is_url(source) and cfg.chunking.code_aware
 
     # --- Step 1: Parse ---
     with Progress(
