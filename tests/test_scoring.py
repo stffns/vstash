@@ -55,23 +55,17 @@ class TestScoringMigration:
 
     def test_chunks_have_access_count(self, scoring_store: VstashStore) -> None:
         """New chunks should have access_count = 1."""
-        rows = scoring_store._conn.execute(
-            "SELECT access_count FROM chunks"
-        ).fetchall()
+        rows = scoring_store._conn.execute("SELECT access_count FROM chunks").fetchall()
         assert all(row["access_count"] == 1 for row in rows)
 
     def test_chunks_have_created_at(self, scoring_store: VstashStore) -> None:
         """New chunks should have created_at set."""
-        rows = scoring_store._conn.execute(
-            "SELECT created_at FROM chunks"
-        ).fetchall()
+        rows = scoring_store._conn.execute("SELECT created_at FROM chunks").fetchall()
         assert all(row["created_at"] is not None for row in rows)
 
     def test_chunks_have_null_last_accessed(self, scoring_store: VstashStore) -> None:
         """New chunks should have last_accessed_at = NULL (never searched)."""
-        rows = scoring_store._conn.execute(
-            "SELECT last_accessed_at FROM chunks"
-        ).fetchall()
+        rows = scoring_store._conn.execute("SELECT last_accessed_at FROM chunks").fetchall()
         assert all(row["last_accessed_at"] is None for row in rows)
 
     def test_migration_on_existing_db(self, tmp_path) -> None:
@@ -116,9 +110,7 @@ class TestScoringMigration:
             "INSERT INTO documents (id, path, title, source_type, added_at) "
             "VALUES ('d1', '/test/old.md', 'Old Doc', 'file', '2026-01-01T00:00:00+00:00')"
         )
-        conn.execute(
-            "INSERT INTO chunks (doc_id, seq, text) VALUES ('d1', 0, 'old content')"
-        )
+        conn.execute("INSERT INTO chunks (doc_id, seq, text) VALUES ('d1', 0, 'old content')")
         conn.commit()
 
         # Verify scoring columns do NOT exist yet
@@ -128,9 +120,7 @@ class TestScoringMigration:
 
         # Re-open via VstashStore — migration should add columns + backfill
         store = VstashStore(db_path, embedding_dim=4)
-        row = store._conn.execute(
-            "SELECT access_count, created_at FROM chunks LIMIT 1"
-        ).fetchone()
+        row = store._conn.execute("SELECT access_count, created_at FROM chunks LIMIT 1").fetchone()
         assert row["access_count"] == 1
         assert row["created_at"] == "2026-01-01T00:00:00+00:00"  # backfilled from added_at
         store.close()

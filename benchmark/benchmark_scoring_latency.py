@@ -54,6 +54,7 @@ QUERIES = [
 @dataclass
 class StageTiming:
     """Timing for a single run of the search pipeline."""
+
     ann_ms: float = 0.0
     fts_ms: float = 0.0
     rrf_ms: float = 0.0
@@ -150,8 +151,11 @@ def run_instrumented_search(
     for rank, row in enumerate(vec_rows):
         chunk_id = row["id"]
         scores[chunk_id] = {
-            "id": chunk_id, "text": row["text"], "title": row["title"],
-            "path": row["path"], "chunk": row["seq"],
+            "id": chunk_id,
+            "text": row["text"],
+            "title": row["title"],
+            "path": row["path"],
+            "chunk": row["seq"],
             "rrf": vec_weight * (1.0 / (RRF_K + rank)),
         }
 
@@ -163,8 +167,11 @@ def run_instrumented_search(
             scores[chunk_id]["rrf"] = float(scores[chunk_id]["rrf"]) + fts_contribution
         elif chunk_id in relevant_chunk_ids or is_fts_top:
             scores[chunk_id] = {
-                "id": chunk_id, "text": row["text"], "title": row["title"],
-                "path": row["path"], "chunk": row["seq"],
+                "id": chunk_id,
+                "text": row["text"],
+                "title": row["title"],
+                "path": row["path"],
+                "chunk": row["seq"],
                 "rrf": fts_contribution,
             }
 
@@ -228,8 +235,12 @@ def main() -> None:
     warmup(model)
 
     scoring = ScoringConfig(
-        enabled=True, alpha=0.8, beta=0.2,
-        decay_lambda=0.05, over_fetch=50, track_access=True,
+        enabled=True,
+        alpha=0.8,
+        beta=0.2,
+        decay_lambda=0.05,
+        over_fetch=50,
+        track_access=True,
     )
 
     # Pre-embed all queries (exclude embedding time from search benchmark)
@@ -280,7 +291,9 @@ def main() -> None:
     sep = "=" * 80
     print(f"\n{sep}")
     print("  SEARCH PIPELINE LATENCY BREAKDOWN")
-    print(f"  {stats.chunks} chunks | {len(QUERIES)} queries | {args.runs} runs/query | top_k={args.top_k} | over_fetch=50")
+    print(
+        f"  {stats.chunks} chunks | {len(QUERIES)} queries | {args.runs} runs/query | top_k={args.top_k} | over_fetch=50"
+    )
     print(sep)
 
     print(f"\n  {'Stage':<32} {'Median':>8} {'P95':>8} {'P99':>8} {'Mean':>8} {'% of Σ':>8}")
@@ -301,14 +314,20 @@ def main() -> None:
 
     overhead_med = percentile(overhead_pcts, 50)
     print(f"\n  Scoring overhead (Δt₄+Δt₅)/Σ:  {overhead_med:.2f}% median")
-    print(f"  Scoring absolute cost (Δt₄+Δt₅): {percentile(rerank_times, 50) + percentile(track_times, 50):.3f}ms median")
+    print(
+        f"  Scoring absolute cost (Δt₄+Δt₅): {percentile(rerank_times, 50) + percentile(track_times, 50):.3f}ms median"
+    )
 
     # --- Generate markdown report ---
     lines: list[str] = []
     lines.append("# Scoring Pipeline Latency Report\n")
     lines.append(f"**Date:** {time.strftime('%Y-%m-%d %H:%M')}")
-    lines.append(f"**Corpus:** {stats.documents} docs, {stats.chunks} chunks, {stats.db_size_mb} MB")
-    lines.append(f"**Config:** α={scoring.alpha}, β={scoring.beta}, λ={scoring.decay_lambda}, over_fetch={scoring.over_fetch}")
+    lines.append(
+        f"**Corpus:** {stats.documents} docs, {stats.chunks} chunks, {stats.db_size_mb} MB"
+    )
+    lines.append(
+        f"**Config:** α={scoring.alpha}, β={scoring.beta}, λ={scoring.decay_lambda}, over_fetch={scoring.over_fetch}"
+    )
     lines.append(f"**Runs:** {args.runs} timed runs × {len(QUERIES)} queries = {n} measurements")
     lines.append(f"**top_k:** {args.top_k}\n")
     lines.append("---\n")
@@ -324,7 +343,9 @@ def main() -> None:
         p99 = percentile(times, 99)
         mean = sum(times) / len(times)
         pct = f"{med / median_total * 100:.1f}%" if median_total > 0 else "—"
-        lines.append(f"| {label} | {med:.3f}ms | {p95:.3f}ms | {p99:.3f}ms | {mean:.3f}ms | {pct} |")
+        lines.append(
+            f"| {label} | {med:.3f}ms | {p95:.3f}ms | {p99:.3f}ms | {mean:.3f}ms | {pct} |"
+        )
 
     lines.append(f"\n**Scoring overhead (Δt₄+Δt₅)/Σ:** {overhead_med:.2f}%")
     rerank_med = percentile(rerank_times, 50)
@@ -338,11 +359,21 @@ def main() -> None:
 
     ann_pct = ann_med / median_total * 100 if median_total > 0 else 0
 
-    lines.append(f"- **ANN lookup dominates** at {ann_pct:.0f}% of total pipeline time ({ann_med:.3f}ms)")
-    lines.append(f"- **rerank_with_decay()** costs {rerank_med:.3f}ms — "
-                 f"{rerank_med / median_total * 100:.1f}% of total" if median_total > 0 else "")
-    lines.append(f"- **track_access()** costs {track_med:.3f}ms — "
-                 f"{track_med / median_total * 100:.1f}% of total" if median_total > 0 else "")
+    lines.append(
+        f"- **ANN lookup dominates** at {ann_pct:.0f}% of total pipeline time ({ann_med:.3f}ms)"
+    )
+    lines.append(
+        f"- **rerank_with_decay()** costs {rerank_med:.3f}ms — "
+        f"{rerank_med / median_total * 100:.1f}% of total"
+        if median_total > 0
+        else ""
+    )
+    lines.append(
+        f"- **track_access()** costs {track_med:.3f}ms — "
+        f"{track_med / median_total * 100:.1f}% of total"
+        if median_total > 0
+        else ""
+    )
     lines.append(f"- **Combined scoring overhead: {overhead_med:.2f}%** of end-to-end search time")
     lines.append("- All stages remain **sub-millisecond** at P99")
 
