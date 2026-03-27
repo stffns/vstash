@@ -580,6 +580,35 @@ de candidatos semánticos es más competitivo.
 
 ---
 
+## Resultados de Latencia (786 chunks, 10 queries × 20 runs)
+
+El scoring agrega overhead medible pero sub-milisegundo. El costo absoluto
+es ~0.4ms adicionales — irrelevante para la experiencia de usuario.
+
+| Config | Median | P95 | P99 | Overhead vs RRF |
+|--------|--------|-----|-----|-----------------|
+| RRF only (sin scoring) | 0.49ms | 0.54ms | 0.60ms | — |
+| Scoring (rerank, sin tracking) | 0.88ms | 0.98ms | 1.18ms | +80% (+0.39ms) |
+| Scoring + track_access | 0.93ms | 1.08ms | 1.27ms | +90% (+0.44ms) |
+
+### Component breakdown
+
+| Componente | Median |
+|-----------|--------|
+| `rerank_with_decay()` (8 candidates) | 0.014ms |
+| `track_access()` (10 chunks) | 0.034ms |
+
+**Dónde está el overhead:** No es el re-ranking ni el tracking (combinados ~0.05ms).
+El costo viene del **over-fetch** — recuperar 50 candidatos de sqlite-vec en vez de
+los 10 finales. Este es el precio necesario para que chunks con alta frecuencia pero
+menor similitud puedan competir.
+
+**Conclusión:** Todo el pipeline (búsqueda + scoring + tracking) permanece bajo 1ms
+en P50 y bajo 1.3ms en P99. El overhead es absolutamente aceptable para el gain de
++4.5% avg NDCG.
+
+---
+
 ## Oportunidades de Mejora Identificadas
 
 ### 1. Importance Scoring — más allá de frecuencia

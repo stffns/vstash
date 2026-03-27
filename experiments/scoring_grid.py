@@ -623,6 +623,150 @@ def main() -> None:
     print(f"    decay_lambda = {best_variant.decay_lambda}")
     print(f"    over_fetch = {best_variant.over_fetch}")
 
+    # ============================================================== #
+    # Latency benchmark                                                #
+    # ============================================================== #
+    print(f"\n{sep}")
+    print("  LATENCY BENCHMARK: scoring overhead measurement")
+    print(sep)
+
+    chunk_count = store._conn.execute("SELECT COUNT(*) as n FROM chunks").fetchone()["n"]
+    print(f"\n  Corpus: {chunk_count} chunks")
+
+    # Warm up embedding model (exclude from timing)
+    warmup_q = EVAL_QUERIES[0]["query"]
+    embed_query(warmup_q, MODEL)
+
+    WARMUP_RUNS = 3
+    BENCH_RUNS = 20
+
+    scoring_off = ScoringConfig(enabled=False)
+    scoring_on = ScoringConfig(
+        enabled=True,
+        alpha=best_variant.alpha,
+        beta=best_variant.beta,
+        decay_lambda=best_variant.decay_lambda,
+        over_fetch=best_variant.over_fetch,
+        track_access=False,
+    )
+    scoring_on_track = ScoringConfig(
+        enabled=True,
+        alpha=best_variant.alpha,
+        beta=best_variant.beta,
+        decay_lambda=best_variant.decay_lambda,
+        over_fetch=best_variant.over_fetch,
+        track_access=True,
+    )
+
+    configs = [
+        ("RRF only (no scoring)", scoring_off),
+        ("Scoring (rerank, no tracking)", scoring_on),
+        ("Scoring + track_access", scoring_on_track),
+    ]
+
+    # Per-query latencies for each config
+    latency_results: dict[str, list[float]] = {}
+
+    for label, cfg_scoring in configs:
+        times_ms: list[float] = []
+
+        for eq in EVAL_QUERIES:
+            q = eq["query"]
+            emb = embed_query(q, MODEL)
+
+            # Warmup runs (discard)
+            for _ in range(WARMUP_RUNS):
+                store.search(query_embedding=emb, query_text=q, top_k=args.top_k, scoring=cfg_scoring)
+
+            # Timed runs
+            query_times: list[float] = []
+            for _ in range(BENCH_RUNS):
+                t0 = time.perf_counter()
+                store.search(query_embedding=emb, query_text=q, top_k=args.top_k, scoring=cfg_scoring)
+                elapsed = (time.perf_counter() - t0) * 1000  # ms
+                query_times.append(elapsed)
+
+            times_ms.extend(query_times)
+
+        latency_results[label] = times_ms
+
+    # Report
+    print(f"\n  {'Config':<35} {'Median':>8} {'P95':>8} {'P99':>8} {'Mean':>8} {'Min':>8} {'Max':>8}")
+    print(f"  {'─' * 83}")
+
+    baseline_median = None
+    for label, times in latency_results.items():
+        times.sort()
+        n = len(times)
+        median = times[n // 2]
+        p95 = times[int(n * 0.95)]
+        p99 = times[int(n * 0.99)]
+        mean = sum(times) / n
+        mn, mx = times[0], times[-1]
+
+        if baseline_median is None:
+            baseline_median = median
+            overhead = ""
+        else:
+            oh = ((median / baseline_median) - 1) * 100
+            overhead = f"  ({oh:+.1f}%)"
+
+        print(
+            f"  {label:<35} {median:>7.2f}ms {p95:>7.2f}ms {p99:>7.2f}ms "
+            f"{mean:>7.2f}ms {mn:>7.2f}ms {mx:>7.2f}ms{overhead}"
+        )
+
+    # Component-level breakdown
+    print(f"\n  Component breakdown (median of {BENCH_RUNS} runs per query):")
+
+    # Measure rerank_with_decay() in isolation
+    restore_access_data(store._conn, clean_snapshot)
+    apply_scenario(store, SCENARIOS[1])  # recent_heavy_use for realistic data
+
+    sample_q = EVAL_QUERIES[0]["query"]
+    sample_emb = embed_query(sample_q, MODEL)
+
+    # Get candidates by running search without scoring
+    raw_results = store.search(
+        query_embedding=sample_emb, query_text=sample_q,
+        top_k=best_variant.over_fetch, scoring=None,
+    )
+
+    # Build candidate dicts like search() does internally
+    candidates = [
+        {"id": i, "rrf": r.score, "text": r.text, "title": r.title,
+         "path": r.path, "chunk": r.chunk}
+        for i, r in enumerate(raw_results, 1)
+    ]
+
+    # Time rerank_with_decay
+    rerank_times: list[float] = []
+    for _ in range(WARMUP_RUNS):
+        store.rerank_with_decay(copy.deepcopy(candidates))
+    for _ in range(BENCH_RUNS * 5):
+        c = copy.deepcopy(candidates)
+        t0 = time.perf_counter()
+        store.rerank_with_decay(c, alpha=best_variant.alpha, beta=best_variant.beta,
+                                decay_lambda=best_variant.decay_lambda)
+        rerank_times.append((time.perf_counter() - t0) * 1000)
+    rerank_times.sort()
+
+    # Time track_access
+    sample_ids = list(range(1, min(11, chunk_count + 1)))  # 10 chunk IDs
+    track_times: list[float] = []
+    for _ in range(WARMUP_RUNS):
+        store.track_access(sample_ids)
+    for _ in range(BENCH_RUNS * 5):
+        t0 = time.perf_counter()
+        store.track_access(sample_ids)
+        track_times.append((time.perf_counter() - t0) * 1000)
+    track_times.sort()
+
+    rr_med = rerank_times[len(rerank_times) // 2]
+    ta_med = track_times[len(track_times) // 2]
+    print(f"  rerank_with_decay({len(candidates)} candidates): {rr_med:.3f}ms median")
+    print(f"  track_access({len(sample_ids)} chunks):            {ta_med:.3f}ms median")
+
     print(f"\n  DB preserved at: {db_path}")
     store.close()
 
