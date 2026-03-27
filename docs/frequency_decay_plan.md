@@ -717,7 +717,7 @@ de α/β/λ.
 - [x] Correr queries baseline (RRF puro) vs frequency+decay — comparar rankings
 - [x] Grid search: 16 configs × 5 escenarios × 10 queries = 800 evaluaciones
 - [x] Actualizar defaults a α=0.8, β=0.2, λ=0.05, enabled=true (re-validado con PDFs)
-- [ ] PR a vstash + publicar findings
+- [x] PR a vstash + publicar findings (v0.5.0 PR#13, v0.5.1 PR#18)
 - [ ] v2: importance scoring (weighted access types)
 - [ ] v2: per-collection scoring params
 - [ ] v2: título real en documentos ingestados por URL
