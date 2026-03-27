@@ -23,17 +23,15 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import copy
 import sqlite3
-import struct
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from vstash.config import ScoringConfig, VstashConfig, load_config
+from vstash.config import ScoringConfig, load_config
 from vstash.embed import embed_query, get_embedding_dim, warmup
 from vstash.store import RRF_K, VstashStore, _serialize
 
@@ -337,7 +335,7 @@ def main() -> None:
     lines.append("## Interpretation\n")
 
     ann_med = percentile(ann_times, 50)
-    fts_med = percentile(fts_times, 50)
+
     ann_pct = ann_med / median_total * 100 if median_total > 0 else 0
 
     lines.append(f"- **ANN lookup dominates** at {ann_pct:.0f}% of total pipeline time ({ann_med:.3f}ms)")
@@ -346,7 +344,7 @@ def main() -> None:
     lines.append(f"- **track_access()** costs {track_med:.3f}ms — "
                  f"{track_med / median_total * 100:.1f}% of total" if median_total > 0 else "")
     lines.append(f"- **Combined scoring overhead: {overhead_med:.2f}%** of end-to-end search time")
-    lines.append(f"- All stages remain **sub-millisecond** at P99")
+    lines.append("- All stages remain **sub-millisecond** at P99")
 
     report = "\n".join(lines)
     REPORT_PATH.write_text(report)
