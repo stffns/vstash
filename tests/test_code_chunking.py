@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from vstash.ingest import _EXT_TO_LANG, _split_code_blocks, chunk_code
 
@@ -59,14 +58,7 @@ class TestSplitCodeBlocksPython:
         assert "async def fetch" in blocks[0]
 
     def test_decorator_starts_new_block(self) -> None:
-        code = (
-            "def first():\n"
-            "    pass\n"
-            "\n"
-            "@app.route('/api')\n"
-            "def handler():\n"
-            "    return 'ok'\n"
-        )
+        code = "def first():\n    pass\n\n@app.route('/api')\ndef handler():\n    return 'ok'\n"
         blocks = _split_code_blocks(code.strip(), "python")
         assert len(blocks) == 2
         assert "@app.route" in blocks[1]
@@ -138,7 +130,7 @@ class TestSplitCodeBlocksGo:
 
 class TestSplitCodeBlocksRust:
     def test_fn_declarations(self) -> None:
-        code = "fn main() {\n    println!(\"hello\");\n}\n\nfn helper() -> i32 {\n    42\n}\n"
+        code = 'fn main() {\n    println!("hello");\n}\n\nfn helper() -> i32 {\n    42\n}\n'
         blocks = _split_code_blocks(code, "rust")
         assert len(blocks) == 2
 
@@ -225,7 +217,10 @@ class TestChunkCode:
 
         enc = tiktoken.get_encoding("cl100k_base")
         # Generate a large file
-        funcs = [f"def func_{i}():\n    '''Long docstring {'x' * 200}.'''\n    return {i}\n" for i in range(20)]
+        funcs = [
+            f"def func_{i}():\n    '''Long docstring {'x' * 200}.'''\n    return {i}\n"
+            for i in range(20)
+        ]
         code = "\n\n".join(funcs)
         chunks = chunk_code(code, 256, 64, "python")
         for chunk in chunks:

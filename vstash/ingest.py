@@ -109,9 +109,7 @@ _HEADER_RE = re.compile(r"^(#{1,6})\s+", re.MULTILINE)
 # Language-specific patterns matching top-level definitions at column 0.
 # Uses MULTILINE so ^ anchors to start-of-line; indented methods don't match.
 _CODE_SPLIT_PATTERNS: dict[str, re.Pattern[str]] = {
-    "python": re.compile(
-        r"^(?=class |def |async def )", re.MULTILINE
-    ),
+    "python": re.compile(r"^(?=class |def |async def )", re.MULTILINE),
     "javascript": re.compile(
         r"^(?=function |class |const \w+ = (?:async )?\(|export (?:default )?(?:function |class |const ))",
         re.MULTILINE,
@@ -120,12 +118,8 @@ _CODE_SPLIT_PATTERNS: dict[str, re.Pattern[str]] = {
         r"^(?=function |class |const \w+ = (?:async )?\(|export (?:default )?(?:function |class |const )|interface |type \w+ )",
         re.MULTILINE,
     ),
-    "go": re.compile(
-        r"^(?=func |type \w+ (?:struct|interface))", re.MULTILINE
-    ),
-    "rust": re.compile(
-        r"^(?=(?:pub\s+)?(?:fn |struct |enum |impl |trait |mod ))", re.MULTILINE
-    ),
+    "go": re.compile(r"^(?=func |type \w+ (?:struct|interface))", re.MULTILINE),
+    "rust": re.compile(r"^(?=(?:pub\s+)?(?:fn |struct |enum |impl |trait |mod ))", re.MULTILINE),
     "java": re.compile(
         r"^(?=(?:public |private |protected |static |abstract |final )*(?:class |interface |enum |void |int |String |boolean |long |double |float )\w)",
         re.MULTILINE,
