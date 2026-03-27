@@ -41,7 +41,16 @@ mcp_server = FastMCP(
     "vstash",
     instructions=(
         "vstash — local document memory with hybrid semantic search. "
-        "Ingest files, URLs, or directories and query them with natural language."
+        "Ingest files, URLs, or directories and query them with natural language.\n\n"
+        "WHEN TO USE vstash_search/vstash_ask:\n"
+        "- User asks a knowledge question about their documents (how, what, why, explain)\n"
+        "- User needs context from specs, docs, notes, or past decisions\n"
+        "- User references information they previously added to memory\n\n"
+        "WHEN NOT TO USE vstash_search/vstash_ask:\n"
+        "- User gives an action command (commit, merge, push, deploy, build, test)\n"
+        "- User gives a short confirmation (yes, no, ok, do it)\n"
+        "- User asks about current code or git state (use other tools instead)\n"
+        "- The query is not related to stored documents"
     ),
 )
 
@@ -411,6 +420,9 @@ def vstash_search(
     Performs hybrid semantic + keyword search using Reciprocal Rank Fusion.
     Useful for retrieving context without consuming LLM tokens.
 
+    Only use this for knowledge questions about stored documents.
+    Do NOT call this for action commands (commit, merge, push, test, deploy).
+
     Args:
         query: Natural language search query.
         top_k: Number of results to return (default: 5).
@@ -419,7 +431,7 @@ def vstash_search(
         layer: If set, restrict search to documents with this layer tag.
 
     Returns:
-        JSON array of matching chunks with text, title, path, and score.
+        JSON object with chunks array and relevance hint.
     """
     try:
         top_k = int(top_k)
@@ -437,7 +449,21 @@ def vstash_search(
             scoring=cfg.scoring,
         )
 
-        return _ok(chunks)
+        if not chunks:
+            return _ok({"chunks": [], "relevance": "none"})
+
+        # Compute score spread — low variance means nothing is particularly relevant
+        scores = [c.score for c in chunks]
+        spread = max(scores) - min(scores) if len(scores) > 1 else 0.0
+        relevance = "high" if spread > 0.15 else "low"
+
+        return _ok({
+            "chunks": [c.model_dump() for c in chunks],
+            "relevance": relevance,
+            "hint": "Results may not be relevant to the query — scores are uniformly high."
+            if relevance == "low"
+            else "Results appear relevant to the query.",
+        })
 
     except FileNotFoundError:
         return _error("vstash database not found. Ingest documents first with vstash_add.")

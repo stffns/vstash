@@ -276,16 +276,26 @@ def search(
             )
             raise typer.Exit()
 
+        # Compute relevance signal from score spread
+        scores = [c.score for c in chunks]
+        spread = max(scores) - min(scores) if len(scores) > 1 else 0.0
+        low_relevance = spread < 0.15
+
         if json_output:
             import json
-            # Model dump using Pydantic v2
-            out = [c.model_dump() for c in chunks]
+            out = {
+                "chunks": [c.model_dump() for c in chunks],
+                "relevance": "low" if low_relevance else "high",
+            }
             print(json.dumps(out, indent=2))
             raise typer.Exit()
 
+        if low_relevance:
+            console.print("[dim]⚠ Results may not be specifically relevant to this query.[/dim]\n")
+
         # Normalize scores to [0, 1] for display
-        max_score = max(c.score for c in chunks) if chunks else 1.0
-        min_score = min(c.score for c in chunks) if len(chunks) > 1 else 0.0
+        max_score = max(scores) if scores else 1.0
+        min_score = min(scores) if len(scores) > 1 else 0.0
         score_range = max_score - min_score
 
         table = Table(show_header=True, header_style="bold cyan", padding=(0, 1))

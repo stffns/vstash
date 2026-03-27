@@ -164,9 +164,11 @@ class TestVstashSearch:
         mock_config.return_value.embeddings.model = "BAAI/bge-small-en-v1.5"
 
         result = json.loads(vstash_search("test query"))
-        assert len(result) == 1
-        assert result[0]["text"] == "relevant text"
-        assert result[0]["score"] == 0.5
+        assert "chunks" in result
+        assert len(result["chunks"]) == 1
+        assert result["chunks"][0]["text"] == "relevant text"
+        assert result["chunks"][0]["score"] == 0.5
+        assert result["relevance"] in ("high", "low")
 
     @patch("vstash.mcp.embed_query", return_value=[0.1] * 384)
     @patch("vstash.mcp._get_store")
@@ -178,7 +180,8 @@ class TestVstashSearch:
         mock_config.return_value.embeddings.model = "BAAI/bge-small-en-v1.5"
 
         result = json.loads(vstash_search("nothing here"))
-        assert result == []
+        assert result["chunks"] == []
+        assert result["relevance"] == "none"
 
     @patch("vstash.mcp._get_store", side_effect=FileNotFoundError("no db"))
     def test_search_db_not_found(self, mock_store: MagicMock) -> None:
