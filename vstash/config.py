@@ -102,6 +102,10 @@ class ChunkingConfig(BaseModel):
     size: int = Field(default=1024, gt=0, description="Tokens per chunk")
     overlap: int = Field(default=128, ge=0, description="Token overlap between chunks")
     top_k: int = Field(default=5, gt=0, description="Chunks retrieved per query")
+    code_aware: bool = Field(
+        default=True,
+        description="Use syntax-aware splitting for code files (functions, classes)",
+    )
 
 
 class StorageConfig(BaseModel):
@@ -181,6 +185,8 @@ SUPPORTED_EXTENSIONS: frozenset[str] = frozenset(
         ".py",
         ".js",
         ".ts",
+        ".tsx",
+        ".jsx",
         ".go",
         ".rs",
         ".java",
