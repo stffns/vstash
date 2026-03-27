@@ -92,15 +92,159 @@ def chunk_text(text: str, chunk_size: int, overlap: int) -> list[str]:
     merged = _merge_small_chunks(sized_chunks, chunk_size)
 
     # --- Filter empty / tiny results ---
-    return [c for c in merged if c.strip() and len(c.strip()) > 20]
+    return [c for c in merged if c.strip() and len(c.strip()) > _MIN_CHUNK_CHARS]
 
 
 # Minimum chunk size in tokens — chunks smaller than this get merged
 # with their neighbour to avoid low-quality embeddings.
 _MIN_CHUNK_TOKENS = 80
+_MIN_CHUNK_CHARS = 20
 
 # Pattern that matches Markdown header lines (# through ######)
 _HEADER_RE = re.compile(r"^(#{1,6})\s+", re.MULTILINE)
+
+# ------------------------------------------------------------------ #
+# Code-aware splitting (Phase 1 — regex, zero deps)                   #
+# ------------------------------------------------------------------ #
+
+# Language-specific patterns matching top-level definitions at column 0.
+# Uses MULTILINE so ^ anchors to start-of-line; indented methods don't match.
+_CODE_SPLIT_PATTERNS: dict[str, re.Pattern[str]] = {
+    "python": re.compile(r"^(?=class |def |async def )", re.MULTILINE),
+    "javascript": re.compile(
+        r"^(?=function |class |const \w+ = (?:async )?\(|export (?:default )?(?:function |class |const ))",
+        re.MULTILINE,
+    ),
+    "typescript": re.compile(
+        r"^(?=function |class |const \w+ = (?:async )?\(|export (?:default )?(?:function |class |const )|interface |type \w+ )",
+        re.MULTILINE,
+    ),
+    "go": re.compile(r"^(?=func |type \w+ (?:struct|interface))", re.MULTILINE),
+    "rust": re.compile(r"^(?=(?:pub\s+)?(?:fn |struct |enum |impl |trait |mod ))", re.MULTILINE),
+    "java": re.compile(
+        r"^(?=(?:public |private |protected |static |abstract |final )*(?:class |interface |enum |void |int |String |boolean |long |double |float )\w)",
+        re.MULTILINE,
+    ),
+}
+
+# Map file extensions to language keys for _CODE_SPLIT_PATTERNS
+_EXT_TO_LANG: dict[str, str] = {
+    ".py": "python",
+    ".js": "javascript",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".jsx": "javascript",
+    ".go": "go",
+    ".rs": "rust",
+    ".java": "java",
+}
+
+
+def _split_code_blocks(text: str, language: str) -> list[str]:
+    """Split source code at top-level definition boundaries.
+
+    Uses regex lookahead to find function/class/method starts for the
+    given language.  Falls back to returning the whole text as a single
+    block if no patterns match.
+    """
+    pattern = _CODE_SPLIT_PATTERNS.get(language)
+    if pattern is None:
+        return [text]
+
+    positions = [m.start() for m in pattern.finditer(text)]
+    if not positions:
+        return [text]
+
+    blocks: list[str] = []
+
+    # Preamble (imports, module-level code before first definition)
+    if positions[0] > 0:
+        preamble = text[: positions[0]].strip()
+        if preamble:
+            blocks.append(preamble)
+
+    # Each definition block runs until the next definition starts
+    for i, start in enumerate(positions):
+        end = positions[i + 1] if i + 1 < len(positions) else len(text)
+        block = text[start:end].strip()
+        if block:
+            blocks.append(block)
+
+    # Post-process: attach trailing @decorator / @annotation lines from
+    # previous block to the next block (Python decorators, Java annotations).
+    if language in ("python", "java") and len(blocks) > 1:
+        blocks = _attach_decorators(blocks)
+
+    return blocks
+
+
+def _attach_decorators(blocks: list[str]) -> list[str]:
+    """Move trailing @decorator lines from each block to the next block."""
+    result: list[str] = []
+    for i, block in enumerate(blocks):
+        lines = block.split("\n")
+        # Find trailing decorator lines
+        decorator_start = len(lines)
+        for j in range(len(lines) - 1, -1, -1):
+            stripped = lines[j].strip()
+            if stripped.startswith("@") and not stripped.startswith(
+                "@="
+            ):  # exclude @= (matrix mul operator)
+                decorator_start = j
+            elif stripped:
+                break
+
+        if decorator_start < len(lines) and i + 1 < len(blocks):
+            # Split: keep non-decorator part, move decorators to next block
+            main_part = "\n".join(lines[:decorator_start]).strip()
+            decorator_part = "\n".join(lines[decorator_start:]).strip()
+            if main_part:
+                result.append(main_part)
+            # Prepend decorators to next block
+            blocks[i + 1] = decorator_part + "\n" + blocks[i + 1]
+        else:
+            result.append(block)
+
+    return result
+
+
+def chunk_code(text: str, chunk_size: int, overlap: int, language: str) -> list[str]:
+    """Split source code into structurally coherent, token-bounded chunks.
+
+    Strategy (in order of priority):
+      1. Split at top-level definitions (functions, classes) using regex.
+      2. Oversized blocks fall back to paragraph splitting, then fixed window.
+      3. Merge adjacent small blocks.
+
+    Args:
+        text: Raw source code text.
+        chunk_size: Maximum tokens per chunk.
+        overlap: Token overlap for fixed-window fallback.
+        language: Language key (python, javascript, go, rust, java).
+
+    Returns:
+        List of non-empty code chunks.
+    """
+    if not text or not text.strip():
+        return []
+
+    # Step 1: split by code structure
+    blocks = _split_code_blocks(text, language)
+
+    # Step 2: ensure each block fits in chunk_size
+    sized_chunks: list[str] = []
+    for block in blocks:
+        token_count = len(_get_enc().encode(block))
+        if token_count <= chunk_size:
+            sized_chunks.append(block)
+        else:
+            # Fall back to paragraph/window splitting for oversized blocks
+            sized_chunks.extend(_split_by_paragraphs(block, chunk_size, overlap))
+
+    # Step 3: merge small adjacent chunks
+    merged = _merge_small_chunks(sized_chunks, chunk_size)
+
+    return [c for c in merged if c.strip() and len(c.strip()) > _MIN_CHUNK_CHARS]
 
 
 def _split_by_headers(text: str) -> list[str]:
@@ -212,7 +356,7 @@ def _fixed_window_chunks(
         chunk_tokens = tokens[start:end]
         chunk_text_str = enc.decode(chunk_tokens).strip()
 
-        if chunk_text_str and len(chunk_text_str) > 20:
+        if chunk_text_str and len(chunk_text_str) > _MIN_CHUNK_CHARS:
             chunks.append(chunk_text_str)
 
         if end >= len(tokens):
@@ -258,6 +402,14 @@ def _merge_small_chunks(chunks: list[str], chunk_size: int) -> list[str]:
 # ------------------------------------------------------------------ #
 
 
+def _read_raw_code(source: str) -> str | None:
+    """Read source code file as raw text, returning None if unreadable."""
+    try:
+        return Path(source).read_text(encoding="utf-8", errors="replace")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
 def _is_url(source: str) -> bool:
     """Check if a source string is an HTTP(S) URL."""
     try:
@@ -293,6 +445,8 @@ def _get_source_type(source: str) -> str:
         ".go": "code",
         ".rs": "code",
         ".java": "code",
+        ".tsx": "code",
+        ".jsx": "code",
         ".html": "html",
         ".htm": "html",
     }
@@ -341,6 +495,9 @@ def ingest(
             title=title,
         )
 
+    # Should we try code-aware chunking?
+    is_code = source_type == "code" and not _is_url(source) and cfg.chunking.code_aware
+
     # --- Step 1: Parse ---
     with Progress(
         SpinnerColumn(),
@@ -351,7 +508,13 @@ def ingest(
     ) as progress:
         progress.add_task(Path(source).name if not _is_url(source) else source)
         try:
-            text = _parse(source)
+            if is_code:
+                text = _read_raw_code(source_path)
+                if text is None:
+                    text = _parse(source)
+                    is_code = False
+            else:
+                text = _parse(source)
         except Exception as exc:
             console.print(f"[red]✗ Error parsing {source}: {exc}[/red]")
             return IngestResult(
@@ -394,7 +557,12 @@ def ingest(
 
     # --- Step 3: Chunk ---
     with console.status("[bold cyan]Chunking...[/bold cyan]", spinner="dots"):
-        chunks = chunk_text(text, cfg.chunking.size, cfg.chunking.overlap)
+        if is_code:
+            ext = Path(source).suffix.lower()
+            language = _EXT_TO_LANG.get(ext, "")
+            chunks = chunk_code(text, cfg.chunking.size, cfg.chunking.overlap, language)
+        else:
+            chunks = chunk_text(text, cfg.chunking.size, cfg.chunking.overlap)
 
     if not chunks:
         console.print(f"[yellow]⚠ No chunks generated from {source}[/yellow]")
