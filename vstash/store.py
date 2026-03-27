@@ -11,6 +11,7 @@ Single .db file. WAL mode for safe concurrent reads.
 from __future__ import annotations
 
 import hashlib
+import math
 import sqlite3
 import struct
 from datetime import datetime, timezone
@@ -181,21 +182,40 @@ class VstashStore:
 
     def _migrate_schema(self, conn: sqlite3.Connection) -> None:
         """Add missing columns to existing databases."""
-        columns = {row[1] for row in conn.execute("PRAGMA table_info(documents)").fetchall()}
+        doc_columns = {row[1] for row in conn.execute("PRAGMA table_info(documents)").fetchall()}
         migrations: list[str] = []
-        if "collection" not in columns:
+        if "collection" not in doc_columns:
             migrations.append(
                 "ALTER TABLE documents ADD COLUMN collection TEXT NOT NULL DEFAULT 'default'"
             )
-        if "project" not in columns:
+        if "project" not in doc_columns:
             migrations.append("ALTER TABLE documents ADD COLUMN project TEXT")
-        if "layer" not in columns:
+        if "layer" not in doc_columns:
             migrations.append("ALTER TABLE documents ADD COLUMN layer TEXT")
-        if "tags" not in columns:
+        if "tags" not in doc_columns:
             migrations.append("ALTER TABLE documents ADD COLUMN tags TEXT")
+
+        # Frequency + decay scoring columns on chunks
+        chunk_columns = {row[1] for row in conn.execute("PRAGMA table_info(chunks)").fetchall()}
+        if "access_count" not in chunk_columns:
+            migrations.append("ALTER TABLE chunks ADD COLUMN access_count INTEGER DEFAULT 1")
+        if "last_accessed_at" not in chunk_columns:
+            migrations.append("ALTER TABLE chunks ADD COLUMN last_accessed_at TEXT")
+        if "created_at" not in chunk_columns:
+            migrations.append("ALTER TABLE chunks ADD COLUMN created_at TEXT")
+
         for sql in migrations:
             conn.execute(sql)
         if migrations:
+            conn.commit()
+
+        # Backfill created_at from parent document's added_at
+        if "created_at" not in chunk_columns:
+            conn.execute("""
+                UPDATE chunks SET created_at = (
+                    SELECT d.added_at FROM documents d WHERE d.id = chunks.doc_id
+                ) WHERE created_at IS NULL
+            """)
             conn.commit()
 
     # ------------------------------------------------------------------ #
@@ -275,11 +295,13 @@ class VstashStore:
                     ],
                 )
 
+                now_iso = datetime.now(timezone.utc).isoformat()
                 for seq, (text, embedding) in enumerate(zip(chunks, embeddings)):
                     # Insert chunk — get rowid for linking vec + fts tables
                     cursor = self._conn.execute(
-                        "INSERT INTO chunks (doc_id, seq, text) VALUES (?, ?, ?)",
-                        [doc_id, seq, text],
+                        "INSERT INTO chunks (doc_id, seq, text, access_count, created_at)"
+                        " VALUES (?, ?, ?, 1, ?)",
+                        [doc_id, seq, text, now_iso],
                     )
                     rowid = cursor.lastrowid
 
@@ -370,6 +392,7 @@ class VstashStore:
         collection: str | None = None,
         project: str | None = None,
         layer: str | None = None,
+        scoring: object | None = None,
     ) -> list[SearchResult]:
         """Hybrid search: vector (semantic) + FTS5 (keyword) combined with RRF.
 
@@ -379,6 +402,9 @@ class VstashStore:
         the query is more than ``distance_cutoff`` times the best (closest)
         distance are discarded before RRF scoring.  This prevents irrelevant
         noise (e.g. Art of War appearing in deep learning queries).
+
+        When ``scoring`` is provided and enabled, results are over-fetched,
+        re-ranked with frequency+decay, and truncated to ``top_k``.
 
         Args:
             query_embedding: Query vector from the embedding model.
@@ -391,13 +417,20 @@ class VstashStore:
             collection: If set, restrict search to documents in this collection.
             project: If set, restrict search to documents with this project tag.
             layer: If set, restrict search to documents with this layer tag.
+            scoring: ScoringConfig instance. If enabled, applies frequency+decay re-ranking.
 
         Returns:
-            Ranked list of SearchResult ordered by descending RRF score.
+            Ranked list of SearchResult ordered by descending score.
         """
+        # Determine effective pool size — over-fetch when scoring is enabled
+        scoring_enabled = scoring is not None and getattr(scoring, "enabled", False)
+        effective_k = top_k
+        if scoring_enabled:
+            effective_k = max(top_k, getattr(scoring, "over_fetch", 50))
+
         # Adaptive candidate pool — avoid pulling half the corpus on small DBs
         total_chunks = self._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
-        candidate_pool = min(top_k * 10, max(top_k * 3, total_chunks // 3))
+        candidate_pool = min(effective_k * 10, max(effective_k * 3, total_chunks // 3))
 
         # --- Build metadata filter ---
         vec_clause, col_clause, filter_params = self._build_doc_filter(
@@ -462,6 +495,7 @@ class VstashStore:
         for rank, row in enumerate(vec_rows):
             chunk_id: int = row["id"]
             scores[chunk_id] = {
+                "id": chunk_id,
                 "text": row["text"],
                 "title": row["title"],
                 "path": row["path"],
@@ -473,12 +507,13 @@ class VstashStore:
             chunk_id = row["id"]
             # Only include FTS results that also passed vector relevance filter,
             # OR that are in the top FTS results (strong keyword match).
-            is_fts_top = rank < top_k * 2
+            is_fts_top = rank < effective_k * 2
             fts_contribution = fts_weight * (1.0 / (RRF_K + rank))
             if chunk_id in scores:
                 scores[chunk_id]["rrf"] = float(scores[chunk_id]["rrf"]) + fts_contribution
             elif chunk_id in relevant_chunk_ids or is_fts_top:
                 scores[chunk_id] = {
+                    "id": chunk_id,
                     "text": row["text"],
                     "title": row["title"],
                     "path": row["path"],
@@ -486,19 +521,42 @@ class VstashStore:
                     "rrf": fts_contribution,
                 }
 
-        # Sort by RRF score descending, return top_k
-        ranked = sorted(scores.values(), key=lambda x: float(x["rrf"]), reverse=True)[:top_k]
+        # Sort by RRF score descending
+        ranked = sorted(scores.values(), key=lambda x: float(x["rrf"]), reverse=True)
 
-        return [
+        # Apply frequency+decay re-ranking if scoring is enabled
+        if scoring_enabled:
+            ranked = ranked[:effective_k]
+            ranked = self.rerank_with_decay(
+                ranked,
+                alpha=getattr(scoring, "alpha", 0.8),
+                beta=getattr(scoring, "beta", 0.2),
+                decay_lambda=getattr(scoring, "decay_lambda", 0.05),
+            )
+
+        ranked = ranked[:top_k]
+
+        results = [
             SearchResult(
                 text=str(r["text"]),
                 title=str(r["title"]),
                 path=str(r["path"]),
                 chunk=int(r["chunk"]),
-                score=round(float(r["rrf"]), 6),
+                score=round(float(r.get("final_score", r["rrf"])), 6),
             )
             for r in ranked
         ]
+
+        # Track access for returned chunks (best-effort, failures don't affect results)
+        if scoring_enabled and getattr(scoring, "track_access", True):
+            try:
+                result_ids = [int(r["id"]) for r in ranked if "id" in r]
+                if result_ids:
+                    self.track_access(result_ids)
+            except Exception:
+                pass  # Access tracking is non-critical; never break search
+
+        return results
 
     # ------------------------------------------------------------------ #
     # Filter builder                                                       #
@@ -773,6 +831,100 @@ class VstashStore:
             results.append(entry)
 
         return results
+
+    # ------------------------------------------------------------------ #
+    # Frequency + Decay Scoring                                            #
+    # ------------------------------------------------------------------ #
+
+    def rerank_with_decay(
+        self,
+        candidates: list[dict[str, object]],
+        *,
+        alpha: float = 0.8,
+        beta: float = 0.2,
+        decay_lambda: float = 0.05,
+    ) -> list[dict[str, object]]:
+        """Re-rank candidates post-RRF with frequency + temporal decay.
+
+        Normalizes RRF scores to [0, 1] via min-max scaling so that
+        the alpha/beta weights operate on comparable scales.
+
+        Args:
+            candidates: List of dicts with keys: id, rrf, text, title, path, chunk.
+            alpha: Weight for semantic similarity (normalized RRF).
+            beta: Weight for access history (frequency * decay).
+            decay_lambda: Exponential decay rate.
+
+        Returns:
+            Same list, sorted by final_score descending, with final_score added.
+        """
+        if not candidates:
+            return candidates
+
+        # Fetch access metadata for all candidate chunk IDs
+        chunk_ids = [int(c["id"]) for c in candidates]
+        placeholders = ",".join("?" * len(chunk_ids))
+        rows = self._conn.execute(
+            f"SELECT id, access_count, last_accessed_at, created_at "
+            f"FROM chunks WHERE id IN ({placeholders})",
+            chunk_ids,
+        ).fetchall()
+        meta = {row["id"]: dict(row) for row in rows}
+
+        # Min-max scaling of RRF scores
+        rrf_scores = [float(c["rrf"]) for c in candidates]
+        min_rrf = min(rrf_scores)
+        max_rrf = max(rrf_scores)
+        rrf_range = max_rrf - min_rrf
+
+        now = datetime.now(timezone.utc)
+
+        for c in candidates:
+            chunk_id = int(c["id"])
+            info = meta.get(chunk_id, {})
+            access_count = info.get("access_count", 1) or 1
+            last_accessed = info.get("last_accessed_at")
+            created = info.get("created_at")
+
+            # Normalize RRF to [0, 1]
+            normalized_rrf = (float(c["rrf"]) - min_rrf) / rrf_range if rrf_range > 0 else 1.0
+
+            # Temporal decay (clamp to 0 to guard against clock skew / future dates)
+            ref_str = last_accessed or created
+            if ref_str is None:
+                days_ago = 0.0
+            else:
+                ref_dt = datetime.fromisoformat(ref_str)
+                if ref_dt.tzinfo is None:
+                    ref_dt = ref_dt.replace(tzinfo=timezone.utc)
+                days_ago = max(0.0, (now - ref_dt).total_seconds() / 86400)
+
+            freq_score = access_count * math.exp(-decay_lambda * days_ago)
+            c["final_score"] = alpha * normalized_rrf + beta * math.log(1 + freq_score)
+
+        candidates.sort(key=lambda c: float(c["final_score"]), reverse=True)
+        return candidates
+
+    def track_access(self, chunk_ids: list[int]) -> None:
+        """Record access for the given chunks (batch UPDATE).
+
+        Increments access_count and sets last_accessed_at for each chunk.
+        Called after search results are built so failures don't affect results.
+
+        Args:
+            chunk_ids: List of chunk IDs that were returned to the user.
+        """
+        if not chunk_ids:
+            return
+        now_iso = datetime.now(timezone.utc).isoformat()
+        placeholders = ",".join("?" * len(chunk_ids))
+        with self._write_lock:
+            self._conn.execute(
+                f"UPDATE chunks SET access_count = COALESCE(access_count, 1) + 1, "
+                f"last_accessed_at = ? WHERE id IN ({placeholders})",
+                [now_iso, *chunk_ids],
+            )
+            self._conn.commit()
 
     def close(self) -> None:
         """Close the database connection."""
