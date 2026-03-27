@@ -54,19 +54,19 @@ class TestScoringMigration:
     """Test that scoring columns are added correctly."""
 
     def test_chunks_have_access_count(self, scoring_store: VstashStore) -> None:
-        """New chunks should have access_count = 1."""
+        """New chunks should have access_count = 0 (never searched)."""
         rows = scoring_store._conn.execute("SELECT access_count FROM chunks").fetchall()
-        assert all(row["access_count"] == 1 for row in rows)
+        assert all(row["access_count"] == 0 for row in rows)
 
     def test_chunks_have_created_at(self, scoring_store: VstashStore) -> None:
         """New chunks should have created_at set."""
         rows = scoring_store._conn.execute("SELECT created_at FROM chunks").fetchall()
         assert all(row["created_at"] is not None for row in rows)
 
-    def test_chunks_have_null_last_accessed(self, scoring_store: VstashStore) -> None:
-        """New chunks should have last_accessed_at = NULL (never searched)."""
+    def test_chunks_have_last_accessed_at(self, scoring_store: VstashStore) -> None:
+        """New chunks should have last_accessed_at set to creation time."""
         rows = scoring_store._conn.execute("SELECT last_accessed_at FROM chunks").fetchall()
-        assert all(row["last_accessed_at"] is None for row in rows)
+        assert all(row["last_accessed_at"] is not None for row in rows)
 
     def test_migration_on_existing_db(self, tmp_path) -> None:
         """Opening an old DB (pre-scoring schema) should add scoring columns via migration."""
@@ -121,7 +121,7 @@ class TestScoringMigration:
         # Re-open via VstashStore — migration should add columns + backfill
         store = VstashStore(db_path, embedding_dim=4)
         row = store._conn.execute("SELECT access_count, created_at FROM chunks LIMIT 1").fetchone()
-        assert row["access_count"] == 1
+        assert row["access_count"] == 0  # migration default for pre-existing chunks
         assert row["created_at"] == "2026-01-01T00:00:00+00:00"  # backfilled from added_at
         store.close()
 
@@ -145,7 +145,7 @@ class TestTrackAccess:
             f"SELECT access_count FROM chunks WHERE id IN ({','.join('?' * len(chunk_ids))})",
             chunk_ids,
         ).fetchall()
-        assert all(row["access_count"] == 2 for row in rows)  # 1 (initial) + 1
+        assert all(row["access_count"] == 1 for row in rows)  # 0 (initial) + 1
 
     def test_track_access_sets_last_accessed(self, scoring_store: VstashStore) -> None:
         """track_access should set last_accessed_at."""
@@ -170,7 +170,7 @@ class TestTrackAccess:
         row = scoring_store._conn.execute(
             "SELECT access_count FROM chunks WHERE id = ?", [chunk_ids[0]]
         ).fetchone()
-        assert row["access_count"] == 6  # 1 (initial) + 5
+        assert row["access_count"] == 5  # 0 (initial) + 5
 
     def test_track_access_empty_list(self, scoring_store: VstashStore) -> None:
         """track_access with empty list should be a no-op."""
@@ -200,15 +200,15 @@ class TestRerankWithDecay:
             r["id"] for r in scoring_store._conn.execute("SELECT id FROM chunks LIMIT 2").fetchall()
         ]
         # Give second chunk many accesses
-        for _ in range(20):
+        for _ in range(50):
             scoring_store.track_access([chunk_ids[1]])
 
         candidates = [
             {"id": chunk_ids[0], "rrf": 0.016, "text": "a", "title": "t", "path": "p", "chunk": 0},
             {"id": chunk_ids[1], "rrf": 0.014, "text": "b", "title": "t", "path": "p", "chunk": 1},
         ]
-        result = scoring_store.rerank_with_decay(candidates, beta=0.5)
-        # With enough accesses and beta=0.5, the boosted chunk should win
+        result = scoring_store.rerank_with_decay(candidates, alpha=0.2, beta=0.8)
+        # With enough accesses and high beta, the boosted chunk should win
         assert result[0]["id"] == chunk_ids[1]
 
     def test_decay_reduces_old_access_influence(self, scoring_store: VstashStore) -> None:

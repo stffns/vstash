@@ -20,7 +20,7 @@ try:
 except ImportError:  # Python 3.10
     import tomli as tomllib  # type: ignore[no-redef]
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class InferenceConfig(BaseModel):
@@ -113,7 +113,10 @@ class StorageConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    db_path: str = Field(default="~/.vstash/memory.db", description="Path to SQLite database file")
+    db_path: str = Field(
+        default_factory=lambda: os.getenv("VSTASH_DB_PATH", "~/.vstash/memory.db"),
+        description="Path to SQLite database file",
+    )
 
 
 class ScoringConfig(BaseModel):
@@ -140,6 +143,13 @@ class ScoringConfig(BaseModel):
         default=True,
         description="Record access counts on search (enabled by default when scoring is on)",
     )
+
+    @model_validator(mode="after")
+    def _validate_weights(self) -> ScoringConfig:
+        if self.alpha + self.beta > 1.0:
+            msg = f"alpha ({self.alpha}) + beta ({self.beta}) must be <= 1.0"
+            raise ValueError(msg)
+        return self
 
 
 class VstashConfig(BaseModel):

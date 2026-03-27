@@ -195,6 +195,7 @@ def ask(
                 collection=collection,
                 project=project,
                 layer=layer,
+                scoring=cfg.scoring,
             )
 
         if not chunks:
@@ -245,6 +246,7 @@ def search(
     ),
     project: str | None = typer.Option(None, "--project", "-p", help="Restrict to project"),
     layer: str | None = typer.Option(None, "--layer", "-l", help="Restrict to layer"),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output results as JSON"),
 ) -> None:
     """Semantic search without LLM (free, local)."""
     cfg, store = _get_store(warm=True)
@@ -261,13 +263,24 @@ def search(
                 collection=collection,
                 project=project,
                 layer=layer,
+                scoring=cfg.scoring,
             )
 
         if not chunks:
+            if json_output:
+                print("[]")
+                raise typer.Exit()
             console.print(
                 "[yellow]No relevant documents found. "
                 "Try adding some with [bold]vstash add[/bold].[/yellow]"
             )
+            raise typer.Exit()
+
+        if json_output:
+            import json
+            # Model dump using Pydantic v2
+            out = [c.model_dump() for c in chunks]
+            print(json.dumps(out, indent=2))
             raise typer.Exit()
 
         # Normalize scores to [0, 1] for display
@@ -354,7 +367,7 @@ def chat(
 
                 # Search
                 q_embedding = embed_query(query, cfg.embeddings.model)
-                chunks = store.search(q_embedding, query, top_k=k)
+                chunks = store.search(q_embedding, query, top_k=k, scoring=cfg.scoring)
 
                 if not chunks:
                     console.print("[yellow]No relevant context found.[/yellow]")
