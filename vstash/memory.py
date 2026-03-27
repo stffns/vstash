@@ -180,6 +180,7 @@ class Memory:
             collection=self._resolve_collection(collection),
             project=self._resolve_project(project),
             layer=layer,
+            scoring=self._cfg.scoring,
         )
 
     def ask(

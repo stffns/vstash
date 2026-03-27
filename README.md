@@ -24,6 +24,7 @@ Most RAG tools are slow, cloud-dependent, or require a running server. vstash is
 | Vector store | sqlite-vec | Single `.db` file, cosine similarity, zero deps |
 | Keyword search | FTS5 (SQLite) | Exact matches, porter stemming, built into SQLite |
 | Hybrid ranking | Reciprocal Rank Fusion | Best of both: semantic + keyword, no training needed |
+| Memory scoring | Frequency + temporal decay | Surfaces frequently-accessed, recent chunks |
 | Chunking | Semantic-first | Markdown headers & paragraphs, with token-bounded fallback |
 | Inference | Cerebras / Ollama / OpenAI | ~2,000 tok/s via Cerebras, or 100% local via Ollama |
 | Parsing | markitdown | PDF, DOCX, PPTX, XLSX, HTML, Markdown, URLs |
@@ -254,6 +255,13 @@ size    = 1024    # max tokens per chunk
 overlap = 128     # token overlap (used in fixed-window fallback)
 top_k   = 5       # chunks retrieved per query
 
+[scoring]
+enabled = true        # frequency + decay re-ranking (default: on)
+alpha = 0.8           # RRF weight
+beta = 0.2            # access history weight
+decay_lambda = 0.05   # temporal decay rate
+over_fetch = 50       # candidates to re-rank
+
 [storage]
 db_path = "~/.vstash/memory.db"
 ```
@@ -296,11 +304,43 @@ query
   → sqlite-vec         (top-k×10 vector candidates by cosine similarity)
   → FTS5               (top-k×10 keyword candidates by BM25)
   → RRF                (merge rankings: score = Σ 1/(60+rank))
+  → rerank_with_decay  (frequency + temporal decay re-ranking)
   → top-k results      (default: 5 chunks)
   → LLM                (optional: Cerebras, Ollama, or OpenAI)
 ```
 
 **Reciprocal Rank Fusion** (k=60, vec_weight=0.6, fts_weight=0.4) ensures that semantic queries find conceptually related chunks while exact keyword queries are never missed.
+
+### Memory scoring
+
+*New in v0.5.0.* vstash learns which chunks matter to you. Every search tracks access frequency and recency, then re-ranks results using:
+
+```
+final_score = α · normalized_rrf + β · log(1 + access_count · e^(−λ · days_ago))
+```
+
+Chunks you access often and recently get a boost. Chunks you haven't touched in months decay naturally. The scoring adds **~0.12ms** to a ~0.7ms pipeline — negligible overhead.
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `alpha` | 0.8 | Weight for semantic similarity (RRF) |
+| `beta` | 0.2 | Weight for access history |
+| `decay_lambda` | 0.05 | Temporal decay rate (higher = faster forgetting) |
+| `over_fetch` | 50 | Candidates to re-rank before truncating to top_k |
+
+Configure in `vstash.toml`:
+
+```toml
+[scoring]
+enabled = true
+alpha = 0.8
+beta = 0.2
+decay_lambda = 0.05
+over_fetch = 50
+track_access = true
+```
+
+Disable scoring entirely with `enabled = false` — search reverts to pure RRF.
 
 ---
 
@@ -330,7 +370,8 @@ PDF, DOCX, PPTX, XLSX, Markdown, TXT, HTML, CSV, Python, JavaScript, TypeScript,
 - **Phase 2 ✅:** Usability — MCP server, collections/namespaces, watch mode, frontmatter metadata, export, semantic chunking
 - **Phase 3 ✅:** Python SDK — `from vstash import Memory`
 - **Phase 4 ✅:** LangChain integration — `VstashRetriever` for chains and agents
-- **Phase 5:** Sync — cr-sqlite CRDT peer-to-peer sync, multiple profiles, REST API
+- **Phase 5 ✅:** Memory scoring — frequency + temporal decay re-ranking
+- **Phase 6:** Sync — cr-sqlite CRDT peer-to-peer sync, multiple profiles, REST API
 
 ---
 
