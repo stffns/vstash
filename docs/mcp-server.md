@@ -43,10 +43,34 @@ The vstash tools should appear in Claude's tool list.
 |------|-------------|
 | `vstash_add(path)` | Ingest a file, directory, or URL into memory |
 | `vstash_ask(query, top_k)` | Semantic search + LLM-generated answer with sources |
-| `vstash_search(query, top_k)` | Raw retrieval without LLM — returns chunks with scores |
+| `vstash_search(query, top_k)` | Hybrid search with context expansion and relevance signal |
 | `vstash_list()` | List all ingested documents |
 | `vstash_stats()` | Database statistics (doc count, chunks, size) |
 | `vstash_forget(source)` | Remove a document from memory |
+| `vstash_collections()` | List all available collections |
+| `vstash_export(...)` | Export chunks with metadata for training data curation |
+| `vstash_job(job_id)` | Check status of background directory ingestion |
+
+### Search Response Fields
+
+`vstash_search` returns a JSON object with:
+
+| Field | Description |
+|-------|-------------|
+| `chunks` | Array of search results with expanded context (±1 adjacent chunks) |
+| `relevance` | Confidence tier: `"high"`, `"medium"`, `"low"`, or `"none"` |
+| `hint` | Human-readable relevance explanation |
+| `best_distance` | Cosine distance of the best vector match (lower = more relevant) |
+
+The relevance signal uses the best vector distance to estimate confidence:
+
+| Distance | Tier | Meaning |
+|----------|------|---------|
+| ≤ 0.95 | **high** | Results are relevant |
+| 0.95–0.98 | **medium** | Results may be tangential |
+| > 0.98 | **low** | Results may not be relevant |
+
+This works from the first search — no usage history or warm-up required.
 
 ---
 

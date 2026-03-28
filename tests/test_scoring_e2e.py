@@ -61,16 +61,21 @@ def e2e_store(tmp_path, e2e_config: VstashConfig) -> VstashStore:
     dim = get_embedding_dim(e2e_config.embeddings.model)
     store = VstashStore(str(tmp_path / "e2e.db"), embedding_dim=dim)
 
-    # Ingest several docs with real embeddings
+    # Ingest docs with real embeddings.  We need ≥10 chunks with access
+    # history so that scoring_maturity() can detect outlier patterns.
     docs = [
-        (
-            "Python decorators simplify function wrapping and metaprogramming.",
-            "python_decorators.md",
-        ),
+        ("Python decorators simplify function wrapping and metaprogramming.", "python_decorators.md"),
         ("Rust ownership model prevents memory leaks at compile time.", "rust_ownership.md"),
         ("Machine learning requires large datasets for training models.", "ml_basics.md"),
         ("Database indexing improves query performance significantly.", "db_indexing.md"),
         ("Python list comprehensions provide concise iteration syntax.", "python_lists.md"),
+        ("Docker containers provide reproducible deployment environments.", "docker_basics.md"),
+        ("REST API design follows resource-oriented architecture patterns.", "rest_api.md"),
+        ("Git branching strategies enable parallel feature development.", "git_branching.md"),
+        ("SQL joins combine rows from two or more tables based on keys.", "sql_joins.md"),
+        ("Neural networks consist of layers of interconnected nodes.", "neural_nets.md"),
+        ("TCP protocol ensures reliable ordered delivery of data packets.", "tcp_protocol.md"),
+        ("Hash tables provide constant time average lookup operations.", "hash_tables.md"),
     ]
 
     for text, filename in docs:
@@ -82,6 +87,11 @@ def e2e_store(tmp_path, e2e_config: VstashConfig) -> VstashStore:
             embeddings=[embedding],
             source_type="markdown",
         )
+
+    # Give all chunks a baseline access count so scoring_maturity() sees
+    # enough accessed chunks (≥10) to potentially activate.
+    store._conn.execute("UPDATE chunks SET access_count = 1")
+    store._conn.commit()
 
     yield store  # type: ignore[misc]
     store.close()
@@ -328,14 +338,19 @@ class TestOverFetch:
         """Scoring may reorder results compared to pure RRF."""
         model = e2e_config.embeddings.model
 
-        # Boost a specific chunk
+        # Boost a specific chunk enough to pass the maturity threshold.
+        # With 12 chunks at access_count=1, we need ratio ≥ 8× for γ > 0.
+        # Setting one chunk to 50 accesses gives ratio ≈ 12*50/61 ≈ 9.8×.
         chunk_row = e2e_store._conn.execute(
             "SELECT c.id FROM chunks c JOIN documents d ON d.id = c.doc_id "
             "WHERE d.path = '/test/ml_basics.md' LIMIT 1"
         ).fetchone()
         if chunk_row:
-            for _ in range(15):
-                e2e_store.track_access([chunk_row["id"]])
+            e2e_store._conn.execute(
+                "UPDATE chunks SET access_count = 50 WHERE id = ?",
+                [chunk_row["id"]],
+            )
+            e2e_store._conn.commit()
 
         query_emb = embed_query("data training models", model)
 

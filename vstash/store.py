@@ -53,6 +53,16 @@ RRF_K = 60
 # produce diminishing returns in the log1p normalization.
 FREQ_SATURATION = 100
 
+# Adaptive scoring: minimum max/mean ratio (among accessed chunks) before
+# memory scoring activates.  Empirically, scoring only helps when there are
+# clear "favorite" chunks (benchmark-focused scenario needed ~30× differential
+# for +16% NDCG).  8× is conservative: it activates only after genuine
+# power-user patterns develop, not from uniform Zipf-like browsing.
+SCORING_SIGNAL_RATIO = 8.0
+
+# Adaptive scoring: γ reaches 1.0 at this max/mean ratio.
+SCORING_SIGNAL_SATURATE = 15.0
+
 
 class VstashStore:
     """SQLite-backed vector + FTS5 hybrid store with RRF ranking.
@@ -442,6 +452,7 @@ class VstashStore:
         project: str | None = None,
         layer: str | None = None,
         scoring: ScoringConfig | None = None,
+        _gamma_override: float | None = None,
     ) -> list[SearchResult]:
         """Hybrid search: vector (semantic) + FTS5 (keyword) combined with RRF.
 
@@ -579,15 +590,20 @@ class VstashStore:
         # Sort by RRF score descending
         ranked = sorted(scores.values(), key=lambda x: float(x["rrf"]), reverse=True)
 
-        # Apply frequency+decay re-ranking if scoring is enabled
+        # Apply frequency+decay re-ranking if scoring is enabled.
+        # The effective beta is scaled by γ (scoring maturity) so that
+        # scoring has zero influence until access patterns are meaningful.
         if scoring is not None and scoring.enabled:
-            ranked = ranked[:effective_k]
-            ranked = self.rerank_with_decay(
-                ranked,
-                alpha=scoring.alpha,
-                beta=scoring.beta,
-                decay_lambda=scoring.decay_lambda,
-            )
+            gamma = _gamma_override if _gamma_override is not None else self.scoring_maturity()
+            if gamma > 0:
+                effective_beta = scoring.beta * gamma
+                ranked = ranked[:effective_k]
+                ranked = self.rerank_with_decay(
+                    ranked,
+                    alpha=scoring.alpha,
+                    beta=effective_beta,
+                    decay_lambda=scoring.decay_lambda,
+                )
 
         # Document-level deduplication: keep only the highest-scoring chunk
         # per document so that a single long document doesn't flood top-k.
@@ -900,6 +916,39 @@ class VstashStore:
         return results
 
     # ------------------------------------------------------------------ #
+    # Adaptive Scoring — maturity gate                                     #
+    # ------------------------------------------------------------------ #
+
+    def scoring_maturity(self) -> float:
+        """Compute γ ∈ [0, 1] measuring whether access patterns have enough
+        differential to make frequency+decay scoring useful.
+
+        Uses the max/mean ratio of access counts among accessed chunks.
+        When all chunks have similar access counts (ratio < SCORING_SIGNAL_RATIO),
+        γ = 0 and scoring is effectively disabled.  As the ratio grows toward
+        SCORING_SIGNAL_SATURATE, γ ramps linearly to 1.0.
+
+        Returns:
+            Float in [0, 1].  0 = no useful signal, 1 = full scoring weight.
+        """
+        row = self._conn.execute(
+            "SELECT AVG(access_count) AS mean, MAX(access_count) AS max_val, "
+            "COUNT(*) AS n "
+            "FROM chunks WHERE access_count > 0"
+        ).fetchone()
+
+        if not row or not row["mean"] or row["n"] < 10:
+            return 0.0
+
+        ratio = row["max_val"] / row["mean"]
+        if ratio < SCORING_SIGNAL_RATIO:
+            return 0.0
+
+        # Linear ramp from 0 → 1 between SIGNAL_RATIO and SIGNAL_SATURATE
+        return min(1.0, (ratio - SCORING_SIGNAL_RATIO)
+                   / (SCORING_SIGNAL_SATURATE - SCORING_SIGNAL_RATIO))
+
+    # ------------------------------------------------------------------ #
     # Frequency + Decay Scoring                                            #
     # ------------------------------------------------------------------ #
 
@@ -926,6 +975,19 @@ class VstashStore:
             Same list, sorted by final_score descending, with final_score added.
         """
         if not candidates:
+            return candidates
+
+        # Short-circuit: if beta ≈ 0 (e.g. γ suppressed it), skip the
+        # metadata DB lookup entirely — ranking is determined by RRF alone.
+        # We still min-max normalize so that final_score is in [0, 1].
+        if beta < 1e-9:
+            rrf_scores = [float(c["rrf"]) for c in candidates]
+            min_rrf = min(rrf_scores)
+            rrf_range = max(rrf_scores) - min_rrf
+            for c in candidates:
+                normalized = (float(c["rrf"]) - min_rrf) / rrf_range if rrf_range > 0 else 1.0
+                c["final_score"] = alpha * normalized
+            candidates.sort(key=lambda c: float(c["final_score"]), reverse=True)
             return candidates
 
         # Fetch access metadata for all candidate chunk IDs
