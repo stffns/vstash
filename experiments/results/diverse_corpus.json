@@ -5,7 +5,7 @@
   "n_chunks": 2602,
   "queries": 10,
   "top_k": 10,
-  "db_path": "/var/folders/3s/d0mzpfw93qj_xqng6nmz28kr0000gn/T/vstash_diverse_k3cbin_1/diverse.db",
+  "db_path": "diverse.db",
   "results": [
     {
       "mode": "vector_only",

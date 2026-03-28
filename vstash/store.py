@@ -945,8 +945,10 @@ class VstashStore:
             return 0.0
 
         # Linear ramp from 0 → 1 between SIGNAL_RATIO and SIGNAL_SATURATE
-        return min(1.0, (ratio - SCORING_SIGNAL_RATIO)
-                   / (SCORING_SIGNAL_SATURATE - SCORING_SIGNAL_RATIO))
+        denominator = SCORING_SIGNAL_SATURATE - SCORING_SIGNAL_RATIO
+        if denominator <= 1e-9:
+            return 1.0
+        return min(1.0, (ratio - SCORING_SIGNAL_RATIO) / denominator)
 
     # ------------------------------------------------------------------ #
     # Frequency + Decay Scoring                                            #
@@ -979,7 +981,7 @@ class VstashStore:
 
         # Short-circuit: if beta ≈ 0 (e.g. γ suppressed it), skip the
         # metadata DB lookup entirely — ranking is determined by RRF alone.
-        # We still min-max normalize so that final_score is in [0, 1].
+        # We still min-max normalize so that normalized_rrf is in [0, 1].
         if beta < 1e-9:
             rrf_scores = [float(c["rrf"]) for c in candidates]
             min_rrf = min(rrf_scores)
