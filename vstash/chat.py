@@ -21,7 +21,8 @@ SYSTEM_PROMPT = """You are a precise document assistant. Answer questions based 
 Rules:
 - Answer only from the context. Do not invent information.
 - If the context doesn't contain the answer, say so clearly.
-- Be concise. Cite the source document when relevant.
+- Always cite which source document each fact comes from (use the document title shown in brackets).
+- If the user's question mentions a specific document but the answer comes from a different one, explicitly note the correction (e.g., "That information is not in [X] but in [Y]").
 - For code questions, provide working code examples from the context."""
 
 
@@ -40,7 +41,7 @@ def _build_prompt(query: str, chunks: list[SearchResult]) -> str:
 
     context_parts: list[str] = []
     for i, chunk in enumerate(chunks, 1):
-        source = f"[{chunk.title}]"
+        source = f"[{chunk.title}] (from: {chunk.path})"
         context_parts.append(f"--- Context {i} {source} ---\n{chunk.text}")
 
     context = "\n\n".join(context_parts)

@@ -1,0 +1,173 @@
+{
+  "experiment": "e2e_improvements",
+  "db_path": "e2e.db",
+  "n_chunks": 786,
+  "tests": [
+    {
+      "name": "dedup_diverse_results",
+      "passed": true,
+      "detail": "0/10 queries had duplicate documents in top-5",
+      "metrics": {
+        "queries_with_dupes": 0,
+        "total_queries": 10
+      }
+    },
+    {
+      "name": "dedup_ndcg_impact",
+      "passed": true,
+      "detail": "Avg NDCG@5 = 0.8287 (target >= 0.75)",
+      "metrics": {
+        "avg_ndcg5": 0.8287,
+        "per_query": [
+          0.8655,
+          0.9103,
+          0.771,
+          0.6194,
+          0.8704,
+          0.9527,
+          0.5894,
+          0.904,
+          0.8046,
+          1.0
+        ]
+      }
+    },
+    {
+      "name": "dedup_result_diversity",
+      "passed": true,
+      "detail": "Avg unique docs in top-5: 5.00 (target >= 4.5)",
+      "metrics": {
+        "avg_unique_per_query": 5.0,
+        "per_query": [
+          5,
+          5,
+          5,
+          5,
+          5,
+          5,
+          5,
+          5,
+          5,
+          5
+        ]
+      }
+    },
+    {
+      "name": "expand_context_text_increase",
+      "passed": true,
+      "detail": "Avg text expansion ratio: 2.64x (target >= 1.2x)",
+      "metrics": {
+        "avg_ratio": 2.64,
+        "min_ratio": 1.73,
+        "max_ratio": 3.84,
+        "samples": 15
+      }
+    },
+    {
+      "name": "expand_context_preserves_metadata",
+      "passed": true,
+      "detail": "All metadata preserved",
+      "metrics": {
+        "mismatches": []
+      }
+    },
+    {
+      "name": "relevance_signal_off_without_scoring",
+      "passed": true,
+      "detail": "Avg spread without scoring: 0.006996 (confirms signal is useless here)",
+      "metrics": {
+        "avg_spread": 0.006996,
+        "max_spread": 0.010587
+      }
+    },
+    {
+      "name": "relevance_signal_on_with_scoring",
+      "passed": true,
+      "detail": "Avg spread with scoring: 0.3081 (should be >> 0.05)",
+      "metrics": {
+        "avg_spread": 0.3081,
+        "min_spread": 0.1323,
+        "max_spread": 0.4519
+      }
+    },
+    {
+      "name": "relevance_discrimination",
+      "passed": true,
+      "detail": "Relevant avg spread: 0.3047, Irrelevant: 0.2453, Ratio: 1.24x",
+      "metrics": {
+        "avg_relevant_spread": 0.3047,
+        "avg_irrelevant_spread": 0.2453,
+        "discrimination_ratio": 1.24
+      }
+    },
+    {
+      "name": "access_tracking_without_scoring",
+      "passed": true,
+      "detail": "Access count delta: 15 (3 queries \u00d7 top_k=5)",
+      "metrics": {
+        "before": 450,
+        "after": 465,
+        "delta": 15
+      }
+    },
+    {
+      "name": "no_tracking_when_explicitly_off",
+      "passed": true,
+      "detail": "Access count delta: 0 (expected 0)",
+      "metrics": {
+        "before": 465,
+        "after": 465,
+        "delta": 0
+      }
+    },
+    {
+      "name": "total_access_count_method",
+      "passed": true,
+      "detail": "Method: 465, Manual SQL: 465",
+      "metrics": {
+        "method": 465,
+        "manual": 465
+      }
+    }
+  ],
+  "benchmarks": [
+    {
+      "name": "search_with_dedup",
+      "iterations": 50,
+      "avg_ms": 1.4329600287601352,
+      "p50_ms": 1.4122294960543513,
+      "p95_ms": 1.5670836088247597,
+      "p99_ms": 1.6999482735991474
+    },
+    {
+      "name": "expand_context_window1",
+      "iterations": 50,
+      "avg_ms": 0.12544823344796896,
+      "p50_ms": 0.12250011786818504,
+      "p95_ms": 0.12906428892165422,
+      "p99_ms": 0.1767480699345469
+    },
+    {
+      "name": "search_scoring_dedup",
+      "iterations": 50,
+      "avg_ms": 2.9239257983863354,
+      "p50_ms": 2.870458527468145,
+      "p95_ms": 3.437383309938013,
+      "p99_ms": 3.620842832606286
+    },
+    {
+      "name": "full_pipeline_search_dedup_expand",
+      "iterations": 30,
+      "avg_ms": 3.405334777198732,
+      "p50_ms": 3.360437578521669,
+      "p95_ms": 3.970556485000998,
+      "p99_ms": 4.1031276364810765
+    }
+  ],
+  "summary": {
+    "tests_passed": 11,
+    "tests_total": 11,
+    "expand_overhead_ms": 0.125,
+    "full_pipeline_avg_ms": 3.405
+  }
+}

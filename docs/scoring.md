@@ -1,6 +1,6 @@
-# Memory Scoring: Frequency + Temporal Decay
+# Memory Scoring: Frequency + Temporal Decay with Adaptive Activation
 
-*Added in v0.5.0*
+*Added in v0.5.0 · Adaptive maturity gate added in v0.7.0*
 
 vstash learns which chunks matter to you. Every time you search or ask a question, vstash records which chunks were returned. Over time, frequently-accessed and recently-accessed chunks get a relevance boost, while chunks you haven't touched in months decay naturally.
 
@@ -13,8 +13,10 @@ This means vstash gets better the more you use it — the documents you actually
 After the standard hybrid search (vector similarity + keyword matching via RRF), vstash applies a second re-ranking pass:
 
 ```
-final_score = α · normalized_rrf + β · log(1 + access_count · e^(−λ · days_ago))
+final_score = α · normalized_rrf + (β · γ) · log(1 + access_count · e^(−λ · days_ago))
 ```
+
+where **γ** is the adaptive maturity gate (see below).
 
 | Term | Meaning |
 |------|---------|
@@ -84,9 +86,63 @@ Scoring adds **~0.12ms** to a ~0.7ms search pipeline — negligible overhead. Th
 
 ---
 
+## Adaptive Maturity Gate (γ)
+
+*Added in v0.7.0*
+
+The adaptive maturity gate automatically suppresses scoring when access patterns don't carry meaningful signal. It uses the **max/mean ratio** of access counts among accessed chunks:
+
+```
+γ = clamp((R - 8.0) / (15.0 - 8.0), 0, 1)
+
+where R = max(access_count) / mean(access_count)   [chunks with access_count > 0]
+```
+
+| R (max/mean) | γ | Effect |
+|:---:|:---:|--------|
+| < 8× | 0.0 | Scoring suppressed — pure RRF, no reranking overhead |
+| 8× – 15× | 0.0 – 1.0 | Linear ramp — partial scoring |
+| ≥ 15× | 1.0 | Full scoring active |
+
+**Why this matters:** Without γ, a fixed β=0.5 degrades NDCG by -8.6% from day one because uniform access counts inject noise rather than signal. With γ, the system maintains 0.0% degradation across all 30 rounds of a 120-document experiment — scoring only activates when there's a genuine outlier in the access pattern.
+
+**Short-circuit optimization:** When γ = 0, the system skips the re-ranking step entirely — no per-result metadata fetch, no decay computation. Some lightweight bookkeeping still occurs (maturity estimation query, over-fetch sizing), so overhead during cold start is minimal rather than strictly zero.
+
+The gate requires at least 10 accessed chunks to activate, avoiding false triggering on tiny corpora.
+
+---
+
 ## Cold Start
 
-New chunks start with `access_count = 1` (ingestion counts as the first access). This means freshly-ingested documents aren't penalized — they compete on semantic relevance until they accumulate enough access history for the memory component to matter.
+New chunks start with `access_count = 0` (ingestion does not count as an access). This means freshly-ingested documents aren't penalized — they compete on semantic relevance until they accumulate enough access history for the memory component to matter.
+
+With the adaptive maturity gate (v0.7.0), scoring can be **enabled by default** with no cold start penalty. The system transitions seamlessly from pure RRF to frequency-augmented ranking as usage patterns mature, with zero user intervention.
+
+---
+
+## Relevance Signal
+
+*Added in v0.6.0*
+
+Separate from scoring, vstash provides a **distance-based relevance signal** that works from the very first search — no scoring or access history required. The cosine distance of the best vector match estimates confidence:
+
+| Distance | Tier | F1 |
+|----------|------|-----|
+| ≤ 0.95 | high | 0.952 |
+| 0.95–0.98 | medium | — |
+| > 0.98 | low | — |
+
+This is applied in CLI (search, ask, chat) and MCP server. See [How It Works](how-it-works.md) for details.
+
+---
+
+## Discard Telemetry
+
+*Added in v0.6.0*
+
+Every search records an event with query, distance, relevance tier, and result count to a `search_events` table. In chat mode, events are marked as "dismissed" when the user exits after a non-high result. The table is pruned to 1,000 entries and indexed by `(relevance_tier, created_at)`.
+
+This allows validating the relevance signal against real-world usage patterns over time.
 
 ---
 

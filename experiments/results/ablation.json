@@ -1,0 +1,519 @@
+{
+  "experiment": "ablation_rrf",
+  "corpus_size": 24,
+  "queries": 10,
+  "top_k": 10,
+  "db_path": "ablation.db",
+  "results": [
+    {
+      "mode": "vector_only",
+      "avg_ndcg_5": 0.8086214040274893,
+      "avg_ndcg_10": 0.8322628650191758,
+      "avg_precision_3": 0.9333333333333333,
+      "avg_precision_5": 1.0016666666666667,
+      "avg_latency_ms": 4.510559986811131,
+      "per_query": [
+        {
+          "mode": "vector_only",
+          "query": "long-term memory systems for conversational AI agents",
+          "ndcg_5": 0.8184696104898866,
+          "ndcg_10": 0.8189921632400328,
+          "precision_3": 1.0,
+          "precision_5": 1.0,
+          "top_results": [
+            "https://arxiv.org/pdf/2508.03341",
+            "https://arxiv.org/pdf/2504.19413",
+            "https://arxiv.org/pdf/2402.17753",
+            "https://arxiv.org/pdf/2504.19413",
+            "https://arxiv.org/pdf/2305.10250"
+          ],
+          "latency_ms": 4.623570805415511
+        },
+        {
+          "mode": "vector_only",
+          "query": "temporal decay and forgetting mechanisms in memory",
+          "ndcg_5": 0.9785660304166897,
+          "ndcg_10": 0.9785660304166897,
+          "precision_3": 1.0,
+          "precision_5": 1.25,
+          "top_results": [
+            "https://arxiv.org/pdf/2305.10250",
+            "https://arxiv.org/pdf/2512.12856",
+            "https://arxiv.org/pdf/2512.12856",
+            "https://arxiv.org/pdf/2512.12856",
+            "https://arxiv.org/pdf/2512.12856"
+          ],
+          "latency_ms": 4.45722087752074
+        },
+        {
+          "mode": "vector_only",
+          "query": "benchmarks for evaluating memory in language models",
+          "ndcg_5": 0.6548198775041992,
+          "ndcg_10": 0.7163500509994284,
+          "precision_3": 0.6666666666666666,
+          "precision_5": 0.8,
+          "top_results": [
+            "https://arxiv.org/pdf/2504.19413",
+            "https://arxiv.org/pdf/2601.03236",
+            "https://arxiv.org/pdf/2504.19413",
+            "https://arxiv.org/pdf/2501.13121",
+            "https://arxiv.org/pdf/2501.13121"
+          ],
+          "latency_ms": 4.521629237569869
+        },
+        {
+          "mode": "vector_only",
+          "query": "episodic memory architecture for LLM agents",
+          "ndcg_5": 0.7615619098893149,
+          "ndcg_10": 0.8641763259655771,
+          "precision_3": 1.0,
+          "precision_5": 1.0,
+          "top_results": [
+            "https://arxiv.org/pdf/2502.12110",
+            "https://arxiv.org/pdf/2502.12110",
+            "https://arxiv.org/pdf/2603.19935",
+            "https://arxiv.org/pdf/2512.12686",
+            "https://arxiv.org/pdf/2601.21714"
+          ],
+          "latency_ms": 4.54980805516243
+        },
+        {
+          "mode": "vector_only",
+          "query": "personalization and user modeling through persistent memory",
+          "ndcg_5": 0.8687013698175803,
+          "ndcg_10": 0.8459093695410579,
+          "precision_3": 1.0,
+          "precision_5": 1.0,
+          "top_results": [
+            "https://arxiv.org/pdf/2512.12856",
+            "https://arxiv.org/pdf/2412.13103",
+            "https://arxiv.org/pdf/2412.13103",
+            "https://arxiv.org/pdf/2305.10250",
+            "https://arxiv.org/pdf/2512.12686"
+          ],
+          "latency_ms": 4.544500005431473
+        },
+        {
+          "mode": "vector_only",
+          "query": "knowledge graph approaches to agent memory",
+          "ndcg_5": 0.9265254403358496,
+          "ndcg_10": 0.904074338142889,
+          "precision_3": 1.0,
+          "precision_5": 1.0,
+          "top_results": [
+            "https://arxiv.org/pdf/2601.03236",
+            "https://arxiv.org/pdf/2502.12110",
+            "https://arxiv.org/pdf/2501.13956",
+            "https://arxiv.org/pdf/2504.19413",
+            "https://arxiv.org/pdf/2512.12856"
+          ],
+          "latency_ms": 4.5142458053305745
+        },
+        {
+          "mode": "vector_only",
+          "query": "memory compression and retrieval efficiency",
+          "ndcg_5": 0.5510867528709219,
+          "ndcg_10": 0.6415754229863777,
+          "precision_3": 1.0,
+          "precision_5": 0.8,
+          "top_results": [
+            "https://arxiv.org/pdf/2502.12110",
+            "https://arxiv.org/pdf/2502.05589",
+            "https://arxiv.org/pdf/2502.05589",
+            "https://arxiv.org/pdf/2601.21714",
+            "https://arxiv.org/pdf/2502.15957"
+          ],
+          "latency_ms": 4.452433506958187
+        },
+        {
+          "mode": "vector_only",
+          "query": "multi-agent memory sharing and coordination",
+          "ndcg_5": 0.8437461967932512,
+          "ndcg_10": 0.8216089420141265,
+          "precision_3": 1.0,
+          "precision_5": 1.0,
+          "top_results": [
+            "https://arxiv.org/pdf/2512.12856",
+            "https://arxiv.org/pdf/2601.03236",
+            "https://arxiv.org/pdf/2512.12856",
+            "https://arxiv.org/pdf/2512.12856",
+            "https://arxiv.org/pdf/2502.12110"
+          ],
+          "latency_ms": 4.482233291491866
+        },
+        {
+          "mode": "vector_only",
+          "query": "read-write memory interfaces for language models",
+          "ndcg_5": 0.6827368521571986,
+          "ndcg_10": 0.7313760068855788,
+          "precision_3": 0.6666666666666666,
+          "precision_5": 0.5,
+          "top_results": [
+            "https://arxiv.org/pdf/2305.14322",
+            "https://arxiv.org/pdf/2601.03236",
+            "https://arxiv.org/pdf/2603.19935",
+            "https://arxiv.org/pdf/2410.14052",
+            "https://arxiv.org/pdf/2502.12110"
+          ],
+          "latency_ms": 4.4750708155334
+        },
+        {
+          "mode": "vector_only",
+          "query": "self-organizing and adaptive memory structures",
+          "ndcg_5": 1.0,
+          "ndcg_10": 1.0,
+          "precision_3": 1.0,
+          "precision_5": 1.6666666666666667,
+          "top_results": [
+            "https://arxiv.org/pdf/2601.02163",
+            "https://arxiv.org/pdf/2508.03341",
+            "https://arxiv.org/pdf/2601.02163",
+            "https://arxiv.org/pdf/2502.12110",
+            "https://arxiv.org/pdf/2508.03341"
+          ],
+          "latency_ms": 4.484887467697263
+        }
+      ]
+    },
+    {
+      "mode": "fts_only",
+      "avg_ndcg_5": 0.6313369547007703,
+      "avg_ndcg_10": 0.6209730996031686,
+      "avg_precision_3": 0.7666666666666667,
+      "avg_precision_5": 0.8616666666666667,
+      "avg_latency_ms": 0.810991614125669,
+      "per_query": [
+        {
+          "mode": "fts_only",
+          "query": "long-term memory systems for conversational AI agents",
+          "ndcg_5": 0.630522497149282,
+          "ndcg_10": 0.569437718964301,
+          "precision_3": 1.0,
+          "precision_5": 1.0,
+          "top_results": [
+            "https://arxiv.org/pdf/2504.19413",
+            "https://arxiv.org/pdf/2502.05589",
+            "https://arxiv.org/pdf/2504.19413",
+            "https://arxiv.org/pdf/2512.12686",
+            "https://arxiv.org/pdf/2504.19413"
+          ],
+          "latency_ms": 0.8649293798953295
+        },
+        {
+          "mode": "fts_only",
+          "query": "temporal decay and forgetting mechanisms in memory",
+          "ndcg_5": 0.7542493064028744,
+          "ndcg_10": 0.7542493064028744,
+          "precision_3": 1.0,
+          "precision_5": 1.0,
+          "top_results": [
+            "https://arxiv.org/pdf/2512.12856",
+            "https://arxiv.org/pdf/2512.12856",
+            "https://arxiv.org/pdf/2305.10250",
+            "https://arxiv.org/pdf/2512.12856",
+            "https://arxiv.org/pdf/2602.11322"
+          ],
+          "latency_ms": 0.8366289781406522
+        },
+        {
+          "mode": "fts_only",
+          "query": "benchmarks for evaluating memory in language models",
+          "ndcg_5": 0.6429465258833323,
+          "ndcg_10": 0.6260776248951835,
+          "precision_3": 0.6666666666666666,
+          "precision_5": 0.6,
+          "top_results": [
+            "https://arxiv.org/pdf/2501.13121",
+            "https://arxiv.org/pdf/2412.13103",
+            "https://arxiv.org/pdf/2501.13121",
+            "https://arxiv.org/pdf/2501.13956",
+            "https://arxiv.org/pdf/2412.13103"
+          ],
+          "latency_ms": 0.8768626023083925
+        },
+        {
+          "mode": "fts_only",
+          "query": "episodic memory architecture for LLM agents",
+          "ndcg_5": 0.3101197485607189,
+          "ndcg_10": 0.2691715978630665,
+          "precision_3": 0.6666666666666666,
+          "precision_5": 0.8,
+          "top_results": [
+            "https://arxiv.org/pdf/2512.12856",
+            "https://arxiv.org/pdf/2601.02163",
+            "https://arxiv.org/pdf/2602.11322",
+            "https://arxiv.org/pdf/2508.03341",
+            "https://arxiv.org/pdf/2602.11322"
+          ],
+          "latency_ms": 0.7934789173305035
+        },
+        {
+          "mode": "fts_only",
+          "query": "personalization and user modeling through persistent memory",
+          "ndcg_5": 0.6464390152757622,
+          "ndcg_10": 0.629478482316071,
+          "precision_3": 1.0,
+          "precision_5": 1.0,
+          "top_results": [
+            "https://arxiv.org/pdf/2512.12686",
+            "https://arxiv.org/pdf/2512.12686",
+            "https://arxiv.org/pdf/2512.12686",
+            "https://arxiv.org/pdf/2512.12686",
+            "https://arxiv.org/pdf/2512.12686"
+          ],
+          "latency_ms": 0.9421247290447354
+        },
+        {
+          "mode": "fts_only",
+          "query": "knowledge graph approaches to agent memory",
+          "ndcg_5": 0.8058899698378053,
+          "ndcg_10": 0.7278156580224281,
+          "precision_3": 1.0,
+          "precision_5": 1.0,
+          "top_results": [
+            "https://arxiv.org/pdf/2501.13956",
+            "https://arxiv.org/pdf/2501.13956",
+            "https://arxiv.org/pdf/2501.13956",
+            "https://arxiv.org/pdf/2501.13956",
+            "https://arxiv.org/pdf/2504.19413"
+          ],
+          "latency_ms": 0.6279916502535343
+        },
+        {
+          "mode": "fts_only",
+          "query": "memory compression and retrieval efficiency",
+          "ndcg_5": 0.3674450713482824,
+          "ndcg_10": 0.3578044647385156,
+          "precision_3": 0.0,
+          "precision_5": 0.4,
+          "top_results": [
+            "https://arxiv.org/pdf/2410.14052",
+            "https://arxiv.org/pdf/2502.15957",
+            "https://arxiv.org/pdf/2502.15957",
+            "https://arxiv.org/pdf/2603.19935",
+            "https://arxiv.org/pdf/2502.05589"
+          ],
+          "latency_ms": 0.7658877409994602
+        },
+        {
+          "mode": "fts_only",
+          "query": "multi-agent memory sharing and coordination",
+          "ndcg_5": 0.4286180228158717,
+          "ndcg_10": 0.5485567530954719,
+          "precision_3": 0.3333333333333333,
+          "precision_5": 0.4,
+          "top_results": [
+            "https://arxiv.org/pdf/2304.03442",
+            "https://arxiv.org/pdf/2304.03442",
+            "https://arxiv.org/pdf/2601.21714",
+            "https://arxiv.org/pdf/2304.03442",
+            "https://arxiv.org/pdf/2512.12856"
+          ],
+          "latency_ms": 0.7821750361472368
+        },
+        {
+          "mode": "fts_only",
+          "query": "read-write memory interfaces for language models",
+          "ndcg_5": 0.8046448780571752,
+          "ndcg_10": 0.8046448780571752,
+          "precision_3": 1.0,
+          "precision_5": 0.75,
+          "top_results": [
+            "https://arxiv.org/pdf/2305.14322",
+            "https://arxiv.org/pdf/2310.08560",
+            "https://arxiv.org/pdf/2305.14322",
+            "https://arxiv.org/pdf/2402.17753",
+            "https://arxiv.org/pdf/2304.03442"
+          ],
+          "latency_ms": 0.8151873713359237
+        },
+        {
+          "mode": "fts_only",
+          "query": "self-organizing and adaptive memory structures",
+          "ndcg_5": 0.9224945116765986,
+          "ndcg_10": 0.9224945116765986,
+          "precision_3": 1.0,
+          "precision_5": 1.6666666666666667,
+          "top_results": [
+            "https://arxiv.org/pdf/2508.03341",
+            "https://arxiv.org/pdf/2601.02163",
+            "https://arxiv.org/pdf/2508.03341",
+            "https://arxiv.org/pdf/2601.02163",
+            "https://arxiv.org/pdf/2502.12110"
+          ],
+          "latency_ms": 0.8046497358009219
+        }
+      ]
+    },
+    {
+      "mode": "hybrid_rrf",
+      "avg_ndcg_5": 0.8140902691862955,
+      "avg_ndcg_10": 0.8025437921980083,
+      "avg_precision_3": 1.0,
+      "avg_precision_5": 1.0266666666666668,
+      "avg_latency_ms": 1.6059871157631278,
+      "per_query": [
+        {
+          "mode": "hybrid_rrf",
+          "query": "long-term memory systems for conversational AI agents",
+          "ndcg_5": 0.8655076496264899,
+          "ndcg_10": 0.7816575998124528,
+          "precision_3": 1.0,
+          "precision_5": 1.0,
+          "top_results": [
+            "https://arxiv.org/pdf/2504.19413",
+            "https://arxiv.org/pdf/2504.19413",
+            "https://arxiv.org/pdf/2508.03341",
+            "https://arxiv.org/pdf/2508.03341",
+            "https://arxiv.org/pdf/2305.10250"
+          ],
+          "latency_ms": 1.6761666862294078
+        },
+        {
+          "mode": "hybrid_rrf",
+          "query": "temporal decay and forgetting mechanisms in memory",
+          "ndcg_5": 0.9102923452009698,
+          "ndcg_10": 0.9102923452009698,
+          "precision_3": 1.0,
+          "precision_5": 1.25,
+          "top_results": [
+            "https://arxiv.org/pdf/2305.10250",
+            "https://arxiv.org/pdf/2512.12856",
+            "https://arxiv.org/pdf/2512.12856",
+            "https://arxiv.org/pdf/2512.12856",
+            "https://arxiv.org/pdf/2512.12856"
+          ],
+          "latency_ms": 1.776370918378234
+        },
+        {
+          "mode": "hybrid_rrf",
+          "query": "benchmarks for evaluating memory in language models",
+          "ndcg_5": 0.770971253302517,
+          "ndcg_10": 0.7507433848669558,
+          "precision_3": 1.0,
+          "precision_5": 1.0,
+          "top_results": [
+            "https://arxiv.org/pdf/2501.13121",
+            "https://arxiv.org/pdf/2501.13121",
+            "https://arxiv.org/pdf/2504.19413",
+            "https://arxiv.org/pdf/2501.13121",
+            "https://arxiv.org/pdf/2504.19413"
+          ],
+          "latency_ms": 1.7476375447586179
+        },
+        {
+          "mode": "hybrid_rrf",
+          "query": "episodic memory architecture for LLM agents",
+          "ndcg_5": 0.6194348529624618,
+          "ndcg_10": 0.7585201395409111,
+          "precision_3": 1.0,
+          "precision_5": 1.0,
+          "top_results": [
+            "https://arxiv.org/pdf/2508.03341",
+            "https://arxiv.org/pdf/2502.12110",
+            "https://arxiv.org/pdf/2601.21714",
+            "https://arxiv.org/pdf/2512.12856",
+            "https://arxiv.org/pdf/2601.03236"
+          ],
+          "latency_ms": 1.4892586739733815
+        },
+        {
+          "mode": "hybrid_rrf",
+          "query": "personalization and user modeling through persistent memory",
+          "ndcg_5": 0.7825732453256621,
+          "ndcg_10": 0.7620409769955143,
+          "precision_3": 1.0,
+          "precision_5": 1.0,
+          "top_results": [
+            "https://arxiv.org/pdf/2512.12686",
+            "https://arxiv.org/pdf/2512.12686",
+            "https://arxiv.org/pdf/2512.12686",
+            "https://arxiv.org/pdf/2412.13103",
+            "https://arxiv.org/pdf/2305.10250"
+          ],
+          "latency_ms": 1.7826207913458347
+        },
+        {
+          "mode": "hybrid_rrf",
+          "query": "knowledge graph approaches to agent memory",
+          "ndcg_5": 0.9526797581523827,
+          "ndcg_10": 0.8603845078303604,
+          "precision_3": 1.0,
+          "precision_5": 1.0,
+          "top_results": [
+            "https://arxiv.org/pdf/2501.13956",
+            "https://arxiv.org/pdf/2502.12110",
+            "https://arxiv.org/pdf/2601.03236",
+            "https://arxiv.org/pdf/2504.19413",
+            "https://arxiv.org/pdf/2502.12110"
+          ],
+          "latency_ms": 1.5287001384422183
+        },
+        {
+          "mode": "hybrid_rrf",
+          "query": "memory compression and retrieval efficiency",
+          "ndcg_5": 0.5893541475004916,
+          "ndcg_10": 0.5738913424911919,
+          "precision_3": 1.0,
+          "precision_5": 0.6,
+          "top_results": [
+            "https://arxiv.org/pdf/2502.05589",
+            "https://arxiv.org/pdf/2502.12110",
+            "https://arxiv.org/pdf/2502.05589",
+            "https://arxiv.org/pdf/2410.14052",
+            "https://arxiv.org/pdf/2502.15957"
+          ],
+          "latency_ms": 1.4769165543839335
+        },
+        {
+          "mode": "hybrid_rrf",
+          "query": "multi-agent memory sharing and coordination",
+          "ndcg_5": 0.8454445617348046,
+          "ndcg_10": 0.823262747184552,
+          "precision_3": 1.0,
+          "precision_5": 1.0,
+          "top_results": [
+            "https://arxiv.org/pdf/2512.12856",
+            "https://arxiv.org/pdf/2512.12856",
+            "https://arxiv.org/pdf/2502.12110",
+            "https://arxiv.org/pdf/2502.12110",
+            "https://arxiv.org/pdf/2502.12110"
+          ],
+          "latency_ms": 1.5320458682253957
+        },
+        {
+          "mode": "hybrid_rrf",
+          "query": "read-write memory interfaces for language models",
+          "ndcg_5": 0.8046448780571752,
+          "ndcg_10": 0.8046448780571752,
+          "precision_3": 1.0,
+          "precision_5": 0.75,
+          "top_results": [
+            "https://arxiv.org/pdf/2305.14322",
+            "https://arxiv.org/pdf/2305.14322",
+            "https://arxiv.org/pdf/2310.08560",
+            "https://arxiv.org/pdf/2402.17753",
+            "https://arxiv.org/pdf/2304.03442"
+          ],
+          "latency_ms": 1.5547500224784017
+        },
+        {
+          "mode": "hybrid_rrf",
+          "query": "self-organizing and adaptive memory structures",
+          "ndcg_5": 1.0,
+          "ndcg_10": 1.0,
+          "precision_3": 1.0,
+          "precision_5": 1.6666666666666667,
+          "top_results": [
+            "https://arxiv.org/pdf/2601.02163",
+            "https://arxiv.org/pdf/2508.03341",
+            "https://arxiv.org/pdf/2508.03341",
+            "https://arxiv.org/pdf/2601.02163",
+            "https://arxiv.org/pdf/2502.12110"
+          ],
+          "latency_ms": 1.495403959415853
+        }
+      ]
+    }
+  ]
+}

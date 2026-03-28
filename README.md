@@ -29,6 +29,20 @@ Most RAG tools are slow, cloud-dependent, or require a running server. vstash is
 
 **Zero cloud required for search. Inference is optional.**
 
+### What's new in v0.7
+
+- **Adaptive scoring** — maturity gate (γ) suppresses frequency+decay until access patterns show genuine signal (max/mean ≥ 8×). Eliminates the -8.6% cold start degradation from fixed scoring. Scoring is now safe to enable by default.
+- **Zero-cost cold start** — when γ = 0, scoring is completely short-circuited: no metadata lookups, no decay computation. Pure RRF with zero overhead.
+
+### What's new in v0.6
+
+- **Relevance signal** — distance-based confidence (F1=0.952) warns when results may not match your query. Works from the first search, no setup needed.
+- **Document deduplication** — one result per document, improving diversity from ~3.2 to 5.0 unique docs per top-5.
+- **Context expansion** — adjacent chunks (±1) automatically included for LLM answers, 2.64× richer context.
+- **Tiered feedback** — high (silent), medium (`?` indicator), low (full warning) in CLI and MCP.
+- **LLM grounding** — system prompt rules enforce source citation and correct wrong-document attributions, passing 9/9 anti-hallucination trap tests.
+- **Discard telemetry** — search events tracked for real-world relevance signal validation.
+
 ---
 
 ## Install
@@ -198,7 +212,8 @@ PDF, DOCX, PPTX, XLSX, Markdown, TXT, HTML, CSV, Python, JavaScript, TypeScript,
 - **Phase 3 ✅:** Python SDK — `from vstash import Memory`
 - **Phase 4 ✅:** LangChain integration — `VstashRetriever`
 - **Phase 5 ✅:** Memory scoring — frequency + temporal decay re-ranking
-- **Phase 6:** Sync — cr-sqlite CRDT peer-to-peer sync, multiple profiles
+- **Phase 6 ✅:** Retrieval quality — distance-based relevance signal, document dedup, context expansion
+- **Phase 7:** Sync — cr-sqlite CRDT peer-to-peer sync, multiple profiles
 
 ---
 

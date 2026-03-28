@@ -1,0 +1,419 @@
+{
+  "raw_rrf": {
+    "signals": [
+      {
+        "query": "long-term memory systems for conversational AI agents",
+        "relevant": true,
+        "distance": 0.4893,
+        "spread": 0.0035
+      },
+      {
+        "query": "temporal decay and forgetting mechanisms in memory",
+        "relevant": true,
+        "distance": 0.64,
+        "spread": 0.0074
+      },
+      {
+        "query": "benchmarks for evaluating memory in language models",
+        "relevant": true,
+        "distance": 0.6401,
+        "spread": 0.0046
+      },
+      {
+        "query": "episodic memory architecture for LLM agents",
+        "relevant": true,
+        "distance": 0.5456,
+        "spread": 0.0019
+      },
+      {
+        "query": "personalization and user modeling through persistent memory",
+        "relevant": true,
+        "distance": 0.6565,
+        "spread": 0.0099
+      },
+      {
+        "query": "knowledge graph approaches to agent memory",
+        "relevant": true,
+        "distance": 0.5563,
+        "spread": 0.007
+      },
+      {
+        "query": "memory compression and retrieval efficiency",
+        "relevant": true,
+        "distance": 0.5732,
+        "spread": 0.0093
+      },
+      {
+        "query": "multi-agent memory sharing and coordination",
+        "relevant": true,
+        "distance": 0.6534,
+        "spread": 0.0055
+      },
+      {
+        "query": "read-write memory interfaces for language models",
+        "relevant": true,
+        "distance": 0.5868,
+        "spread": 0.0104
+      },
+      {
+        "query": "self-organizing and adaptive memory structures",
+        "relevant": true,
+        "distance": 0.6012,
+        "spread": 0.0106
+      },
+      {
+        "query": "recipes for chocolate cake baking",
+        "relevant": false,
+        "distance": 1.0135,
+        "spread": 0.0051
+      },
+      {
+        "query": "professional basketball NBA draft picks",
+        "relevant": false,
+        "distance": 1.0081,
+        "spread": 0.0052
+      },
+      {
+        "query": "gardening tips for growing tomatoes",
+        "relevant": false,
+        "distance": 1.009,
+        "spread": 0.0049
+      },
+      {
+        "query": "history of ancient Egyptian pyramids",
+        "relevant": false,
+        "distance": 0.9746,
+        "spread": 0.0023
+      },
+      {
+        "query": "how to train for a marathon",
+        "relevant": false,
+        "distance": 0.86,
+        "spread": 0.0037
+      },
+      {
+        "query": "best vacation destinations in Europe",
+        "relevant": false,
+        "distance": 1.0544,
+        "spread": 0.0068
+      },
+      {
+        "query": "stock market investment strategies",
+        "relevant": false,
+        "distance": 0.8681,
+        "spread": 0.0034
+      },
+      {
+        "query": "yoga poses for beginners",
+        "relevant": false,
+        "distance": 0.9876,
+        "spread": 0.0006
+      },
+      {
+        "query": "how to fix a leaking faucet",
+        "relevant": false,
+        "distance": 1.0448,
+        "spread": 0.0033
+      },
+      {
+        "query": "popular dog breeds for families",
+        "relevant": false,
+        "distance": 0.9609,
+        "spread": 0.0072
+      }
+    ],
+    "strategies": [
+      {
+        "method": "spread > 0.15 (fixed)",
+        "tp": 0,
+        "fp": 0,
+        "tn": 10,
+        "fn": 10,
+        "precision": 0,
+        "recall": 0.0,
+        "f1": 0,
+        "accuracy": 0.5
+      },
+      {
+        "method": "distance < 0.6565 (optimal)",
+        "tp": 9,
+        "fp": 0,
+        "tn": 10,
+        "fn": 1,
+        "precision": 1.0,
+        "recall": 0.9,
+        "f1": 0.947,
+        "accuracy": 0.95
+      },
+      {
+        "method": "distance < 0.90",
+        "tp": 10,
+        "fp": 2,
+        "tn": 8,
+        "fn": 0,
+        "precision": 0.833,
+        "recall": 1.0,
+        "f1": 0.909,
+        "accuracy": 0.9
+      },
+      {
+        "method": "distance < 0.95",
+        "tp": 10,
+        "fp": 2,
+        "tn": 8,
+        "fn": 0,
+        "precision": 0.833,
+        "recall": 1.0,
+        "f1": 0.909,
+        "accuracy": 0.9
+      },
+      {
+        "method": "distance < 1.00",
+        "tp": 10,
+        "fp": 5,
+        "tn": 5,
+        "fn": 0,
+        "precision": 0.667,
+        "recall": 1.0,
+        "f1": 0.8,
+        "accuracy": 0.75
+      },
+      {
+        "method": "distance < 0.95 AND spread > 0.005",
+        "tp": 7,
+        "fp": 0,
+        "tn": 10,
+        "fn": 3,
+        "precision": 1.0,
+        "recall": 0.7,
+        "f1": 0.824,
+        "accuracy": 0.85
+      },
+      {
+        "method": "distance < 1.00 AND spread > 0.005",
+        "tp": 7,
+        "fp": 1,
+        "tn": 9,
+        "fn": 3,
+        "precision": 0.875,
+        "recall": 0.7,
+        "f1": 0.778,
+        "accuracy": 0.8
+      }
+    ]
+  },
+  "with_scoring": {
+    "signals": [
+      {
+        "query": "long-term memory systems for conversational AI agents",
+        "relevant": true,
+        "distance": 0.4893,
+        "spread": 0.1898
+      },
+      {
+        "query": "temporal decay and forgetting mechanisms in memory",
+        "relevant": true,
+        "distance": 0.64,
+        "spread": 0.2982
+      },
+      {
+        "query": "benchmarks for evaluating memory in language models",
+        "relevant": true,
+        "distance": 0.6401,
+        "spread": 0.279
+      },
+      {
+        "query": "episodic memory architecture for LLM agents",
+        "relevant": true,
+        "distance": 0.5456,
+        "spread": 0.1933
+      },
+      {
+        "query": "personalization and user modeling through persistent memory",
+        "relevant": true,
+        "distance": 0.6565,
+        "spread": 0.4503
+      },
+      {
+        "query": "knowledge graph approaches to agent memory",
+        "relevant": true,
+        "distance": 0.5563,
+        "spread": 0.2443
+      },
+      {
+        "query": "memory compression and retrieval efficiency",
+        "relevant": true,
+        "distance": 0.5732,
+        "spread": 0.3793
+      },
+      {
+        "query": "multi-agent memory sharing and coordination",
+        "relevant": true,
+        "distance": 0.6534,
+        "spread": 0.2842
+      },
+      {
+        "query": "read-write memory interfaces for language models",
+        "relevant": true,
+        "distance": 0.5868,
+        "spread": 0.4377
+      },
+      {
+        "query": "self-organizing and adaptive memory structures",
+        "relevant": true,
+        "distance": 0.6012,
+        "spread": 0.4982
+      },
+      {
+        "query": "recipes for chocolate cake baking",
+        "relevant": false,
+        "distance": 1.0135,
+        "spread": 0.1626
+      },
+      {
+        "query": "professional basketball NBA draft picks",
+        "relevant": false,
+        "distance": 1.0081,
+        "spread": 0.181
+      },
+      {
+        "query": "gardening tips for growing tomatoes",
+        "relevant": false,
+        "distance": 1.009,
+        "spread": 0.2765
+      },
+      {
+        "query": "history of ancient Egyptian pyramids",
+        "relevant": false,
+        "distance": 0.9746,
+        "spread": 0.2594
+      },
+      {
+        "query": "how to train for a marathon",
+        "relevant": false,
+        "distance": 0.86,
+        "spread": 0.334
+      },
+      {
+        "query": "best vacation destinations in Europe",
+        "relevant": false,
+        "distance": 1.0544,
+        "spread": 0.2316
+      },
+      {
+        "query": "stock market investment strategies",
+        "relevant": false,
+        "distance": 0.8681,
+        "spread": 0.2556
+      },
+      {
+        "query": "yoga poses for beginners",
+        "relevant": false,
+        "distance": 0.9876,
+        "spread": 0.3043
+      },
+      {
+        "query": "how to fix a leaking faucet",
+        "relevant": false,
+        "distance": 1.0448,
+        "spread": 0.2708
+      },
+      {
+        "query": "popular dog breeds for families",
+        "relevant": false,
+        "distance": 0.9609,
+        "spread": 0.3465
+      }
+    ],
+    "strategies": [
+      {
+        "method": "spread > 0.15 (fixed)",
+        "tp": 10,
+        "fp": 10,
+        "tn": 0,
+        "fn": 0,
+        "precision": 0.5,
+        "recall": 1.0,
+        "f1": 0.667,
+        "accuracy": 0.5
+      },
+      {
+        "method": "spread > adaptive",
+        "tp": 8,
+        "fp": 8,
+        "tn": 2,
+        "fn": 2,
+        "precision": 0.5,
+        "recall": 0.8,
+        "f1": 0.615,
+        "accuracy": 0.5
+      },
+      {
+        "method": "distance < 0.6565 (optimal)",
+        "tp": 9,
+        "fp": 0,
+        "tn": 10,
+        "fn": 1,
+        "precision": 1.0,
+        "recall": 0.9,
+        "f1": 0.947,
+        "accuracy": 0.95
+      },
+      {
+        "method": "distance < 0.95",
+        "tp": 10,
+        "fp": 2,
+        "tn": 8,
+        "fn": 0,
+        "precision": 0.833,
+        "recall": 1.0,
+        "f1": 0.909,
+        "accuracy": 0.9
+      },
+      {
+        "method": "distance < 1.00",
+        "tp": 10,
+        "fp": 5,
+        "tn": 5,
+        "fn": 0,
+        "precision": 0.667,
+        "recall": 1.0,
+        "f1": 0.8,
+        "accuracy": 0.75
+      },
+      {
+        "method": "distance < 0.95 OR spread > 0.30",
+        "tp": 10,
+        "fp": 4,
+        "tn": 6,
+        "fn": 0,
+        "precision": 0.714,
+        "recall": 1.0,
+        "f1": 0.833,
+        "accuracy": 0.8
+      },
+      {
+        "method": "distance < 1.00 AND spread > 0.15",
+        "tp": 10,
+        "fp": 5,
+        "tn": 5,
+        "fn": 0,
+        "precision": 0.667,
+        "recall": 1.0,
+        "f1": 0.8,
+        "accuracy": 0.75
+      },
+      {
+        "method": "distance < 1.00 OR spread > 0.35",
+        "tp": 10,
+        "fp": 5,
+        "tn": 5,
+        "fn": 0,
+        "precision": 0.667,
+        "recall": 1.0,
+        "f1": 0.8,
+        "accuracy": 0.75
+      }
+    ]
+  }
+}

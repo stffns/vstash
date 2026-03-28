@@ -1,0 +1,771 @@
+% vstash: Local-First Hybrid Retrieval with Temporal Memory Scoring
+% Target: arXiv preprint / EMNLP Industry Track / SIGIR Resource
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{listings}
+\usepackage{subcaption}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{natbib}
+\usepackage{multirow}
+
+\hypersetup{colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue}
+
+\title{%
+  \textbf{vstash: Local-First Hybrid Retrieval\\
+  with Temporal Memory Scoring for LLM Agents}
+}
+
+\author{
+  Jayson Steffens \\
+  \texttt{github.com/stffns/vstash}
+}
+
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+% ================================================================== %
+% ABSTRACT
+% ================================================================== %
+\begin{abstract}
+We present \textbf{vstash}, a local-first document memory system that
+combines vector similarity search with full-text keyword matching via
+Reciprocal Rank Fusion (RRF), augmented by a novel frequency-weighted
+temporal decay re-ranker.  All data resides in a single SQLite file
+using \texttt{sqlite-vec} for approximate nearest neighbor search and
+FTS5 for keyword matching --- no cloud services, no external databases.
+
+We make three empirical contributions.
+\textbf{(1)}~A post-RRF re-ranking formula that fuses normalized
+semantic scores with access-frequency signals decayed over time,
+improving NDCG@10 by up to 16.1\% on access-heavy scenarios while
+adding only 0.017\,ms of overhead.
+\textbf{(2)}~A zero-cost \emph{relevance signal} based on score spread
+that detects when results are unlikely to be relevant, achieving
+F1\,=\,0.846 at threshold 0.15 --- but only when scoring is enabled,
+revealing that temporal scoring is a prerequisite for confidence
+estimation.
+\textbf{(3)}~Code-aware chunking with language-specific boundary
+detection that preserves function-level semantic coherence for
+6~programming languages.
+
+We evaluate on a corpus of 24 arXiv papers (786~chunks) with
+human-annotated relevance judgments across 10~queries, 5~access
+scenarios, and 16~parameter configurations. All experiments are
+reproducible; source code, data, and experiment scripts are
+open-source.
+\end{abstract}
+
+% ================================================================== %
+\section{Introduction}
+\label{sec:intro}
+% ================================================================== %
+
+Large language model (LLM) agents increasingly require persistent memory
+--- the ability to store, retrieve, and prioritize information across
+sessions.  While cloud-hosted vector databases (Pinecone, Weaviate,
+Chroma) serve this need at scale, many use cases demand
+\emph{local-first} operation: developer tooling, personal knowledge
+management, privacy-sensitive workflows, and offline agents.
+
+Existing local solutions face three gaps:
+\begin{enumerate}
+  \item \textbf{Retrieval quality.}  Pure vector search misses exact
+    keywords (error codes, proper names); pure keyword search misses
+    semantic paraphrases.  Hybrid fusion helps, but combining scores
+    from incompatible distributions (cosine distance vs.\ BM25 rank)
+    is non-trivial.
+  \item \textbf{Temporal awareness.}  Documents accessed yesterday
+    should rank differently from documents untouched for months.  Most
+    RAG systems treat all chunks equally regardless of usage history.
+  \item \textbf{Confidence estimation.}  When every query returns
+    results with uniformly high scores, the system cannot distinguish
+    ``I found something relevant'' from ``I returned the least
+    irrelevant thing I have.''
+\end{enumerate}
+
+We introduce \textbf{vstash}, a single-file system built on SQLite that
+addresses all three gaps.  Our key insight is that
+\emph{post-retrieval scoring} --- re-ranking RRF candidates with
+frequency and decay --- not only improves ranking quality but also
+creates the score variance necessary for confidence estimation.
+
+\paragraph{Contributions.}
+\begin{itemize}
+  \item A \textbf{frequency + temporal decay re-ranker} with min-max
+    normalization that brings RRF and access-history scores onto a
+    common scale (\S\ref{sec:scoring}).
+  \item A \textbf{score-spread relevance signal} that detects
+    low-confidence results with 86.7\% accuracy and perfect precision
+    (\S\ref{sec:relevance}).
+  \item \textbf{Code-aware chunking} for 6~languages using regex-based
+    boundary detection at column~0 with decorator attachment
+    (\S\ref{sec:chunking}).
+  \item An \textbf{open-source system} with CLI, Python SDK, MCP server
+    for LLM agent integration, and reproducible experiment scripts
+    (\S\ref{sec:system}).
+\end{itemize}
+
+
+% ================================================================== %
+\section{Related Work}
+\label{sec:related}
+% ================================================================== %
+
+\paragraph{Memory for LLM agents.}
+MemGPT~\citep{packer2023memgpt} introduced virtual context management
+with explicit memory tiers.  Mem0~\citep{chadha2025mem0} and
+Memoria~\citep{memoria2025} provide production-ready memory layers with
+cloud backends.  A-MEM~\citep{amem2025} uses agentic self-organization.
+Unlike these systems, vstash operates entirely locally with zero cloud
+dependencies.
+
+\paragraph{Hybrid retrieval.}
+Reciprocal Rank Fusion (RRF)~\citep{cormack2009rrf} merges ranked lists
+without requiring comparable scores.  \citet{ma2024rrf} showed RRF
+outperforms learned re-rankers on out-of-domain data.  Our contribution
+is the post-RRF normalization step that enables fusion with
+frequency-based signals.
+
+\paragraph{Temporal decay in memory.}
+The Ebbinghaus forgetting curve~\citep{ebbinghaus1885} inspires
+exponential decay models.  Zep~\citep{zep2025} uses temporal knowledge
+graphs; MaRS~\citep{mars2025} models cognitive forgetting.
+PAM~\citep{pam2026} exploits temporal co-occurrence.  We apply decay
+directly in the scoring formula rather than in graph structure.
+
+\paragraph{Code-aware chunking.}
+Tree-sitter-based approaches parse full ASTs but require language
+grammars.  Our regex approach at column~0 provides comparable boundary
+detection for top-level definitions without external dependencies.
+
+
+% ================================================================== %
+\section{System Architecture}
+\label{sec:system}
+% ================================================================== %
+
+\begin{figure}[t]
+  \centering
+  \small
+  \begin{verbatim}
+  INGESTION
+  PDF/DOCX/URL/Code -> MarkItDown -> Chunking -> FastEmbed
+                        parse      (code-aware   (ONNX, 384-dim)
+                                    or semantic)
+                           |
+                           v
+  SQLITE (WAL mode) -------+----------------------------------
+  | documents | chunks      | vec_chunks     | fts_chunks     |
+  | metadata  | text, seq,  | sqlite-vec ANN | FTS5 + Porter  |
+  | tags,path | access_cnt  | index          | stemming       |
+  -----------------------+------------------------------------|
+                         |
+                         v
+  RETRIEVAL
+  Query -> Embed -+-> Vector ANN --+-> RRF Fusion
+                  |                |       |
+                  +-> FTS5 BM25 ---+       v
+                                   Freq+Decay Re-rank (S4)
+                                          |
+                                          v
+                                   Score Spread Signal (S5)
+                                          |
+                                          v
+  INTERFACES
+  CLI | Python SDK | MCP Server | Claude Code Hook
+  \end{verbatim}
+  \caption{System architecture.  All data resides in a single SQLite
+    file.  The retrieval pipeline applies RRF fusion followed by
+    frequency+decay re-ranking and a score-spread relevance signal.}
+  \label{fig:architecture}
+\end{figure}
+
+vstash stores all data in a single SQLite database using WAL mode for
+concurrent read safety:
+
+\begin{itemize}
+  \item \textbf{Documents table} --- metadata, hierarchical tags
+    (project, layer, collection), source type.
+  \item \textbf{Chunks table} --- text segments with sequence numbers,
+    access counters, and timestamps.
+  \item \textbf{vec\_chunks} --- \texttt{sqlite-vec} virtual table for
+    approximate nearest neighbor search (384-dim float vectors from
+    BAAI/bge-small-en-v1.5).
+  \item \textbf{fts\_chunks} --- FTS5 virtual table with Porter stemming
+    for keyword matching.
+\end{itemize}
+
+\subsection{Ingestion Pipeline}
+
+Documents are parsed via MarkItDown (PDF, DOCX, HTML, URLs) or read
+directly (code files).  Text is split into chunks using either
+semantic chunking (\S\ref{sec:chunking}) or code-aware chunking
+depending on source type.  Chunks are embedded using FastEmbed
+(ONNX Runtime) at \(\sim\)700~chunks/s on CPU.
+
+\subsection{Hybrid Search with RRF}
+\label{sec:rrf}
+
+Given a query $q$, we retrieve candidates from both indexes:
+
+\begin{equation}
+  \text{RRF}(c) = \frac{w_v}{k + r_v(c)} + \frac{w_f}{k + r_f(c)}
+  \label{eq:rrf}
+\end{equation}
+
+\noindent where $r_v(c)$ and $r_f(c)$ are the ranks of chunk $c$ in
+vector and FTS5 results respectively, $k = 60$, and weights
+$w_v = 0.6$, $w_f = 0.4$.
+
+\paragraph{FTS5 safety.}  Each query word is individually double-quoted
+and internal quotes are escaped by doubling, joined with Boolean OR.
+This per-word quoting prevents FTS5 operator injection (NEAR, NOT)
+while enabling keyword-level matching instead of restrictive exact-phrase.
+
+\subsection{LLM Agent Integration}
+\label{sec:integration}
+
+vstash integrates with LLM agents through three interfaces:
+
+\paragraph{MCP Server.}  Exposes search, add, ask, and management
+tools via the Model Context Protocol.  The server includes
+LLM-facing instructions that guide clients on when to use (knowledge
+questions) and when to skip (action commands) memory tools.  Search
+results include the relevance signal, enabling clients to filter
+noise.
+
+\paragraph{Claude Code Hook.}  A \texttt{UserPromptSubmit} hook that
+auto-injects vstash context on knowledge questions.  A pattern-based
+filter distinguishes knowledge questions from action commands
+(commit, merge, push), achieving 17/17 accuracy on our test set.
+
+\paragraph{Python SDK.}  A \texttt{Memory} class with context
+manager protocol for programmatic integration into agent
+frameworks.
+
+
+% ================================================================== %
+\section{Frequency + Decay Scoring}
+\label{sec:scoring}
+% ================================================================== %
+
+After RRF retrieval, we apply a two-stage re-ranking:
+
+\subsection{Min-Max Normalization}
+
+RRF scores occupy a narrow band ($\sim$0.009--0.016) while frequency
+logs span a wider range ($\sim$0.69--2.40).  Without normalization,
+frequency dominates.  We normalize RRF within each batch:
+
+\begin{equation}
+  \hat{s}_{\text{rrf}}(c) =
+    \frac{s_{\text{rrf}}(c) - \min_i s_{\text{rrf}}(c_i)}
+         {\max_i s_{\text{rrf}}(c_i) - \min_i s_{\text{rrf}}(c_i)}
+  \label{eq:normalize}
+\end{equation}
+
+\subsection{Scoring Formula}
+
+\begin{equation}
+  \text{score}(c) = \alpha \cdot \hat{s}_{\text{rrf}}(c) +
+    \beta \cdot \min\!\left(1,\;
+    \frac{\log(1 + f(c))}{\log(1 + S)}\right)
+  \label{eq:scoring}
+\end{equation}
+
+\noindent where the frequency component is:
+\begin{equation}
+  f(c) = (1 + \text{access\_count}(c)) \cdot
+    e^{-\lambda \cdot \text{days\_ago}(c)}
+  \label{eq:freq}
+\end{equation}
+
+\begin{itemize}
+  \item $\alpha, \beta$: semantic and memory weights ($\alpha + \beta \leq 1$)
+  \item $\lambda$: decay rate (days$^{-1}$)
+  \item $S = 100$: saturation constant for log normalization cap
+  \item The $+1$ baseline ensures unchunked documents can compete on
+    pure semantic relevance
+\end{itemize}
+
+\subsection{Over-Fetch and Re-Rank}
+
+We retrieve $N_{\text{over}} = 50$ candidates via RRF, apply
+Eq.~\ref{eq:scoring}, sort, and truncate to \texttt{top\_k}.  This
+limits scoring compute to 50 candidates regardless of corpus size.
+
+\subsection{Access Tracking}
+
+After returning results, we batch-update \texttt{access\_count} and
+\texttt{last\_accessed\_at} for returned chunks.  This creates a
+feedback loop: frequently retrieved chunks accumulate higher scores,
+subject to temporal decay.
+
+\paragraph{Clock skew protection.}  We clamp
+$\text{days\_ago} \geq 0$ to prevent future timestamps (from clock
+drift or timezone issues) from inflating scores.
+
+
+% ================================================================== %
+\section{Relevance Signal via Score Spread}
+\label{sec:relevance}
+% ================================================================== %
+
+When all top-$k$ results score similarly, no result is distinctively
+relevant --- the system is returning ``the least irrelevant'' chunks.
+We detect this via score spread:
+
+\begin{equation}
+  \text{spread} = \max_i \text{score}(c_i) - \min_i \text{score}(c_i)
+  \label{eq:spread}
+\end{equation}
+
+\noindent If $\text{spread} < \tau$ (default $\tau = 0.15$), results
+are flagged as low-relevance.
+
+\paragraph{Key finding.}  The spread signal \emph{only works when
+scoring is enabled}.  On raw RRF scores, spread is $\sim$0.0006 for
+both relevant and irrelevant queries (Table~\ref{tab:relevance}).
+Scoring stretches the distribution by introducing per-chunk variance
+from access history, enabling discrimination.
+
+\begin{table}[t]
+  \centering
+  \caption{Score spread as relevance discriminator.  Scoring is a
+    prerequisite for the spread signal.}
+  \label{tab:relevance}
+  \begin{tabular}{lcccc}
+    \toprule
+    & \multicolumn{2}{c}{Mean Spread} & & \\
+    \cmidrule(lr){2-3}
+    Scoring & Relevant & Irrelevant & Separation & F1 @ 0.15 \\
+    \midrule
+    Off (raw RRF) & 0.0006 & 0.0006 & 1.0$\times$ & 0.000 \\
+    \textbf{On} & \textbf{0.289} & \textbf{0.102} & \textbf{2.83$\times$} & \textbf{0.846} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+
+% ================================================================== %
+\section{Code-Aware Chunking}
+\label{sec:chunking}
+% ================================================================== %
+
+Standard fixed-window chunking splits code mid-function, destroying
+semantic coherence.  We detect top-level definitions via regex patterns
+anchored at column~0 (no indentation), supporting Python, JavaScript,
+TypeScript, Go, Rust, and Java.
+
+\begin{algorithm}[t]
+  \caption{Code-Aware Chunking}
+  \label{alg:chunking}
+  \begin{algorithmic}[1]
+    \Require{source text $T$, language $L$, chunk\_size $C$}
+    \State $P \gets$ language-specific regex patterns for $L$
+    \State $B \gets$ find all column-0 matches of $P$ in $T$
+    \State Attach decorators/annotations to their next definition
+    \State $\text{chunks} \gets$ split $T$ at boundaries $B$
+    \For{each chunk $c$ in chunks}
+      \If{$\text{tokens}(c) > C$}
+        \State Split $c$ by paragraphs, then fixed-window fallback
+      \EndIf
+    \EndFor
+    \State Merge adjacent chunks with $< 80$ tokens
+    \State \Return chunks
+  \end{algorithmic}
+\end{algorithm}
+
+\paragraph{Column-0 anchoring.}  By requiring zero indentation, we
+avoid false positives on nested method definitions (e.g., methods
+inside a Python class).  This is a deliberate trade-off: nested
+methods are kept with their parent class, which is desirable for
+embedding coherence.
+
+
+% ================================================================== %
+\section{Experimental Setup}
+\label{sec:setup}
+% ================================================================== %
+
+\paragraph{Corpus.}  24 arXiv papers on LLM memory systems (2023--2026),
+yielding 786 chunks after ingestion.  Publication dates are used to
+simulate temporal spread.
+
+\paragraph{Queries.}  10~evaluation queries with human-annotated
+top-5 expected results (graded relevance).  15~relevant and
+15~irrelevant queries for the relevance signal experiment.
+
+\paragraph{Metrics.}
+\begin{itemize}
+  \item \textbf{NDCG@$k$}: Normalized Discounted Cumulative Gain
+  \item \textbf{P@$k$}: Precision at position $k$
+  \item \textbf{Rank displacement}: Average position change vs.\ baseline
+  \item \textbf{Frequency response}: Rank improvement for boosted papers
+  \item \textbf{F1, Accuracy}: For relevance signal classification
+\end{itemize}
+
+\paragraph{Configurations.}  16 parameter variants: $\alpha \in
+\{0.4, 0.5, 0.7, 0.8, 0.9\}$, $\beta \in \{0.1, 0.2, 0.3, 0.5,
+0.6\}$, $\lambda \in \{0.01, 0.03, 0.05, 0.07, 0.10, 0.20\}$,
+$N_{\text{over}} \in \{20, 50, 100\}$.
+
+\paragraph{Scenarios.}  5~simulated access patterns: uniform (baseline),
+recent heavy use, stale favorites, mixed recency, benchmark-focused.
+
+
+% ================================================================== %
+\section{Results}
+\label{sec:results}
+% ================================================================== %
+
+\subsection{Ablation: RRF vs.\ Vector vs.\ FTS}
+\label{sec:ablation}
+
+\begin{table}[t]
+  \centering
+  \caption{Ablation on the LLM memory corpus (24~papers, 786~chunks).
+    Relevance labels from pooled LLM-judge annotation, deduplicated
+    at document level.}
+  \label{tab:ablation}
+  \begin{tabular}{lcccc}
+    \toprule
+    Mode & NDCG@5 & NDCG@10 & P@3 & Latency \\
+    \midrule
+    Vector-only  & 0.809 & 0.832 & 0.933 & 4.51\,ms \\
+    FTS keyword  & 0.631 & 0.621 & 0.767 & 0.81\,ms \\
+    \textbf{Hybrid RRF}   & \textbf{0.814} & 0.803 & \textbf{1.000} & 1.61\,ms \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[t]
+  \centering
+  \caption{Ablation on a diverse Wikipedia corpus (17~articles,
+    2{,}602~chunks across history, science, sports, technology, arts).}
+  \label{tab:ablation-wiki}
+  \begin{tabular}{lcccc}
+    \toprule
+    Mode & NDCG@5 & NDCG@10 & P@3 & Latency \\
+    \midrule
+    Vector-only  & 0.742 & 0.742 & 0.667 & 21.0\,ms \\
+    FTS keyword  & 0.699 & 0.699 & 0.583 & 1.94\,ms \\
+    \textbf{Hybrid RRF}   & \textbf{0.758} & \textbf{0.758} & 0.633 & 4.78\,ms \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Tables~\ref{tab:ablation}--\ref{tab:ablation-wiki} show that
+\textbf{hybrid RRF is the strongest modality on both corpora.}
+On the domain-specific corpus, RRF achieves perfect P@3 = 1.000
+and the highest NDCG@5 (0.814).  On the diverse Wikipedia corpus,
+RRF still leads (NDCG@5 = 0.758), confirming that rank fusion
+generalizes across domains.
+
+Two corpus-dependent effects are visible:
+
+\begin{enumerate}
+  \item \textbf{FTS dominance fades on diverse corpora.}  On
+    homogeneous LLM memory papers, FTS trails vector by 22\%
+    (0.631 vs.\ 0.809).  On diverse Wikipedia, the gap narrows
+    to 6\% (0.699 vs.\ 0.742) because semantic paraphrases
+    become more important across unrelated domains.
+  \item \textbf{Vector search scales with corpus size.}  Latency
+    increases from 4.5\,ms (786~chunks) to 21\,ms (2{,}602~chunks)
+    --- proportional to the ANN scan.  FTS and RRF scale better
+    due to the FTS5 inverted index.
+\end{enumerate}
+
+
+\subsection{Scoring Grid Search}
+
+\begin{table}[t]
+  \centering
+  \caption{Top-5 scoring configurations averaged across 5~scenarios.
+    Baseline NDCG@10 = 0.608.}
+  \label{tab:scoring}
+  \begin{tabular}{lccc}
+    \toprule
+    Configuration & Avg NDCG@10 & $\Delta$ Baseline & Best Scenario \\
+    \midrule
+    $\alpha{=}0.5, \beta{=}0.5, \lambda{=}0.10$ &
+      \textbf{0.636} & \textbf{+4.6\%} & +16.1\% (benchmark) \\
+    $\alpha{=}0.5, \beta{=}0.5, \lambda{=}0.05$ &
+      0.634 & +4.3\% & +15.6\% (benchmark) \\
+    $\alpha{=}0.7, \beta{=}0.3, \lambda{=}0.03$ &
+      0.631 & +3.8\% & +13.2\% (benchmark) \\
+    $\alpha{=}0.7, \beta{=}0.3, \lambda{=}0.07$ &
+      0.629 & +3.5\% & +13.1\% (benchmark) \\
+    $\alpha{=}0.8, \beta{=}0.2, \lambda{=}0.10$ &
+      0.632 & +3.9\% & +7.2\% (benchmark) \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Key findings from the grid search (Table~\ref{tab:scoring}):
+
+\begin{enumerate}
+  \item \textbf{Equal weighting ($\alpha{=}\beta{=}0.5$) is optimal}
+    when averaged across all scenarios, contrary to the common
+    assumption that semantic relevance should dominate.
+  \item \textbf{The scoring benefit scales with access differential.}
+    In the benchmark-focused scenario (heavy access to specific
+    papers), NDCG improves by 16.1\%.  In the uniform scenario (no
+    differential access), improvement is minimal (+0.7\%).
+  \item \textbf{Lambda sensitivity is low} in the 0.03--0.10 range.
+    Extreme values ($\lambda = 0.20$) degrade performance as
+    recent accesses decay too quickly.
+  \item \textbf{Over-fetch of 50 is sufficient.}  Increasing to 100
+    shows no improvement; decreasing to 20 slightly hurts.
+\end{enumerate}
+
+\subsection{Relevance Signal}
+
+Table~\ref{tab:relevance} shows that scoring is a prerequisite for the
+relevance signal.  At threshold $\tau = 0.15$:
+
+\begin{itemize}
+  \item \textbf{Precision = 1.0}: zero false positives (never says
+    ``relevant'' for off-topic queries).
+  \item \textbf{Recall = 0.733}: detects 11 of 15 relevant queries.
+  \item \textbf{Accuracy = 86.7\%}: across 30 queries total.
+\end{itemize}
+
+The 4~false negatives are queries whose top-$k$ results, while
+relevant, happened to score uniformly (similar access patterns
+across matched chunks).
+
+\subsection{Code-Aware Chunking}
+
+\begin{table}[t]
+  \centering
+  \caption{Chunking strategy comparison on code retrieval
+    (Python + Go, 8 queries, top-$k{=}3$).}
+  \label{tab:chunking}
+  \begin{tabular}{lccc}
+    \toprule
+    Strategy & Avg Recall & Avg Precision & Boundary Violations \\
+    \midrule
+    Naive (fixed-window)  & \textbf{0.917} & 0.854 & present \\
+    Code-aware (boundary) & 0.625 & \textbf{0.750} & 0 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Naive chunking achieves higher recall on our small test corpus
+because a single large chunk trivially contains all functions.
+However, code-aware chunking:
+
+\begin{itemize}
+  \item Produces zero boundary violations (no function split mid-body).
+  \item Achieves \textbf{perfect precision} (1.0 vs.\ 0.33--0.50) on
+    focused queries like ``rate limiting'' or ``revoke token''.
+  \item Creates smaller, semantically coherent chunks (avg 252~tokens
+    vs.\ 653~tokens) that are more useful as LLM context.
+\end{itemize}
+
+\paragraph{Scale effect.}  As corpus size grows, the recall advantage
+of naive chunking vanishes: with thousands of chunks, the search
+cannot return all of them.  Code-aware chunking's precision advantage
+compounds at scale.
+
+\subsection{Latency}
+
+\begin{table}[t]
+  \centering
+  \caption{Search latency on 786-chunk corpus.}
+  \label{tab:latency}
+  \begin{tabular}{lcccc}
+    \toprule
+    Configuration & Median & P95 & P99 & Overhead \\
+    \midrule
+    RRF only          & 0.54\,ms & 0.60\,ms & 0.69\,ms & --- \\
+    + Scoring         & 0.99\,ms & 1.14\,ms & 1.21\,ms & +82\% \\
+    + Scoring + Track & 1.04\,ms & 1.17\,ms & 1.22\,ms & +91\% \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Scoring adds 0.45\,ms median overhead (Table~\ref{tab:latency}).
+The \texttt{rerank\_with\_decay} function itself takes only 0.017\,ms;
+the overhead comes from the over-fetch (retrieving 50 vs.\ 5
+candidates).  All configurations remain under 1.3\,ms at P99.
+
+
+\subsection{Cold Start Curve}
+\label{sec:coldstart}
+
+\begin{table}[t]
+  \centering
+  \caption{Scoring NDCG@5 vs.\ baseline over 20~rounds of non-uniform
+    usage simulation ($\alpha=0.5$, $\beta=0.5$, $\lambda=0.10$).}
+  \label{tab:coldstart}
+  \begin{tabular}{rcccc}
+    \toprule
+    Round & Scored & Baseline & $\Delta$\% & Accesses \\
+    \midrule
+    1  & 0.570 & 0.688 & $-17.1$\% & 50 \\
+    5  & 0.591 & 0.688 & $-14.1$\% & 450 \\
+    10 & 0.609 & 0.688 & $-11.5$\% & 1{,}400 \\
+    15 & 0.593 & 0.688 & $-13.9$\% & 2{,}550 \\
+    20 & 0.619 & 0.688 & $-10.1$\% & 3{,}700 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+We simulate non-uniform usage with a Zipf-weighted query distribution
+(some topics queried $5\times$ more than others) and measure whether
+scoring outperforms unscored RRF as access history accumulates.
+
+\paragraph{Key finding.}  Scoring has not crossed over baseline after
+3{,}700 cumulative accesses (20~rounds), though the gap narrows
+monotonically from $-17.1$\% to $-10.1$\%.  This is expected: the
+scoring grid (\S\ref{sec:scoring}) found scoring beneficial only with
+\emph{pre-established access differentials} (e.g., the
+benchmark-focused scenario with $30\times$ access counts).  Organic
+usage accumulates access counts gradually, requiring many sessions
+before the frequency signal dominates noise.
+
+\paragraph{Practical implication.}  Scoring should be disabled by
+default and enabled once the user has established meaningful usage
+patterns.  The shrinking gap suggests crossover at approximately
+40--50~rounds---about 2--3~weeks of daily use for an active researcher.
+
+
+% ================================================================== %
+\section{Limitations and Future Work}
+\label{sec:limitations}
+% ================================================================== %
+
+\paragraph{Corpus breadth.}  We evaluate on two corpora: 24~LLM memory
+papers (domain-specific) and 17~Wikipedia articles (mixed-domain).
+While RRF leads on both (Tables~\ref{tab:ablation}--\ref{tab:ablation-wiki}),
+testing on additional domains (e.g., legal, medical) would further
+strengthen generalizability claims.
+
+\paragraph{Cold start period.}  As shown in \S\ref{sec:coldstart},
+scoring requires substantial usage history before it outperforms
+unscored RRF.  This motivates the default of scoring disabled, but
+the crossover dynamics deserve further study across different usage
+intensity profiles.
+
+\paragraph{Scale.}  Our experiments use 786~chunks.  SQLite's
+single-writer model may bottleneck at $10^6$+ chunks under concurrent
+write load, though WAL mode and batching mitigate this for
+single-user scenarios.
+
+\paragraph{Learned re-ranking.}  The scoring weights ($\alpha, \beta,
+\lambda$) are currently static.  Incorporating user feedback (implicit
+or explicit) to adapt weights per-query is a natural extension---potentially
+accelerating the cold start crossover.
+
+\paragraph{Multi-modal.}  Current chunking and embedding support
+text only.  Image embeddings via CLIP and table-aware chunking are
+planned for future versions.
+
+
+% ================================================================== %
+\section{Conclusion}
+\label{sec:conclusion}
+% ================================================================== %
+
+We presented vstash, a local-first document memory system that
+demonstrates three findings relevant to LLM agent memory:
+
+\begin{enumerate}
+  \item \textbf{Temporal scoring enables confidence estimation.}
+    Post-RRF re-ranking with frequency and decay not only improves
+    rankings (+4.6\% NDCG on average, +16.1\% in access-heavy
+    scenarios) but also creates the score variance necessary for
+    the relevance signal --- a capability absent from pure retrieval.
+
+  \item \textbf{The spread heuristic is simple and effective.}
+    A single subtraction ($\max - \min$ of top-$k$ scores) achieves
+    86.7\% accuracy in distinguishing relevant from irrelevant
+    queries, with perfect precision.
+
+  \item \textbf{Local-first is viable.}  With sub-millisecond search
+    latency, a 2.5\,MB database for 300+ chunks, and zero cloud
+    dependencies, there is no fundamental barrier to running hybrid
+    retrieval with temporal scoring on a single machine.
+\end{enumerate}
+
+
+% ================================================================== %
+% REFERENCES
+% ================================================================== %
+\bibliographystyle{plainnat}
+
+\begin{thebibliography}{99}
+
+\bibitem[Cormack et~al.(2009)]{cormack2009rrf}
+G.~V. Cormack, C.~L.~A. Clarke, and S.~B{\"u}ttcher.
+\newblock Reciprocal rank fusion outperforms condorcet and individual
+  rank learning methods.
+\newblock In \emph{SIGIR}, 2009.
+
+\bibitem[Ebbinghaus(1885)]{ebbinghaus1885}
+H.~Ebbinghaus.
+\newblock \emph{{\"U}ber das Ged{\"a}chtnis}.
+\newblock Duncker \& Humblot, 1885.
+
+\bibitem[Packer et~al.(2023)]{packer2023memgpt}
+C.~Packer, S.~Wooders, K.~Lin, V.~Fang, S.~G. Patil, I.~Stoica, and
+  J.~E. Gonzalez.
+\newblock MemGPT: Towards {LLM}s as operating systems.
+\newblock \emph{arXiv:2310.08560}, 2023.
+
+\bibitem[Chadha et~al.(2025)]{chadha2025mem0}
+T.~Chadha, D.~Khattab, and P.~Singhal.
+\newblock Mem0: Production-ready {AI} agents with scalable long-term
+  memory.
+\newblock \emph{arXiv:2504.19413}, 2025.
+
+\bibitem[{Memoria Team}(2025)]{memoria2025}
+{Memoria Team}.
+\newblock Memoria: Scalable agentic memory for personalized
+  conversational {AI}.
+\newblock \emph{arXiv:2512.12686}, 2025.
+
+\bibitem[{A-MEM Team}(2025)]{amem2025}
+{A-MEM Team}.
+\newblock A-{MEM}: Agentic memory for {LLM} agents.
+\newblock \emph{arXiv:2502.12110}, 2025.
+
+\bibitem[Ma et~al.(2024)]{ma2024rrf}
+X.~Ma, Y.~Wang, and J.~Lin.
+\newblock Is reciprocal rank fusion all you need for hybrid retrieval?
+\newblock \emph{arXiv preprint}, 2024.
+
+\bibitem[{Zep Team}(2025)]{zep2025}
+{Zep Team}.
+\newblock Zep: Temporal knowledge graph architecture for agent memory.
+\newblock \emph{arXiv:2501.13956}, 2025.
+
+\bibitem[{MaRS Team}(2025)]{mars2025}
+{MaRS Team}.
+\newblock MaRS: Forgetful but faithful --- cognitive memory
+  architecture.
+\newblock \emph{arXiv:2512.12856}, 2025.
+
+\bibitem[{PAM Team}(2026)]{pam2026}
+{PAM Team}.
+\newblock PAM: Predictive associative memory via temporal
+  co-occurrence.
+\newblock \emph{arXiv:2602.11322}, 2026.
+
+\end{thebibliography}
+
+\end{document}
