@@ -1,0 +1,521 @@
+{
+  "experiment": "diverse_corpus",
+  "corpus": "wikipedia_mixed",
+  "corpus_size": 17,
+  "n_chunks": 2602,
+  "queries": 10,
+  "top_k": 10,
+  "db_path": "/var/folders/3s/d0mzpfw93qj_xqng6nmz28kr0000gn/T/vstash_diverse_k3cbin_1/diverse.db",
+  "results": [
+    {
+      "mode": "vector_only",
+      "avg_ndcg_5": 0.7415195841584861,
+      "avg_ndcg_10": 0.7415195841584861,
+      "avg_precision_3": 0.6666666666666666,
+      "avg_precision_5": 0.65,
+      "avg_latency_ms": 21.016691741533577,
+      "per_query": [
+        {
+          "mode": "vector_only",
+          "query": "wars and military conflicts in European history",
+          "ndcg_5": 0.412880880324275,
+          "ndcg_10": 0.412880880324275,
+          "precision_3": 0.6666666666666666,
+          "precision_5": 0.5,
+          "top_results": [
+            "https://en.wikipedia.org/wiki/Renaissance",
+            "https://en.wikipedia.org/wiki/World_War_II",
+            "https://en.wikipedia.org/wiki/World_War_II",
+            "https://en.wikipedia.org/wiki/Roman_Empire",
+            "https://en.wikipedia.org/wiki/Roman_Empire"
+          ],
+          "latency_ms": 37.34800009988248
+        },
+        {
+          "mode": "vector_only",
+          "query": "fundamental physics theories about space and time",
+          "ndcg_5": 1.0,
+          "ndcg_10": 1.0,
+          "precision_3": 1.0,
+          "precision_5": 1.0,
+          "top_results": [
+            "https://en.wikipedia.org/wiki/General_relativity",
+            "https://en.wikipedia.org/wiki/General_relativity",
+            "https://en.wikipedia.org/wiki/General_relativity",
+            "https://en.wikipedia.org/wiki/General_relativity",
+            "https://en.wikipedia.org/wiki/General_relativity"
+          ],
+          "latency_ms": 18.81904201582074
+        },
+        {
+          "mode": "vector_only",
+          "query": "biological processes that convert light into energy",
+          "ndcg_5": 0.7601875334318685,
+          "ndcg_10": 0.7601875334318685,
+          "precision_3": 0.5,
+          "precision_5": 0.5,
+          "top_results": [
+            "https://en.wikipedia.org/wiki/Photosynthesis",
+            "https://en.wikipedia.org/wiki/Photosynthesis",
+            "https://en.wikipedia.org/wiki/Photosynthesis",
+            "https://en.wikipedia.org/wiki/Photosynthesis",
+            "https://en.wikipedia.org/wiki/Photosynthesis"
+          ],
+          "latency_ms": 17.690042033791542
+        },
+        {
+          "mode": "vector_only",
+          "query": "global sporting events and international competition",
+          "ndcg_5": 0.8597186998521972,
+          "ndcg_10": 0.8597186998521972,
+          "precision_3": 1.0,
+          "precision_5": 1.0,
+          "top_results": [
+            "https://en.wikipedia.org/wiki/Olympic_Games",
+            "https://en.wikipedia.org/wiki/Olympic_Games",
+            "https://en.wikipedia.org/wiki/FIFA_World_Cup",
+            "https://en.wikipedia.org/wiki/FIFA_World_Cup",
+            "https://en.wikipedia.org/wiki/FIFA_World_Cup"
+          ],
+          "latency_ms": 19.79462499730289
+        },
+        {
+          "mode": "vector_only",
+          "query": "how computers and machines learn to think",
+          "ndcg_5": 0.6300059872618923,
+          "ndcg_10": 0.6300059872618923,
+          "precision_3": 0.3333333333333333,
+          "precision_5": 0.3333333333333333,
+          "top_results": [
+            "https://en.wikipedia.org/wiki/Artificial_intelligence",
+            "https://en.wikipedia.org/wiki/Artificial_intelligence",
+            "https://en.wikipedia.org/wiki/Artificial_intelligence",
+            "https://en.wikipedia.org/wiki/Artificial_intelligence",
+            "https://en.wikipedia.org/wiki/Artificial_intelligence"
+          ],
+          "latency_ms": 19.54770809970796
+        },
+        {
+          "mode": "vector_only",
+          "query": "cultural and artistic movements in Europe",
+          "ndcg_5": 0.894999002123018,
+          "ndcg_10": 0.894999002123018,
+          "precision_3": 0.6666666666666666,
+          "precision_5": 0.6666666666666666,
+          "top_results": [
+            "https://en.wikipedia.org/wiki/Renaissance",
+            "https://en.wikipedia.org/wiki/Renaissance",
+            "https://en.wikipedia.org/wiki/Renaissance",
+            "https://en.wikipedia.org/wiki/Renaissance",
+            "https://en.wikipedia.org/wiki/Renaissance"
+          ],
+          "latency_ms": 18.264624988660216
+        },
+        {
+          "mode": "vector_only",
+          "query": "the genetic code and hereditary information in cells",
+          "ndcg_5": 0.7601875334318685,
+          "ndcg_10": 0.7601875334318685,
+          "precision_3": 0.5,
+          "precision_5": 0.5,
+          "top_results": [
+            "https://en.wikipedia.org/wiki/DNA",
+            "https://en.wikipedia.org/wiki/DNA",
+            "https://en.wikipedia.org/wiki/DNA",
+            "https://en.wikipedia.org/wiki/DNA",
+            "https://en.wikipedia.org/wiki/DNA"
+          ],
+          "latency_ms": 18.089290941134095
+        },
+        {
+          "mode": "vector_only",
+          "query": "extreme environments and natural wonders of the world",
+          "ndcg_5": 0.8597186998521972,
+          "ndcg_10": 0.8597186998521972,
+          "precision_3": 1.0,
+          "precision_5": 1.0,
+          "top_results": [
+            "https://en.wikipedia.org/wiki/Amazon_rainforest",
+            "https://en.wikipedia.org/wiki/Mount_Everest",
+            "https://en.wikipedia.org/wiki/Mount_Everest",
+            "https://en.wikipedia.org/wiki/Amazon_rainforest",
+            "https://en.wikipedia.org/wiki/Amazon_rainforest"
+          ],
+          "latency_ms": 18.192792078480124
+        },
+        {
+          "mode": "vector_only",
+          "query": "the rise and fall of ancient civilizations",
+          "ndcg_5": 0.6074915180456525,
+          "ndcg_10": 0.6074915180456525,
+          "precision_3": 0.6666666666666666,
+          "precision_5": 0.6666666666666666,
+          "top_results": [
+            "https://en.wikipedia.org/wiki/Renaissance",
+            "https://en.wikipedia.org/wiki/Roman_Empire",
+            "https://en.wikipedia.org/wiki/Renaissance",
+            "https://en.wikipedia.org/wiki/Roman_Empire",
+            "https://en.wikipedia.org/wiki/Roman_Empire"
+          ],
+          "latency_ms": 18.198000034317374
+        },
+        {
+          "mode": "vector_only",
+          "query": "digital networks that connect people globally",
+          "ndcg_5": 0.6300059872618923,
+          "ndcg_10": 0.6300059872618923,
+          "precision_3": 0.3333333333333333,
+          "precision_5": 0.3333333333333333,
+          "top_results": [
+            "https://en.wikipedia.org/wiki/Internet",
+            "https://en.wikipedia.org/wiki/Internet",
+            "https://en.wikipedia.org/wiki/Internet",
+            "https://en.wikipedia.org/wiki/Internet",
+            "https://en.wikipedia.org/wiki/Internet"
+          ],
+          "latency_ms": 24.222792126238346
+        }
+      ]
+    },
+    {
+      "mode": "fts_only",
+      "avg_ndcg_5": 0.698930742203414,
+      "avg_ndcg_10": 0.698930742203414,
+      "avg_precision_3": 0.5833333333333333,
+      "avg_precision_5": 0.5916666666666667,
+      "avg_latency_ms": 1.9366916036233306,
+      "per_query": [
+        {
+          "mode": "fts_only",
+          "query": "wars and military conflicts in European history",
+          "ndcg_5": 0.5765994321241396,
+          "ndcg_10": 0.5765994321241396,
+          "precision_3": 0.6666666666666666,
+          "precision_5": 0.75,
+          "top_results": [
+            "https://en.wikipedia.org/wiki/Cold_War",
+            "https://en.wikipedia.org/wiki/Renaissance",
+            "https://en.wikipedia.org/wiki/Roman_Empire",
+            "https://en.wikipedia.org/wiki/Cold_War",
+            "https://en.wikipedia.org/wiki/Renaissance"
+          ],
+          "latency_ms": 2.380707999691367
+        },
+        {
+          "mode": "fts_only",
+          "query": "fundamental physics theories about space and time",
+          "ndcg_5": 1.0,
+          "ndcg_10": 1.0,
+          "precision_3": 1.0,
+          "precision_5": 1.0,
+          "top_results": [
+            "https://en.wikipedia.org/wiki/General_relativity",
+            "https://en.wikipedia.org/wiki/Quantum_mechanics",
+            "https://en.wikipedia.org/wiki/General_relativity",
+            "https://en.wikipedia.org/wiki/Quantum_mechanics",
+            "https://en.wikipedia.org/wiki/Quantum_mechanics"
+          ],
+          "latency_ms": 2.0805001258850098
+        },
+        {
+          "mode": "fts_only",
+          "query": "biological processes that convert light into energy",
+          "ndcg_5": 0.7601875334318685,
+          "ndcg_10": 0.7601875334318685,
+          "precision_3": 0.5,
+          "precision_5": 0.5,
+          "top_results": [
+            "https://en.wikipedia.org/wiki/Photosynthesis",
+            "https://en.wikipedia.org/wiki/Photosynthesis",
+            "https://en.wikipedia.org/wiki/Photosynthesis",
+            "https://en.wikipedia.org/wiki/Photosynthesis",
+            "https://en.wikipedia.org/wiki/Photosynthesis"
+          ],
+          "latency_ms": 0.9080830495804548
+        },
+        {
+          "mode": "fts_only",
+          "query": "global sporting events and international competition",
+          "ndcg_5": 0.8597186998521972,
+          "ndcg_10": 0.8597186998521972,
+          "precision_3": 1.0,
+          "precision_5": 1.0,
+          "top_results": [
+            "https://en.wikipedia.org/wiki/Olympic_Games",
+            "https://en.wikipedia.org/wiki/Olympic_Games",
+            "https://en.wikipedia.org/wiki/FIFA_World_Cup",
+            "https://en.wikipedia.org/wiki/Olympic_Games",
+            "https://en.wikipedia.org/wiki/Olympic_Games"
+          ],
+          "latency_ms": 1.9249159377068281
+        },
+        {
+          "mode": "fts_only",
+          "query": "how computers and machines learn to think",
+          "ndcg_5": 0.6300059872618923,
+          "ndcg_10": 0.6300059872618923,
+          "precision_3": 0.3333333333333333,
+          "precision_5": 0.3333333333333333,
+          "top_results": [
+            "https://en.wikipedia.org/wiki/Artificial_intelligence",
+            "https://en.wikipedia.org/wiki/Artificial_intelligence",
+            "https://en.wikipedia.org/wiki/Artificial_intelligence",
+            "https://en.wikipedia.org/wiki/Artificial_intelligence",
+            "https://en.wikipedia.org/wiki/Artificial_intelligence"
+          ],
+          "latency_ms": 1.9695840310305357
+        },
+        {
+          "mode": "fts_only",
+          "query": "cultural and artistic movements in Europe",
+          "ndcg_5": 0.6300059872618923,
+          "ndcg_10": 0.6300059872618923,
+          "precision_3": 0.3333333333333333,
+          "precision_5": 0.3333333333333333,
+          "top_results": [
+            "https://en.wikipedia.org/wiki/Renaissance",
+            "https://en.wikipedia.org/wiki/Roman_Empire",
+            "https://en.wikipedia.org/wiki/Renaissance",
+            "https://en.wikipedia.org/wiki/Renaissance",
+            "https://en.wikipedia.org/wiki/Renaissance"
+          ],
+          "latency_ms": 1.6523748636245728
+        },
+        {
+          "mode": "fts_only",
+          "query": "the genetic code and hereditary information in cells",
+          "ndcg_5": 0.7601875334318685,
+          "ndcg_10": 0.7601875334318685,
+          "precision_3": 0.5,
+          "precision_5": 0.5,
+          "top_results": [
+            "https://en.wikipedia.org/wiki/DNA",
+            "https://en.wikipedia.org/wiki/DNA",
+            "https://en.wikipedia.org/wiki/DNA",
+            "https://en.wikipedia.org/wiki/DNA",
+            "https://en.wikipedia.org/wiki/DNA"
+          ],
+          "latency_ms": 2.389125060290098
+        },
+        {
+          "mode": "fts_only",
+          "query": "extreme environments and natural wonders of the world",
+          "ndcg_5": 0.38009376671593426,
+          "ndcg_10": 0.38009376671593426,
+          "precision_3": 0.5,
+          "precision_5": 0.5,
+          "top_results": [
+            "https://en.wikipedia.org/wiki/Amazon_rainforest",
+            "https://en.wikipedia.org/wiki/Internet",
+            "https://en.wikipedia.org/wiki/Internet",
+            "https://en.wikipedia.org/wiki/Amazon_rainforest",
+            "https://en.wikipedia.org/wiki/Photosynthesis"
+          ],
+          "latency_ms": 2.490790793672204
+        },
+        {
+          "mode": "fts_only",
+          "query": "the rise and fall of ancient civilizations",
+          "ndcg_5": 0.7625024946924551,
+          "ndcg_10": 0.7625024946924551,
+          "precision_3": 0.6666666666666666,
+          "precision_5": 0.6666666666666666,
+          "top_results": [
+            "https://en.wikipedia.org/wiki/Roman_Empire",
+            "https://en.wikipedia.org/wiki/Roman_Empire",
+            "https://en.wikipedia.org/wiki/Roman_Empire",
+            "https://en.wikipedia.org/wiki/Renaissance",
+            "https://en.wikipedia.org/wiki/Roman_Empire"
+          ],
+          "latency_ms": 2.2752091754227877
+        },
+        {
+          "mode": "fts_only",
+          "query": "digital networks that connect people globally",
+          "ndcg_5": 0.6300059872618923,
+          "ndcg_10": 0.6300059872618923,
+          "precision_3": 0.3333333333333333,
+          "precision_5": 0.3333333333333333,
+          "top_results": [
+            "https://en.wikipedia.org/wiki/Internet",
+            "https://en.wikipedia.org/wiki/Internet",
+            "https://en.wikipedia.org/wiki/Internet",
+            "https://en.wikipedia.org/wiki/Internet",
+            "https://en.wikipedia.org/wiki/Amazon_rainforest"
+          ],
+          "latency_ms": 1.2956249993294477
+        }
+      ]
+    },
+    {
+      "mode": "hybrid_rrf",
+      "avg_ndcg_5": 0.7578061738079045,
+      "avg_ndcg_10": 0.7578061738079045,
+      "avg_precision_3": 0.6333333333333333,
+      "avg_precision_5": 0.6666666666666667,
+      "avg_latency_ms": 4.7756084240973,
+      "per_query": [
+        {
+          "mode": "hybrid_rrf",
+          "query": "wars and military conflicts in European history",
+          "ndcg_5": 0.6857288150327812,
+          "ndcg_10": 0.6857288150327812,
+          "precision_3": 0.6666666666666666,
+          "precision_5": 1.0,
+          "top_results": [
+            "https://en.wikipedia.org/wiki/Roman_Empire",
+            "https://en.wikipedia.org/wiki/Renaissance",
+            "https://en.wikipedia.org/wiki/World_War_II",
+            "https://en.wikipedia.org/wiki/World_War_II",
+            "https://en.wikipedia.org/wiki/World_War_II"
+          ],
+          "latency_ms": 8.811458013951778
+        },
+        {
+          "mode": "hybrid_rrf",
+          "query": "fundamental physics theories about space and time",
+          "ndcg_5": 1.0,
+          "ndcg_10": 1.0,
+          "precision_3": 1.0,
+          "precision_5": 1.0,
+          "top_results": [
+            "https://en.wikipedia.org/wiki/General_relativity",
+            "https://en.wikipedia.org/wiki/Quantum_mechanics",
+            "https://en.wikipedia.org/wiki/General_relativity",
+            "https://en.wikipedia.org/wiki/General_relativity",
+            "https://en.wikipedia.org/wiki/General_relativity"
+          ],
+          "latency_ms": 3.7908339872956276
+        },
+        {
+          "mode": "hybrid_rrf",
+          "query": "biological processes that convert light into energy",
+          "ndcg_5": 0.7601875334318685,
+          "ndcg_10": 0.7601875334318685,
+          "precision_3": 0.5,
+          "precision_5": 0.5,
+          "top_results": [
+            "https://en.wikipedia.org/wiki/Photosynthesis",
+            "https://en.wikipedia.org/wiki/Photosynthesis",
+            "https://en.wikipedia.org/wiki/Photosynthesis",
+            "https://en.wikipedia.org/wiki/Photosynthesis",
+            "https://en.wikipedia.org/wiki/Photosynthesis"
+          ],
+          "latency_ms": 2.373084193095565
+        },
+        {
+          "mode": "hybrid_rrf",
+          "query": "global sporting events and international competition",
+          "ndcg_5": 0.8597186998521972,
+          "ndcg_10": 0.8597186998521972,
+          "precision_3": 1.0,
+          "precision_5": 1.0,
+          "top_results": [
+            "https://en.wikipedia.org/wiki/Olympic_Games",
+            "https://en.wikipedia.org/wiki/Olympic_Games",
+            "https://en.wikipedia.org/wiki/FIFA_World_Cup",
+            "https://en.wikipedia.org/wiki/FIFA_World_Cup",
+            "https://en.wikipedia.org/wiki/Olympic_Games"
+          ],
+          "latency_ms": 3.533415962010622
+        },
+        {
+          "mode": "hybrid_rrf",
+          "query": "how computers and machines learn to think",
+          "ndcg_5": 0.6300059872618923,
+          "ndcg_10": 0.6300059872618923,
+          "precision_3": 0.3333333333333333,
+          "precision_5": 0.3333333333333333,
+          "top_results": [
+            "https://en.wikipedia.org/wiki/Artificial_intelligence",
+            "https://en.wikipedia.org/wiki/Artificial_intelligence",
+            "https://en.wikipedia.org/wiki/Artificial_intelligence",
+            "https://en.wikipedia.org/wiki/Artificial_intelligence",
+            "https://en.wikipedia.org/wiki/Artificial_intelligence"
+          ],
+          "latency_ms": 4.759291186928749
+        },
+        {
+          "mode": "hybrid_rrf",
+          "query": "cultural and artistic movements in Europe",
+          "ndcg_5": 0.6300059872618923,
+          "ndcg_10": 0.6300059872618923,
+          "precision_3": 0.3333333333333333,
+          "precision_5": 0.3333333333333333,
+          "top_results": [
+            "https://en.wikipedia.org/wiki/Renaissance",
+            "https://en.wikipedia.org/wiki/Renaissance",
+            "https://en.wikipedia.org/wiki/Renaissance",
+            "https://en.wikipedia.org/wiki/Renaissance",
+            "https://en.wikipedia.org/wiki/Renaissance"
+          ],
+          "latency_ms": 3.768624970689416
+        },
+        {
+          "mode": "hybrid_rrf",
+          "query": "the genetic code and hereditary information in cells",
+          "ndcg_5": 0.7601875334318685,
+          "ndcg_10": 0.7601875334318685,
+          "precision_3": 0.5,
+          "precision_5": 0.5,
+          "top_results": [
+            "https://en.wikipedia.org/wiki/DNA",
+            "https://en.wikipedia.org/wiki/DNA",
+            "https://en.wikipedia.org/wiki/DNA",
+            "https://en.wikipedia.org/wiki/DNA",
+            "https://en.wikipedia.org/wiki/DNA"
+          ],
+          "latency_ms": 5.160042084753513
+        },
+        {
+          "mode": "hybrid_rrf",
+          "query": "extreme environments and natural wonders of the world",
+          "ndcg_5": 0.8597186998521972,
+          "ndcg_10": 0.8597186998521972,
+          "precision_3": 1.0,
+          "precision_5": 1.0,
+          "top_results": [
+            "https://en.wikipedia.org/wiki/Amazon_rainforest",
+            "https://en.wikipedia.org/wiki/Mount_Everest",
+            "https://en.wikipedia.org/wiki/Amazon_rainforest",
+            "https://en.wikipedia.org/wiki/Amazon_rainforest",
+            "https://en.wikipedia.org/wiki/Amazon_rainforest"
+          ],
+          "latency_ms": 5.399999907240272
+        },
+        {
+          "mode": "hybrid_rrf",
+          "query": "the rise and fall of ancient civilizations",
+          "ndcg_5": 0.7625024946924551,
+          "ndcg_10": 0.7625024946924551,
+          "precision_3": 0.6666666666666666,
+          "precision_5": 0.6666666666666666,
+          "top_results": [
+            "https://en.wikipedia.org/wiki/Roman_Empire",
+            "https://en.wikipedia.org/wiki/Roman_Empire",
+            "https://en.wikipedia.org/wiki/Roman_Empire",
+            "https://en.wikipedia.org/wiki/Renaissance",
+            "https://en.wikipedia.org/wiki/Roman_Empire"
+          ],
+          "latency_ms": 7.841000100597739
+        },
+        {
+          "mode": "hybrid_rrf",
+          "query": "digital networks that connect people globally",
+          "ndcg_5": 0.6300059872618923,
+          "ndcg_10": 0.6300059872618923,
+          "precision_3": 0.3333333333333333,
+          "precision_5": 0.3333333333333333,
+          "top_results": [
+            "https://en.wikipedia.org/wiki/Internet",
+            "https://en.wikipedia.org/wiki/Internet",
+            "https://en.wikipedia.org/wiki/Internet",
+            "https://en.wikipedia.org/wiki/Internet",
+            "https://en.wikipedia.org/wiki/Internet"
+          ],
+          "latency_ms": 2.3183338344097137
+        }
+      ]
+    }
+  ]
+}
