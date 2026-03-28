@@ -1,6 +1,6 @@
 {
   "experiment": "cold_start",
-  "db_path": "/var/folders/3s/d0mzpfw93qj_xqng6nmz28kr0000gn/T/vstash_coldstart_psy3j1al/cold_start.db",
+  "db_path": "cold_start.db",
   "rounds": [
     {
       "round_num": 1,

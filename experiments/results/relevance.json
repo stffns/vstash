@@ -2,7 +2,7 @@
   "experiment": "relevance_signal",
   "corpus_size": 24,
   "top_k": 5,
-  "db_path": "/var/folders/3s/d0mzpfw93qj_xqng6nmz28kr0000gn/T/vstash_relevance_ullbscxt/relevance.db",
+  "db_path": "relevance.db",
   "relevant_queries": 15,
   "irrelevant_queries": 15,
   "spread_distributions": {
