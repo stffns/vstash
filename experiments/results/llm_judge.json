@@ -1,0 +1,289 @@
+{
+  "experiment": "llm_judge",
+  "llm_model": "qwen/qwen3.5-9b",
+  "db_path": "/var/folders/3s/d0mzpfw93qj_xqng6nmz28kr0000gn/T/vstash_judge_xrzrq9in/judge.db",
+  "pooled_results": [
+    {
+      "query": "long-term memory systems for conversational AI agents",
+      "n_pooled": 8,
+      "n_relevant": 8,
+      "vector_ndcg_5": 1.0,
+      "vector_ndcg_10": 1.1545890319329501,
+      "fts_ndcg_5": 1.0,
+      "fts_ndcg_10": 1.1806636837760776,
+      "rrf_ndcg_5": 1.0,
+      "rrf_ndcg_10": 1.1806636837760776,
+      "labels": {
+        "https://arxiv.org/pdf/2508.03341": 3,
+        "https://arxiv.org/pdf/2504.19413": 3,
+        "https://arxiv.org/pdf/2402.17753": 3,
+        "https://arxiv.org/pdf/2305.10250": 3,
+        "https://arxiv.org/pdf/2512.12686": 3,
+        "https://arxiv.org/pdf/2603.19935": 2,
+        "https://arxiv.org/pdf/2502.12110": 3,
+        "https://arxiv.org/pdf/2502.05589": 3
+      }
+    },
+    {
+      "query": "temporal decay and forgetting mechanisms in memory",
+      "n_pooled": 7,
+      "n_relevant": 4,
+      "vector_ndcg_5": 1.157621113941981,
+      "vector_ndcg_10": 1.5785751637905443,
+      "fts_ndcg_5": 1.0057353459573,
+      "fts_ndcg_10": 1.5563404574155657,
+      "rrf_ndcg_5": 1.157621113941981,
+      "rrf_ndcg_10": 1.581236880992721,
+      "labels": {
+        "https://arxiv.org/pdf/2305.10250": 3,
+        "https://arxiv.org/pdf/2512.12856": 3,
+        "https://arxiv.org/pdf/2601.02163": 2,
+        "https://arxiv.org/pdf/2601.03236": 0,
+        "https://arxiv.org/pdf/2304.03442": 3,
+        "https://arxiv.org/pdf/2602.11322": 0,
+        "https://arxiv.org/pdf/2504.19413": 1
+      }
+    },
+    {
+      "query": "benchmarks for evaluating memory in language models",
+      "n_pooled": 8,
+      "n_relevant": 6,
+      "vector_ndcg_5": 0.7243222900095092,
+      "vector_ndcg_10": 1.0893004942664801,
+      "fts_ndcg_5": 0.769413739609356,
+      "fts_ndcg_10": 1.1687656623359677,
+      "rrf_ndcg_5": 1.057211112467919,
+      "rrf_ndcg_10": 1.4299409162122838,
+      "labels": {
+        "https://arxiv.org/pdf/2504.19413": 2,
+        "https://arxiv.org/pdf/2601.03236": 0,
+        "https://arxiv.org/pdf/2501.13121": 3,
+        "https://arxiv.org/pdf/2502.05589": 2,
+        "https://arxiv.org/pdf/2501.13956": 3,
+        "https://arxiv.org/pdf/2512.12686": 2,
+        "https://arxiv.org/pdf/2412.13103": 0,
+        "https://arxiv.org/pdf/2512.12856": 2
+      }
+    },
+    {
+      "query": "episodic memory architecture for LLM agents",
+      "n_pooled": 10,
+      "n_relevant": 9,
+      "vector_ndcg_5": 1.0,
+      "vector_ndcg_10": 1.0709057376817577,
+      "fts_ndcg_5": 0.6242708835600316,
+      "fts_ndcg_10": 0.766991880700172,
+      "rrf_ndcg_5": 0.8382571482945591,
+      "rrf_ndcg_10": 0.9545964086177301,
+      "labels": {
+        "https://arxiv.org/pdf/2502.12110": 3,
+        "https://arxiv.org/pdf/2603.19935": 3,
+        "https://arxiv.org/pdf/2512.12686": 3,
+        "https://arxiv.org/pdf/2601.21714": 3,
+        "https://arxiv.org/pdf/2508.03341": 2,
+        "https://arxiv.org/pdf/2501.13121": 3,
+        "https://arxiv.org/pdf/2601.03236": 3,
+        "https://arxiv.org/pdf/2512.12856": 2,
+        "https://arxiv.org/pdf/2601.02163": 0,
+        "https://arxiv.org/pdf/2602.11322": 3
+      }
+    },
+    {
+      "query": "personalization and user modeling through persistent memory",
+      "n_pooled": 6,
+      "n_relevant": 6,
+      "vector_ndcg_5": 0.9120323004336051,
+      "vector_ndcg_10": 1.324132804146145,
+      "fts_ndcg_5": 1.0457352585518969,
+      "fts_ndcg_10": 1.4499436526269407,
+      "rrf_ndcg_5": 0.9948189840222265,
+      "rrf_ndcg_10": 1.332622124214162,
+      "labels": {
+        "https://arxiv.org/pdf/2512.12856": 3,
+        "https://arxiv.org/pdf/2412.13103": 2,
+        "https://arxiv.org/pdf/2305.10250": 3,
+        "https://arxiv.org/pdf/2512.12686": 3,
+        "https://arxiv.org/pdf/2603.19935": 3,
+        "https://arxiv.org/pdf/2504.19413": 2
+      }
+    },
+    {
+      "query": "knowledge graph approaches to agent memory",
+      "n_pooled": 8,
+      "n_relevant": 8,
+      "vector_ndcg_5": 0.9562649741625527,
+      "vector_ndcg_10": 1.1554787690715962,
+      "fts_ndcg_5": 1.0,
+      "fts_ndcg_10": 1.1876287660964227,
+      "rrf_ndcg_5": 1.0,
+      "rrf_ndcg_10": 1.1839948220328624,
+      "labels": {
+        "https://arxiv.org/pdf/2601.03236": 3,
+        "https://arxiv.org/pdf/2502.12110": 3,
+        "https://arxiv.org/pdf/2501.13956": 3,
+        "https://arxiv.org/pdf/2504.19413": 3,
+        "https://arxiv.org/pdf/2512.12856": 2,
+        "https://arxiv.org/pdf/2508.03341": 3,
+        "https://arxiv.org/pdf/2410.14052": 3,
+        "https://arxiv.org/pdf/2602.11322": 2
+      }
+    },
+    {
+      "query": "memory compression and retrieval efficiency",
+      "n_pooled": 9,
+      "n_relevant": 6,
+      "vector_ndcg_5": 0.7557415207297863,
+      "vector_ndcg_10": 0.9590121685716061,
+      "fts_ndcg_5": 0.2772734273550483,
+      "fts_ndcg_10": 0.7572762576721038,
+      "rrf_ndcg_5": 0.6513978177334426,
+      "rrf_ndcg_10": 0.9917080085400197,
+      "labels": {
+        "https://arxiv.org/pdf/2502.12110": 2,
+        "https://arxiv.org/pdf/2502.05589": 3,
+        "https://arxiv.org/pdf/2601.21714": 3,
+        "https://arxiv.org/pdf/2502.15957": 0,
+        "https://arxiv.org/pdf/2601.02163": 0,
+        "https://arxiv.org/pdf/2504.19413": 3,
+        "https://arxiv.org/pdf/2410.14052": 0,
+        "https://arxiv.org/pdf/2603.19935": 3,
+        "https://arxiv.org/pdf/2512.12856": 3
+      }
+    },
+    {
+      "query": "multi-agent memory sharing and coordination",
+      "n_pooled": 8,
+      "n_relevant": 6,
+      "vector_ndcg_5": 1.1018366773001722,
+      "vector_ndcg_10": 1.5595273281493867,
+      "fts_ndcg_5": 0.26913295120148545,
+      "fts_ndcg_10": 0.6034357774232657,
+      "rrf_ndcg_5": 1.1018366773001722,
+      "rrf_ndcg_10": 1.521389647677995,
+      "labels": {
+        "https://arxiv.org/pdf/2512.12856": 3,
+        "https://arxiv.org/pdf/2601.03236": 3,
+        "https://arxiv.org/pdf/2502.12110": 3,
+        "https://arxiv.org/pdf/2304.03442": 0,
+        "https://arxiv.org/pdf/2601.21714": 2,
+        "https://arxiv.org/pdf/2412.13103": 0,
+        "https://arxiv.org/pdf/2508.03341": 2,
+        "https://arxiv.org/pdf/2504.19413": 2
+      }
+    },
+    {
+      "query": "read-write memory interfaces for language models",
+      "n_pooled": 13,
+      "n_relevant": 4,
+      "vector_ndcg_5": 0.5922291501736026,
+      "vector_ndcg_10": 0.6977072900269593,
+      "fts_ndcg_5": 0.9464990377779515,
+      "fts_ndcg_10": 1.0802080916595838,
+      "rrf_ndcg_5": 0.9464990377779515,
+      "rrf_ndcg_10": 1.0802080916595838,
+      "labels": {
+        "https://arxiv.org/pdf/2305.14322": 3,
+        "https://arxiv.org/pdf/2601.03236": 0,
+        "https://arxiv.org/pdf/2603.19935": 2,
+        "https://arxiv.org/pdf/2410.14052": 0,
+        "https://arxiv.org/pdf/2502.12110": 0,
+        "https://arxiv.org/pdf/2512.12686": 2,
+        "https://arxiv.org/pdf/2504.19413": 0,
+        "https://arxiv.org/pdf/2511.07587": 0,
+        "https://arxiv.org/pdf/2501.13121": 0,
+        "https://arxiv.org/pdf/2310.08560": 3,
+        "https://arxiv.org/pdf/2402.17753": 0,
+        "https://arxiv.org/pdf/2304.03442": 0,
+        "https://arxiv.org/pdf/2512.12856": 0
+      }
+    },
+    {
+      "query": "self-organizing and adaptive memory structures",
+      "n_pooled": 7,
+      "n_relevant": 3,
+      "vector_ndcg_5": 1.2963173835037423,
+      "vector_ndcg_10": 1.8410081894676662,
+      "fts_ndcg_5": 1.2963173835037423,
+      "fts_ndcg_10": 1.4696397664609562,
+      "rrf_ndcg_5": 1.2963173835037423,
+      "rrf_ndcg_10": 1.4696397664609562,
+      "labels": {
+        "https://arxiv.org/pdf/2601.02163": 3,
+        "https://arxiv.org/pdf/2508.03341": 3,
+        "https://arxiv.org/pdf/2502.12110": 3,
+        "https://arxiv.org/pdf/2502.15957": 0,
+        "https://arxiv.org/pdf/2601.03236": 0,
+        "https://arxiv.org/pdf/2410.14052": 1,
+        "https://arxiv.org/pdf/2512.12686": 0
+      }
+    }
+  ],
+  "rag_results": [
+    {
+      "query": "What is MemGPT and how does it manage memory for LLM agents?",
+      "answer": "Based on the provided context, here is an explanation of MemGPT and its memory management approach:\n\n**What is MemGPT?**\nMemGPT (Memory GPT) is a system that introduces an **operating system-inspired approach** to overcome the fixed context window limitations inherent in Large Language Models (LLMs). It augments a fixed-context LLM processor with a hierarchical memory system and functions, allowing the LLM to manage its own memory effectively. This architecture provides the \"illusion of infinite context\" by intelligently managing memory resources.\n\n**How MemGPT Manages Memory:**\nMemGPT manages memory through a sophisticated pipeline consisting of three key components: a hierarchical memory system, self-directed memory operations, and an event-based control flow mechanism.\n\n1.  **Hierarchical Memory System:**\n    *   **Main Context (RAM):** Analogous to physical memory (RAM), this is bound by the LLM's fixed context window. It contains system instructions, recent conversation history, and working memory. This data is read-write and can be modified by the model.\n    *   **External Context (Disk Storage):** Analogous to disk storage, this holds unlimited information outside the immediate context window, such as complete conversation histories and archival data.\n    *   **Data Movement:** The LLM uses **functions** to move data between these tiers. When the LLM needs information not in the main context, it initiates function calls to search, retrieve, or modify content in external storage, effectively \"paging\" information in and out of the context window.\n\n2.  **Self-Directed Memory Operations:**\n    *   **Functions:** The LLM can request immediate follow-up inference to chain function calls together (e.g., by generating a special keyword argument `request heartbeat=true`) to perform multi-step retrieval.\n    *   **Queue Manager:** This component manages messages in recall storage (a FIFO queue). It appends incoming messages and generated LLM outputs to the queue. When the prompt tokens exceed a warning count (e.g., 70% of the window), the queue manager triggers eviction policies to remove older data and insert system messages warning the LLM of impending eviction.\n    *   **Recall Storage:** Messages are stored here and retrieved via function calls, allowing the system to handle data larger than the context window.\n\n3.  **Event-Based Control Flow:**\n    *   The system allows the LLM to \"plan out loud\" by executing functions and managing its own objectives and responsibilities.\n    *   It supports **self-directed editing**, where the LLM can modify its main context to better reflect evolving objectives.\n\nIn summary, MemGPT enables LLMs to maintain conversational coherence over extended interactions, manage documents exceeding standard context limits, and perform multi-hop information retrieval tasks by treating the LLM as an agent capable of managing an OS-like memory hierarchy.",
+      "answer_length": 2927,
+      "generation_latency_ms": 33546.82312486693,
+      "n_chunks": 5,
+      "judgment": {
+        "score": 3,
+        "reason": "The answer accurately defines MemGPT as an OS-inspired system for LLMs and correctly details its memory management strategy using a hierarchical architecture (RAM/Disk analogy), a FIFO queue manager for eviction, and function-based data movement, all well-supported by the provided source chunks."
+      }
+    },
+    {
+      "query": "How does temporal decay work in memory systems for AI?",
+      "answer": "Based on the provided context, temporal decay in memory systems for AI works through the following mechanisms:\n\n*   **Conceptual Framework:** Temporal decay is a principle where memory retention decreases over time. This concept is inspired by the **Ebbinghaus Forgetting Curve**, which quantifies that information is lost rapidly after learning unless consciously reviewed. The rate of loss is steep initially (within the first few hours or days) and slows down afterward.\n*   **Mathematical Modeling:** In specific implementations like **MemoryBank**, this is modeled using an exponential decay formula: $R = e^{-t/S}$.\n    *   **$R$**: Represents memory retention (the fraction of information retained).\n    *   **$t$**: Represents the time elapsed since the information was learned.\n    *   **$S$**: Represents memory strength, which is influenced by the depth of learning and repetition.\n*   **Operational Mechanism:** To manage this decay, systems often use **temporal heuristics** such as **FIFO** (First-In, First-Out) or **LRU** (Least Recently Used).\n*   **Mitigation via Recall:** When a memory item is recalled during a conversation, the system can intervene to counteract decay. For example, in the MemoryBank model, recalling an item increases its memory strength ($S$) by 1 and resets the elapsed time ($t$) to 0, thereby reducing the probability of it being forgotten.\n*   **Policy Integration:** In broader frameworks like **MaRS**, temporal decay is generalized into **forgetting policies** that consider access statistics (recency) alongside other factors like semantic centrality and privacy sensitivity to decide what to discard under explicit token budgets.",
+      "answer_length": 1679,
+      "generation_latency_ms": 26676.79979186505,
+      "n_chunks": 5,
+      "judgment": {
+        "score": 0,
+        "reason": "The answer is rated 0 because it hallucinates specific details (Ebbinghaus curve, MemoryBank model, FIFO/LRU policies, and the exact exponential decay formula) that are not present in the provided source chunks, which only discuss 'forgetting-by-design', the MaRS schema, and general episodic memory concepts without detailing these specific mechanisms."
+      }
+    },
+    {
+      "query": "What benchmarks exist for evaluating LLM memory capabilities?",
+      "answer": "Based on the provided context, the following benchmarks exist for evaluating LLM memory capabilities:\n\n*   **LongMemEval**: Used to evaluate the MemGPT system and Zep. It is designed to assess memory systems, though the current MemGPT framework required a workaround (adding conversation messages to archival history) to participate.\n*   **LoCoMo**: Used to evaluate the Memori system. Memori achieved 81.95% accuracy on this benchmark.\n*   **FiFA**: A suite introduced to operationalize faithfulness under memory constraints. It includes leakage-aware metrics aligned with privacy concerns and uses long-horizon, multi-agent simulations to evaluate retention policies.\n*   **Episodic Memory Benchmark**: Proposed in one of the contexts to address limitations in existing evaluations. Its guidelines include explicitly incorporating temporal and spatial contexts, forcing models to track entity states, using varied retrieval cues, avoiding data leakage, and balancing complexity and realism.\n\nAdditionally, the text notes that popular agent benchmarks often privilege tool-use accuracy or web/GUI control, whereas memory competence is described as multi-criteria and long-horizon.",
+      "answer_length": 1181,
+      "generation_latency_ms": 22620.66504196264,
+      "n_chunks": 5,
+      "judgment": {
+        "score": 1,
+        "reason": "The answer correctly identifies LongMemEval and the Episodic Memory Benchmark from the sources but hallucinates the existence of 'LoCoMo' and 'FiFA' benchmarks, which are not mentioned in the provided source chunks."
+      }
+    },
+    {
+      "query": "How do knowledge graphs help with agent memory?",
+      "answer": "Based on the provided context, knowledge graphs (KGs) help with agent memory in the following ways:\n\n*   **Structured Organization:** They provide structured organization for memory systems, moving beyond basic storage and retrieval (Context 1).\n*   **Dynamic Synthesis:** They enable the dynamic synthesis of both unstructured conversational data and structured business data (Context 2).\n*   **Temporal Awareness:** Through engines like Graphiti, KGs maintain a timeline of facts and relationships, including their periods of validity, allowing the graph to represent a complex, evolving world (Context 2).\n*   **Non-Lossy Updates:** They allow the knowledge graph to be dynamically updated with new information in a non-lossy manner (Context 2).\n*   **Deep Understanding of Connections:** By storing memories as directed labeled graphs with entities as nodes and relationships as edges, KGs enable a deeper understanding of connections between entities (Context 4).\n*   **Advanced Reasoning:** They support more advanced reasoning across interconnected facts, particularly for queries requiring navigation of complex relational paths across multiple memories (Context 4).\n*   **Provenance and Dependencies:** They allow memories to be connected by dependency or provenance edges (e.g., `depends_on`), ensuring that summaries are not retained without the facts they presuppose (Context 5).",
+      "answer_length": 1391,
+      "generation_latency_ms": 23826.131084002554,
+      "n_chunks": 5,
+      "judgment": {
+        "score": 0,
+        "reason": "The generated answer is rated 0 because it hallucinates specific details (such as 'Graphiti' engine, 'Context 1-5' references, and specific capabilities like 'non-lossy updates') that are not present in the provided source chunks, which only contain titles, author lists, and abstract snippets."
+      }
+    },
+    {
+      "query": "What approaches exist for memory compression in LLM systems?",
+      "answer": "Based on the provided context, the following approaches for memory compression in LLM systems exist:\n\n1.  **Prompt Compression Techniques (e.g., LLMLingua-2):**\n    *   These techniques serve as effective denoising methods to enhance memory retrieval.\n    *   They improve retrieval recall by increasing the similarity between the query and relevant segments while decreasing similarity with irrelevant ones.\n    *   They function as a denoising technique to enhance the memory retrieval system.\n\n2.  **Summarization-Based Methods:**\n    *   Earlier research and recent approaches involve prompting LLMs to summarize raw dialogues to denoise them.\n    *   These methods align vector representations of original text with those of generated summaries.\n    *   *Limitations:* These methods introduce latency and computational costs, require high-quality annotated data for dialogue state methods, and fine-tuning retrievers risks overfitting and catastrophic forgetting.\n\n3.  **Segment-Level Memory Construction (SECOM):**\n    *   This approach constructs a memory bank at the segment level by introducing a conversation segmentation model.\n    *   It applies compression-based denoising on memory units to enhance memory retrieval.\n    *   It addresses limitations of turn-level, session-level, and summarization-based approaches regarding precise retrieval and coherent context.\n\n4.  **Full Context / Full History:**\n    *   This approach involves injecting large volumes of raw conversation into prompts without compression.\n    *   *Limitations:* This leads to high token costs, degraded performance, context rot (where relevant information is present but not effectively used), and instability as context windows grow.\n\n5.  **Zero History:**\n    *   This represents a baseline where no historical context is retrieved or compressed, serving as a comparison point for compressed memory systems.",
+      "answer_length": 1896,
+      "generation_latency_ms": 12277.652166085318,
+      "n_chunks": 5,
+      "judgment": {
+        "score": 0,
+        "reason": "The answer is rated 0 because it hallucinates specific method names (SECOM, Zero History) and detailed limitations that are not present in the provided source chunks, which only mention LLMLingua-2 and general concepts of compression."
+      }
+    }
+  ],
+  "summary": {
+    "avg_vector_ndcg_5": 0.9496365410254951,
+    "avg_fts_ndcg_5": 0.8234378027516811,
+    "avg_rrf_ndcg_5": 1.0043959275041994,
+    "avg_vector_ndcg_10": 1.2430236977105094,
+    "avg_fts_ndcg_10": 1.1220893996167056,
+    "avg_rrf_ndcg_10": 1.272600035018439,
+    "avg_rag_score": 0.8,
+    "total_judgments": 84,
+    "total_tokens": 39041
+  }
+}

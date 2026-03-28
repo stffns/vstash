@@ -1,0 +1,1127 @@
+{
+  "experiment": "relevance_signal",
+  "corpus_size": 24,
+  "top_k": 5,
+  "db_path": "/var/folders/3s/d0mzpfw93qj_xqng6nmz28kr0000gn/T/vstash_relevance_ullbscxt/relevance.db",
+  "relevant_queries": 15,
+  "irrelevant_queries": 15,
+  "spread_distributions": {
+    "relevant": [
+      {
+        "query": "long-term memory for conversational AI agents",
+        "is_relevant": true,
+        "scores": [
+          0.01,
+          0.009836,
+          0.009677,
+          0.009524,
+          0.009375
+        ],
+        "spread": 0.0006250000000000006,
+        "max_score": 0.01,
+        "min_score": 0.009375,
+        "mean_score": 0.009682399999999999,
+        "std_score": 0.00022094216437792052,
+        "n_results": 5
+      },
+      {
+        "query": "temporal decay and forgetting in memory systems",
+        "is_relevant": true,
+        "scores": [
+          0.01,
+          0.009836,
+          0.009677,
+          0.009524,
+          0.009375
+        ],
+        "spread": 0.0006250000000000006,
+        "max_score": 0.01,
+        "min_score": 0.009375,
+        "mean_score": 0.009682399999999999,
+        "std_score": 0.00022094216437792052,
+        "n_results": 5
+      },
+      {
+        "query": "episodic memory architecture for LLMs",
+        "is_relevant": true,
+        "scores": [
+          0.01,
+          0.009836,
+          0.009677,
+          0.009524,
+          0.009375
+        ],
+        "spread": 0.0006250000000000006,
+        "max_score": 0.01,
+        "min_score": 0.009375,
+        "mean_score": 0.009682399999999999,
+        "std_score": 0.00022094216437792052,
+        "n_results": 5
+      },
+      {
+        "query": "benchmarks for evaluating agent memory",
+        "is_relevant": true,
+        "scores": [
+          0.01,
+          0.009836,
+          0.009677,
+          0.009524,
+          0.009375
+        ],
+        "spread": 0.0006250000000000006,
+        "max_score": 0.01,
+        "min_score": 0.009375,
+        "mean_score": 0.009682399999999999,
+        "std_score": 0.00022094216437792052,
+        "n_results": 5
+      },
+      {
+        "query": "knowledge graph approaches to memory",
+        "is_relevant": true,
+        "scores": [
+          0.01,
+          0.009836,
+          0.009677,
+          0.009524,
+          0.009375
+        ],
+        "spread": 0.0006250000000000006,
+        "max_score": 0.01,
+        "min_score": 0.009375,
+        "mean_score": 0.009682399999999999,
+        "std_score": 0.00022094216437792052,
+        "n_results": 5
+      },
+      {
+        "query": "memory compression and retrieval",
+        "is_relevant": true,
+        "scores": [
+          0.01,
+          0.009836,
+          0.009677,
+          0.009524,
+          0.009375
+        ],
+        "spread": 0.0006250000000000006,
+        "max_score": 0.01,
+        "min_score": 0.009375,
+        "mean_score": 0.009682399999999999,
+        "std_score": 0.00022094216437792052,
+        "n_results": 5
+      },
+      {
+        "query": "multi-agent memory sharing",
+        "is_relevant": true,
+        "scores": [
+          0.01,
+          0.009836,
+          0.009677,
+          0.009524,
+          0.009375
+        ],
+        "spread": 0.0006250000000000006,
+        "max_score": 0.01,
+        "min_score": 0.009375,
+        "mean_score": 0.009682399999999999,
+        "std_score": 0.00022094216437792052,
+        "n_results": 5
+      },
+      {
+        "query": "personalization through persistent memory",
+        "is_relevant": true,
+        "scores": [
+          0.01,
+          0.009836,
+          0.009677,
+          0.009524,
+          0.009375
+        ],
+        "spread": 0.0006250000000000006,
+        "max_score": 0.01,
+        "min_score": 0.009375,
+        "mean_score": 0.009682399999999999,
+        "std_score": 0.00022094216437792052,
+        "n_results": 5
+      },
+      {
+        "query": "read-write memory interfaces for LLMs",
+        "is_relevant": true,
+        "scores": [
+          0.01,
+          0.009836,
+          0.009677
+        ],
+        "spread": 0.00032300000000000037,
+        "max_score": 0.01,
+        "min_score": 0.009677,
+        "mean_score": 0.009837666666666666,
+        "std_score": 0.00013186946407548486,
+        "n_results": 3
+      },
+      {
+        "query": "self-organizing memory structures",
+        "is_relevant": true,
+        "scores": [
+          0.01
+        ],
+        "spread": 0.0,
+        "max_score": 0.01,
+        "min_score": 0.01,
+        "mean_score": 0.01,
+        "std_score": 0.0,
+        "n_results": 1
+      },
+      {
+        "query": "agentic memory with tool use",
+        "is_relevant": true,
+        "scores": [
+          0.01,
+          0.009836,
+          0.009677,
+          0.009524,
+          0.009375
+        ],
+        "spread": 0.0006250000000000006,
+        "max_score": 0.01,
+        "min_score": 0.009375,
+        "mean_score": 0.009682399999999999,
+        "std_score": 0.00022094216437792052,
+        "n_results": 5
+      },
+      {
+        "query": "conversational memory evaluation metrics",
+        "is_relevant": true,
+        "scores": [
+          0.01,
+          0.009836,
+          0.009677,
+          0.009524,
+          0.009375
+        ],
+        "spread": 0.0006250000000000006,
+        "max_score": 0.01,
+        "min_score": 0.009375,
+        "mean_score": 0.009682399999999999,
+        "std_score": 0.00022094216437792052,
+        "n_results": 5
+      },
+      {
+        "query": "memory-augmented generation for dialogue",
+        "is_relevant": true,
+        "scores": [
+          0.01,
+          0.009836,
+          0.009677,
+          0.009524,
+          0.009375
+        ],
+        "spread": 0.0006250000000000006,
+        "max_score": 0.01,
+        "min_score": 0.009375,
+        "mean_score": 0.009682399999999999,
+        "std_score": 0.00022094216437792052,
+        "n_results": 5
+      },
+      {
+        "query": "scalable long-term memory for AI",
+        "is_relevant": true,
+        "scores": [
+          0.01,
+          0.009836,
+          0.009677,
+          0.009524,
+          0.009375
+        ],
+        "spread": 0.0006250000000000006,
+        "max_score": 0.01,
+        "min_score": 0.009375,
+        "mean_score": 0.009682399999999999,
+        "std_score": 0.00022094216437792052,
+        "n_results": 5
+      },
+      {
+        "query": "cognitive science inspired memory for agents",
+        "is_relevant": true,
+        "scores": [
+          0.01,
+          0.009836,
+          0.009677,
+          0.009524,
+          0.009375
+        ],
+        "spread": 0.0006250000000000006,
+        "max_score": 0.01,
+        "min_score": 0.009375,
+        "mean_score": 0.009682399999999999,
+        "std_score": 0.00022094216437792052,
+        "n_results": 5
+      }
+    ],
+    "irrelevant": [
+      {
+        "query": "best pizza restaurants in downtown Chicago",
+        "is_relevant": false,
+        "scores": [
+          0.01,
+          0.009836,
+          0.009677,
+          0.009524,
+          0.009375
+        ],
+        "spread": 0.0006250000000000006,
+        "max_score": 0.01,
+        "min_score": 0.009375,
+        "mean_score": 0.009682399999999999,
+        "std_score": 0.00022094216437792052,
+        "n_results": 5
+      },
+      {
+        "query": "how to train a dog to sit and shake",
+        "is_relevant": false,
+        "scores": [
+          0.01,
+          0.009836,
+          0.009677,
+          0.009524,
+          0.009375
+        ],
+        "spread": 0.0006250000000000006,
+        "max_score": 0.01,
+        "min_score": 0.009375,
+        "mean_score": 0.009682399999999999,
+        "std_score": 0.00022094216437792052,
+        "n_results": 5
+      },
+      {
+        "query": "history of the Roman Empire and Julius Caesar",
+        "is_relevant": false,
+        "scores": [
+          0.01,
+          0.009836,
+          0.009677,
+          0.009524,
+          0.009375
+        ],
+        "spread": 0.0006250000000000006,
+        "max_score": 0.01,
+        "min_score": 0.009375,
+        "mean_score": 0.009682399999999999,
+        "std_score": 0.00022094216437792052,
+        "n_results": 5
+      },
+      {
+        "query": "photosynthesis process in C4 plants",
+        "is_relevant": false,
+        "scores": [
+          0.01,
+          0.009836,
+          0.009677,
+          0.009524,
+          0.009375
+        ],
+        "spread": 0.0006250000000000006,
+        "max_score": 0.01,
+        "min_score": 0.009375,
+        "mean_score": 0.009682399999999999,
+        "std_score": 0.00022094216437792052,
+        "n_results": 5
+      },
+      {
+        "query": "quantum computing error correction codes",
+        "is_relevant": false,
+        "scores": [
+          0.01,
+          0.009836,
+          0.009677,
+          0.009524,
+          0.009375
+        ],
+        "spread": 0.0006250000000000006,
+        "max_score": 0.01,
+        "min_score": 0.009375,
+        "mean_score": 0.009682399999999999,
+        "std_score": 0.00022094216437792052,
+        "n_results": 5
+      },
+      {
+        "query": "Taylor Swift album discography and awards",
+        "is_relevant": false,
+        "scores": [
+          0.01,
+          0.009836,
+          0.009677,
+          0.009524,
+          0.009375
+        ],
+        "spread": 0.0006250000000000006,
+        "max_score": 0.01,
+        "min_score": 0.009375,
+        "mean_score": 0.009682399999999999,
+        "std_score": 0.00022094216437792052,
+        "n_results": 5
+      },
+      {
+        "query": "recipe for homemade sourdough bread",
+        "is_relevant": false,
+        "scores": [
+          0.01,
+          0.009836,
+          0.009677,
+          0.009524,
+          0.009375
+        ],
+        "spread": 0.0006250000000000006,
+        "max_score": 0.01,
+        "min_score": 0.009375,
+        "mean_score": 0.009682399999999999,
+        "std_score": 0.00022094216437792052,
+        "n_results": 5
+      },
+      {
+        "query": "FIFA World Cup 2022 final highlights",
+        "is_relevant": false,
+        "scores": [
+          0.01,
+          0.009836,
+          0.009677,
+          0.009524,
+          0.009375
+        ],
+        "spread": 0.0006250000000000006,
+        "max_score": 0.01,
+        "min_score": 0.009375,
+        "mean_score": 0.009682399999999999,
+        "std_score": 0.00022094216437792052,
+        "n_results": 5
+      },
+      {
+        "query": "stock market technical analysis patterns",
+        "is_relevant": false,
+        "scores": [
+          0.01,
+          0.009836,
+          0.009677,
+          0.009524,
+          0.009375
+        ],
+        "spread": 0.0006250000000000006,
+        "max_score": 0.01,
+        "min_score": 0.009375,
+        "mean_score": 0.009682399999999999,
+        "std_score": 0.00022094216437792052,
+        "n_results": 5
+      },
+      {
+        "query": "how to change a car tire in winter",
+        "is_relevant": false,
+        "scores": [
+          0.01,
+          0.009836,
+          0.009677,
+          0.009524,
+          0.009375
+        ],
+        "spread": 0.0006250000000000006,
+        "max_score": 0.01,
+        "min_score": 0.009375,
+        "mean_score": 0.009682399999999999,
+        "std_score": 0.00022094216437792052,
+        "n_results": 5
+      },
+      {
+        "query": "deep sea fishing techniques for tuna",
+        "is_relevant": false,
+        "scores": [
+          0.01,
+          0.009836,
+          0.009677,
+          0.009524,
+          0.009375
+        ],
+        "spread": 0.0006250000000000006,
+        "max_score": 0.01,
+        "min_score": 0.009375,
+        "mean_score": 0.009682399999999999,
+        "std_score": 0.00022094216437792052,
+        "n_results": 5
+      },
+      {
+        "query": "yoga poses for lower back pain",
+        "is_relevant": false,
+        "scores": [
+          0.01,
+          0.009836,
+          0.009677,
+          0.009524,
+          0.009375
+        ],
+        "spread": 0.0006250000000000006,
+        "max_score": 0.01,
+        "min_score": 0.009375,
+        "mean_score": 0.009682399999999999,
+        "std_score": 0.00022094216437792052,
+        "n_results": 5
+      },
+      {
+        "query": "history of impressionist painting in France",
+        "is_relevant": false,
+        "scores": [
+          0.01,
+          0.009836,
+          0.009677,
+          0.009524,
+          0.009375
+        ],
+        "spread": 0.0006250000000000006,
+        "max_score": 0.01,
+        "min_score": 0.009375,
+        "mean_score": 0.009682399999999999,
+        "std_score": 0.00022094216437792052,
+        "n_results": 5
+      },
+      {
+        "query": "beginner guide to rock climbing",
+        "is_relevant": false,
+        "scores": [
+          0.01,
+          0.009836,
+          0.009677,
+          0.009524,
+          0.009375
+        ],
+        "spread": 0.0006250000000000006,
+        "max_score": 0.01,
+        "min_score": 0.009375,
+        "mean_score": 0.009682399999999999,
+        "std_score": 0.00022094216437792052,
+        "n_results": 5
+      },
+      {
+        "query": "how to set up a saltwater aquarium",
+        "is_relevant": false,
+        "scores": [
+          0.01,
+          0.009836,
+          0.009677,
+          0.009524,
+          0.009375
+        ],
+        "spread": 0.0006250000000000006,
+        "max_score": 0.01,
+        "min_score": 0.009375,
+        "mean_score": 0.009682399999999999,
+        "std_score": 0.00022094216437792052,
+        "n_results": 5
+      }
+    ]
+  },
+  "threshold_sweep": [
+    {
+      "threshold": 0.01,
+      "true_positives": 14,
+      "false_positives": 15,
+      "true_negatives": 0,
+      "false_negatives": 1,
+      "precision": 0.4827586206896552,
+      "recall": 0.9333333333333333,
+      "f1": 0.6363636363636364,
+      "accuracy": 0.4666666666666667
+    },
+    {
+      "threshold": 0.02,
+      "true_positives": 14,
+      "false_positives": 15,
+      "true_negatives": 0,
+      "false_negatives": 1,
+      "precision": 0.4827586206896552,
+      "recall": 0.9333333333333333,
+      "f1": 0.6363636363636364,
+      "accuracy": 0.4666666666666667
+    },
+    {
+      "threshold": 0.03,
+      "true_positives": 14,
+      "false_positives": 15,
+      "true_negatives": 0,
+      "false_negatives": 1,
+      "precision": 0.4827586206896552,
+      "recall": 0.9333333333333333,
+      "f1": 0.6363636363636364,
+      "accuracy": 0.4666666666666667
+    },
+    {
+      "threshold": 0.04,
+      "true_positives": 14,
+      "false_positives": 15,
+      "true_negatives": 0,
+      "false_negatives": 1,
+      "precision": 0.4827586206896552,
+      "recall": 0.9333333333333333,
+      "f1": 0.6363636363636364,
+      "accuracy": 0.4666666666666667
+    },
+    {
+      "threshold": 0.05,
+      "true_positives": 14,
+      "false_positives": 15,
+      "true_negatives": 0,
+      "false_negatives": 1,
+      "precision": 0.4827586206896552,
+      "recall": 0.9333333333333333,
+      "f1": 0.6363636363636364,
+      "accuracy": 0.4666666666666667
+    },
+    {
+      "threshold": 0.06,
+      "true_positives": 13,
+      "false_positives": 14,
+      "true_negatives": 1,
+      "false_negatives": 2,
+      "precision": 0.48148148148148145,
+      "recall": 0.8666666666666667,
+      "f1": 0.6190476190476191,
+      "accuracy": 0.4666666666666667
+    },
+    {
+      "threshold": 0.07,
+      "true_positives": 13,
+      "false_positives": 14,
+      "true_negatives": 1,
+      "false_negatives": 2,
+      "precision": 0.48148148148148145,
+      "recall": 0.8666666666666667,
+      "f1": 0.6190476190476191,
+      "accuracy": 0.4666666666666667
+    },
+    {
+      "threshold": 0.08,
+      "true_positives": 13,
+      "false_positives": 12,
+      "true_negatives": 3,
+      "false_negatives": 2,
+      "precision": 0.52,
+      "recall": 0.8666666666666667,
+      "f1": 0.65,
+      "accuracy": 0.5333333333333333
+    },
+    {
+      "threshold": 0.09,
+      "true_positives": 13,
+      "false_positives": 12,
+      "true_negatives": 3,
+      "false_negatives": 2,
+      "precision": 0.52,
+      "recall": 0.8666666666666667,
+      "f1": 0.65,
+      "accuracy": 0.5333333333333333
+    },
+    {
+      "threshold": 0.1,
+      "true_positives": 13,
+      "false_positives": 5,
+      "true_negatives": 10,
+      "false_negatives": 2,
+      "precision": 0.7222222222222222,
+      "recall": 0.8666666666666667,
+      "f1": 0.7878787878787877,
+      "accuracy": 0.7666666666666667
+    },
+    {
+      "threshold": 0.11,
+      "true_positives": 13,
+      "false_positives": 5,
+      "true_negatives": 10,
+      "false_negatives": 2,
+      "precision": 0.7222222222222222,
+      "recall": 0.8666666666666667,
+      "f1": 0.7878787878787877,
+      "accuracy": 0.7666666666666667
+    },
+    {
+      "threshold": 0.12,
+      "true_positives": 13,
+      "false_positives": 3,
+      "true_negatives": 12,
+      "false_negatives": 2,
+      "precision": 0.8125,
+      "recall": 0.8666666666666667,
+      "f1": 0.8387096774193549,
+      "accuracy": 0.8333333333333334
+    },
+    {
+      "threshold": 0.13,
+      "true_positives": 12,
+      "false_positives": 3,
+      "true_negatives": 12,
+      "false_negatives": 3,
+      "precision": 0.8,
+      "recall": 0.8,
+      "f1": 0.8000000000000002,
+      "accuracy": 0.8
+    },
+    {
+      "threshold": 0.14,
+      "true_positives": 11,
+      "false_positives": 3,
+      "true_negatives": 12,
+      "false_negatives": 4,
+      "precision": 0.7857142857142857,
+      "recall": 0.7333333333333333,
+      "f1": 0.7586206896551724,
+      "accuracy": 0.7666666666666667
+    },
+    {
+      "threshold": 0.15,
+      "true_positives": 11,
+      "false_positives": 0,
+      "true_negatives": 15,
+      "false_negatives": 4,
+      "precision": 1.0,
+      "recall": 0.7333333333333333,
+      "f1": 0.846153846153846,
+      "accuracy": 0.8666666666666667
+    },
+    {
+      "threshold": 0.16,
+      "true_positives": 11,
+      "false_positives": 0,
+      "true_negatives": 15,
+      "false_negatives": 4,
+      "precision": 1.0,
+      "recall": 0.7333333333333333,
+      "f1": 0.846153846153846,
+      "accuracy": 0.8666666666666667
+    },
+    {
+      "threshold": 0.17,
+      "true_positives": 10,
+      "false_positives": 0,
+      "true_negatives": 15,
+      "false_negatives": 5,
+      "precision": 1.0,
+      "recall": 0.6666666666666666,
+      "f1": 0.8,
+      "accuracy": 0.8333333333333334
+    },
+    {
+      "threshold": 0.18,
+      "true_positives": 9,
+      "false_positives": 0,
+      "true_negatives": 15,
+      "false_negatives": 6,
+      "precision": 1.0,
+      "recall": 0.6,
+      "f1": 0.7499999999999999,
+      "accuracy": 0.8
+    },
+    {
+      "threshold": 0.19,
+      "true_positives": 9,
+      "false_positives": 0,
+      "true_negatives": 15,
+      "false_negatives": 6,
+      "precision": 1.0,
+      "recall": 0.6,
+      "f1": 0.7499999999999999,
+      "accuracy": 0.8
+    },
+    {
+      "threshold": 0.2,
+      "true_positives": 9,
+      "false_positives": 0,
+      "true_negatives": 15,
+      "false_negatives": 6,
+      "precision": 1.0,
+      "recall": 0.6,
+      "f1": 0.7499999999999999,
+      "accuracy": 0.8
+    },
+    {
+      "threshold": 0.21,
+      "true_positives": 8,
+      "false_positives": 0,
+      "true_negatives": 15,
+      "false_negatives": 7,
+      "precision": 1.0,
+      "recall": 0.5333333333333333,
+      "f1": 0.6956521739130436,
+      "accuracy": 0.7666666666666667
+    },
+    {
+      "threshold": 0.22,
+      "true_positives": 8,
+      "false_positives": 0,
+      "true_negatives": 15,
+      "false_negatives": 7,
+      "precision": 1.0,
+      "recall": 0.5333333333333333,
+      "f1": 0.6956521739130436,
+      "accuracy": 0.7666666666666667
+    },
+    {
+      "threshold": 0.23,
+      "true_positives": 8,
+      "false_positives": 0,
+      "true_negatives": 15,
+      "false_negatives": 7,
+      "precision": 1.0,
+      "recall": 0.5333333333333333,
+      "f1": 0.6956521739130436,
+      "accuracy": 0.7666666666666667
+    },
+    {
+      "threshold": 0.24,
+      "true_positives": 8,
+      "false_positives": 0,
+      "true_negatives": 15,
+      "false_negatives": 7,
+      "precision": 1.0,
+      "recall": 0.5333333333333333,
+      "f1": 0.6956521739130436,
+      "accuracy": 0.7666666666666667
+    },
+    {
+      "threshold": 0.25,
+      "true_positives": 8,
+      "false_positives": 0,
+      "true_negatives": 15,
+      "false_negatives": 7,
+      "precision": 1.0,
+      "recall": 0.5333333333333333,
+      "f1": 0.6956521739130436,
+      "accuracy": 0.7666666666666667
+    },
+    {
+      "threshold": 0.26,
+      "true_positives": 8,
+      "false_positives": 0,
+      "true_negatives": 15,
+      "false_negatives": 7,
+      "precision": 1.0,
+      "recall": 0.5333333333333333,
+      "f1": 0.6956521739130436,
+      "accuracy": 0.7666666666666667
+    },
+    {
+      "threshold": 0.27,
+      "true_positives": 6,
+      "false_positives": 0,
+      "true_negatives": 15,
+      "false_negatives": 9,
+      "precision": 1.0,
+      "recall": 0.4,
+      "f1": 0.5714285714285715,
+      "accuracy": 0.7
+    },
+    {
+      "threshold": 0.28,
+      "true_positives": 6,
+      "false_positives": 0,
+      "true_negatives": 15,
+      "false_negatives": 9,
+      "precision": 1.0,
+      "recall": 0.4,
+      "f1": 0.5714285714285715,
+      "accuracy": 0.7
+    },
+    {
+      "threshold": 0.29,
+      "true_positives": 5,
+      "false_positives": 0,
+      "true_negatives": 15,
+      "false_negatives": 10,
+      "precision": 1.0,
+      "recall": 0.3333333333333333,
+      "f1": 0.5,
+      "accuracy": 0.6666666666666666
+    },
+    {
+      "threshold": 0.3,
+      "true_positives": 5,
+      "false_positives": 0,
+      "true_negatives": 15,
+      "false_negatives": 10,
+      "precision": 1.0,
+      "recall": 0.3333333333333333,
+      "f1": 0.5,
+      "accuracy": 0.6666666666666666
+    },
+    {
+      "threshold": 0.31,
+      "true_positives": 5,
+      "false_positives": 0,
+      "true_negatives": 15,
+      "false_negatives": 10,
+      "precision": 1.0,
+      "recall": 0.3333333333333333,
+      "f1": 0.5,
+      "accuracy": 0.6666666666666666
+    },
+    {
+      "threshold": 0.32,
+      "true_positives": 5,
+      "false_positives": 0,
+      "true_negatives": 15,
+      "false_negatives": 10,
+      "precision": 1.0,
+      "recall": 0.3333333333333333,
+      "f1": 0.5,
+      "accuracy": 0.6666666666666666
+    },
+    {
+      "threshold": 0.33,
+      "true_positives": 4,
+      "false_positives": 0,
+      "true_negatives": 15,
+      "false_negatives": 11,
+      "precision": 1.0,
+      "recall": 0.26666666666666666,
+      "f1": 0.4210526315789474,
+      "accuracy": 0.6333333333333333
+    },
+    {
+      "threshold": 0.34,
+      "true_positives": 4,
+      "false_positives": 0,
+      "true_negatives": 15,
+      "false_negatives": 11,
+      "precision": 1.0,
+      "recall": 0.26666666666666666,
+      "f1": 0.4210526315789474,
+      "accuracy": 0.6333333333333333
+    },
+    {
+      "threshold": 0.35000000000000003,
+      "true_positives": 4,
+      "false_positives": 0,
+      "true_negatives": 15,
+      "false_negatives": 11,
+      "precision": 1.0,
+      "recall": 0.26666666666666666,
+      "f1": 0.4210526315789474,
+      "accuracy": 0.6333333333333333
+    },
+    {
+      "threshold": 0.36,
+      "true_positives": 4,
+      "false_positives": 0,
+      "true_negatives": 15,
+      "false_negatives": 11,
+      "precision": 1.0,
+      "recall": 0.26666666666666666,
+      "f1": 0.4210526315789474,
+      "accuracy": 0.6333333333333333
+    },
+    {
+      "threshold": 0.37,
+      "true_positives": 4,
+      "false_positives": 0,
+      "true_negatives": 15,
+      "false_negatives": 11,
+      "precision": 1.0,
+      "recall": 0.26666666666666666,
+      "f1": 0.4210526315789474,
+      "accuracy": 0.6333333333333333
+    },
+    {
+      "threshold": 0.38,
+      "true_positives": 3,
+      "false_positives": 0,
+      "true_negatives": 15,
+      "false_negatives": 12,
+      "precision": 1.0,
+      "recall": 0.2,
+      "f1": 0.33333333333333337,
+      "accuracy": 0.6
+    },
+    {
+      "threshold": 0.39,
+      "true_positives": 3,
+      "false_positives": 0,
+      "true_negatives": 15,
+      "false_negatives": 12,
+      "precision": 1.0,
+      "recall": 0.2,
+      "f1": 0.33333333333333337,
+      "accuracy": 0.6
+    },
+    {
+      "threshold": 0.4,
+      "true_positives": 3,
+      "false_positives": 0,
+      "true_negatives": 15,
+      "false_negatives": 12,
+      "precision": 1.0,
+      "recall": 0.2,
+      "f1": 0.33333333333333337,
+      "accuracy": 0.6
+    },
+    {
+      "threshold": 0.41000000000000003,
+      "true_positives": 3,
+      "false_positives": 0,
+      "true_negatives": 15,
+      "false_negatives": 12,
+      "precision": 1.0,
+      "recall": 0.2,
+      "f1": 0.33333333333333337,
+      "accuracy": 0.6
+    },
+    {
+      "threshold": 0.42,
+      "true_positives": 3,
+      "false_positives": 0,
+      "true_negatives": 15,
+      "false_negatives": 12,
+      "precision": 1.0,
+      "recall": 0.2,
+      "f1": 0.33333333333333337,
+      "accuracy": 0.6
+    },
+    {
+      "threshold": 0.43,
+      "true_positives": 3,
+      "false_positives": 0,
+      "true_negatives": 15,
+      "false_negatives": 12,
+      "precision": 1.0,
+      "recall": 0.2,
+      "f1": 0.33333333333333337,
+      "accuracy": 0.6
+    },
+    {
+      "threshold": 0.44,
+      "true_positives": 3,
+      "false_positives": 0,
+      "true_negatives": 15,
+      "false_negatives": 12,
+      "precision": 1.0,
+      "recall": 0.2,
+      "f1": 0.33333333333333337,
+      "accuracy": 0.6
+    },
+    {
+      "threshold": 0.45,
+      "true_positives": 3,
+      "false_positives": 0,
+      "true_negatives": 15,
+      "false_negatives": 12,
+      "precision": 1.0,
+      "recall": 0.2,
+      "f1": 0.33333333333333337,
+      "accuracy": 0.6
+    },
+    {
+      "threshold": 0.46,
+      "true_positives": 3,
+      "false_positives": 0,
+      "true_negatives": 15,
+      "false_negatives": 12,
+      "precision": 1.0,
+      "recall": 0.2,
+      "f1": 0.33333333333333337,
+      "accuracy": 0.6
+    },
+    {
+      "threshold": 0.47000000000000003,
+      "true_positives": 3,
+      "false_positives": 0,
+      "true_negatives": 15,
+      "false_negatives": 12,
+      "precision": 1.0,
+      "recall": 0.2,
+      "f1": 0.33333333333333337,
+      "accuracy": 0.6
+    },
+    {
+      "threshold": 0.48,
+      "true_positives": 3,
+      "false_positives": 0,
+      "true_negatives": 15,
+      "false_negatives": 12,
+      "precision": 1.0,
+      "recall": 0.2,
+      "f1": 0.33333333333333337,
+      "accuracy": 0.6
+    },
+    {
+      "threshold": 0.49,
+      "true_positives": 3,
+      "false_positives": 0,
+      "true_negatives": 15,
+      "false_negatives": 12,
+      "precision": 1.0,
+      "recall": 0.2,
+      "f1": 0.33333333333333337,
+      "accuracy": 0.6
+    },
+    {
+      "threshold": 0.5,
+      "true_positives": 3,
+      "false_positives": 0,
+      "true_negatives": 15,
+      "false_negatives": 12,
+      "precision": 1.0,
+      "recall": 0.2,
+      "f1": 0.33333333333333337,
+      "accuracy": 0.6
+    }
+  ],
+  "best_threshold": {
+    "by_f1": {
+      "threshold": 0.15,
+      "true_positives": 11,
+      "false_positives": 0,
+      "true_negatives": 15,
+      "false_negatives": 4,
+      "precision": 1.0,
+      "recall": 0.7333333333333333,
+      "f1": 0.846153846153846,
+      "accuracy": 0.8666666666666667
+    },
+    "by_accuracy": {
+      "threshold": 0.15,
+      "true_positives": 11,
+      "false_positives": 0,
+      "true_negatives": 15,
+      "false_negatives": 4,
+      "precision": 1.0,
+      "recall": 0.7333333333333333,
+      "f1": 0.846153846153846,
+      "accuracy": 0.8666666666666667
+    }
+  },
+  "alternative_signals": {
+    "spread (max-min)": {
+      "best_f1": 0.6666666666666666,
+      "best_acc": 0.5,
+      "threshold": -0.001
+    },
+    "std deviation": {
+      "best_f1": 0.6666666666666666,
+      "best_acc": 0.5,
+      "threshold": -0.001
+    },
+    "max score": {
+      "best_f1": 0.6666666666666666,
+      "best_acc": 0.5,
+      "threshold": 0.009000000000000001
+    },
+    "mean score": {
+      "best_f1": 0.6666666666666666,
+      "best_acc": 0.5,
+      "threshold": 0.0086824
+    },
+    "max - mean": {
+      "best_f1": 0.6666666666666666,
+      "best_acc": 0.5,
+      "threshold": -0.001
+    }
+  },
+  "scored_vs_unscored": {
+    "scored_relevant_mean": 0.2892143999999999,
+    "scored_irrelevant_mean": 0.10218359999999999,
+    "unscored_relevant_mean": 0.0005632000000000005,
+    "unscored_irrelevant_mean": 0.0006250000000000006
+  }
+}
