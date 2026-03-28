@@ -83,48 +83,79 @@ URL_TO_NAME = {p["url"]: p["title"] for p in PAPERS}
 # Expanded queries with expected relevance judgments                    #
 # ------------------------------------------------------------------ #
 
-# Each query has "expected_top" — papers that a human would expect in top-5.
-# Used for NDCG calculation. Order matters (first = most relevant).
+# Each query has "expected_top" — pooled relevance labels from LLM-as-judge
+# (Qwen 3.5:9B) validated against human judgment. Order matters: score-3
+# papers first, then score-2, with human tie-breaking within each tier.
+# Full pooling: union of top-10 from vector, FTS, and RRF methods.
 EVAL_QUERIES = [
     {
         "query": "long-term memory systems for conversational AI agents",
-        "expected_top": ["LoCoMo", "Memoria", "Memori", "MemGPT", "Mem0"],
+        "expected_top": [
+            "LoCoMo", "Memoria", "Mem0", "MemoryBank", "A-MEM",
+            "Nemori", "SeCom", "Memori",
+        ],
     },
     {
         "query": "temporal decay and forgetting mechanisms in memory",
-        "expected_top": ["MaRS", "PAM", "Zep", "MemoryBank", "Nemori"],
+        "expected_top": [
+            "MemoryBank", "MaRS", "Generative Agents",
+            "EverMemOS",
+        ],
     },
     {
         "query": "benchmarks for evaluating memory in language models",
-        "expected_top": ["LoCoMo", "SORT", "Episodic Memories Benchmark", "MaRS", "SeCom"],
+        "expected_top": [
+            "Episodic Memories Benchmark", "Zep",
+            "SeCom", "Memoria", "Mem0", "MaRS",
+        ],
     },
     {
         "query": "episodic memory architecture for LLM agents",
-        "expected_top": ["E-mem", "EverMemOS", "SORT", "Episodic Memories Benchmark", "MAGMA"],
+        "expected_top": [
+            "E-mem", "Episodic Memories Benchmark", "A-MEM", "MAGMA",
+            "Memori", "Memoria", "PAM", "Nemori", "MaRS",
+        ],
     },
     {
         "query": "personalization and user modeling through persistent memory",
-        "expected_top": ["AI PERSONA", "SeCom", "Memoria", "Memori", "Mem0"],
+        "expected_top": [
+            "MaRS", "MemoryBank", "Memoria", "Memori",
+            "AI PERSONA", "Mem0",
+        ],
     },
     {
         "query": "knowledge graph approaches to agent memory",
-        "expected_top": ["Zep", "MAGMA", "Dynamic Tree Memory", "A-MEM", "EverMemOS"],
+        "expected_top": [
+            "Zep", "MAGMA", "A-MEM", "Mem0", "Nemori",
+            "Dynamic Tree Memory", "MaRS", "PAM",
+        ],
     },
     {
         "query": "memory compression and retrieval efficiency",
-        "expected_top": ["R³Mem", "SeCom", "SCM", "RET-LLM", "Generative Agents"],
+        "expected_top": [
+            "SeCom", "E-mem", "Mem0", "Memori", "MaRS",
+            "A-MEM",
+        ],
     },
     {
         "query": "multi-agent memory sharing and coordination",
-        "expected_top": ["E-mem", "MAGMA", "Generative Agents", "EverMemOS", "MemGPT"],
+        "expected_top": [
+            "MaRS", "MAGMA", "A-MEM",
+            "E-mem", "Nemori", "Mem0",
+        ],
     },
     {
         "query": "read-write memory interfaces for language models",
-        "expected_top": ["RET-LLM", "MemGPT", "A-MEM", "Mem0", "MemoryBank"],
+        "expected_top": [
+            "RET-LLM", "MemGPT",
+            "Memori", "Memoria",
+        ],
     },
     {
         "query": "self-organizing and adaptive memory structures",
-        "expected_top": ["Nemori", "EverMemOS", "A-MEM", "MAGMA", "Dynamic Tree Memory"],
+        "expected_top": [
+            "EverMemOS", "Nemori", "A-MEM",
+        ],
     },
 ]
 
@@ -244,7 +275,12 @@ def dcg_at_k(relevance: list[float], k: int) -> float:
 
 
 def ndcg_at_k(result_titles: list[str], expected_top: list[str], k: int = 5) -> float:
-    """Normalized DCG@k. Expected_top uses paper short names (mapped to URLs)."""
+    """Normalized DCG@k with document-level deduplication.
+
+    Multiple chunks from the same document are collapsed: only the
+    first occurrence counts.  This prevents NDCG > 1.0 when a highly
+    relevant paper contributes several chunks to the top-k.
+    """
     max_rel = len(expected_top)
     # Map expected paper names → URLs → graded relevance
     expected_urls = {}
@@ -253,9 +289,17 @@ def ndcg_at_k(result_titles: list[str], expected_top: list[str], k: int = 5) -> 
         if url:
             expected_urls[url] = max_rel - i
 
-    # Actual relevance of returned results (result titles ARE URLs)
+    # Deduplicate results by document (keep first occurrence only)
+    seen_docs: set[str] = set()
+    deduped_titles: list[str] = []
+    for title in result_titles:
+        if title not in seen_docs:
+            seen_docs.add(title)
+            deduped_titles.append(title)
+
+    # Actual relevance of deduplicated results
     actual_rel = []
-    for title in result_titles[:k]:
+    for title in deduped_titles[:k]:
         actual_rel.append(expected_urls.get(title, 0))
 
     # Ideal relevance (sorted descending)

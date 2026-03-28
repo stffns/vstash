@@ -452,17 +452,36 @@ def vstash_search(
         if not chunks:
             return _ok({"chunks": [], "relevance": "none"})
 
-        # Compute score spread — low variance means nothing is particularly relevant
-        scores = [c.score for c in chunks]
-        spread = max(scores) - min(scores) if len(scores) > 1 else 0.0
-        relevance = "high" if spread > 0.15 else "low"
+        # Expand context: include adjacent chunks (±1) for richer LLM context.
+        # This is critical for MCP/Claude Code where the LLM consumes these
+        # chunks directly — more context yields better answers.
+        chunks = store.expand_context(chunks, window=1)
+
+        # Tiered relevance signal based on vector distance.
+        # high (<=0.95): confident. medium (0.95-0.98): uncertain. low (>0.98): off-topic.
+        best_distance = store.last_best_distance
+        if best_distance <= 0.95:
+            relevance = "high"
+            hint = "Results appear relevant to the query."
+        elif best_distance <= 0.98:
+            relevance = "medium"
+            hint = "Results may be tangential — consider refining your query."
+        else:
+            relevance = "low"
+            hint = "Results may not be relevant — best match is semantically distant."
+
+        store.record_search_event(
+            query=query,
+            best_distance=best_distance,
+            relevance_tier=relevance,
+            result_count=len(chunks),
+        )
 
         return _ok({
             "chunks": [c.model_dump() for c in chunks],
             "relevance": relevance,
-            "hint": "Results may not be relevant to the query — scores are uniformly high."
-            if relevance == "low"
-            else "Results appear relevant to the query.",
+            "hint": hint,
+            "best_distance": round(best_distance, 4),
         })
 
     except FileNotFoundError:
