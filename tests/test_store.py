@@ -485,3 +485,83 @@ class TestSearchTelemetry:
     def test_telemetry_empty(self, sample_store: VstashStore) -> None:
         summary = sample_store.search_telemetry_summary()
         assert summary == {}
+
+
+class TestScoringMaturity:
+    """Tests for adaptive scoring maturity (γ) — outlier-based activation."""
+
+    def test_empty_store_returns_zero(self, sample_store: VstashStore) -> None:
+        """No chunks → γ = 0."""
+        assert sample_store.scoring_maturity() == 0.0
+
+    def test_uniform_access_returns_zero(self, sample_store: VstashStore) -> None:
+        """All chunks accessed equally → no outlier → γ = 0."""
+        dim = sample_store.embedding_dim
+        sample_store.add_document(
+            path="/test/uniform.md",
+            title="Uniform",
+            chunks=[f"chunk {i}" for i in range(20)],
+            embeddings=[[0.1 * (i + 1) / 20] * dim for i in range(20)],
+        )
+        # Give all chunks the same access count
+        sample_store._conn.execute("UPDATE chunks SET access_count = 5")
+        sample_store._conn.commit()
+        assert sample_store.scoring_maturity() == 0.0
+
+    def test_moderate_outlier_partial_gamma(self, sample_store: VstashStore) -> None:
+        """Max/mean ratio between 8 and 15 → 0 < γ < 1."""
+        dim = sample_store.embedding_dim
+        sample_store.add_document(
+            path="/test/moderate.md",
+            title="Moderate",
+            chunks=[f"chunk {i}" for i in range(20)],
+            embeddings=[[0.1 * (i + 1) / 20] * dim for i in range(20)],
+        )
+        # 19 chunks with access_count=2, 1 chunk with access_count=25
+        # mean ≈ 3.15, max=25, ratio ≈ 7.94 → just below 8, let's use 30
+        # mean ≈ 3.4, max=30, ratio ≈ 8.82 → between 8 and 15
+        sample_store._conn.execute("UPDATE chunks SET access_count = 2")
+        sample_store._conn.execute(
+            "UPDATE chunks SET access_count = 30 WHERE id = ("
+            "SELECT id FROM chunks LIMIT 1)"
+        )
+        sample_store._conn.commit()
+        gamma = sample_store.scoring_maturity()
+        assert 0.0 < gamma < 1.0
+
+    def test_strong_outlier_full_gamma(self, sample_store: VstashStore) -> None:
+        """Max/mean ratio ≥ 15 → γ = 1.0."""
+        dim = sample_store.embedding_dim
+        sample_store.add_document(
+            path="/test/strong.md",
+            title="Strong",
+            chunks=[f"chunk {i}" for i in range(20)],
+            embeddings=[[0.1 * (i + 1) / 20] * dim for i in range(20)],
+        )
+        # 19 chunks with access_count=1, 1 chunk with access_count=200
+        # mean ≈ 10.95, max=200, ratio ≈ 18.3 → well above 15
+        sample_store._conn.execute("UPDATE chunks SET access_count = 1")
+        sample_store._conn.execute(
+            "UPDATE chunks SET access_count = 200 WHERE id = ("
+            "SELECT id FROM chunks LIMIT 1)"
+        )
+        sample_store._conn.commit()
+        gamma = sample_store.scoring_maturity()
+        assert gamma == 1.0
+
+    def test_too_few_chunks_returns_zero(self, sample_store: VstashStore) -> None:
+        """Fewer than 10 accessed chunks → γ = 0 regardless of ratio."""
+        dim = sample_store.embedding_dim
+        sample_store.add_document(
+            path="/test/small.md",
+            title="Small",
+            chunks=[f"chunk {i}" for i in range(5)],
+            embeddings=[[0.1 * (i + 1) / 5] * dim for i in range(5)],
+        )
+        sample_store._conn.execute("UPDATE chunks SET access_count = 1")
+        sample_store._conn.execute(
+            "UPDATE chunks SET access_count = 100 WHERE id = ("
+            "SELECT id FROM chunks LIMIT 1)"
+        )
+        sample_store._conn.commit()
+        assert sample_store.scoring_maturity() == 0.0

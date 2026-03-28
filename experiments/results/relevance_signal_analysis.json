@@ -1,0 +1,48 @@
+{
+  "phases": {
+    "cold": {
+      "ratio": 1.0957,
+      "fixed_f1": 0.5714,
+      "optimal_f1": 0.6667,
+      "optimal_threshold": 0.1323
+    },
+    "warm": {
+      "ratio": 1.2025,
+      "fixed_f1": 0.6667,
+      "optimal_f1": 0.6897,
+      "adaptive_f1": 0.6154,
+      "adaptive_threshold": 0.2104
+    },
+    "heavy": {
+      "ratio": 1.2172,
+      "fixed_f1": 0.6207,
+      "optimal_f1": 0.6667,
+      "adaptive_f1": 0.64,
+      "adaptive_threshold": 0.2016
+    }
+  },
+  "relevant_spreads_heavy": [
+    0.1983,
+    0.3083,
+    0.2728,
+    0.1395,
+    0.4514,
+    0.2393,
+    0.3731,
+    0.2404,
+    0.4169,
+    0.4981
+  ],
+  "irrelevant_spreads_heavy": [
+    0.2434,
+    0.1862,
+    0.2765,
+    0.2594,
+    0.3402,
+    0.1985,
+    0.1805,
+    0.3266,
+    0.2371,
+    0.3298
+  ]
+}
