@@ -109,12 +109,41 @@ class TestScoringDisabled:
         assert len(results) > 0
         assert all(isinstance(r, SearchResult) for r in results)
 
-    def test_no_access_tracking_when_disabled(self, e2e_store: VstashStore) -> None:
-        """Access counts should not change when scoring is disabled."""
-        cfg = ScoringConfig(enabled=False)
+    def test_access_tracking_when_scoring_disabled_but_track_on(
+        self, e2e_store: VstashStore
+    ) -> None:
+        """Access counts should still increment when scoring is disabled but track_access=True.
+
+        This builds usage history so scoring can be enabled later.
+        """
+        cfg = ScoringConfig(enabled=False, track_access=True)
         query_emb = embed_query("Python decorators", VstashConfig().embeddings.model)
 
-        # Get initial access counts
+        before = {
+            r["id"]: r["access_count"]
+            for r in e2e_store._conn.execute("SELECT id, access_count FROM chunks").fetchall()
+        }
+
+        e2e_store.search(
+            query_embedding=query_emb,
+            query_text="Python decorators",
+            top_k=3,
+            scoring=cfg,
+        )
+
+        after = {
+            r["id"]: r["access_count"]
+            for r in e2e_store._conn.execute("SELECT id, access_count FROM chunks").fetchall()
+        }
+        assert any(after[cid] > before[cid] for cid in before)
+
+    def test_no_access_tracking_when_track_access_false(
+        self, e2e_store: VstashStore
+    ) -> None:
+        """Access counts should not change when track_access is explicitly False."""
+        cfg = ScoringConfig(enabled=False, track_access=False)
+        query_emb = embed_query("Python decorators", VstashConfig().embeddings.model)
+
         before = {
             r["id"]: r["access_count"]
             for r in e2e_store._conn.execute("SELECT id, access_count FROM chunks").fetchall()

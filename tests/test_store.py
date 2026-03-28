@@ -139,6 +139,152 @@ class TestStoreSearch:
             assert isinstance(r.score, float)
 
 
+class TestStoreDeduplication:
+    """Test document-level deduplication in search results."""
+
+    def test_search_deduplicates_by_document(self, sample_store: VstashStore) -> None:
+        """Multiple chunks from the same document should not flood top-k."""
+        dim = sample_store.embedding_dim
+        # Add one document with many chunks that all match the query
+        sample_store.add_document(
+            path="/test/big_doc.md",
+            title="Big Document",
+            chunks=[f"machine learning topic {i}" for i in range(5)],
+            embeddings=[[0.1 + i * 0.01] * dim for i in range(5)],
+        )
+        # Add another document with a single relevant chunk
+        sample_store.add_document(
+            path="/test/small_doc.md",
+            title="Small Document",
+            chunks=["machine learning basics"],
+            embeddings=[[0.12] * dim],
+        )
+        results = sample_store.search([0.11] * dim, "machine learning", top_k=5)
+        titles = [r.title for r in results]
+        # Each document should appear at most once
+        assert titles.count("Big Document") <= 1
+        assert titles.count("Small Document") <= 1
+        # Both documents should be represented
+        assert "Big Document" in titles
+        assert "Small Document" in titles
+
+
+class TestExpandContext:
+    """Test context expansion with adjacent chunks."""
+
+    def test_expand_context_includes_neighbors(self, sample_store: VstashStore) -> None:
+        """Expanding a middle chunk should include previous and next chunks."""
+        dim = sample_store.embedding_dim
+        sample_store.add_document(
+            path="/test/multi.md",
+            title="Multi Chunk Doc",
+            chunks=["chunk zero", "chunk one", "chunk two", "chunk three"],
+            embeddings=[[0.1 + i * 0.01] * dim for i in range(4)],
+        )
+        # Search to get a result for the middle chunk
+        results = sample_store.search([0.11] * dim, "chunk one", top_k=1)
+        assert len(results) == 1
+        assert results[0].title == "Multi Chunk Doc"
+
+        expanded = sample_store.expand_context(results, window=1)
+        assert len(expanded) == 1
+        # The expanded text should contain adjacent chunk text
+        assert "chunk" in expanded[0].text
+        # Should have more text than original single chunk
+        assert len(expanded[0].text) >= len(results[0].text)
+
+    def test_expand_context_window_zero_returns_unchanged(self, sample_store: VstashStore) -> None:
+        """Window=0 should return results unchanged."""
+        dim = sample_store.embedding_dim
+        sample_store.add_document(
+            path="/test/doc.md",
+            title="Test Doc",
+            chunks=["hello world"],
+            embeddings=[[0.1] * dim],
+        )
+        results = sample_store.search([0.1] * dim, "hello", top_k=1)
+        expanded = sample_store.expand_context(results, window=0)
+        assert expanded == results
+
+    def test_expand_context_empty_results(self, sample_store: VstashStore) -> None:
+        """Empty results should return empty."""
+        expanded = sample_store.expand_context([], window=1)
+        assert expanded == []
+
+
+class TestTotalAccessCount:
+    """Test total access count aggregation."""
+
+    def test_total_access_count_initial(self, sample_store: VstashStore) -> None:
+        """Fresh store should have zero total accesses."""
+        dim = sample_store.embedding_dim
+        sample_store.add_document(
+            path="/test/doc.md",
+            title="Doc",
+            chunks=["some text"],
+            embeddings=[[0.1] * dim],
+        )
+        assert sample_store.total_access_count() == 0
+
+    def test_total_access_count_after_tracking(self, sample_store: VstashStore) -> None:
+        """Total should reflect tracked accesses."""
+        dim = sample_store.embedding_dim
+        sample_store.add_document(
+            path="/test/doc.md",
+            title="Doc",
+            chunks=["some text", "more text"],
+            embeddings=[[0.1] * dim, [0.2] * dim],
+        )
+        # Get chunk ids
+        rows = sample_store._conn.execute("SELECT id FROM chunks").fetchall()
+        chunk_ids = [r["id"] for r in rows]
+        # Track 3 times
+        for _ in range(3):
+            sample_store.track_access(chunk_ids)
+        # 2 chunks × 3 accesses = 6
+        assert sample_store.total_access_count() == 6
+
+
+class TestAdaptiveRelevanceThreshold:
+    """Test adaptive relevance threshold based on spread history."""
+
+    def test_fallback_with_no_history(self, sample_store: VstashStore) -> None:
+        """Should return fallback when no spreads recorded."""
+        assert sample_store.adaptive_relevance_threshold(fallback=0.15) == 0.15
+
+    def test_fallback_with_few_samples(self, sample_store: VstashStore) -> None:
+        """Should return fallback when fewer than 10 spreads."""
+        for i in range(5):
+            sample_store.record_spread(0.3)
+        assert sample_store.adaptive_relevance_threshold(fallback=0.15) == 0.15
+
+    def test_adaptive_with_enough_history(self, sample_store: VstashStore) -> None:
+        """With 10+ uniform spreads, threshold should be near mean - 1σ."""
+        for _ in range(15):
+            sample_store.record_spread(0.30)
+        threshold = sample_store.adaptive_relevance_threshold()
+        # All same value → σ=0, threshold = mean = 0.30
+        assert abs(threshold - 0.30) < 0.01
+
+    def test_adaptive_responds_to_variance(self, sample_store: VstashStore) -> None:
+        """Higher variance should lower the threshold (more lenient)."""
+        # Mix of high and low spreads
+        for v in [0.1, 0.5, 0.1, 0.5, 0.1, 0.5, 0.1, 0.5, 0.1, 0.5]:
+            sample_store.record_spread(v)
+        threshold = sample_store.adaptive_relevance_threshold()
+        # mean=0.3, σ=0.2, threshold=0.3-0.2=0.1
+        assert threshold < 0.15  # more lenient than fixed 0.15
+
+    def test_ring_buffer_prunes_old(self, sample_store: VstashStore) -> None:
+        """Only last 50 entries should be kept."""
+        for i in range(60):
+            sample_store.record_spread(float(i) / 100)
+        count = sample_store._conn.execute(
+            "SELECT COUNT(*) AS n FROM search_stats"
+        ).fetchone()["n"]
+        assert count == 50
+
+
 class TestStoreCollections:
     """Test collection-scoped operations."""
 
@@ -302,3 +448,40 @@ class TestStoreCollections:
         docs = sample_store.list_documents()
         assert len(docs) == 1
         assert docs[0].collection == "default"
+
+
+class TestSearchTelemetry:
+    """Tests for search event telemetry (discard tracking)."""
+
+    def test_record_search_event(self, sample_store: VstashStore) -> None:
+        event_id = sample_store.record_search_event(
+            query="test", best_distance=0.5, relevance_tier="high", result_count=5,
+        )
+        assert event_id > 0
+
+    def test_mark_search_dismissed(self, sample_store: VstashStore) -> None:
+        event_id = sample_store.record_search_event(
+            query="test", best_distance=0.99, relevance_tier="low", result_count=3,
+        )
+        sample_store.mark_search_dismissed(event_id)
+        row = sample_store._conn.execute(
+            "SELECT dismissed FROM search_events WHERE id = ?", [event_id]
+        ).fetchone()
+        assert row["dismissed"] == 1
+
+    def test_telemetry_summary_groups_by_tier(self, sample_store: VstashStore) -> None:
+        # Record events across tiers
+        sample_store.record_search_event("q1", 0.5, "high", 5)
+        sample_store.record_search_event("q2", 0.6, "high", 5)
+        eid = sample_store.record_search_event("q3", 0.99, "low", 3)
+        sample_store.mark_search_dismissed(eid)
+
+        summary = sample_store.search_telemetry_summary()
+        assert summary["high"]["total"] == 2
+        assert summary["high"]["dismissed"] == 0
+        assert summary["low"]["total"] == 1
+        assert summary["low"]["dismissed"] == 1
+
+    def test_telemetry_empty(self, sample_store: VstashStore) -> None:
+        summary = sample_store.search_telemetry_summary()
+        assert summary == {}
