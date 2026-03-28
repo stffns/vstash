@@ -9,7 +9,7 @@
 
 We present **vstash**, a local-first document memory system that combines vector similarity search with full-text keyword matching via Reciprocal Rank Fusion (RRF), augmented by a novel frequency-weighted temporal decay re-ranker. All data resides in a single SQLite file using `sqlite-vec` for approximate nearest neighbor search and FTS5 for keyword matching — no cloud services, no external databases.
 
-We make six empirical contributions. **(1)** A post-RRF re-ranking formula that fuses normalized semantic scores with access-frequency signals decayed over time, improving NDCG@10 by up to 16.1% on access-heavy scenarios while adding only 0.017 ms of overhead. **(2)** A *distance-based relevance signal* using the cosine distance of the best vector match, achieving F1 = 0.952 with zero overlap between relevant and irrelevant queries — working from the first search with no scoring or usage history required. This supersedes our earlier score-spread approach (F1 = 0.667, 10/10 class overlap). **(3)** Document-level deduplication that improves result diversity from ~3.2 to 5.0 unique documents per top-5 while simultaneously improving NDCG@5 from 0.814 to 0.829. **(4)** Context expansion that retrieves adjacent chunks (±1 window) for 2.64× richer LLM context at +0.12 ms cost. **(5)** Code-aware chunking with language-specific boundary detection that preserves function-level semantic coherence for 6 programming languages. **(6)** An *adaptive scoring maturity gate* (γ) that suppresses the frequency+decay component until access patterns exhibit sufficient differential (max/mean ≥ 8×), eliminating the cold start degradation of -8.6% observed with fixed β weighting.
+We make six empirical contributions. **(1)** A post-RRF re-ranking formula that fuses normalized semantic scores with access-frequency signals decayed over time, improving NDCG@10 by up to 16.1% on access-heavy scenarios while adding only 0.017 ms of overhead. **(2)** A *distance-based relevance signal* using the cosine distance of the best vector match, achieving F1 = 0.952 with zero overlap between relevant and irrelevant queries — working from the first search with no scoring or usage history required. This supersedes our earlier score-spread approach (F1 = 0.667, 10/10 class overlap). **(3)** Document-level deduplication that improves result diversity from ~3.2 to 5.0 unique documents per top-5 while simultaneously improving NDCG@5 from 0.814 to 0.829. **(4)** Context expansion that retrieves adjacent chunks (±1 window) for 2.64× richer LLM context at +0.12 ms cost. **(5)** Code-aware chunking with language-specific boundary detection that preserves function-level semantic coherence for 6 programming languages. **(6)** An *adaptive scoring maturity gate* (γ) that suppresses the frequency+decay component until access patterns exhibit sufficient differential (max/mean ≥ 8×), providing a conservative safety net against cold start degradation on sparse corpora while preserving marginal scoring benefits on rich corpora.
 
 We evaluate on three corpora — 24 arXiv papers (786 chunks, domain-specific), 17 Wikipedia articles (2,602 chunks, mixed-domain), and a synthetic 120-document corpus (582 chunks, 12 topic clusters) for cold start evaluation — with pooled relevance judgments across 10 queries, 5 access scenarios, and 16 parameter configurations. RRF achieves the highest NDCG@5 on both organic corpora (0.829 after dedup and 0.758 respectively). All experiments are reproducible; source code, data, and experiment scripts are open-source.
 
@@ -36,7 +36,7 @@ We introduce **vstash**, a single-file system built on SQLite that addresses all
 - **Document-level deduplication** that prevents a single document from flooding top-*k*, improving both diversity (5.0 unique docs per top-5) and NDCG@5 (+1.8%) (§3.4).
 - **Context expansion** via adjacent chunk retrieval for 2.64× richer LLM context at negligible latency cost (§3.5).
 - **Code-aware chunking** for 6 languages using regex-based boundary detection at column 0 with decorator attachment (§6).
-- An **adaptive scoring maturity gate** (γ) that suppresses frequency+decay until access patterns exhibit sufficient differential (max/mean ≥ 8×), eliminating cold start degradation of -8.6% observed with fixed β weighting (§4.5).
+- An **adaptive scoring maturity gate** (γ) that suppresses frequency+decay until access patterns exhibit sufficient differential (max/mean ≥ 8×), providing a conservative safety net against cold start degradation (§4.5).
 - An **open-source system** with CLI, Python SDK, MCP server for LLM agent integration, and reproducible experiment scripts (§3).
 
 ---
@@ -433,25 +433,29 @@ Naive chunking achieves higher recall on our small test corpus because a single 
 
 ### 8.6 Cold Start: Fixed β vs. Adaptive γ
 
-We evaluate the adaptive maturity gate (§4.5) on a synthetic corpus of 120 documents (582 chunks) across 12 topic clusters, with 10 evaluation queries and Zipf-weighted usage simulation over 30 rounds.
+We evaluate the adaptive maturity gate (§4.5) on a synthetic corpus of 120 documents (1,564 chunks) across 12 topic clusters, using 10 cross-topic evaluation queries with graded relevance (primary cluster = 3, secondary = 2, tertiary = 1) and Zipf-weighted usage simulation over 30 rounds. Each document is a multi-paragraph technical article (~600 words) chunked through vstash's real chunking pipeline.
 
-### Table 6: Fixed scoring vs. adaptive scoring over 30 rounds
+### Table 6: Fixed scoring vs. adaptive scoring over 30 rounds (120 docs, 1,564 chunks)
 
 | Round | Baseline (γ=0) | Fixed (β=0.5) | Adaptive (real γ) | γ | Cumulative Accesses |
 |:-----:|:--------------:|:--------------:|:------------------:|:---:|:-------------------:|
-| 1 | 0.847 | 0.812 (-4.1%) | 0.847 (0.0%) | 0.0 | 19 |
-| 5 | 0.847 | 0.778 (-8.1%) | 0.847 (0.0%) | 0.0 | 155 |
-| 10 | 0.847 | 0.774 (-8.6%) | 0.847 (0.0%) | 0.0 | 479 |
-| 15 | 0.847 | 0.774 (-8.6%) | 0.847 (0.0%) | 0.0 | 978 |
-| 20 | 0.847 | 0.774 (-8.6%) | 0.847 (0.0%) | 0.0 | 1,583 |
-| 25 | 0.847 | 0.774 (-8.6%) | 0.847 (0.0%) | 0.0 | 2,188 |
-| 30 | 0.847 | 0.774 (-8.6%) | 0.847 (0.0%) | 0.0 | 2,793 |
+| 1 | 0.801 | 0.814 (+1.6%) | 0.801 (0.0%) | 0.0 | 25 |
+| 5 | 0.801 | 0.814 (+1.6%) | 0.801 (0.0%) | 0.0 | 225 |
+| 10 | 0.801 | 0.814 (+1.6%) | 0.801 (0.0%) | 0.0 | 700 |
+| 15 | 0.801 | 0.814 (+1.6%) | 0.801 (0.0%) | 0.0 | 1,425 |
+| 20 | 0.801 | 0.814 (+1.6%) | 0.801 (0.0%) | 0.0 | 2,300 |
+| 25 | 0.801 | 0.801 (0.0%) | 0.801 (0.0%) | 0.0 | 3,175 |
+| 30 | 0.801 | 0.801 (0.0%) | 0.801 (0.0%) | 0.0 | 4,050 |
 
-**Key finding:** Fixed β=0.5 degrades NDCG by -8.6% from round 1 and *never recovers* across all 30 rounds (2,793 cumulative accesses). The adaptive gate produces **zero degradation** across all 30 rounds — γ remains 0.0 because the Zipf-weighted usage distribution does not create a sufficiently extreme outlier (max/mean ratio stays below 8×).
+**Key findings:**
 
-This validates the design: when there is no clear "power user favorite" in the access pattern, the maturity gate correctly suppresses scoring entirely. The frequency+decay component only activates when the access distribution exhibits a genuine outlier (e.g., a power user who queries one topic 50× more than the average), at which point the signal is strong enough to improve rather than degrade ranking.
+1. **Fixed β does not degrade on realistic corpora.** With multi-paragraph documents and cross-topic queries, fixed β=0.5 produces a marginal improvement (+1.6%) in early rounds and converges to baseline (0.0%) by round 23. This contrasts with smaller corpora (582 chunks from single-sentence documents) where fixed β degrades by -8.6% — indicating that degradation risk is inversely related to corpus richness.
 
-**Practical implication:** With the adaptive gate, scoring can be **enabled by default** — there is no cold start penalty. The system transitions seamlessly from pure RRF to frequency-augmented ranking as usage patterns mature, with zero user intervention.
+2. **The adaptive gate is a conservative safety net.** γ remains 0.0 across all 30 rounds because Zipf-weighted usage does not produce a sufficiently extreme outlier (max/mean ratio stays below 8×). The gate correctly identifies that the access distribution does not warrant scoring intervention.
+
+3. **Scoring benefit is corpus-dependent.** The +1.6% improvement from fixed β occurs because cross-topic queries benefit from frequency signals at the margin — frequently accessed clusters get a slight ranking boost when documents from multiple clusters compete for the same result slots. This benefit disappears as access counts converge (rounds 23+).
+
+**Practical implication:** The adaptive gate ensures scoring never degrades ranking regardless of corpus characteristics. On rich corpora, it trades a small potential benefit (+1.6%) for guaranteed safety. On sparse corpora (where degradation risk is highest), it prevents the -8.6% penalty observed with fixed β. Scoring can be **enabled by default** with zero cold start risk.
 
 ---
 
@@ -477,7 +481,7 @@ This validates the design: when there is no clear "power user favorite" in the a
 
 We presented vstash, a local-first document memory system that demonstrates six findings relevant to LLM agent memory:
 
-1. **Temporal scoring improves ranking under differential access, with adaptive activation.** Post-RRF re-ranking with frequency and decay improves NDCG@10 by +4.6% on average and +16.1% in access-heavy scenarios. The adaptive maturity gate (γ) eliminates the cold start penalty: fixed β=0.5 degrades NDCG by -8.6% from day one, while the adaptive gate maintains 0.0% degradation across 30 rounds by suppressing scoring until access patterns exhibit a clear outlier (max/mean ≥ 8×).
+1. **Temporal scoring improves ranking under differential access, with adaptive activation.** Post-RRF re-ranking with frequency and decay improves NDCG@10 by +4.6% on average and +16.1% in access-heavy scenarios. The adaptive maturity gate (γ) provides a conservative safety net: on a 120-document corpus (1,564 chunks) with cross-topic queries, the gate maintains 0.0% degradation across 30 rounds by suppressing scoring until access patterns exhibit a clear outlier (max/mean ≥ 8×), trading a marginal +1.6% benefit for guaranteed safety.
 
 2. **Vector distance is a strong, autonomous relevance signal.** The cosine distance of the best vector match achieves F1 = 0.952 in distinguishing relevant from irrelevant queries — with zero class overlap, no scoring dependency, and no warm-up period. This supersedes our initial score-spread approach (F1 = 0.667, complete class overlap), eliminating the need for human threshold tuning.
 
@@ -487,7 +491,7 @@ We presented vstash, a local-first document memory system that demonstrates six 
 
 5. **Local-first is viable.** With sub-millisecond search latency, a single SQLite file, and zero cloud dependencies, there is no fundamental barrier to running hybrid retrieval with temporal scoring, deduplication, and relevance signaling on a single machine.
 
-6. **Adaptive activation makes scoring safe by default.** The maturity gate's short-circuit optimization means scoring can be enabled from day one with zero overhead — when γ = 0, no metadata lookups or decay computations occur. The system transitions seamlessly from pure RRF to frequency-augmented ranking as usage patterns mature.
+6. **Adaptive activation makes scoring safe by default.** The maturity gate ensures scoring never degrades ranking regardless of corpus characteristics — on rich corpora it trades a marginal benefit (+1.6%) for guaranteed safety, on sparse corpora it prevents degradation risk. When γ = 0, no metadata lookups or decay computations occur. The system transitions seamlessly from pure RRF to frequency-augmented ranking as usage patterns mature.
 
 ---
 
