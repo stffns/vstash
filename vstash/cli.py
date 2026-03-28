@@ -31,6 +31,22 @@ from .store import VstashStore
 from . import __version__
 
 
+def _relevance_tier(distance: float) -> str:
+    """Classify vector distance into a relevance tier.
+
+    Tiers:
+        "high"   — distance <= 0.95: confident match, no indicator shown.
+        "medium" — 0.95 < distance <= 0.98: uncertain, subtle ? indicator.
+        "low"    — distance > 0.98: likely off-topic, full warning shown.
+    """
+    if distance <= 0.95:
+        return "high"
+    elif distance <= 0.98:
+        return "medium"
+    else:
+        return "low"
+
+
 def _version_callback(value: bool) -> None:
     if value:
         print(f"vstash {__version__}")
@@ -205,6 +221,24 @@ def ask(
             )
             raise typer.Exit()
 
+        # Tiered relevance signal
+        tier = _relevance_tier(store.last_best_distance)
+        store.record_search_event(
+            query=query,
+            best_distance=store.last_best_distance,
+            relevance_tier=tier,
+            result_count=len(chunks),
+        )
+        if tier == "low":
+            console.print(
+                "[dim]⚠ Low relevance — context may not match your question well.[/dim]"
+            )
+        elif tier == "medium":
+            console.print("[dim]? Uncertain relevance — results may be tangential.[/dim]")
+
+        # Expand context: include adjacent chunks for richer LLM context
+        chunks = store.expand_context(chunks, window=1)
+
         # Show sources
         if sources:
             source_list = list({c.title for c in chunks})
@@ -276,24 +310,36 @@ def search(
             )
             raise typer.Exit()
 
-        # Compute relevance signal from score spread
-        scores = [c.score for c in chunks]
-        spread = max(scores) - min(scores) if len(scores) > 1 else 0.0
-        low_relevance = spread < 0.15
+        # Relevance signal: tiered ghost warning based on vector distance.
+        # high (<=0.95): confident, no warning. medium (0.95-0.98): subtle ?.
+        # low (>0.98): full warning. Works from day zero, no scoring needed.
+        best_distance = store.last_best_distance
+        tier = _relevance_tier(best_distance)
+        scoring_enabled = cfg.scoring is not None and cfg.scoring.enabled
+
+        # Telemetry: record search event for discard rate analysis
+        _event_id = store.record_search_event(
+            query=query,
+            best_distance=best_distance,
+            relevance_tier=tier,
+            result_count=len(chunks),
+        )
 
         if json_output:
             import json
             out = {
                 "chunks": [c.model_dump() for c in chunks],
-                "relevance": "low" if low_relevance else "high",
+                "relevance": tier,
+                "best_distance": round(best_distance, 4),
             }
             print(json.dumps(out, indent=2))
             raise typer.Exit()
 
-        if low_relevance:
-            console.print("[dim]⚠ Results may not be specifically relevant to this query.[/dim]\n")
+        if tier == "low":
+            console.print("[dim]⚠ Low relevance — results may not match your query.[/dim]\n")
 
         # Normalize scores to [0, 1] for display
+        scores = [c.score for c in chunks]
         max_score = max(scores) if scores else 1.0
         min_score = min(scores) if len(scores) > 1 else 0.0
         score_range = max_score - min_score
@@ -308,17 +354,38 @@ def search(
             display_score = (
                 (c.score - min_score) / score_range if score_range > 0 else 1.0
             )
+            # Ghost warning: medium tier gets a subtle ? next to the rank
+            rank_label = f"{i}?" if tier == "medium" else str(i)
             text_preview = c.text.replace("\n", " ").strip()
             if len(text_preview) > 120:
                 text_preview = text_preview[:120] + "..."
             table.add_row(
-                str(i),
+                rank_label,
                 f"{display_score:.2f}",
                 c.title,
                 text_preview,
             )
 
         console.print(table)
+
+        # Show scoring warm-up progress when scoring is disabled
+        if not scoring_enabled:
+            total_accesses = store.total_access_count()
+            target = 500  # ~100 searches × 5 results
+            if total_accesses >= target:
+                console.print(
+                    "\n[dim]💡 Scoring ready! You have enough usage history. "
+                    "Enable in vstash.toml: [bold]scoring.enabled = true[/bold][/dim]"
+                )
+            elif total_accesses >= 50:
+                # Show progress once user has done at least ~10 searches
+                pct = min(100, int(total_accesses / target * 100))
+                bar_filled = pct // 5  # 20-char bar
+                bar = "█" * bar_filled + "░" * (20 - bar_filled)
+                console.print(
+                    f"\n[dim]Learning preferences: {bar} {pct}% "
+                    f"({total_accesses}/{target})[/dim]"
+                )
 
 
 # ------------------------------------------------------------------ #
@@ -382,6 +449,24 @@ def chat(
                 if not chunks:
                     console.print("[yellow]No relevant context found.[/yellow]")
                     continue
+
+                # Tiered relevance signal
+                tier = _relevance_tier(store.last_best_distance)
+                store.record_search_event(
+                    query=query,
+                    best_distance=store.last_best_distance,
+                    relevance_tier=tier,
+                    result_count=len(chunks),
+                )
+                if tier == "low":
+                    console.print(
+                        "[dim]⚠ Low relevance — context may not match well.[/dim]"
+                    )
+                elif tier == "medium":
+                    console.print("[dim]? Uncertain relevance — results may be tangential.[/dim]")
+
+                # Expand context with adjacent chunks
+                chunks = store.expand_context(chunks, window=1)
 
                 source_list = list({c.title for c in chunks})
                 console.print(f"[dim]Sources: {', '.join(source_list)}[/dim]\n")

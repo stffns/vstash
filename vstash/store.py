@@ -72,6 +72,9 @@ class VstashStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.embedding_dim = embedding_dim
         self._write_lock = threading.Lock()
+        # Set after each search — the cosine distance of the best vector match.
+        # Lower = more semantically similar. Used for relevance confidence.
+        self.last_best_distance: float = 0.0
         self._conn = self._connect()
 
     # ------------------------------------------------------------------ #
@@ -161,6 +164,24 @@ class VstashStore:
             USING fts5(text, content=chunks, content_rowid=id, tokenize='porter ascii');
 
             CREATE INDEX IF NOT EXISTS idx_chunks_doc ON chunks(doc_id);
+
+            -- Search statistics for adaptive relevance threshold
+            CREATE TABLE IF NOT EXISTS search_stats (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                spread     REAL NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            -- Search event telemetry for validating relevance signal
+            CREATE TABLE IF NOT EXISTS search_events (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                query           TEXT NOT NULL,
+                best_distance   REAL NOT NULL,
+                relevance_tier  TEXT NOT NULL,
+                result_count    INTEGER NOT NULL,
+                dismissed       INTEGER NOT NULL DEFAULT 0,
+                created_at      TEXT NOT NULL
+            );
 
             -- Auto-sync FTS5 when chunks are deleted directly
             CREATE TRIGGER IF NOT EXISTS trg_chunks_delete
@@ -473,17 +494,24 @@ class VstashStore:
         # Remove results that are semantically too far from the ideal match.
         if vec_rows:
             best_distance = float(vec_rows[0]["distance"])
+            self.last_best_distance = best_distance
             if best_distance > 0:
                 threshold = best_distance * distance_cutoff
                 vec_rows = [r for r in vec_rows if float(r["distance"]) <= threshold]
+        else:
+            self.last_best_distance = 2.0  # max cosine distance = worst case
 
         # Track which chunk IDs passed the vector distance filter
         relevant_chunk_ids: set[int] = {row["id"] for row in vec_rows}
 
         # --- FTS5 search ---
-        # Wrap user input in double-quotes to force literal matching.
-        # This prevents FTS5 syntax injection (e.g. NEAR, OR, NOT operators).
-        safe_query = '"' + query_text.replace('"', '""') + '"'
+        # Quote each word individually and join with OR for keyword matching.
+        # This preserves injection safety (each token is double-quoted to
+        # prevent FTS5 syntax like NEAR, NOT, OR from being interpreted)
+        # while allowing keyword-level matching instead of exact-phrase.
+        words = query_text.split()
+        quoted_words = ['"' + w.replace('"', '""') + '"' for w in words if len(w) > 1]
+        safe_query = " OR ".join(quoted_words) if quoted_words else '"' + query_text.replace('"', '""') + '"'
         try:
             fts_rows = self._conn.execute(
                 f"""
@@ -548,7 +576,17 @@ class VstashStore:
                 decay_lambda=scoring.decay_lambda,
             )
 
-        ranked = ranked[:top_k]
+        # Document-level deduplication: keep only the highest-scoring chunk
+        # per document so that a single long document doesn't flood top-k.
+        seen_docs: set[str] = set()
+        deduped: list[dict[str, str | int | float]] = []
+        for r in ranked:
+            doc_key = str(r["title"])
+            if doc_key not in seen_docs:
+                seen_docs.add(doc_key)
+                deduped.append(r)
+
+        ranked = deduped[:top_k]
 
         results = [
             SearchResult(
@@ -561,8 +599,10 @@ class VstashStore:
             for r in ranked
         ]
 
-        # Track access for returned chunks (best-effort, failures don't affect results)
-        if scoring is not None and scoring.enabled and scoring.track_access:
+        # Track access for returned chunks (best-effort, failures don't affect results).
+        # Always track when track_access is True, even if scoring is disabled —
+        # this builds up usage history for future scoring enablement.
+        if scoring is not None and scoring.track_access:
             try:
                 result_ids = [int(r["id"]) for r in ranked if "id" in r]
                 if result_ids:
@@ -942,6 +982,153 @@ class VstashStore:
                 [now_iso, *chunk_ids],
             )
             self._conn.commit()
+
+    def total_access_count(self) -> int:
+        """Return the sum of all access_count values across chunks."""
+        row = self._conn.execute(
+            "SELECT COALESCE(SUM(access_count), 0) AS total FROM chunks"
+        ).fetchone()
+        return int(row["total"])
+
+    def record_spread(self, spread: float) -> None:
+        """Record a search spread value for adaptive threshold computation.
+
+        Keeps only the last 50 entries to act as a sliding window.
+        """
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._write_lock:
+            self._conn.execute(
+                "INSERT INTO search_stats (spread, created_at) VALUES (?, ?)",
+                [spread, now_iso],
+            )
+            # Prune to keep only the last 50 entries
+            self._conn.execute(
+                "DELETE FROM search_stats WHERE id NOT IN "
+                "(SELECT id FROM search_stats ORDER BY id DESC LIMIT 50)"
+            )
+            self._conn.commit()
+
+    def adaptive_relevance_threshold(self, fallback: float = 0.15) -> float:
+        """Compute a per-corpus adaptive relevance threshold.
+
+        Uses the mean and standard deviation of recent spreads to set a
+        threshold at mean - 1 standard deviation. This adapts to the user's
+        specific corpus: a corpus with naturally high spreads gets a higher
+        threshold, and vice versa.
+
+        Falls back to the fixed threshold when fewer than 10 data points exist.
+
+        Returns:
+            Adaptive threshold, or ``fallback`` if insufficient history.
+        """
+        rows = self._conn.execute(
+            "SELECT spread FROM search_stats ORDER BY id DESC LIMIT 50"
+        ).fetchall()
+
+        if len(rows) < 10:
+            return fallback
+
+        spreads = [r["spread"] for r in rows]
+        mean = sum(spreads) / len(spreads)
+        variance = sum((s - mean) ** 2 for s in spreads) / len(spreads)
+        std = variance ** 0.5
+
+        # Threshold at mean - 1σ: spreads below this are unusually low
+        threshold = max(0.01, mean - std)
+        return threshold
+
+    def record_search_event(
+        self,
+        query: str,
+        best_distance: float,
+        relevance_tier: str,
+        result_count: int,
+    ) -> int:
+        """Record a search event for discard telemetry.
+
+        Returns the event ID so it can be marked as dismissed later.
+        """
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._write_lock:
+            cursor = self._conn.execute(
+                "INSERT INTO search_events (query, best_distance, relevance_tier, "
+                "result_count, dismissed, created_at) VALUES (?, ?, ?, ?, 0, ?)",
+                [query, best_distance, relevance_tier, result_count, now_iso],
+            )
+            self._conn.commit()
+            return cursor.lastrowid  # type: ignore[return-value]
+
+    def mark_search_dismissed(self, event_id: int) -> None:
+        """Mark a search event as dismissed (user didn't engage with results)."""
+        with self._write_lock:
+            self._conn.execute(
+                "UPDATE search_events SET dismissed = 1 WHERE id = ?",
+                [event_id],
+            )
+            self._conn.commit()
+
+    def search_telemetry_summary(self) -> dict[str, dict[str, int]]:
+        """Return dismiss rates grouped by relevance tier.
+
+        Returns:
+            Dict mapping tier name to {"total": N, "dismissed": N}.
+        """
+        rows = self._conn.execute(
+            "SELECT relevance_tier, COUNT(*) AS total, "
+            "SUM(dismissed) AS dismissed FROM search_events "
+            "GROUP BY relevance_tier"
+        ).fetchall()
+        return {
+            row["relevance_tier"]: {
+                "total": row["total"],
+                "dismissed": row["dismissed"],
+            }
+            for row in rows
+        }
+
+    def expand_context(self, results: list[SearchResult], window: int = 1) -> list[SearchResult]:
+        """Expand each search result with adjacent chunks from the same document.
+
+        For each result, fetches up to ``window`` chunks before and after it
+        (by sequence number), concatenates their text, and returns a new
+        SearchResult with the expanded text. This gives the LLM more context
+        without increasing the number of results.
+
+        Args:
+            results: Search results to expand.
+            window: Number of adjacent chunks to include on each side.
+
+        Returns:
+            New list of SearchResult with expanded text.
+        """
+        if not results or window < 1:
+            return results
+
+        expanded = []
+        for r in results:
+            row = self._conn.execute(
+                "SELECT text FROM chunks WHERE doc_id = ("
+                "  SELECT doc_id FROM chunks c JOIN documents d ON d.id = c.doc_id "
+                "  WHERE d.title = ? AND c.seq = ? LIMIT 1"
+                ") AND seq BETWEEN ? AND ? ORDER BY seq",
+                [r.title, r.chunk, r.chunk - window, r.chunk + window],
+            ).fetchall()
+
+            if row:
+                combined_text = "\n".join(chunk["text"] for chunk in row)
+                expanded.append(
+                    SearchResult(
+                        text=combined_text,
+                        title=r.title,
+                        path=r.path,
+                        chunk=r.chunk,
+                        score=r.score,
+                    )
+                )
+            else:
+                expanded.append(r)
+
+        return expanded
 
     def close(self) -> None:
         """Close the database connection."""
