@@ -11,7 +11,7 @@ We present **vstash**, a local-first document memory system that combines vector
 
 We make six empirical contributions. **(1)** A post-RRF re-ranking formula that fuses normalized semantic scores with access-frequency signals decayed over time, improving NDCG@10 by up to 16.1% on access-heavy scenarios while adding only 0.017 ms of overhead. **(2)** A *distance-based relevance signal* using the cosine distance of the best vector match, achieving F1 = 0.952 with zero overlap between relevant and irrelevant queries — working from the first search with no scoring or usage history required. This supersedes our earlier score-spread approach (F1 = 0.667, 10/10 class overlap). **(3)** Document-level deduplication that improves result diversity from ~3.2 to 5.0 unique documents per top-5 while simultaneously improving NDCG@5 from 0.814 to 0.829. **(4)** Context expansion that retrieves adjacent chunks (±1 window) for 2.64× richer LLM context at +0.12 ms cost. **(5)** Code-aware chunking with language-specific boundary detection that preserves function-level semantic coherence for 6 programming languages. **(6)** An *adaptive scoring maturity gate* (γ) that suppresses the frequency+decay component until access patterns exhibit sufficient differential (max/mean ≥ 8×), eliminating the cold start degradation of -8.6% observed with fixed β weighting.
 
-We evaluate on two corpora — 24 arXiv papers (786 chunks, domain-specific) and 17 Wikipedia articles (2,602 chunks, mixed-domain) — with pooled relevance judgments across 10 queries, 5 access scenarios, and 16 parameter configurations. RRF achieves the highest NDCG@5 on both corpora (0.829 after dedup and 0.758 respectively). All experiments are reproducible; source code, data, and experiment scripts are open-source.
+We evaluate on three corpora — 24 arXiv papers (786 chunks, domain-specific), 17 Wikipedia articles (2,602 chunks, mixed-domain), and a synthetic 120-document corpus (582 chunks, 12 topic clusters) for cold start evaluation — with pooled relevance judgments across 10 queries, 5 access scenarios, and 16 parameter configurations. RRF achieves the highest NDCG@5 on both organic corpora (0.829 after dedup and 0.758 respectively). All experiments are reproducible; source code, data, and experiment scripts are open-source.
 
 ---
 
@@ -318,9 +318,13 @@ Input: source text T, language L, chunk_size C
 
 ## 7. Experimental Setup
 
-**Corpus.** 24 arXiv papers on LLM memory systems (2023–2026), yielding 786 chunks after ingestion. Publication dates are used to simulate temporal spread.
+**Corpora.** Three evaluation corpora of increasing scale:
 
-**Queries.** 10 evaluation queries with human-annotated top-5 expected results (graded relevance). 15 relevant and 15 irrelevant queries for the relevance signal experiment.
+1. **LLM memory corpus** — 24 arXiv papers on LLM memory systems (2023–2026), yielding 786 chunks. Used for ablation (§8.1), scoring grid search (§8.2), relevance signal (§8.3), and latency (§8.5). Publication dates simulate temporal spread.
+2. **Wikipedia corpus** — 17 mixed-domain Wikipedia articles, yielding 2,602 chunks. Used for cross-domain ablation (§8.1) to validate generalizability.
+3. **Synthetic cold start corpus** — 120 documents across 12 topic clusters (machine learning, systems, databases, networking, etc.), yielding 582 chunks. Generated with controlled topic distributions for the adaptive scoring experiment (§8.6). Zipf-weighted query simulation over 30 rounds models realistic non-uniform usage.
+
+**Queries.** 10 evaluation queries with human-annotated top-5 expected results (graded relevance). 15 relevant and 15 irrelevant queries for the relevance signal experiment. 10 topic-aligned queries for cold start evaluation.
 
 **Metrics:**
 - **NDCG@k**: Normalized Discounted Cumulative Gain
@@ -453,13 +457,13 @@ This validates the design: when there is no clear "power user favorite" in the a
 
 ## 9. Limitations and Future Work
 
-**Corpus breadth.** We evaluate on two corpora: 24 LLM memory papers (domain-specific) and 17 Wikipedia articles (mixed-domain). While RRF leads on both (Tables 2a–2b), testing on additional domains (e.g., legal, medical) would further strengthen generalizability claims.
+**Corpus breadth.** We evaluate on three corpora: 24 LLM memory papers (domain-specific), 17 Wikipedia articles (mixed-domain), and a 120-document synthetic corpus (12 topic clusters). While RRF leads on both organic corpora (Tables 2a–2b) and the adaptive gate validates on the synthetic corpus (Table 6), testing on additional real-world domains (e.g., legal, medical) would further strengthen generalizability claims.
 
 **Cold start period — solved for ranking.** The adaptive maturity gate (§4.5) eliminates the cold start ranking degradation: with γ = 0, scoring adds zero noise to fresh corpora. However, the gate's conservative thresholds (R ≥ 8×) mean scoring may remain dormant even with moderate usage. Users with uniformly distributed access patterns may never activate the frequency component — by design, since uniform access carries no signal worth exploiting.
 
 **Discard telemetry is prospective.** The search_events table and dismiss tracking (§5.4) are instrumented but have not yet accumulated enough real-world data to validate dismiss rates across tiers. This is a designed validation path, not a confirmed result.
 
-**Scale.** Our experiments use 786 chunks. SQLite's single-writer model may bottleneck at 10⁶+ chunks under concurrent write load, though WAL mode and batching mitigate this for single-user scenarios.
+**Scale.** Our largest experiment uses 2,602 chunks (Wikipedia) and the cold start experiment uses 582 chunks across 120 documents. SQLite's single-writer model may bottleneck at 10⁶+ chunks under concurrent write load, though WAL mode and batching mitigate this for single-user scenarios.
 
 **Maximal Marginal Relevance (MMR).** Document deduplication (§3.4) uses hard per-document dedup. MMR-style diversity-aware re-ranking could provide a better diversity/relevance tradeoff by allowing multiple chunks from the same document when they are sufficiently diverse.
 
