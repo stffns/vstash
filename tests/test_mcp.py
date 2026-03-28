@@ -161,6 +161,9 @@ class TestVstashSearch:
     ) -> None:
         chunks = [_make_search_result("relevant text", "Doc1")]
         mock_store.return_value.search.return_value = chunks
+        mock_store.return_value.expand_context.return_value = chunks
+        mock_store.return_value.last_best_distance = 0.5
+        mock_store.return_value.record_search_event.return_value = 1
         mock_config.return_value.embeddings.model = "BAAI/bge-small-en-v1.5"
 
         result = json.loads(vstash_search("test query"))
@@ -168,7 +171,7 @@ class TestVstashSearch:
         assert len(result["chunks"]) == 1
         assert result["chunks"][0]["text"] == "relevant text"
         assert result["chunks"][0]["score"] == 0.5
-        assert result["relevance"] in ("high", "low")
+        assert result["relevance"] in ("high", "medium", "low")
 
     @patch("vstash.mcp.embed_query", return_value=[0.1] * 384)
     @patch("vstash.mcp._get_store")
