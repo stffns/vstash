@@ -72,10 +72,20 @@ class VstashStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.embedding_dim = embedding_dim
         self._write_lock = threading.Lock()
-        # Set after each search — the cosine distance of the best vector match.
-        # Lower = more semantically similar. Used for relevance confidence.
-        self.last_best_distance: float = 0.0
+        # Per-thread state for the cosine distance of the best vector match.
+        # Thread-local so concurrent searches on a shared instance don't race.
+        self._thread_local = threading.local()
+        self._thread_local.last_best_distance = 0.0
         self._conn = self._connect()
+
+    @property
+    def last_best_distance(self) -> float:
+        """Cosine distance of the best vector match from the last search."""
+        return getattr(self._thread_local, "last_best_distance", 0.0)
+
+    @last_best_distance.setter
+    def last_best_distance(self, value: float) -> None:
+        self._thread_local.last_best_distance = value
 
     # ------------------------------------------------------------------ #
     # Context manager                                                      #
@@ -182,6 +192,9 @@ class VstashStore:
                 dismissed       INTEGER NOT NULL DEFAULT 0,
                 created_at      TEXT NOT NULL
             );
+
+            CREATE INDEX IF NOT EXISTS idx_search_events_tier
+            ON search_events(relevance_tier, created_at);
 
             -- Auto-sync FTS5 when chunks are deleted directly
             CREATE TRIGGER IF NOT EXISTS trg_chunks_delete
@@ -581,7 +594,7 @@ class VstashStore:
         seen_docs: set[str] = set()
         deduped: list[dict[str, str | int | float]] = []
         for r in ranked:
-            doc_key = str(r["title"])
+            doc_key = str(r["path"])
             if doc_key not in seen_docs:
                 seen_docs.add(doc_key)
                 deduped.append(r)
@@ -1055,6 +1068,11 @@ class VstashStore:
                 "result_count, dismissed, created_at) VALUES (?, ?, ?, ?, 0, ?)",
                 [query, best_distance, relevance_tier, result_count, now_iso],
             )
+            # Prune to keep only the last 1000 entries
+            self._conn.execute(
+                "DELETE FROM search_events WHERE id NOT IN "
+                "(SELECT id FROM search_events ORDER BY id DESC LIMIT 1000)"
+            )
             self._conn.commit()
             return cursor.lastrowid  # type: ignore[return-value]
 
@@ -1109,9 +1127,9 @@ class VstashStore:
             row = self._conn.execute(
                 "SELECT text FROM chunks WHERE doc_id = ("
                 "  SELECT doc_id FROM chunks c JOIN documents d ON d.id = c.doc_id "
-                "  WHERE d.title = ? AND c.seq = ? LIMIT 1"
+                "  WHERE d.path = ? AND c.seq = ? LIMIT 1"
                 ") AND seq BETWEEN ? AND ? ORDER BY seq",
-                [r.title, r.chunk, r.chunk - window, r.chunk + window],
+                [r.path, r.chunk, r.chunk - window, r.chunk + window],
             ).fetchall()
 
             if row:

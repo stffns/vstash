@@ -134,7 +134,9 @@ def find_optimal_threshold(
             best_f1 = m.f1
             best_threshold = s
             best_metrics = m
-    return best_threshold, best_metrics  # type: ignore[return-value]
+    if best_metrics is None:
+        best_metrics = evaluate_threshold(relevant_spreads, irrelevant_spreads, best_threshold)
+    return best_threshold, best_metrics
 
 
 def main() -> None:

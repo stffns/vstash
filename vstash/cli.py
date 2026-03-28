@@ -429,17 +429,28 @@ def chat(
                 total += msg_tokens
             return list(reversed(trimmed))
 
+        # Telemetry: track whether user engages after non-high results
+        last_event_id: int | None = None
+        last_tier: str = "high"
+
+        def _maybe_dismiss() -> None:
+            """Mark the last search as dismissed if it was non-high relevance."""
+            if last_event_id is not None and last_tier != "high":
+                store.mark_search_dismissed(last_event_id)
+
         try:
             while True:
                 console.print()
                 try:
                     query = console.input("[bold cyan]>[/bold cyan] ").strip()
                 except (EOFError, KeyboardInterrupt):
+                    _maybe_dismiss()
                     break
 
                 if not query:
                     continue
                 if query.lower() in ("exit", "quit", "q"):
+                    _maybe_dismiss()
                     break
 
                 # Search
@@ -452,12 +463,13 @@ def chat(
 
                 # Tiered relevance signal
                 tier = _relevance_tier(store.last_best_distance)
-                store.record_search_event(
+                last_event_id = store.record_search_event(
                     query=query,
                     best_distance=store.last_best_distance,
                     relevance_tier=tier,
                     result_count=len(chunks),
                 )
+                last_tier = tier
                 if tier == "low":
                     console.print(
                         "[dim]⚠ Low relevance — context may not match well.[/dim]"
