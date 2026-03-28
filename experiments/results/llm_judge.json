@@ -1,7 +1,7 @@
 {
   "experiment": "llm_judge",
   "llm_model": "qwen/qwen3.5-9b",
-  "db_path": "/var/folders/3s/d0mzpfw93qj_xqng6nmz28kr0000gn/T/vstash_judge_xrzrq9in/judge.db",
+  "db_path": "judge.db",
   "pooled_results": [
     {
       "query": "long-term memory systems for conversational AI agents",

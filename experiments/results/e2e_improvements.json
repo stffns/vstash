@@ -1,6 +1,6 @@
 {
   "experiment": "e2e_improvements",
-  "db_path": "/var/folders/3s/d0mzpfw93qj_xqng6nmz28kr0000gn/T/vstash_e2e_nsqw5czf/e2e.db",
+  "db_path": "e2e.db",
   "n_chunks": 786,
   "tests": [
     {

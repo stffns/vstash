@@ -3,7 +3,7 @@
   "corpus_size": 24,
   "queries": 10,
   "top_k": 10,
-  "db_path": "/var/folders/3s/d0mzpfw93qj_xqng6nmz28kr0000gn/T/vstash_ablation_g63btqwi/ablation.db",
+  "db_path": "ablation.db",
   "results": [
     {
       "mode": "vector_only",
