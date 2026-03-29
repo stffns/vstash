@@ -17,6 +17,7 @@ import sqlite3
 import struct
 from datetime import datetime, timezone
 from pathlib import Path
+from collections.abc import Callable
 from types import TracebackType
 
 import threading
@@ -1346,6 +1347,81 @@ class VstashStore:
                 expanded.append(r)
 
         return expanded
+
+    # ------------------------------------------------------------------ #
+    # Reindex                                                              #
+    # ------------------------------------------------------------------ #
+
+    def reindex(
+        self,
+        embed_fn: Callable[[list[str]], list[list[float]]],
+        new_dim: int,
+        batch_size: int = 256,
+        progress_cb: Callable[[int, int], None] | None = None,
+    ) -> int:
+        """Re-embed all chunks with a new embedding model.
+
+        Drops and recreates ``vec_chunks`` with the new dimensionality,
+        then re-embeds all chunk text in batches.
+
+        Args:
+            embed_fn: Function that takes a list of texts and returns
+                a list of embedding vectors.
+            new_dim: Dimensionality of the new embedding model.
+            batch_size: Number of chunks to embed per batch.
+            progress_cb: Optional callback ``(processed, total)`` for
+                progress reporting.
+
+        Returns:
+            Number of chunks re-embedded.
+        """
+        with self._write_lock:
+            # Count total chunks
+            total = self._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+            if total == 0:
+                return 0
+
+            try:
+                # Drop and recreate vec_chunks with new dimensions
+                self._conn.execute("DROP TABLE IF EXISTS vec_chunks")
+                self._conn.execute(
+                    f"CREATE VIRTUAL TABLE vec_chunks USING vec0(embedding float[{new_dim}])"
+                )
+
+                # Re-embed in batches
+                processed = 0
+                offset = 0
+                while offset < total:
+                    rows = self._conn.execute(
+                        "SELECT id, text FROM chunks ORDER BY id LIMIT ? OFFSET ?",
+                        [batch_size, offset],
+                    ).fetchall()
+                    if not rows:
+                        break
+
+                    texts = [row["text"] for row in rows]
+                    ids = [row["id"] for row in rows]
+                    embeddings = embed_fn(texts)
+
+                    for chunk_id, embedding in zip(ids, embeddings):
+                        self._conn.execute(
+                            "INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)",
+                            [chunk_id, _serialize(embedding)],
+                        )
+
+                    processed += len(rows)
+                    offset += batch_size
+                    if progress_cb:
+                        progress_cb(processed, total)
+
+                # Update stored dimension
+                self.embedding_dim = new_dim
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
+            return processed
 
     def close(self) -> None:
         """Close the database connection."""
