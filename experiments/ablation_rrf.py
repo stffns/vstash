@@ -15,19 +15,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import tempfile
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from vstash.config import VstashConfig
-from vstash.embed import embed_query, get_embedding_dim
-from vstash.store import VstashStore
-
-MODEL = "BAAI/bge-small-en-v1.5"
-
-# Reuse the same corpus and queries from scoring_grid
 from experiments.scoring_grid import (
     EVAL_QUERIES,
     NAME_TO_URL,
@@ -35,6 +27,10 @@ from experiments.scoring_grid import (
     ingest_papers,
     ndcg_at_k,
 )
+from vstash.embed import embed_query, get_embedding_dim
+from vstash.store import VstashStore
+
+MODEL = "BAAI/bge-small-en-v1.5"
 
 
 # ------------------------------------------------------------------ #
@@ -42,12 +38,10 @@ from experiments.scoring_grid import (
 # ------------------------------------------------------------------ #
 
 
-def search_vector_only(
-    store: VstashStore, query_embedding: list[float], top_k: int
-) -> list:
+def search_vector_only(store: VstashStore, query_embedding: list[float], top_k: int) -> list:
     """Vector search only — bypass FTS entirely."""
     dim = len(query_embedding)
-    sql = f"""
+    sql = """
         SELECT c.id, c.text, c.seq, d.title, d.path,
                vec_distance_cosine(v.embedding, ?) AS distance
         FROM vec_chunks v
@@ -56,7 +50,6 @@ def search_vector_only(
         ORDER BY distance ASC
         LIMIT ?
     """
-    import sqlite_vec
     import struct
 
     blob = struct.pack(f"{dim}f", *query_embedding)
@@ -80,9 +73,7 @@ def search_vector_only(
     return results
 
 
-def search_fts_only(
-    store: VstashStore, query_text: str, top_k: int
-) -> list:
+def search_fts_only(store: VstashStore, query_text: str, top_k: int) -> list:
     """FTS5 search only — bypass vector entirely.
 
     Uses individual keyword matching (OR) for fair comparison,

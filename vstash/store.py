@@ -546,7 +546,9 @@ class VstashStore:
         # while allowing keyword-level matching instead of exact-phrase.
         words = query_text.split()
         quoted_words = ['"' + w.replace('"', '""') + '"' for w in words if len(w) > 1]
-        safe_query = " OR ".join(quoted_words) if quoted_words else '"' + query_text.replace('"', '""') + '"'
+        safe_query = (
+            " OR ".join(quoted_words) if quoted_words else '"' + query_text.replace('"', '""') + '"'
+        )
         try:
             fts_rows = self._conn.execute(
                 f"""
@@ -701,8 +703,7 @@ class VstashStore:
             placeholders = ",".join("?" * len(dup_ids))
             try:
                 rows = self._conn.execute(
-                    f"SELECT rowid, embedding FROM vec_chunks "
-                    f"WHERE rowid IN ({placeholders})",
+                    f"SELECT rowid, embedding FROM vec_chunks WHERE rowid IN ({placeholders})",
                     dup_ids,
                 ).fetchall()
                 for row in rows:
@@ -1244,7 +1245,7 @@ class VstashStore:
         spreads = [r["spread"] for r in rows]
         mean = sum(spreads) / len(spreads)
         variance = sum((s - mean) ** 2 for s in spreads) / len(spreads)
-        std = variance ** 0.5
+        std = variance**0.5
 
         # Threshold at mean - 1σ: spreads below this are unusually low
         threshold = max(0.01, mean - std)
