@@ -328,7 +328,7 @@ Input: source text T, language L, chunk_size C
 7. Return chunks
 ```
 
-**Column-0 anchoring.** By requiring zero indentation, we avoid false positives on nested method definitions (e.g., methods inside a Python class). This is a deliberate trade-off: nested methods are kept with their parent class, which is desirable for embedding coherence.
+**Column-0 anchoring.** By requiring zero indentation, we avoid false positives on nested method definitions (e.g., methods inside a Python class). This is a deliberate trade-off: nested methods are kept with their parent class, which is desirable for embedding coherence. The convention is strongest in Python, Go, and Rust, where top-level definitions are idiomatically unindented; JavaScript and TypeScript module patterns occasionally nest exports, which the regex misses. In all cases, the 3-tier fallback chain (regex → paragraph → fixed-window) ensures that unmatched code still produces token-bounded chunks — the failure mode is slightly less semantic boundaries, never data loss or silent omission. A Tree-sitter-based parser would improve boundary precision for nested JS/TS patterns at the cost of ~15 MB of compiled grammars and per-language binary dependencies, a trade-off we consider worthwhile only for codebases dominated by deeply nested module patterns.
 
 ---
 
@@ -485,7 +485,7 @@ We evaluate the adaptive maturity gate (§4.5) on a corpus of 120 real Wikipedia
 
 **Scale.** Our largest experiment uses 2,602 chunks (Wikipedia) and the cold start experiment uses 919 chunks across 120 real Wikipedia articles. SQLite's single-writer model may bottleneck at 10⁶+ chunks under concurrent write load, though WAL mode and batching mitigate this for single-user scenarios.
 
-**MMR λ sensitivity.** The intra-document MMR deduplication (§3.4) uses a fixed λ=0.5 balancing relevance and diversity. While this works well across our test corpora, the optimal λ may vary for specific use cases (e.g., λ closer to 1.0 for short documents where intra-document diversity is low, λ closer to 0.3 for book-length documents). Adaptive λ selection based on document length or chunk count is a potential improvement.
+**MMR λ sensitivity.** The intra-document MMR deduplication (§3.4) uses a fixed λ=0.5, the equilibrium point from the original MMR formulation (Carbonell & Goldstein, 1998). Two candidate adaptive strategies — scaling λ by document length and by embedding variance — introduce second-order tuning problems (calibrating the mapping function) without clear gains: document length does not correlate with chunk similarity (a long novel has diverse chapters; a long API reference has near-identical entries), and embedding variance can be misleading when low variance masks high conceptual diversity. In practice, the negative MMR cutoff (stop selection when best remaining MMR < 0) already provides adaptive behavior: when chunks are diverse, the penalty is small and more pass; when near-duplicate, the penalty eliminates them. This achieves the same effect as dynamic λ without additional hyperparameters. The parameter is user-configurable via `scoring.mmr_lambda` in `vstash.toml` for domain-specific tuning.
 
 **Implicit feedback.** Tracking which results the user expands, copies, or follows up on could refine the relevance signal and accelerate scoring warm-up — closing the loop between usage and retrieval quality.
 
@@ -532,3 +532,5 @@ We presented vstash, a local-first document memory system that demonstrates six 
 9. MaRS Team. (2025). MaRS: Forgetful but faithful — cognitive memory architecture. *arXiv:2512.12856*.
 
 10. PAM Team. (2026). PAM: Predictive associative memory via temporal co-occurrence. *arXiv:2602.11322*.
+
+11. Carbonell, J., & Goldstein, J. (1998). The use of MMR, diversity-based reranking for reordering documents and producing summaries. *SIGIR*.
