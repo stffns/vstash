@@ -9,6 +9,7 @@ Commands:
   vstash list             → show ingested documents
   vstash stats            → memory statistics
   vstash forget <file>    → remove document
+  vstash reindex           → re-embed chunks with new model
   vstash config           → show current config
 """
 
@@ -230,9 +231,7 @@ def ask(
             result_count=len(chunks),
         )
         if tier == "low":
-            console.print(
-                "[dim]⚠ Low relevance — context may not match your question well.[/dim]"
-            )
+            console.print("[dim]⚠ Low relevance — context may not match your question well.[/dim]")
         elif tier == "medium":
             console.print("[dim]? Uncertain relevance — results may be tangential.[/dim]")
 
@@ -327,6 +326,7 @@ def search(
 
         if json_output:
             import json
+
             out = {
                 "chunks": [c.model_dump() for c in chunks],
                 "relevance": tier,
@@ -351,9 +351,7 @@ def search(
         table.add_column("Text", max_width=80)
 
         for i, c in enumerate(chunks, 1):
-            display_score = (
-                (c.score - min_score) / score_range if score_range > 0 else 1.0
-            )
+            display_score = (c.score - min_score) / score_range if score_range > 0 else 1.0
             # Ghost warning: medium tier gets a subtle ? next to the rank
             rank_label = f"{i}?" if tier == "medium" else str(i)
             text_preview = c.text.replace("\n", " ").strip()
@@ -383,8 +381,7 @@ def search(
                 bar_filled = pct // 5  # 20-char bar
                 bar = "█" * bar_filled + "░" * (20 - bar_filled)
                 console.print(
-                    f"\n[dim]Learning preferences: {bar} {pct}% "
-                    f"({total_accesses}/{target})[/dim]"
+                    f"\n[dim]Learning preferences: {bar} {pct}% ({total_accesses}/{target})[/dim]"
                 )
 
 
@@ -471,9 +468,7 @@ def chat(
                 )
                 last_tier = tier
                 if tier == "low":
-                    console.print(
-                        "[dim]⚠ Low relevance — context may not match well.[/dim]"
-                    )
+                    console.print("[dim]⚠ Low relevance — context may not match well.[/dim]")
                 elif tier == "medium":
                     console.print("[dim]? Uncertain relevance — results may be tangential.[/dim]")
 
@@ -702,6 +697,82 @@ def show_config() -> None:
             border_style="cyan",
         )
     )
+
+
+# ------------------------------------------------------------------ #
+# vstash reindex                                                       #
+# ------------------------------------------------------------------ #
+
+
+@app.command()
+def reindex(
+    model: str | None = typer.Option(
+        None,
+        "--model",
+        "-m",
+        help="New embedding model (default: use vstash.toml setting)",
+    ),
+    batch_size: int = typer.Option(256, "--batch-size", help="Chunks per embedding batch"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
+) -> None:
+    """Re-embed all chunks with a different embedding model.
+
+    Use this after changing the embedding model in vstash.toml
+    (e.g., switching to a multilingual model). All existing vector
+    embeddings are recomputed — text, FTS, and metadata are preserved.
+    """
+    from .embed import embed_texts, get_embedding_dim
+
+    cfg = load_config()
+    target_model = model or cfg.embeddings.model
+    new_dim = get_embedding_dim(target_model)
+
+    # Warm up to get accurate model name display
+    warmup(target_model, cfg.embeddings.backend)
+
+    # Open store with current dim (to read existing data)
+    current_dim = get_embedding_dim(cfg.embeddings.model) if model else new_dim
+    store = VstashStore(cfg.storage.db_path, embedding_dim=current_dim)
+
+    with store:
+        total = store._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+        if total == 0:
+            console.print("[yellow]No chunks to reindex.[/yellow]")
+            raise typer.Exit()
+
+        console.print(
+            f"[bold]Reindex plan:[/bold]\n"
+            f"  Model:  {target_model}\n"
+            f"  Dims:   {new_dim}\n"
+            f"  Chunks: {total}\n"
+            f"  Batch:  {batch_size}"
+        )
+
+        if not yes:
+            typer.confirm("This will re-embed all chunks. Continue?", abort=True)
+
+        from rich.progress import Progress
+
+        with Progress(console=console) as progress:
+            task = progress.add_task("[cyan]Re-embedding chunks...", total=total)
+
+            def _progress(processed: int, _total: int) -> None:
+                progress.update(task, completed=processed)
+
+            def _embed_batch(texts: list[str]) -> list[list[float]]:
+                return embed_texts(texts, target_model, cfg.embeddings.backend)
+
+            count = store.reindex(
+                embed_fn=_embed_batch,
+                new_dim=new_dim,
+                batch_size=batch_size,
+                progress_cb=_progress,
+            )
+
+        console.print(
+            f"[bold green]Done![/bold green] Re-embedded {count} chunks "
+            f"with {target_model} ({new_dim} dims)"
+        )
 
 
 # ------------------------------------------------------------------ #

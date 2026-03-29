@@ -52,7 +52,10 @@ WIKI_ARTICLES: list[dict[str, str]] = [
     {"title": "Photosynthesis", "url": "https://en.wikipedia.org/wiki/Photosynthesis"},
     {"title": "Quantum mechanics", "url": "https://en.wikipedia.org/wiki/Quantum_mechanics"},
     # Technology
-    {"title": "Artificial intelligence", "url": "https://en.wikipedia.org/wiki/Artificial_intelligence"},
+    {
+        "title": "Artificial intelligence",
+        "url": "https://en.wikipedia.org/wiki/Artificial_intelligence",
+    },
     {"title": "Internet", "url": "https://en.wikipedia.org/wiki/Internet"},
     {"title": "Semiconductor", "url": "https://en.wikipedia.org/wiki/Semiconductor"},
     # Sports
@@ -300,8 +303,10 @@ def main() -> None:
     print(f"  {'Corpus':<25} {'Vector':>8} {'FTS':>8} {'RRF':>8} {'Best':>10}")
     print(f"  {'─' * 60}")
     print(f"  {'LLM Memory (24 papers)':<25} {'0.809':>8} {'0.631':>8} {'0.814':>8} {'RRF':>10}")
-    print(f"  {'Wikipedia (17 articles)':<25} {vec_ndcg:>8.3f} {fts_ndcg:>8.3f} {rrf_ndcg:>8.3f} "
-          f"{'RRF' if rrf_ndcg >= max(vec_ndcg, fts_ndcg) else 'Vector' if vec_ndcg > fts_ndcg else 'FTS':>10}")
+    print(
+        f"  {'Wikipedia (17 articles)':<25} {vec_ndcg:>8.3f} {fts_ndcg:>8.3f} {rrf_ndcg:>8.3f} "
+        f"{'RRF' if rrf_ndcg >= max(vec_ndcg, fts_ndcg) else 'Vector' if vec_ndcg > fts_ndcg else 'FTS':>10}"
+    )
 
     # Save JSON
     output_path = Path(args.output)
