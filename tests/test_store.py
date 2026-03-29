@@ -271,6 +271,102 @@ class TestMMRDedup:
         assert titles == {"Doc 0", "Doc 1", "Doc 2"}
 
 
+class TestReindex:
+    """Test re-embedding chunks with a new model."""
+
+    def test_reindex_changes_embeddings(self, tmp_db_path: str) -> None:
+        """Reindex should replace all vec_chunks with new embeddings."""
+        dim = 384
+        store = VstashStore(tmp_db_path, embedding_dim=dim)
+        with store:
+            store.add_document(
+                path="/test/doc.md",
+                title="Test Doc",
+                chunks=["hello world", "foo bar"],
+                embeddings=[[0.1] * dim, [0.2] * dim],
+            )
+            assert store.stats().chunks == 2
+
+            # Reindex with a "new model" (same dim, different vectors)
+            new_dim = 384
+            call_count = [0]
+
+            def fake_embed(texts: list[str]) -> list[list[float]]:
+                call_count[0] += 1
+                return [[0.9] * new_dim for _ in texts]
+
+            count = store.reindex(embed_fn=fake_embed, new_dim=new_dim)
+            assert count == 2
+            assert call_count[0] >= 1
+
+            # Search should still work with new embeddings
+            results = store.search([0.9] * new_dim, "hello", top_k=2)
+            assert len(results) >= 1
+
+    def test_reindex_with_different_dim(self, tmp_db_path: str) -> None:
+        """Reindex should handle dimension changes."""
+        old_dim = 384
+        store = VstashStore(tmp_db_path, embedding_dim=old_dim)
+        with store:
+            store.add_document(
+                path="/test/doc.md",
+                title="Test Doc",
+                chunks=["hello world"],
+                embeddings=[[0.1] * old_dim],
+            )
+
+            new_dim = 768
+
+            def fake_embed(texts: list[str]) -> list[list[float]]:
+                return [[0.5] * new_dim for _ in texts]
+
+            count = store.reindex(embed_fn=fake_embed, new_dim=new_dim)
+            assert count == 1
+            assert store.embedding_dim == new_dim
+
+            # Search with new dim should work
+            results = store.search([0.5] * new_dim, "hello", top_k=1)
+            assert len(results) == 1
+
+    def test_reindex_empty_store(self, tmp_db_path: str) -> None:
+        """Reindex on empty store should return 0."""
+        store = VstashStore(tmp_db_path, embedding_dim=384)
+        with store:
+            count = store.reindex(
+                embed_fn=lambda texts: [[0.1] * 384 for _ in texts],
+                new_dim=384,
+            )
+            assert count == 0
+
+    def test_reindex_progress_callback(self, tmp_db_path: str) -> None:
+        """Progress callback should be called during reindex."""
+        dim = 384
+        store = VstashStore(tmp_db_path, embedding_dim=dim)
+        with store:
+            store.add_document(
+                path="/test/doc.md",
+                title="Test Doc",
+                chunks=["chunk one", "chunk two", "chunk three"],
+                embeddings=[[0.1 + i * 0.01] * dim for i in range(3)],
+            )
+
+            progress_calls: list[tuple[int, int]] = []
+
+            def on_progress(processed: int, total: int) -> None:
+                progress_calls.append((processed, total))
+
+            store.reindex(
+                embed_fn=lambda texts: [[0.5] * dim for _ in texts],
+                new_dim=dim,
+                batch_size=2,
+                progress_cb=on_progress,
+            )
+            assert len(progress_calls) >= 1
+            # Last call should show all chunks processed
+            assert progress_calls[-1][0] == 3
+            assert progress_calls[-1][1] == 3
+
+
 class TestExpandContext:
     """Test context expansion with adjacent chunks."""
 
