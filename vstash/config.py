@@ -143,6 +143,16 @@ class ScoringConfig(BaseModel):
         default=True,
         description="Record access counts on search (enabled by default when scoring is on)",
     )
+    mmr_lambda: float = Field(
+        default=0.5,
+        ge=0,
+        le=1,
+        description=(
+            "MMR diversity parameter for intra-document dedup. "
+            "1.0 = pure relevance (no diversity penalty), "
+            "0.0 = maximum diversity. Default 0.5 balances both."
+        ),
+    )
 
     @model_validator(mode="after")
     def _validate_weights(self) -> ScoringConfig:
