@@ -1,0 +1,2494 @@
+{
+  "experiment": "dataset_discovery",
+  "timestamp": "2026-03-29T14:53:10.872721+00:00",
+  "corpus_size": 954,
+  "num_queries": 35,
+  "mean_precision_5": 0.6285714285714286,
+  "mean_ndcg_5": 0.6442208102032502,
+  "mean_mrr": 0.7771428571428571,
+  "discovery_rate": 0.9142857142857143,
+  "per_query": [
+    {
+      "query": "large language model training dataset with diverse text",
+      "target_groups": [
+        "text-generation"
+      ],
+      "precision_5": 0.2,
+      "ndcg_5": 0.21398626473452756,
+      "mrr_score": 0.5,
+      "hit_at_5": true,
+      "top_results": [
+        {
+          "dataset": "ICTNLP/StreamUni",
+          "group": "translation",
+          "tasks": [
+            "translation"
+          ],
+          "relevant": false,
+          "score": 0.017
+        },
+        {
+          "dataset": "uonlp/CulturaX",
+          "group": "text-generation",
+          "tasks": [
+            "text-generation",
+            "fill-mask"
+          ],
+          "relevant": true,
+          "score": 0.015
+        },
+        {
+          "dataset": "tonytan48/TempReason",
+          "group": "qa",
+          "tasks": [
+            "question-answering"
+          ],
+          "relevant": false,
+          "score": 0.014
+        },
+        {
+          "dataset": "instruction-pretrain/general-instruction-augmented-corpora",
+          "group": "classification",
+          "tasks": [
+            "text-classification",
+            "table-question-answering",
+            "question-answering",
+            "zero-shot-classification"
+          ],
+          "relevant": false,
+          "score": 0.013
+        },
+        {
+          "dataset": "LEMAS-Project/LEMAS-Dataset-train",
+          "group": "audio",
+          "tasks": [
+            "text-to-speech",
+            "automatic-speech-recognition"
+          ],
+          "relevant": false,
+          "score": 0.013
+        }
+      ]
+    },
+    {
+      "query": "dataset for text generation and creative writing",
+      "target_groups": [
+        "text-generation"
+      ],
+      "precision_5": 0.6,
+      "ndcg_5": 0.5296347172140421,
+      "mrr_score": 0.5,
+      "hit_at_5": true,
+      "top_results": [
+        {
+          "dataset": "agentlans/LinguaNova",
+          "group": "similarity",
+          "tasks": [
+            "text-generation",
+            "text-classification",
+            "text-retrieval"
+          ],
+          "relevant": false,
+          "score": 0.015
+        },
+        {
+          "dataset": "noeatme/MNBVC",
+          "group": "text-generation",
+          "tasks": [
+            "text-generation",
+            "fill-mask"
+          ],
+          "relevant": true,
+          "score": 0.014
+        },
+        {
+          "dataset": "liwu/MNBVC",
+          "group": "text-generation",
+          "tasks": [
+            "text-generation",
+            "fill-mask"
+          ],
+          "relevant": true,
+          "score": 0.014
+        },
+        {
+          "dataset": "allenai/peS2o",
+          "group": "text-generation",
+          "tasks": [
+            "text-generation",
+            "fill-mask"
+          ],
+          "relevant": true,
+          "score": 0.014
+        },
+        {
+          "dataset": "LingoIITGN/HinGE",
+          "group": "translation",
+          "tasks": [
+            "translation"
+          ],
+          "relevant": false,
+          "score": 0.014
+        }
+      ]
+    },
+    {
+      "query": "pretraining corpus for language modeling",
+      "target_groups": [
+        "text-generation"
+      ],
+      "precision_5": 0.4,
+      "ndcg_5": 0.36005461457723403,
+      "mrr_score": 0.5,
+      "hit_at_5": true,
+      "top_results": [
+        {
+          "dataset": "instruction-pretrain/general-instruction-augmented-corpora",
+          "group": "classification",
+          "tasks": [
+            "text-classification",
+            "table-question-answering",
+            "question-answering",
+            "zero-shot-classification"
+          ],
+          "relevant": false,
+          "score": 0.016
+        },
+        {
+          "dataset": "noeatme/MNBVC",
+          "group": "text-generation",
+          "tasks": [
+            "text-generation",
+            "fill-mask"
+          ],
+          "relevant": true,
+          "score": 0.013
+        },
+        {
+          "dataset": "ICTNLP/StreamUni",
+          "group": "translation",
+          "tasks": [
+            "translation"
+          ],
+          "relevant": false,
+          "score": 0.013
+        },
+        {
+          "dataset": "liwu/MNBVC",
+          "group": "text-generation",
+          "tasks": [
+            "text-generation",
+            "fill-mask"
+          ],
+          "relevant": true,
+          "score": 0.013
+        },
+        {
+          "dataset": "Batnini/tunartts-mini-hf",
+          "group": "audio",
+          "tasks": [
+            "text-to-speech",
+            "automatic-speech-recognition"
+          ],
+          "relevant": false,
+          "score": 0.009
+        }
+      ]
+    },
+    {
+      "query": "sentiment analysis dataset with positive and negative labels",
+      "target_groups": [
+        "classification"
+      ],
+      "precision_5": 0.6,
+      "ndcg_5": 0.7227265726449519,
+      "mrr_score": 1.0,
+      "hit_at_5": true,
+      "top_results": [
+        {
+          "dataset": "cornell-movie-review-data/rotten_tomatoes",
+          "group": "classification",
+          "tasks": [
+            "text-classification"
+          ],
+          "relevant": true,
+          "score": 0.017
+        },
+        {
+          "dataset": "stanfordnlp/sst2",
+          "group": "classification",
+          "tasks": [
+            "text-classification"
+          ],
+          "relevant": true,
+          "score": 0.016
+        },
+        {
+          "dataset": "Yelp/yelp_review_full",
+          "group": "classification",
+          "tasks": [
+            "text-classification"
+          ],
+          "relevant": true,
+          "score": 0.015
+        },
+        {
+          "dataset": "yilingwang/visual-contrastive-dpo-dataset",
+          "group": "qa",
+          "tasks": [
+            "image-text-to-text",
+            "visual-question-answering"
+          ],
+          "relevant": false,
+          "score": 0.015
+        },
+        {
+          "dataset": "sentence-transformers/mldr",
+          "group": "similarity",
+          "tasks": [
+            "feature-extraction",
+            "sentence-similarity"
+          ],
+          "relevant": false,
+          "score": 0.014
+        }
+      ]
+    },
+    {
+      "query": "text classification benchmark for topic categorization",
+      "target_groups": [
+        "classification"
+      ],
+      "precision_5": 0.2,
+      "ndcg_5": 0.3391602052736161,
+      "mrr_score": 1.0,
+      "hit_at_5": true,
+      "top_results": [
+        {
+          "dataset": "mteb/twentynewsgroups-clustering",
+          "group": "classification",
+          "tasks": [
+            "text-classification"
+          ],
+          "relevant": true,
+          "score": 0.012
+        },
+        {
+          "dataset": "yuweiyin/FinBench",
+          "group": "tabular",
+          "tasks": [
+            "tabular-classification",
+            "text-classification"
+          ],
+          "relevant": false,
+          "score": 0.01
+        },
+        {
+          "dataset": "agentlans/LinguaNova",
+          "group": "similarity",
+          "tasks": [
+            "text-generation",
+            "text-classification",
+            "text-retrieval"
+          ],
+          "relevant": false,
+          "score": 0.01
+        },
+        {
+          "dataset": "Hello-SimpleAI/HC3",
+          "group": "similarity",
+          "tasks": [
+            "text-classification",
+            "question-answering",
+            "sentence-similarity",
+            "zero-shot-classification"
+          ],
+          "relevant": false,
+          "score": 0.01
+        },
+        {
+          "dataset": "zeta-alpha-ai/NanoMSMARCO",
+          "group": "similarity",
+          "tasks": [
+            "text-retrieval"
+          ],
+          "relevant": false,
+          "score": 0.01
+        }
+      ]
+    },
+    {
+      "query": "dataset for spam detection or intent classification",
+      "target_groups": [
+        "classification"
+      ],
+      "precision_5": 0.0,
+      "ndcg_5": 0.0,
+      "mrr_score": 0.16666666666666666,
+      "hit_at_5": false,
+      "top_results": [
+        {
+          "dataset": "Amanpatel81/my_smolvla123456789",
+          "group": "audio",
+          "tasks": [
+            "text-classification",
+            "table-question-answering",
+            "question-answering",
+            "translation",
+            "zero-shot-classification",
+            "feature-extraction",
+            "text-generation",
+            "fill-mask",
+            "text-to-speech",
+            "sentence-similarity",
+            "summarization",
+            "audio-to-audio",
+            "automatic-speech-recognition",
+            "audio-classification",
+            "depth-estimation",
+            "image-classification",
+            "voice-activity-detection",
+            "text-to-audio",
+            "object-detection",
+            "image-segmentation",
+            "token-classification",
+            "image-to-text",
+            "text-to-image",
+            "image-to-video",
+            "image-to-image",
+            "video-classification",
+            "robotics",
+            "reinforcement-learning"
+          ],
+          "relevant": false,
+          "score": 0.013
+        },
+        {
+          "dataset": "ae5115242430e13/RSL_Maran",
+          "group": "audio",
+          "tasks": [
+            "token-classification",
+            "table-question-answering",
+            "question-answering",
+            "text-classification",
+            "zero-shot-classification",
+            "translation",
+            "summarization",
+            "feature-extraction",
+            "text-generation",
+            "fill-mask",
+            "sentence-similarity",
+            "text-to-audio",
+            "text-to-speech",
+            "automatic-speech-recognition",
+            "audio-classification",
+            "audio-to-audio",
+            "voice-activity-detection",
+            "depth-estimation",
+            "image-classification",
+            "object-detection",
+            "image-segmentation",
+            "image-to-text",
+            "image-to-image",
+            "text-to-image",
+            "image-to-video",
+            "unconditional-image-generation",
+            "video-classification",
+            "reinforcement-learning",
+            "tabular-classification",
+            "tabular-regression",
+            "tabular-to-text",
+            "robotics",
+            "multiple-choice",
+            "time-series-forecasting"
+          ],
+          "relevant": false,
+          "score": 0.012
+        },
+        {
+          "dataset": "Kabeer9997/Mix.AI-Data",
+          "group": "audio",
+          "tasks": [
+            "text-classification",
+            "token-classification",
+            "table-question-answering",
+            "question-answering",
+            "translation",
+            "text-generation",
+            "summarization",
+            "text-to-speech",
+            "voice-activity-detection",
+            "image-classification"
+          ],
+          "relevant": false,
+          "score": 0.012
+        },
+        {
+          "dataset": "dijihax/Dataset",
+          "group": "audio",
+          "tasks": [
+            "text-classification",
+            "token-classification",
+            "table-question-answering",
+            "question-answering",
+            "zero-shot-classification",
+            "translation",
+            "summarization",
+            "feature-extraction",
+            "text-generation",
+            "fill-mask",
+            "sentence-similarity",
+            "text-to-speech",
+            "text-to-audio",
+            "automatic-speech-recognition",
+            "audio-to-audio",
+            "audio-classification",
+            "voice-activity-detection",
+            "depth-estimation",
+            "image-classification",
+            "object-detection",
+            "image-segmentation",
+            "text-to-image",
+            "image-to-image",
+            "unconditional-image-generation",
+            "multiple-choice",
+            "image-to-text",
+            "image-to-video",
+            "video-classification",
+            "reinforcement-learning",
+            "robotics",
+            "tabular-classification",
+            "tabular-regression",
+            "tabular-to-text",
+            "table-to-text",
+            "text-retrieval",
+            "time-series-forecasting",
+            "text-to-video",
+            "visual-question-answering",
+            "zero-shot-image-classification",
+            "graph-ml",
+            "mask-generation",
+            "zero-shot-object-detection",
+            "text-to-3d",
+            "image-to-3d",
+            "image-feature-extraction",
+            "video-text-to-text"
+          ],
+          "relevant": false,
+          "score": 0.012
+        },
+        {
+          "dataset": "detection-datasets/coco",
+          "group": "vision",
+          "tasks": [
+            "object-detection"
+          ],
+          "relevant": false,
+          "score": 0.012
+        }
+      ]
+    },
+    {
+      "query": "question answering dataset with context paragraphs",
+      "target_groups": [
+        "qa"
+      ],
+      "precision_5": 0.8,
+      "ndcg_5": 0.6608397947263839,
+      "mrr_score": 0.5,
+      "hit_at_5": true,
+      "top_results": [
+        {
+          "dataset": "sentence-transformers/natural-questions",
+          "group": "similarity",
+          "tasks": [
+            "feature-extraction",
+            "sentence-similarity"
+          ],
+          "relevant": false,
+          "score": 0.015
+        },
+        {
+          "dataset": "AmazonScience/document-haystack",
+          "group": "qa",
+          "tasks": [
+            "question-answering",
+            "visual-question-answering",
+            "document-question-answering"
+          ],
+          "relevant": true,
+          "score": 0.015
+        },
+        {
+          "dataset": "rajpurkar/squad_v2",
+          "group": "qa",
+          "tasks": [
+            "question-answering"
+          ],
+          "relevant": true,
+          "score": 0.015
+        },
+        {
+          "dataset": "tau/commonsense_qa",
+          "group": "qa",
+          "tasks": [
+            "question-answering"
+          ],
+          "relevant": true,
+          "score": 0.015
+        },
+        {
+          "dataset": "hotpotqa/hotpot_qa",
+          "group": "qa",
+          "tasks": [
+            "question-answering"
+          ],
+          "relevant": true,
+          "score": 0.014
+        }
+      ]
+    },
+    {
+      "query": "reading comprehension benchmark with extractive answers",
+      "target_groups": [
+        "qa"
+      ],
+      "precision_5": 0.4,
+      "ndcg_5": 0.34519134224686937,
+      "mrr_score": 0.5,
+      "hit_at_5": true,
+      "top_results": [
+        {
+          "dataset": "isaacus/LegalQAEval",
+          "group": "ner",
+          "tasks": [
+            "question-answering",
+            "token-classification",
+            "text-classification",
+            "sentence-similarity",
+            "zero-shot-classification"
+          ],
+          "relevant": false,
+          "score": 0.014
+        },
+        {
+          "dataset": "tonytan48/TempReason",
+          "group": "qa",
+          "tasks": [
+            "question-answering"
+          ],
+          "relevant": true,
+          "score": 0.013
+        },
+        {
+          "dataset": "google/frames-benchmark",
+          "group": "ner",
+          "tasks": [
+            "text-classification",
+            "token-classification",
+            "table-question-answering",
+            "question-answering"
+          ],
+          "relevant": false,
+          "score": 0.011
+        },
+        {
+          "dataset": "Salesforce/UniDoc-Bench",
+          "group": "similarity",
+          "tasks": [
+            "question-answering",
+            "text-retrieval",
+            "visual-question-answering",
+            "document-question-answering",
+            "image-text-to-text"
+          ],
+          "relevant": false,
+          "score": 0.011
+        },
+        {
+          "dataset": "rajpurkar/squad_v2",
+          "group": "qa",
+          "tasks": [
+            "question-answering"
+          ],
+          "relevant": true,
+          "score": 0.011
+        }
+      ]
+    },
+    {
+      "query": "open-domain QA dataset for evaluating knowledge retrieval",
+      "target_groups": [
+        "qa"
+      ],
+      "precision_5": 0.6,
+      "ndcg_5": 0.7227265726449519,
+      "mrr_score": 1.0,
+      "hit_at_5": true,
+      "top_results": [
+        {
+          "dataset": "hotpotqa/hotpot_qa",
+          "group": "qa",
+          "tasks": [
+            "question-answering"
+          ],
+          "relevant": true,
+          "score": 0.015
+        },
+        {
+          "dataset": "sharryXR/GUIDE-dataset",
+          "group": "qa",
+          "tasks": [
+            "video-classification",
+            "visual-question-answering"
+          ],
+          "relevant": true,
+          "score": 0.014
+        },
+        {
+          "dataset": "tau/commonsense_qa",
+          "group": "qa",
+          "tasks": [
+            "question-answering"
+          ],
+          "relevant": true,
+          "score": 0.014
+        },
+        {
+          "dataset": "hicai-zju/SciKnowEval",
+          "group": "similarity",
+          "tasks": [
+            "question-answering",
+            "feature-extraction",
+            "text-classification",
+            "summarization"
+          ],
+          "relevant": false,
+          "score": 0.014
+        },
+        {
+          "dataset": "zeta-alpha-ai/NanoMSMARCO",
+          "group": "similarity",
+          "tasks": [
+            "text-retrieval"
+          ],
+          "relevant": false,
+          "score": 0.013
+        }
+      ]
+    },
+    {
+      "query": "parallel corpus for machine translation between languages",
+      "target_groups": [
+        "translation"
+      ],
+      "precision_5": 1.0,
+      "ndcg_5": 1.0,
+      "mrr_score": 1.0,
+      "hit_at_5": true,
+      "top_results": [
+        {
+          "dataset": "yhavinga/ccmatrix",
+          "group": "translation",
+          "tasks": [
+            "translation"
+          ],
+          "relevant": true,
+          "score": 0.016
+        },
+        {
+          "dataset": "ICTNLP/StreamUni",
+          "group": "translation",
+          "tasks": [
+            "translation"
+          ],
+          "relevant": true,
+          "score": 0.014
+        },
+        {
+          "dataset": "cdleong/piglatin-mt",
+          "group": "translation",
+          "tasks": [
+            "translation"
+          ],
+          "relevant": true,
+          "score": 0.007
+        },
+        {
+          "dataset": "Helsinki-NLP/europarl",
+          "group": "translation",
+          "tasks": [
+            "translation"
+          ],
+          "relevant": true,
+          "score": 0.007
+        },
+        {
+          "dataset": "ai4bharat/samanantar",
+          "group": "translation",
+          "tasks": [
+            "text-generation",
+            "translation"
+          ],
+          "relevant": true,
+          "score": 0.006
+        }
+      ]
+    },
+    {
+      "query": "multilingual dataset for cross-lingual transfer learning",
+      "target_groups": [
+        "translation"
+      ],
+      "precision_5": 0.2,
+      "ndcg_5": 0.13120507751234178,
+      "mrr_score": 0.2,
+      "hit_at_5": true,
+      "top_results": [
+        {
+          "dataset": "google/xtreme",
+          "group": "ner",
+          "tasks": [
+            "multiple-choice",
+            "question-answering",
+            "token-classification",
+            "text-classification",
+            "text-retrieval"
+          ],
+          "relevant": false,
+          "score": 0.015
+        },
+        {
+          "dataset": "facebook/multilingual_librispeech",
+          "group": "audio",
+          "tasks": [
+            "automatic-speech-recognition",
+            "text-to-speech",
+            "text-to-audio"
+          ],
+          "relevant": false,
+          "score": 0.014
+        },
+        {
+          "dataset": "MiniMaxAI/TTS-Multilingual-Test-Set",
+          "group": "audio",
+          "tasks": [
+            "text-to-speech"
+          ],
+          "relevant": false,
+          "score": 0.013
+        },
+        {
+          "dataset": "parler-tts/mls_eng",
+          "group": "audio",
+          "tasks": [
+            "automatic-speech-recognition",
+            "text-to-speech",
+            "text-to-audio"
+          ],
+          "relevant": false,
+          "score": 0.013
+        },
+        {
+          "dataset": "yhavinga/ccmatrix",
+          "group": "translation",
+          "tasks": [
+            "translation"
+          ],
+          "relevant": true,
+          "score": 0.013
+        }
+      ]
+    },
+    {
+      "query": "translation pairs for low-resource language pairs",
+      "target_groups": [
+        "translation"
+      ],
+      "precision_5": 0.4,
+      "ndcg_5": 0.5531464700081437,
+      "mrr_score": 1.0,
+      "hit_at_5": true,
+      "top_results": [
+        {
+          "dataset": "ICTNLP/StreamUni",
+          "group": "translation",
+          "tasks": [
+            "translation"
+          ],
+          "relevant": true,
+          "score": 0.013
+        },
+        {
+          "dataset": "yhavinga/ccmatrix",
+          "group": "translation",
+          "tasks": [
+            "translation"
+          ],
+          "relevant": true,
+          "score": 0.01
+        },
+        {
+          "dataset": "liwu/MNBVC",
+          "group": "text-generation",
+          "tasks": [
+            "text-generation",
+            "fill-mask"
+          ],
+          "relevant": false,
+          "score": 0.01
+        },
+        {
+          "dataset": "Batnini/tunartts-mini-hf",
+          "group": "audio",
+          "tasks": [
+            "text-to-speech",
+            "automatic-speech-recognition"
+          ],
+          "relevant": false,
+          "score": 0.01
+        },
+        {
+          "dataset": "noeatme/MNBVC",
+          "group": "text-generation",
+          "tasks": [
+            "text-generation",
+            "fill-mask"
+          ],
+          "relevant": false,
+          "score": 0.009
+        }
+      ]
+    },
+    {
+      "query": "image classification dataset with labeled categories",
+      "target_groups": [
+        "vision"
+      ],
+      "precision_5": 0.6,
+      "ndcg_5": 0.6992148198508501,
+      "mrr_score": 1.0,
+      "hit_at_5": true,
+      "top_results": [
+        {
+          "dataset": "tanganke/sun397",
+          "group": "vision",
+          "tasks": [
+            "image-classification"
+          ],
+          "relevant": true,
+          "score": 0.016
+        },
+        {
+          "dataset": "ethz/food101",
+          "group": "vision",
+          "tasks": [
+            "image-classification"
+          ],
+          "relevant": true,
+          "score": 0.016
+        },
+        {
+          "dataset": "Kondapally/AIWD6",
+          "group": "qa",
+          "tasks": [
+            "image-classification",
+            "object-detection",
+            "image-segmentation",
+            "visual-question-answering",
+            "image-to-text"
+          ],
+          "relevant": false,
+          "score": 0.014
+        },
+        {
+          "dataset": "ufldl-stanford/svhn",
+          "group": "vision",
+          "tasks": [
+            "image-classification",
+            "object-detection"
+          ],
+          "relevant": true,
+          "score": 0.013
+        },
+        {
+          "dataset": "Heizsenberg/leaf-image-dataset",
+          "group": "ner",
+          "tasks": [
+            "token-classification"
+          ],
+          "relevant": false,
+          "score": 0.01
+        }
+      ]
+    },
+    {
+      "query": "object detection dataset with bounding box annotations",
+      "target_groups": [
+        "vision"
+      ],
+      "precision_5": 1.0,
+      "ndcg_5": 1.0,
+      "mrr_score": 1.0,
+      "hit_at_5": true,
+      "top_results": [
+        {
+          "dataset": "detection-datasets/coco",
+          "group": "vision",
+          "tasks": [
+            "object-detection"
+          ],
+          "relevant": true,
+          "score": 0.015
+        },
+        {
+          "dataset": "ohhan777/kfgod",
+          "group": "vision",
+          "tasks": [
+            "object-detection"
+          ],
+          "relevant": true,
+          "score": 0.007
+        },
+        {
+          "dataset": "Voxel51/spatial_lm_dataset",
+          "group": "vision",
+          "tasks": [
+            "object-detection"
+          ],
+          "relevant": true,
+          "score": 0.007
+        },
+        {
+          "dataset": "hexishuyuan/CanolaTrack",
+          "group": "vision",
+          "tasks": [
+            "image-to-image",
+            "image-feature-extraction",
+            "object-detection"
+          ],
+          "relevant": true,
+          "score": 0.006
+        },
+        {
+          "dataset": "UrbanSyn/UrbanSyn",
+          "group": "vision",
+          "tasks": [
+            "object-detection",
+            "image-segmentation",
+            "depth-estimation"
+          ],
+          "relevant": true,
+          "score": 0.006
+        }
+      ]
+    },
+    {
+      "query": "image captioning dataset with text descriptions",
+      "target_groups": [
+        "vision"
+      ],
+      "precision_5": 1.0,
+      "ndcg_5": 1.0,
+      "mrr_score": 1.0,
+      "hit_at_5": true,
+      "top_results": [
+        {
+          "dataset": "google-research-datasets/conceptual_captions",
+          "group": "vision",
+          "tasks": [
+            "image-to-text"
+          ],
+          "relevant": true,
+          "score": 0.017
+        },
+        {
+          "dataset": "pixparse/cc3m-wds",
+          "group": "vision",
+          "tasks": [
+            "image-to-text"
+          ],
+          "relevant": true,
+          "score": 0.016
+        },
+        {
+          "dataset": "a3xrfgb/gpt-image-mega-4k",
+          "group": "vision",
+          "tasks": [
+            "image-to-text"
+          ],
+          "relevant": true,
+          "score": 0.016
+        },
+        {
+          "dataset": "pixparse/cc12m-wds",
+          "group": "vision",
+          "tasks": [
+            "image-to-text"
+          ],
+          "relevant": true,
+          "score": 0.015
+        },
+        {
+          "dataset": "apple/DataCompDR-1B",
+          "group": "vision",
+          "tasks": [
+            "text-to-image",
+            "image-to-text"
+          ],
+          "relevant": true,
+          "score": 0.015
+        }
+      ]
+    },
+    {
+      "query": "named entity recognition dataset with person and location labels",
+      "target_groups": [
+        "ner"
+      ],
+      "precision_5": 0.6,
+      "ndcg_5": 0.7227265726449519,
+      "mrr_score": 1.0,
+      "hit_at_5": true,
+      "top_results": [
+        {
+          "dataset": "eriktks/conll2003",
+          "group": "ner",
+          "tasks": [
+            "token-classification"
+          ],
+          "relevant": true,
+          "score": 0.016
+        },
+        {
+          "dataset": "leondz/wnut_17",
+          "group": "ner",
+          "tasks": [
+            "token-classification"
+          ],
+          "relevant": true,
+          "score": 0.015
+        },
+        {
+          "dataset": "bltlab/open-ner-standardized",
+          "group": "ner",
+          "tasks": [
+            "token-classification"
+          ],
+          "relevant": true,
+          "score": 0.014
+        },
+        {
+          "dataset": "dijihax/Dataset",
+          "group": "audio",
+          "tasks": [
+            "text-classification",
+            "token-classification",
+            "table-question-answering",
+            "question-answering",
+            "zero-shot-classification",
+            "translation",
+            "summarization",
+            "feature-extraction",
+            "text-generation",
+            "fill-mask",
+            "sentence-similarity",
+            "text-to-speech",
+            "text-to-audio",
+            "automatic-speech-recognition",
+            "audio-to-audio",
+            "audio-classification",
+            "voice-activity-detection",
+            "depth-estimation",
+            "image-classification",
+            "object-detection",
+            "image-segmentation",
+            "text-to-image",
+            "image-to-image",
+            "unconditional-image-generation",
+            "multiple-choice",
+            "image-to-text",
+            "image-to-video",
+            "video-classification",
+            "reinforcement-learning",
+            "robotics",
+            "tabular-classification",
+            "tabular-regression",
+            "tabular-to-text",
+            "table-to-text",
+            "text-retrieval",
+            "time-series-forecasting",
+            "text-to-video",
+            "visual-question-answering",
+            "zero-shot-image-classification",
+            "graph-ml",
+            "mask-generation",
+            "zero-shot-object-detection",
+            "text-to-3d",
+            "image-to-3d",
+            "image-feature-extraction",
+            "video-text-to-text"
+          ],
+          "relevant": false,
+          "score": 0.012
+        },
+        {
+          "dataset": "oriyonay/quickdraw-mnist",
+          "group": "vision",
+          "tasks": [
+            "image-classification"
+          ],
+          "relevant": false,
+          "score": 0.012
+        }
+      ]
+    },
+    {
+      "query": "token classification dataset for biomedical entities",
+      "target_groups": [
+        "ner"
+      ],
+      "precision_5": 0.8,
+      "ndcg_5": 0.8687949224876582,
+      "mrr_score": 1.0,
+      "hit_at_5": true,
+      "top_results": [
+        {
+          "dataset": "bltlab/open-ner-standardized",
+          "group": "ner",
+          "tasks": [
+            "token-classification"
+          ],
+          "relevant": true,
+          "score": 0.016
+        },
+        {
+          "dataset": "ncbi/ncbi_disease",
+          "group": "ner",
+          "tasks": [
+            "token-classification"
+          ],
+          "relevant": true,
+          "score": 0.015
+        },
+        {
+          "dataset": "Heizsenberg/leaf-image-dataset",
+          "group": "ner",
+          "tasks": [
+            "token-classification"
+          ],
+          "relevant": true,
+          "score": 0.015
+        },
+        {
+          "dataset": "leondz/wnut_17",
+          "group": "ner",
+          "tasks": [
+            "token-classification"
+          ],
+          "relevant": true,
+          "score": 0.015
+        },
+        {
+          "dataset": "m-a-p/FineFineWeb",
+          "group": "text-generation",
+          "tasks": [
+            "text-classification",
+            "text-generation"
+          ],
+          "relevant": false,
+          "score": 0.013
+        }
+      ]
+    },
+    {
+      "query": "sequence labeling dataset for information extraction",
+      "target_groups": [
+        "ner"
+      ],
+      "precision_5": 0.0,
+      "ndcg_5": 0.0,
+      "mrr_score": 0.0,
+      "hit_at_5": false,
+      "top_results": [
+        {
+          "dataset": "dijihax/Dataset",
+          "group": "audio",
+          "tasks": [
+            "text-classification",
+            "token-classification",
+            "table-question-answering",
+            "question-answering",
+            "zero-shot-classification",
+            "translation",
+            "summarization",
+            "feature-extraction",
+            "text-generation",
+            "fill-mask",
+            "sentence-similarity",
+            "text-to-speech",
+            "text-to-audio",
+            "automatic-speech-recognition",
+            "audio-to-audio",
+            "audio-classification",
+            "voice-activity-detection",
+            "depth-estimation",
+            "image-classification",
+            "object-detection",
+            "image-segmentation",
+            "text-to-image",
+            "image-to-image",
+            "unconditional-image-generation",
+            "multiple-choice",
+            "image-to-text",
+            "image-to-video",
+            "video-classification",
+            "reinforcement-learning",
+            "robotics",
+            "tabular-classification",
+            "tabular-regression",
+            "tabular-to-text",
+            "table-to-text",
+            "text-retrieval",
+            "time-series-forecasting",
+            "text-to-video",
+            "visual-question-answering",
+            "zero-shot-image-classification",
+            "graph-ml",
+            "mask-generation",
+            "zero-shot-object-detection",
+            "text-to-3d",
+            "image-to-3d",
+            "image-feature-extraction",
+            "video-text-to-text"
+          ],
+          "relevant": false,
+          "score": 0.015
+        },
+        {
+          "dataset": "sentence-transformers/all-nli",
+          "group": "similarity",
+          "tasks": [
+            "feature-extraction",
+            "sentence-similarity"
+          ],
+          "relevant": false,
+          "score": 0.013
+        },
+        {
+          "dataset": "ae5115242430e13/RSL_Maran",
+          "group": "audio",
+          "tasks": [
+            "token-classification",
+            "table-question-answering",
+            "question-answering",
+            "text-classification",
+            "zero-shot-classification",
+            "translation",
+            "summarization",
+            "feature-extraction",
+            "text-generation",
+            "fill-mask",
+            "sentence-similarity",
+            "text-to-audio",
+            "text-to-speech",
+            "automatic-speech-recognition",
+            "audio-classification",
+            "audio-to-audio",
+            "voice-activity-detection",
+            "depth-estimation",
+            "image-classification",
+            "object-detection",
+            "image-segmentation",
+            "image-to-text",
+            "image-to-image",
+            "text-to-image",
+            "image-to-video",
+            "unconditional-image-generation",
+            "video-classification",
+            "reinforcement-learning",
+            "tabular-classification",
+            "tabular-regression",
+            "tabular-to-text",
+            "robotics",
+            "multiple-choice",
+            "time-series-forecasting"
+          ],
+          "relevant": false,
+          "score": 0.013
+        },
+        {
+          "dataset": "google-research-datasets/paws",
+          "group": "classification",
+          "tasks": [
+            "text-classification"
+          ],
+          "relevant": false,
+          "score": 0.012
+        },
+        {
+          "dataset": "sentence-transformers/quora-duplicates",
+          "group": "similarity",
+          "tasks": [
+            "feature-extraction",
+            "sentence-similarity"
+          ],
+          "relevant": false,
+          "score": 0.012
+        }
+      ]
+    },
+    {
+      "query": "sentence similarity dataset for semantic textual similarity",
+      "target_groups": [
+        "similarity"
+      ],
+      "precision_5": 1.0,
+      "ndcg_5": 1.0,
+      "mrr_score": 1.0,
+      "hit_at_5": true,
+      "top_results": [
+        {
+          "dataset": "sentence-transformers/stsb",
+          "group": "similarity",
+          "tasks": [
+            "feature-extraction",
+            "sentence-similarity"
+          ],
+          "relevant": true,
+          "score": 0.017
+        },
+        {
+          "dataset": "sentence-transformers/all-nli",
+          "group": "similarity",
+          "tasks": [
+            "feature-extraction",
+            "sentence-similarity"
+          ],
+          "relevant": true,
+          "score": 0.016
+        },
+        {
+          "dataset": "mteb/stsb_multi_mt",
+          "group": "similarity",
+          "tasks": [
+            "sentence-similarity"
+          ],
+          "relevant": true,
+          "score": 0.016
+        },
+        {
+          "dataset": "sentence-transformers/s2orc",
+          "group": "similarity",
+          "tasks": [
+            "feature-extraction",
+            "sentence-similarity"
+          ],
+          "relevant": true,
+          "score": 0.015
+        },
+        {
+          "dataset": "donghabahn/sts22-crosslingual-sts",
+          "group": "similarity",
+          "tasks": [
+            "sentence-similarity"
+          ],
+          "relevant": true,
+          "score": 0.015
+        }
+      ]
+    },
+    {
+      "query": "information retrieval dataset with queries and relevant documents",
+      "target_groups": [
+        "similarity"
+      ],
+      "precision_5": 0.8,
+      "ndcg_5": 0.8687949224876582,
+      "mrr_score": 1.0,
+      "hit_at_5": true,
+      "top_results": [
+        {
+          "dataset": "racineai/VDR_MEGA_MultiDomain_DocRetrieval",
+          "group": "similarity",
+          "tasks": [
+            "visual-document-retrieval",
+            "text-retrieval"
+          ],
+          "relevant": true,
+          "score": 0.015
+        },
+        {
+          "dataset": "lightretriever/lightretriever-finetune-data",
+          "group": "similarity",
+          "tasks": [
+            "sentence-similarity",
+            "text-ranking"
+          ],
+          "relevant": true,
+          "score": 0.013
+        },
+        {
+          "dataset": "zeta-alpha-ai/NanoNQ",
+          "group": "similarity",
+          "tasks": [
+            "text-retrieval"
+          ],
+          "relevant": true,
+          "score": 0.013
+        },
+        {
+          "dataset": "zeta-alpha-ai/NanoMSMARCO",
+          "group": "similarity",
+          "tasks": [
+            "text-retrieval"
+          ],
+          "relevant": true,
+          "score": 0.013
+        },
+        {
+          "dataset": "AmazonScience/document-haystack",
+          "group": "qa",
+          "tasks": [
+            "question-answering",
+            "visual-question-answering",
+            "document-question-answering"
+          ],
+          "relevant": false,
+          "score": 0.012
+        }
+      ]
+    },
+    {
+      "query": "dataset for training embedding models and retrieval",
+      "target_groups": [
+        "similarity"
+      ],
+      "precision_5": 0.8,
+      "ndcg_5": 0.6608397947263839,
+      "mrr_score": 0.5,
+      "hit_at_5": true,
+      "top_results": [
+        {
+          "dataset": "TIGER-Lab/MMEB-V2",
+          "group": "ner",
+          "tasks": [
+            "text-retrieval",
+            "text-classification",
+            "token-classification"
+          ],
+          "relevant": false,
+          "score": 0.015
+        },
+        {
+          "dataset": "racineai/VDR_MEGA_MultiDomain_DocRetrieval",
+          "group": "similarity",
+          "tasks": [
+            "visual-document-retrieval",
+            "text-retrieval"
+          ],
+          "relevant": true,
+          "score": 0.015
+        },
+        {
+          "dataset": "nvidia/embed-nemotron-dataset-v1",
+          "group": "similarity",
+          "tasks": [
+            "text-retrieval",
+            "text-ranking",
+            "sentence-similarity",
+            "text-classification"
+          ],
+          "relevant": true,
+          "score": 0.014
+        },
+        {
+          "dataset": "mteb/MultiLongDocRetrieval",
+          "group": "similarity",
+          "tasks": [
+            "text-retrieval"
+          ],
+          "relevant": true,
+          "score": 0.014
+        },
+        {
+          "dataset": "mteb/fiqa",
+          "group": "similarity",
+          "tasks": [
+            "text-retrieval"
+          ],
+          "relevant": true,
+          "score": 0.014
+        }
+      ]
+    },
+    {
+      "query": "robotics dataset with manipulation trajectories and actions",
+      "target_groups": [
+        "robotics"
+      ],
+      "precision_5": 1.0,
+      "ndcg_5": 1.0,
+      "mrr_score": 1.0,
+      "hit_at_5": true,
+      "top_results": [
+        {
+          "dataset": "nvidia/PhysicalAI-Robotics-GR00T-X-Embodiment-Sim",
+          "group": "robotics",
+          "tasks": [
+            "robotics"
+          ],
+          "relevant": true,
+          "score": 0.016
+        },
+        {
+          "dataset": "ManipArena/maniparena-dataset",
+          "group": "robotics",
+          "tasks": [
+            "robotics"
+          ],
+          "relevant": true,
+          "score": 0.016
+        },
+        {
+          "dataset": "Salesforce/3d_optical_flow_droid",
+          "group": "robotics",
+          "tasks": [
+            "robotics"
+          ],
+          "relevant": true,
+          "score": 0.016
+        },
+        {
+          "dataset": "nvidia/PhysicalAI-Robotics-Manipulation-Kitchen-Demos",
+          "group": "robotics",
+          "tasks": [
+            "robotics"
+          ],
+          "relevant": true,
+          "score": 0.016
+        },
+        {
+          "dataset": "OpenDriveLab/FreeTacMan",
+          "group": "robotics",
+          "tasks": [
+            "robotics"
+          ],
+          "relevant": true,
+          "score": 0.016
+        }
+      ]
+    },
+    {
+      "query": "reinforcement learning environment dataset with rewards",
+      "target_groups": [
+        "robotics"
+      ],
+      "precision_5": 1.0,
+      "ndcg_5": 1.0,
+      "mrr_score": 1.0,
+      "hit_at_5": true,
+      "top_results": [
+        {
+          "dataset": "kevinpro/R-PRM",
+          "group": "robotics",
+          "tasks": [
+            "text-generation",
+            "reinforcement-learning"
+          ],
+          "relevant": true,
+          "score": 0.016
+        },
+        {
+          "dataset": "AILabDsUnipi/SafeQIL-dataset",
+          "group": "robotics",
+          "tasks": [
+            "reinforcement-learning"
+          ],
+          "relevant": true,
+          "score": 0.016
+        },
+        {
+          "dataset": "EpicPinkPenguin/procgen",
+          "group": "robotics",
+          "tasks": [
+            "reinforcement-learning"
+          ],
+          "relevant": true,
+          "score": 0.016
+        },
+        {
+          "dataset": "InstaDeepAI/og-marl",
+          "group": "robotics",
+          "tasks": [
+            "reinforcement-learning"
+          ],
+          "relevant": true,
+          "score": 0.015
+        },
+        {
+          "dataset": "nortem/marl-gpt-datasets",
+          "group": "robotics",
+          "tasks": [
+            "reinforcement-learning"
+          ],
+          "relevant": true,
+          "score": 0.015
+        }
+      ]
+    },
+    {
+      "query": "robot navigation and control dataset",
+      "target_groups": [
+        "robotics"
+      ],
+      "precision_5": 1.0,
+      "ndcg_5": 1.0,
+      "mrr_score": 1.0,
+      "hit_at_5": true,
+      "top_results": [
+        {
+          "dataset": "InternRobotics/InternData-N1",
+          "group": "robotics",
+          "tasks": [
+            "robotics"
+          ],
+          "relevant": true,
+          "score": 0.016
+        },
+        {
+          "dataset": "behavior-1k/2025-challenge-demos",
+          "group": "robotics",
+          "tasks": [
+            "robotics"
+          ],
+          "relevant": true,
+          "score": 0.014
+        },
+        {
+          "dataset": "ManipArena/maniparena-dataset",
+          "group": "robotics",
+          "tasks": [
+            "robotics"
+          ],
+          "relevant": true,
+          "score": 0.014
+        },
+        {
+          "dataset": "nvidia/PhysicalAI-Robotics-GR00T-X-Embodiment-Sim",
+          "group": "robotics",
+          "tasks": [
+            "robotics"
+          ],
+          "relevant": true,
+          "score": 0.014
+        },
+        {
+          "dataset": "IPEC-COMMUNITY/fractal20220817_data_lerobot",
+          "group": "robotics",
+          "tasks": [
+            "robotics"
+          ],
+          "relevant": true,
+          "score": 0.014
+        }
+      ]
+    },
+    {
+      "query": "tabular dataset for regression or classification tasks",
+      "target_groups": [
+        "tabular"
+      ],
+      "precision_5": 1.0,
+      "ndcg_5": 1.0,
+      "mrr_score": 1.0,
+      "hit_at_5": true,
+      "top_results": [
+        {
+          "dataset": "inria-soda/tabular-benchmark",
+          "group": "tabular",
+          "tasks": [
+            "tabular-classification",
+            "tabular-regression"
+          ],
+          "relevant": true,
+          "score": 0.016
+        },
+        {
+          "dataset": "yuweiyin/FinBench",
+          "group": "tabular",
+          "tasks": [
+            "tabular-classification",
+            "text-classification"
+          ],
+          "relevant": true,
+          "score": 0.013
+        },
+        {
+          "dataset": "powidla/Friend-Or-Foe",
+          "group": "tabular",
+          "tasks": [
+            "tabular-classification",
+            "tabular-regression"
+          ],
+          "relevant": true,
+          "score": 0.007
+        },
+        {
+          "dataset": "alexodavies/cleantablib",
+          "group": "tabular",
+          "tasks": [
+            "tabular-classification",
+            "tabular-regression"
+          ],
+          "relevant": true,
+          "score": 0.007
+        },
+        {
+          "dataset": "maharshipandya/spotify-tracks-dataset",
+          "group": "tabular",
+          "tasks": [
+            "feature-extraction",
+            "tabular-classification",
+            "tabular-regression"
+          ],
+          "relevant": true,
+          "score": 0.006
+        }
+      ]
+    },
+    {
+      "query": "structured data with numerical features for prediction",
+      "target_groups": [
+        "tabular"
+      ],
+      "precision_5": 0.4,
+      "ndcg_5": 0.30078518014914984,
+      "mrr_score": 0.3333333333333333,
+      "hit_at_5": true,
+      "top_results": [
+        {
+          "dataset": "SeonghuJeon/f3d-nvs-benchmark",
+          "group": "vision",
+          "tasks": [
+            "image-to-image"
+          ],
+          "relevant": false,
+          "score": 0.015
+        },
+        {
+          "dataset": "hazyresearch/based-swde",
+          "group": "similarity",
+          "tasks": [
+            "question-answering",
+            "feature-extraction"
+          ],
+          "relevant": false,
+          "score": 0.012
+        },
+        {
+          "dataset": "GD-ML/SCASRec",
+          "group": "tabular",
+          "tasks": [
+            "tabular-classification"
+          ],
+          "relevant": true,
+          "score": 0.012
+        },
+        {
+          "dataset": "ngaggion/UnsupervisedRootVideos",
+          "group": "vision",
+          "tasks": [
+            "image-segmentation"
+          ],
+          "relevant": false,
+          "score": 0.011
+        },
+        {
+          "dataset": "yuweiyin/FinBench",
+          "group": "tabular",
+          "tasks": [
+            "tabular-classification",
+            "text-classification"
+          ],
+          "relevant": true,
+          "score": 0.01
+        }
+      ]
+    },
+    {
+      "query": "CSV dataset for machine learning benchmarking",
+      "target_groups": [
+        "tabular"
+      ],
+      "precision_5": 0.6,
+      "ndcg_5": 0.6843515475204855,
+      "mrr_score": 1.0,
+      "hit_at_5": true,
+      "top_results": [
+        {
+          "dataset": "inria-soda/tabular-benchmark",
+          "group": "tabular",
+          "tasks": [
+            "tabular-classification",
+            "tabular-regression"
+          ],
+          "relevant": true,
+          "score": 0.017
+        },
+        {
+          "dataset": "strand-ai/variantformer-1000g",
+          "group": "tabular",
+          "tasks": [
+            "tabular-classification"
+          ],
+          "relevant": true,
+          "score": 0.012
+        },
+        {
+          "dataset": "VisGym/inference-dataset",
+          "group": "robotics",
+          "tasks": [
+            "visual-question-answering",
+            "reinforcement-learning"
+          ],
+          "relevant": false,
+          "score": 0.012
+        },
+        {
+          "dataset": "Coldog2333/JMedBench",
+          "group": "similarity",
+          "tasks": [
+            "text-classification",
+            "question-answering",
+            "translation",
+            "sentence-similarity"
+          ],
+          "relevant": false,
+          "score": 0.012
+        },
+        {
+          "dataset": "Herrprofessor/Neon-Slab-Datasets",
+          "group": "tabular",
+          "tasks": [
+            "tabular-regression"
+          ],
+          "relevant": true,
+          "score": 0.011
+        }
+      ]
+    },
+    {
+      "query": "speech recognition dataset with audio and transcriptions",
+      "target_groups": [
+        "audio"
+      ],
+      "precision_5": 1.0,
+      "ndcg_5": 1.0,
+      "mrr_score": 1.0,
+      "hit_at_5": true,
+      "top_results": [
+        {
+          "dataset": "doduy1911/voiceNam",
+          "group": "audio",
+          "tasks": [
+            "text-to-speech",
+            "automatic-speech-recognition"
+          ],
+          "relevant": true,
+          "score": 0.015
+        },
+        {
+          "dataset": "speechcolab/gigaspeech",
+          "group": "audio",
+          "tasks": [
+            "automatic-speech-recognition",
+            "text-to-speech",
+            "text-to-audio"
+          ],
+          "relevant": true,
+          "score": 0.014
+        },
+        {
+          "dataset": "1uckyan/code-switch_chunks",
+          "group": "audio",
+          "tasks": [
+            "automatic-speech-recognition"
+          ],
+          "relevant": true,
+          "score": 0.013
+        },
+        {
+          "dataset": "mandipgoswami/rir-mega-speech",
+          "group": "audio",
+          "tasks": [
+            "automatic-speech-recognition",
+            "audio-to-audio",
+            "audio-classification"
+          ],
+          "relevant": true,
+          "score": 0.013
+        },
+        {
+          "dataset": "Arjunj/malayalam_speech",
+          "group": "audio",
+          "tasks": [
+            "automatic-speech-recognition",
+            "text-to-speech"
+          ],
+          "relevant": true,
+          "score": 0.013
+        }
+      ]
+    },
+    {
+      "query": "audio classification dataset for sound event detection",
+      "target_groups": [
+        "audio"
+      ],
+      "precision_5": 0.8,
+      "ndcg_5": 0.8687949224876582,
+      "mrr_score": 1.0,
+      "hit_at_5": true,
+      "top_results": [
+        {
+          "dataset": "agkphysics/AudioSet",
+          "group": "audio",
+          "tasks": [
+            "audio-classification"
+          ],
+          "relevant": true,
+          "score": 0.016
+        },
+        {
+          "dataset": "yangwang825/audioset",
+          "group": "audio",
+          "tasks": [
+            "audio-classification"
+          ],
+          "relevant": true,
+          "score": 0.016
+        },
+        {
+          "dataset": "Fhrozen/FSD50k",
+          "group": "audio",
+          "tasks": [
+            "audio-classification"
+          ],
+          "relevant": true,
+          "score": 0.016
+        },
+        {
+          "dataset": "labhamlet/RealSELD",
+          "group": "audio",
+          "tasks": [
+            "audio-classification"
+          ],
+          "relevant": true,
+          "score": 0.015
+        },
+        {
+          "dataset": "Ayush2312/multimodal",
+          "group": "similarity",
+          "tasks": [
+            "audio-classification",
+            "feature-extraction"
+          ],
+          "relevant": false,
+          "score": 0.015
+        }
+      ]
+    },
+    {
+      "query": "text to speech dataset with speaker recordings",
+      "target_groups": [
+        "audio"
+      ],
+      "precision_5": 1.0,
+      "ndcg_5": 1.0,
+      "mrr_score": 1.0,
+      "hit_at_5": true,
+      "top_results": [
+        {
+          "dataset": "Oye12/A_Pilot_Speech_Corpus",
+          "group": "audio",
+          "tasks": [
+            "voice-activity-detection"
+          ],
+          "relevant": true,
+          "score": 0.015
+        },
+        {
+          "dataset": "MLCommons/peoples_speech",
+          "group": "audio",
+          "tasks": [
+            "automatic-speech-recognition"
+          ],
+          "relevant": true,
+          "score": 0.014
+        },
+        {
+          "dataset": "DonghuiYIN/voxceleb2",
+          "group": "audio",
+          "tasks": [
+            "automatic-speech-recognition",
+            "audio-classification"
+          ],
+          "relevant": true,
+          "score": 0.014
+        },
+        {
+          "dataset": "chris745820/more_peoples_speech_v1.0",
+          "group": "audio",
+          "tasks": [
+            "automatic-speech-recognition"
+          ],
+          "relevant": true,
+          "score": 0.014
+        },
+        {
+          "dataset": "AITRADER/dutch-tts-labeled-complete",
+          "group": "audio",
+          "tasks": [
+            "text-to-speech",
+            "automatic-speech-recognition"
+          ],
+          "relevant": true,
+          "score": 0.014
+        }
+      ]
+    },
+    {
+      "query": "multimodal dataset combining images and text descriptions",
+      "target_groups": [
+        "vision",
+        "qa"
+      ],
+      "precision_5": 0.0,
+      "ndcg_5": 0.0,
+      "mrr_score": 0.16666666666666666,
+      "hit_at_5": false,
+      "top_results": [
+        {
+          "dataset": "ScienceOne-AI/S1-MMAlign",
+          "group": "similarity",
+          "tasks": [
+            "image-to-text",
+            "visual-question-answering",
+            "feature-extraction"
+          ],
+          "relevant": false,
+          "score": 0.015
+        },
+        {
+          "dataset": "bezirganyan/LUMA",
+          "group": "classification",
+          "tasks": [
+            "image-classification",
+            "audio-classification",
+            "text-classification"
+          ],
+          "relevant": false,
+          "score": 0.015
+        },
+        {
+          "dataset": "mlfoundations/MINT-1T-HTML",
+          "group": "text-generation",
+          "tasks": [
+            "image-to-text",
+            "text-generation"
+          ],
+          "relevant": false,
+          "score": 0.014
+        },
+        {
+          "dataset": "racineai/VDR_MEGA_MultiDomain_DocRetrieval",
+          "group": "similarity",
+          "tasks": [
+            "visual-document-retrieval",
+            "text-retrieval"
+          ],
+          "relevant": false,
+          "score": 0.013
+        },
+        {
+          "dataset": "dijihax/Dataset",
+          "group": "audio",
+          "tasks": [
+            "text-classification",
+            "token-classification",
+            "table-question-answering",
+            "question-answering",
+            "zero-shot-classification",
+            "translation",
+            "summarization",
+            "feature-extraction",
+            "text-generation",
+            "fill-mask",
+            "sentence-similarity",
+            "text-to-speech",
+            "text-to-audio",
+            "automatic-speech-recognition",
+            "audio-to-audio",
+            "audio-classification",
+            "voice-activity-detection",
+            "depth-estimation",
+            "image-classification",
+            "object-detection",
+            "image-segmentation",
+            "text-to-image",
+            "image-to-image",
+            "unconditional-image-generation",
+            "multiple-choice",
+            "image-to-text",
+            "image-to-video",
+            "video-classification",
+            "reinforcement-learning",
+            "robotics",
+            "tabular-classification",
+            "tabular-regression",
+            "tabular-to-text",
+            "table-to-text",
+            "text-retrieval",
+            "time-series-forecasting",
+            "text-to-video",
+            "visual-question-answering",
+            "zero-shot-image-classification",
+            "graph-ml",
+            "mask-generation",
+            "zero-shot-object-detection",
+            "text-to-3d",
+            "image-to-3d",
+            "image-feature-extraction",
+            "video-text-to-text"
+          ],
+          "relevant": false,
+          "score": 0.012
+        }
+      ]
+    },
+    {
+      "query": "dataset for training a chatbot or conversational AI",
+      "target_groups": [
+        "text-generation",
+        "qa"
+      ],
+      "precision_5": 0.2,
+      "ndcg_5": 0.16958010263680806,
+      "mrr_score": 0.3333333333333333,
+      "hit_at_5": true,
+      "top_results": [
+        {
+          "dataset": "anaisleila/computer-use-data-psai",
+          "group": "robotics",
+          "tasks": [
+            "reinforcement-learning",
+            "robotics",
+            "video-classification",
+            "image-to-text",
+            "visual-question-answering",
+            "other"
+          ],
+          "relevant": false,
+          "score": 0.015
+        },
+        {
+          "dataset": "humanify/si",
+          "group": "audio",
+          "tasks": [
+            "audio-classification"
+          ],
+          "relevant": false,
+          "score": 0.014
+        },
+        {
+          "dataset": "JiaaqiLiu/SkillArena-datasets",
+          "group": "qa",
+          "tasks": [
+            "text-generation",
+            "question-answering"
+          ],
+          "relevant": true,
+          "score": 0.013
+        },
+        {
+          "dataset": "crystalai/ai-auto-train-datasets-cuda-5d-quantum-mindmap-simulations-generator-zkevms-immutablex",
+          "group": "audio",
+          "tasks": [
+            "text-classification",
+            "translation",
+            "token-classification",
+            "question-answering",
+            "feature-extraction",
+            "fill-mask",
+            "text-generation",
+            "automatic-speech-recognition",
+            "voice-activity-detection",
+            "sentence-similarity",
+            "text-to-speech",
+            "audio-to-audio",
+            "text-to-audio",
+            "image-segmentation",
+            "object-detection",
+            "text-to-image",
+            "unconditional-image-generation",
+            "video-classification",
+            "audio-classification",
+            "table-question-answering",
+            "zero-shot-classification",
+            "summarization",
+            "depth-estimation",
+            "image-to-text",
+            "image-classification",
+            "image-to-video",
+            "image-to-image",
+            "reinforcement-learning",
+            "robotics",
+            "tabular-classification",
+            "tabular-regression",
+            "tabular-to-text",
+            "table-to-text",
+            "multiple-choice",
+            "text-retrieval",
+            "time-series-forecasting",
+            "text-to-video",
+            "visual-question-answering",
+            "zero-shot-image-classification",
+            "graph-ml",
+            "mask-generation",
+            "zero-shot-object-detection",
+            "text-to-3d",
+            "image-to-3d",
+            "image-feature-extraction",
+            "video-text-to-text"
+          ],
+          "relevant": false,
+          "score": 0.013
+        },
+        {
+          "dataset": "Kabeer9997/Mix.AI-Data",
+          "group": "audio",
+          "tasks": [
+            "text-classification",
+            "token-classification",
+            "table-question-answering",
+            "question-answering",
+            "translation",
+            "text-generation",
+            "summarization",
+            "text-to-speech",
+            "voice-activity-detection",
+            "image-classification"
+          ],
+          "relevant": false,
+          "score": 0.013
+        }
+      ]
+    },
+    {
+      "query": "benchmark dataset for evaluating NLP models across multiple tasks",
+      "target_groups": [
+        "classification",
+        "qa",
+        "ner"
+      ],
+      "precision_5": 0.8,
+      "ndcg_5": 0.7860137352654724,
+      "mrr_score": 1.0,
+      "hit_at_5": true,
+      "top_results": [
+        {
+          "dataset": "PromptEval/PromptEval_MMLU_full",
+          "group": "qa",
+          "tasks": [
+            "question-answering"
+          ],
+          "relevant": true,
+          "score": 0.015
+        },
+        {
+          "dataset": "GEM/gem",
+          "group": "text-generation",
+          "tasks": [
+            "fill-mask",
+            "summarization",
+            "table-to-text",
+            "tabular-to-text",
+            "text-generation"
+          ],
+          "relevant": false,
+          "score": 0.015
+        },
+        {
+          "dataset": "longvideobench/LongVideoBench",
+          "group": "qa",
+          "tasks": [
+            "multiple-choice",
+            "visual-question-answering"
+          ],
+          "relevant": true,
+          "score": 0.014
+        },
+        {
+          "dataset": "tonytan48/TempReason",
+          "group": "qa",
+          "tasks": [
+            "question-answering"
+          ],
+          "relevant": true,
+          "score": 0.013
+        },
+        {
+          "dataset": "MathLLMs/VoiceAssistant-Eval",
+          "group": "qa",
+          "tasks": [
+            "question-answering",
+            "visual-question-answering",
+            "audio-to-audio",
+            "any-to-any",
+            "multiple-choice",
+            "text-generation"
+          ],
+          "relevant": true,
+          "score": 0.013
+        }
+      ]
+    },
+    {
+      "query": "dataset for autonomous driving with sensor data",
+      "target_groups": [
+        "vision",
+        "robotics"
+      ],
+      "precision_5": 0.8,
+      "ndcg_5": 0.7860137352654724,
+      "mrr_score": 1.0,
+      "hit_at_5": true,
+      "top_results": [
+        {
+          "dataset": "immanuelpeter/carla-autopilot-multimodal-dataset",
+          "group": "vision",
+          "tasks": [
+            "object-detection",
+            "image-classification",
+            "image-segmentation",
+            "depth-estimation",
+            "video-classification",
+            "any-to-any",
+            "image-to-text",
+            "reinforcement-learning"
+          ],
+          "relevant": true,
+          "score": 0.017
+        },
+        {
+          "dataset": "vijpandaturtle/roadscapes",
+          "group": "qa",
+          "tasks": [
+            "object-detection",
+            "visual-question-answering",
+            "image-segmentation"
+          ],
+          "relevant": false,
+          "score": 0.016
+        },
+        {
+          "dataset": "kze193825/PhysicalAI-Autonomous-Vehicle-Cosmos-Drive-Dreams",
+          "group": "robotics",
+          "tasks": [
+            "robotics"
+          ],
+          "relevant": true,
+          "score": 0.015
+        },
+        {
+          "dataset": "nvidia/PhysicalAI-Autonomous-Vehicle-Cosmos-Drive-Dreams",
+          "group": "robotics",
+          "tasks": [
+            "robotics"
+          ],
+          "relevant": true,
+          "score": 0.014
+        },
+        {
+          "dataset": "genrobot2025/Gen-EgoData",
+          "group": "robotics",
+          "tasks": [
+            "robotics",
+            "reinforcement-learning"
+          ],
+          "relevant": true,
+          "score": 0.014
+        }
+      ]
+    },
+    {
+      "query": "code generation dataset with programming problems and solutions",
+      "target_groups": [
+        "text-generation"
+      ],
+      "precision_5": 0.4,
+      "ndcg_5": 0.5531464700081437,
+      "mrr_score": 1.0,
+      "hit_at_5": true,
+      "top_results": [
+        {
+          "dataset": "NTU-NLP-sg/xCodeEval",
+          "group": "text-generation",
+          "tasks": [
+            "translation",
+            "token-classification",
+            "text-retrieval",
+            "text-generation",
+            "text-classification",
+            "feature-extraction",
+            "question-answering"
+          ],
+          "relevant": true,
+          "score": 0.017
+        },
+        {
+          "dataset": "code-search-net/code_search_net",
+          "group": "text-generation",
+          "tasks": [
+            "text-generation",
+            "fill-mask"
+          ],
+          "relevant": true,
+          "score": 0.016
+        },
+        {
+          "dataset": "SuraviAkhter/c-java-source-code",
+          "group": "tabular",
+          "tasks": [
+            "tabular-classification"
+          ],
+          "relevant": false,
+          "score": 0.016
+        },
+        {
+          "dataset": "deepmind/code_contests",
+          "group": "translation",
+          "tasks": [
+            "translation"
+          ],
+          "relevant": false,
+          "score": 0.015
+        },
+        {
+          "dataset": "flytech/python-codes-25k",
+          "group": "ner",
+          "tasks": [
+            "text-classification",
+            "question-answering",
+            "token-classification",
+            "summarization",
+            "text-generation"
+          ],
+          "relevant": false,
+          "score": 0.014
+        }
+      ]
+    }
+  ]
+}
