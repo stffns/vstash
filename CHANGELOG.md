@@ -14,6 +14,8 @@ All notable changes to vstash are documented here.
 - **Negative MMR cutoff** — stops selecting when best remaining candidate has MMR < 0 (redundancy exceeds relevance).
 - **`_cosine_sim()` helper** for MMR similarity computation.
 - **4 reindex tests** and **4 MMR dedup tests** (312 total).
+- **ArXiv retrieval benchmark** (`experiments/arxiv_retrieval_bench.py`) — 1,000 ML papers from HuggingFace, 10 topic clusters, 3 models × 5 configs. BGE-base (768d) P@5=0.703, MRR=0.895. Validates hybrid RRF, scoring, and model comparison.
+- **Dataset discovery engine** (`experiments/dataset_discovery.py`) — 954 HuggingFace Hub datasets, 10 task categories. P@5=0.629, MRR=0.777, 91.4% discovery rate. Interactive REPL mode with `--interactive`.
 
 ### Changed
 - `_mmr_dedup()` replaces the hard dedup block in search pipeline. `mmr_lambda=1.0` degrades to hard dedup for backwards compatibility.
