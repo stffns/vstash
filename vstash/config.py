@@ -80,13 +80,24 @@ class OpenAIConfig(BaseModel):
 
 
 class EmbeddingsConfig(BaseModel):
-    """Embedding model configuration."""
+    """Embedding model configuration.
+
+    Supported models:
+      - ``BAAI/bge-small-en-v1.5`` (384 dims, English, fastest — default)
+      - ``sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`` (384 dims, 50+ languages)
+      - ``sentence-transformers/paraphrase-multilingual-mpnet-base-v2`` (768 dims, 50+ languages)
+      - ``intfloat/multilingual-e5-large`` (1024 dims, 100+ languages, highest quality)
+
+    **Tip**: For multilingual corpora, set
+    ``model = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"``
+    in ``vstash.toml`` and run ``vstash reindex`` to re-embed existing chunks.
+    """
 
     model_config = ConfigDict(frozen=True)
 
     model: str = Field(
         default="BAAI/bge-small-en-v1.5",
-        description="FastEmbed model name",
+        description="FastEmbed model name (use paraphrase-multilingual-MiniLM-L12-v2 for multilingual)",
     )
     backend: Literal["onnx", "mlx", "auto"] = Field(
         default="auto",
@@ -142,6 +153,17 @@ class ScoringConfig(BaseModel):
     track_access: bool = Field(
         default=True,
         description="Record access counts on search (enabled by default when scoring is on)",
+    )
+    mmr_lambda: float = Field(
+        default=0.5,
+        ge=0,
+        le=1,
+        description=(
+            "MMR diversity parameter for intra-document dedup. "
+            "1.0 = hard dedup (at most one chunk per document), "
+            "0.0 = maximum diversity (no relevance weight). "
+            "Default 0.5 balances relevance and diversity."
+        ),
     )
 
     @model_validator(mode="after")

@@ -169,6 +169,204 @@ class TestStoreDeduplication:
         assert "Small Document" in titles
 
 
+class TestMMRDedup:
+    """Test intra-document MMR diversity deduplication."""
+
+    def test_similar_chunks_same_doc_are_deduped(self, sample_store: VstashStore) -> None:
+        """Near-identical chunks from the same document should be deduped to one."""
+        dim = sample_store.embedding_dim
+        # One document with 5 near-identical chunks (same embedding direction)
+        sample_store.add_document(
+            path="/test/repetitive.md",
+            title="Repetitive Doc",
+            chunks=[f"machine learning topic variation {i}" for i in range(5)],
+            embeddings=[[0.1 + i * 0.001] * dim for i in range(5)],  # very similar
+        )
+        # Another document
+        sample_store.add_document(
+            path="/test/other.md",
+            title="Other Doc",
+            chunks=["machine learning basics"],
+            embeddings=[[0.12] * dim],
+        )
+        results = sample_store.search([0.11] * dim, "machine learning", top_k=5)
+        titles = [r.title for r in results]
+        # Similar chunks should be deduped — at most 1 from the repetitive doc
+        assert titles.count("Repetitive Doc") <= 1
+        assert "Other Doc" in titles
+
+    def test_diverse_chunks_same_doc_both_appear(self, sample_store: VstashStore) -> None:
+        """Semantically different chunks from the same document should both appear."""
+        dim = sample_store.embedding_dim
+        # One document with two very different chapters
+        # Chapter 1: about ML (embedding direction: [1, 0, 0, ...])
+        # Chapter 2: about databases (embedding direction: [0, 1, 0, ...])
+        emb_ml = [1.0] + [0.0] * (dim - 1)
+        emb_db = [0.0] + [1.0] + [0.0] * (dim - 2)
+        # Add some padding chunks between to simulate a real book
+        emb_filler = [0.5] * dim
+        sample_store.add_document(
+            path="/test/book.pdf",
+            title="Big Book",
+            chunks=[
+                "chapter one about machine learning and neural networks",
+                "filler content about nothing relevant",
+                "filler content more stuff",
+                "chapter four about database indexing and SQL queries",
+            ],
+            embeddings=[emb_ml, emb_filler, emb_filler, emb_db],
+        )
+        # Search with a query that's between both topics
+        query_emb = [0.7] + [0.7] + [0.0] * (dim - 2)
+        results = sample_store.search(query_emb, "machine learning databases", top_k=5)
+        book_results = [r for r in results if r.title == "Big Book"]
+        # Both diverse chapters should appear
+        assert len(book_results) == 2
+        texts = [r.text for r in book_results]
+        assert any("machine learning" in t for t in texts)
+        assert any("database" in t for t in texts)
+
+    def test_mmr_lambda_1_is_hard_dedup(self, sample_store: VstashStore) -> None:
+        """With mmr_lambda=1.0, behaves like the old hard per-document dedup."""
+        dim = sample_store.embedding_dim
+        from vstash.config import ScoringConfig
+
+        # Two very different chunks from same doc
+        emb_a = [1.0] + [0.0] * (dim - 1)
+        emb_b = [0.0] + [1.0] + [0.0] * (dim - 2)
+        sample_store.add_document(
+            path="/test/book.pdf",
+            title="Big Book",
+            chunks=["chapter about topic A", "chapter about topic B"],
+            embeddings=[emb_a, emb_b],
+        )
+        sample_store.add_document(
+            path="/test/other.md",
+            title="Other Doc",
+            chunks=["related content"],
+            embeddings=[[0.5] * dim],
+        )
+        # mmr_lambda=1.0 means pure relevance, no diversity → hard dedup
+        scoring = ScoringConfig(enabled=False, mmr_lambda=1.0)
+        query_emb = [0.7] + [0.7] + [0.0] * (dim - 2)
+        results = sample_store.search(query_emb, "topics", top_k=5, scoring=scoring)
+        book_results = [r for r in results if r.title == "Big Book"]
+        # Hard dedup: only 1 chunk per document
+        assert len(book_results) == 1
+
+    def test_mmr_does_not_affect_cross_document_ranking(self, sample_store: VstashStore) -> None:
+        """Chunks from different documents should never penalize each other."""
+        dim = sample_store.embedding_dim
+        # Three documents with identical embeddings — MMR should keep all three
+        for i in range(3):
+            sample_store.add_document(
+                path=f"/test/doc_{i}.md",
+                title=f"Doc {i}",
+                chunks=["identical content about machine learning"],
+                embeddings=[[0.1] * dim],
+            )
+        results = sample_store.search([0.1] * dim, "machine learning", top_k=5)
+        titles = {r.title for r in results}
+        # All three documents should appear (no cross-doc penalty)
+        assert titles == {"Doc 0", "Doc 1", "Doc 2"}
+
+
+class TestReindex:
+    """Test re-embedding chunks with a new model."""
+
+    def test_reindex_changes_embeddings(self, tmp_db_path: str) -> None:
+        """Reindex should replace all vec_chunks with new embeddings."""
+        dim = 384
+        store = VstashStore(tmp_db_path, embedding_dim=dim)
+        with store:
+            store.add_document(
+                path="/test/doc.md",
+                title="Test Doc",
+                chunks=["hello world", "foo bar"],
+                embeddings=[[0.1] * dim, [0.2] * dim],
+            )
+            assert store.stats().chunks == 2
+
+            # Reindex with a "new model" (same dim, different vectors)
+            new_dim = 384
+            call_count = [0]
+
+            def fake_embed(texts: list[str]) -> list[list[float]]:
+                call_count[0] += 1
+                return [[0.9] * new_dim for _ in texts]
+
+            count = store.reindex(embed_fn=fake_embed, new_dim=new_dim)
+            assert count == 2
+            assert call_count[0] >= 1
+
+            # Search should still work with new embeddings
+            results = store.search([0.9] * new_dim, "hello", top_k=2)
+            assert len(results) >= 1
+
+    def test_reindex_with_different_dim(self, tmp_db_path: str) -> None:
+        """Reindex should handle dimension changes."""
+        old_dim = 384
+        store = VstashStore(tmp_db_path, embedding_dim=old_dim)
+        with store:
+            store.add_document(
+                path="/test/doc.md",
+                title="Test Doc",
+                chunks=["hello world"],
+                embeddings=[[0.1] * old_dim],
+            )
+
+            new_dim = 768
+
+            def fake_embed(texts: list[str]) -> list[list[float]]:
+                return [[0.5] * new_dim for _ in texts]
+
+            count = store.reindex(embed_fn=fake_embed, new_dim=new_dim)
+            assert count == 1
+            assert store.embedding_dim == new_dim
+
+            # Search with new dim should work
+            results = store.search([0.5] * new_dim, "hello", top_k=1)
+            assert len(results) == 1
+
+    def test_reindex_empty_store(self, tmp_db_path: str) -> None:
+        """Reindex on empty store should return 0."""
+        store = VstashStore(tmp_db_path, embedding_dim=384)
+        with store:
+            count = store.reindex(
+                embed_fn=lambda texts: [[0.1] * 384 for _ in texts],
+                new_dim=384,
+            )
+            assert count == 0
+
+    def test_reindex_progress_callback(self, tmp_db_path: str) -> None:
+        """Progress callback should be called during reindex."""
+        dim = 384
+        store = VstashStore(tmp_db_path, embedding_dim=dim)
+        with store:
+            store.add_document(
+                path="/test/doc.md",
+                title="Test Doc",
+                chunks=["chunk one", "chunk two", "chunk three"],
+                embeddings=[[0.1 + i * 0.01] * dim for i in range(3)],
+            )
+
+            progress_calls: list[tuple[int, int]] = []
+
+            def on_progress(processed: int, total: int) -> None:
+                progress_calls.append((processed, total))
+
+            store.reindex(
+                embed_fn=lambda texts: [[0.5] * dim for _ in texts],
+                new_dim=dim,
+                batch_size=2,
+                progress_cb=on_progress,
+            )
+            assert len(progress_calls) >= 1
+            # Last call should show all chunks processed
+            assert progress_calls[-1][0] == 3
+            assert progress_calls[-1][1] == 3
+
+
 class TestExpandContext:
     """Test context expansion with adjacent chunks."""
 
@@ -279,9 +477,7 @@ class TestAdaptiveRelevanceThreshold:
         """Only last 50 entries should be kept."""
         for i in range(60):
             sample_store.record_spread(float(i) / 100)
-        count = sample_store._conn.execute(
-            "SELECT COUNT(*) AS n FROM search_stats"
-        ).fetchone()["n"]
+        count = sample_store._conn.execute("SELECT COUNT(*) AS n FROM search_stats").fetchone()["n"]
         assert count == 50
 
 
@@ -455,13 +651,19 @@ class TestSearchTelemetry:
 
     def test_record_search_event(self, sample_store: VstashStore) -> None:
         event_id = sample_store.record_search_event(
-            query="test", best_distance=0.5, relevance_tier="high", result_count=5,
+            query="test",
+            best_distance=0.5,
+            relevance_tier="high",
+            result_count=5,
         )
         assert event_id > 0
 
     def test_mark_search_dismissed(self, sample_store: VstashStore) -> None:
         event_id = sample_store.record_search_event(
-            query="test", best_distance=0.99, relevance_tier="low", result_count=3,
+            query="test",
+            best_distance=0.99,
+            relevance_tier="low",
+            result_count=3,
         )
         sample_store.mark_search_dismissed(event_id)
         row = sample_store._conn.execute(
@@ -522,8 +724,7 @@ class TestScoringMaturity:
         # mean ≈ 3.4, max=30, ratio ≈ 8.82 → between 8 and 15
         sample_store._conn.execute("UPDATE chunks SET access_count = 2")
         sample_store._conn.execute(
-            "UPDATE chunks SET access_count = 30 WHERE id = ("
-            "SELECT id FROM chunks LIMIT 1)"
+            "UPDATE chunks SET access_count = 30 WHERE id = (SELECT id FROM chunks LIMIT 1)"
         )
         sample_store._conn.commit()
         gamma = sample_store.scoring_maturity()
@@ -542,8 +743,7 @@ class TestScoringMaturity:
         # mean ≈ 10.95, max=200, ratio ≈ 18.3 → well above 15
         sample_store._conn.execute("UPDATE chunks SET access_count = 1")
         sample_store._conn.execute(
-            "UPDATE chunks SET access_count = 200 WHERE id = ("
-            "SELECT id FROM chunks LIMIT 1)"
+            "UPDATE chunks SET access_count = 200 WHERE id = (SELECT id FROM chunks LIMIT 1)"
         )
         sample_store._conn.commit()
         gamma = sample_store.scoring_maturity()
@@ -560,8 +760,7 @@ class TestScoringMaturity:
         )
         sample_store._conn.execute("UPDATE chunks SET access_count = 1")
         sample_store._conn.execute(
-            "UPDATE chunks SET access_count = 100 WHERE id = ("
-            "SELECT id FROM chunks LIMIT 1)"
+            "UPDATE chunks SET access_count = 100 WHERE id = (SELECT id FROM chunks LIMIT 1)"
         )
         sample_store._conn.commit()
         assert sample_store.scoring_maturity() == 0.0

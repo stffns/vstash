@@ -24,11 +24,6 @@ from pathlib import Path
 
 from openai import OpenAI
 
-from vstash.embed import embed_query, get_embedding_dim
-from vstash.store import VstashStore
-
-MODEL = "BAAI/bge-small-en-v1.5"
-
 from experiments.ablation_rrf import search_fts_only, search_vector_only
 from experiments.scoring_grid import (
     EVAL_QUERIES,
@@ -37,6 +32,10 @@ from experiments.scoring_grid import (
     dcg_at_k,
     ingest_papers,
 )
+from vstash.embed import embed_query, get_embedding_dim
+from vstash.store import VstashStore
+
+MODEL = "BAAI/bge-small-en-v1.5"
 
 
 # ------------------------------------------------------------------ #
@@ -64,11 +63,7 @@ def judge_relevance(
     doc_title: str,
 ) -> dict:
     """Ask the LLM to judge relevance of a chunk to a query."""
-    user_msg = (
-        f"QUERY: {query}\n\n"
-        f"DOCUMENT: {doc_title}\n\n"
-        f"TEXT (first 1000 chars):\n{text[:1000]}"
-    )
+    user_msg = f"QUERY: {query}\n\nDOCUMENT: {doc_title}\n\nTEXT (first 1000 chars):\n{text[:1000]}"
 
     try:
         resp = client.chat.completions.create(
@@ -83,9 +78,9 @@ def judge_relevance(
         content = resp.choices[0].message.content or ""
         reasoning_tokens = 0
         if resp.usage and resp.usage.completion_tokens_details:
-            reasoning_tokens = getattr(
-                resp.usage.completion_tokens_details, "reasoning_tokens", 0
-            ) or 0
+            reasoning_tokens = (
+                getattr(resp.usage.completion_tokens_details, "reasoning_tokens", 0) or 0
+            )
 
         # Parse JSON from content
         content = content.strip()
@@ -98,7 +93,12 @@ def judge_relevance(
         result["total_tokens"] = resp.usage.total_tokens if resp.usage else 0
         return result
     except (json.JSONDecodeError, Exception) as e:
-        return {"score": -1, "reason": f"Parse error: {e}", "reasoning_tokens": 0, "total_tokens": 0}
+        return {
+            "score": -1,
+            "reason": f"Parse error: {e}",
+            "reasoning_tokens": 0,
+            "total_tokens": 0,
+        }
 
 
 # ------------------------------------------------------------------ #
@@ -160,14 +160,8 @@ def evaluate_rag(
     gen_latency = (time.perf_counter() - t0) * 1000
 
     # Judge the answer
-    chunks_text = "\n---\n".join(
-        f"[{c.title}] {c.text[:400]}" for c in chunks[:3]
-    )
-    user_msg = (
-        f"QUERY: {query}\n\n"
-        f"SOURCE CHUNKS:\n{chunks_text}\n\n"
-        f"GENERATED ANSWER:\n{answer}"
-    )
+    chunks_text = "\n---\n".join(f"[{c.title}] {c.text[:400]}" for c in chunks[:3])
+    user_msg = f"QUERY: {query}\n\nSOURCE CHUNKS:\n{chunks_text}\n\nGENERATED ANSWER:\n{answer}"
 
     try:
         resp = client.chat.completions.create(
@@ -267,21 +261,19 @@ def run_judge_experiment(
     all_scores = []
     pooled_results = []
 
-    print(f"\n  Phase 1: Pooled Relevance Judgments")
+    print("\n  Phase 1: Pooled Relevance Judgments")
     print(f"  {'─' * 50}")
 
     for qi, eq in enumerate(EVAL_QUERIES):
         q = eq["query"]
-        print(f"\n  Q{qi+1}: {q[:60]}...")
+        print(f"\n  Q{qi + 1}: {q[:60]}...")
 
         emb = embed_query(q, MODEL)
 
         # Get top-10 from all 3 methods
         vec_results = search_vector_only(store, emb, top_k)
         fts_results = search_fts_only(store, q, top_k)
-        rrf_results = store.search(
-            query_embedding=emb, query_text=q, top_k=top_k, scoring=None
-        )
+        rrf_results = store.search(query_embedding=emb, query_text=q, top_k=top_k, scoring=None)
 
         # Pool unique chunks (by title + text hash)
         seen = {}  # key -> (title, text)
@@ -332,7 +324,7 @@ def run_judge_experiment(
         )
 
     # Phase 2: RAG quality
-    print(f"\n\n  Phase 2: RAG End-to-End Quality")
+    print("\n\n  Phase 2: RAG End-to-End Quality")
     print(f"  {'─' * 50}")
 
     rag_results = []
@@ -341,7 +333,9 @@ def run_judge_experiment(
         result = evaluate_rag(client, llm_model, store, rq)
         rag_results.append(result)
         j = result["judgment"]
-        print(f"    Score: {j.get('score', '?')}/3  Latency: {result['generation_latency_ms']:.0f}ms")
+        print(
+            f"    Score: {j.get('score', '?')}/3  Latency: {result['generation_latency_ms']:.0f}ms"
+        )
         print(f"    Answer: {result['answer'][:100]}...")
 
     # Aggregates
@@ -352,7 +346,9 @@ def run_judge_experiment(
     avg_fts_10 = sum(r.fts_ndcg_10 for r in pooled_results) / len(pooled_results)
     avg_rrf_10 = sum(r.rrf_ndcg_10 for r in pooled_results) / len(pooled_results)
 
-    rag_scores = [r["judgment"].get("score", 0) for r in rag_results if r["judgment"].get("score", -1) >= 0]
+    rag_scores = [
+        r["judgment"].get("score", 0) for r in rag_results if r["judgment"].get("score", -1) >= 0
+    ]
     avg_rag = sum(rag_scores) / len(rag_scores) if rag_scores else 0.0
 
     return JudgeExperimentResult(
@@ -426,11 +422,13 @@ def main() -> None:
 
     print(f"  {'Mode':<15} {'NDCG@5':>8} {'NDCG@10':>9}")
     print(f"  {'─' * 35}")
-    print(f"  {'Vector-only':<15} {result.avg_vector_ndcg_5:>8.4f} {result.avg_vector_ndcg_10:>9.4f}")
+    print(
+        f"  {'Vector-only':<15} {result.avg_vector_ndcg_5:>8.4f} {result.avg_vector_ndcg_10:>9.4f}"
+    )
     print(f"  {'FTS keyword':<15} {result.avg_fts_ndcg_5:>8.4f} {result.avg_fts_ndcg_10:>9.4f}")
     print(f"  {'Hybrid RRF':<15} {result.avg_rrf_ndcg_5:>8.4f} {result.avg_rrf_ndcg_10:>9.4f}")
 
-    print(f"\n  Per-query breakdown:")
+    print("\n  Per-query breakdown:")
     for pr in result.pooled_results:
         print(f"    Q: {pr.query[:55]}")
         print(f"      Pooled: {pr.n_pooled} docs, {pr.n_relevant} relevant (score≥2)")
@@ -442,9 +440,11 @@ def main() -> None:
     print(f"  Average RAG score: {result.avg_rag_score:.2f}/3.0")
     for rr in result.rag_results:
         j = rr["judgment"]
-        print(f"    {rr['query'][:55]:<55} {j.get('score','?')}/3  {rr['generation_latency_ms']:.0f}ms")
+        print(
+            f"    {rr['query'][:55]:<55} {j.get('score', '?')}/3  {rr['generation_latency_ms']:.0f}ms"
+        )
 
-    print(f"\n  LLM Stats:")
+    print("\n  LLM Stats:")
     print(f"    Total judgments: {result.total_judgments}")
     print(f"    Total tokens: {result.total_tokens:,}")
     print(f"    Reasoning tokens: {result.total_reasoning_tokens:,}")

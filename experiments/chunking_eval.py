@@ -18,7 +18,7 @@ import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from vstash.ingest import chunk_text, chunk_code
+from vstash.ingest import chunk_code
 from vstash.embed import embed_query, get_embedding_dim
 from vstash.store import VstashStore
 
@@ -173,7 +173,7 @@ class RateLimiter:
         return max(0, self.max_requests - len(current))
 '''
 
-GO_CODE = '''package cache
+GO_CODE = """package cache
 
 import (
 \t"container/list"
@@ -311,7 +311,7 @@ func (c *LRUCache) Purge() {
 \tc.items = make(map[string]*list.Element)
 \tc.order.Init()
 }
-'''
+"""
 
 # Ground truth: queries and which functions they should retrieve
 CODE_QUERIES = [
@@ -399,7 +399,9 @@ def chunk_naive(text: str, chunk_size: int = 1024, overlap: int = 128) -> list[s
     return chunks
 
 
-def chunk_code_aware(text: str, language: str, chunk_size: int = 1024, overlap: int = 128) -> list[str]:
+def chunk_code_aware(
+    text: str, language: str, chunk_size: int = 1024, overlap: int = 128
+) -> list[str]:
     """Code-aware chunking using vstash's chunk_code."""
     chunks = chunk_code(text, chunk_size=chunk_size, overlap=overlap, language=language)
     return [c for c in chunks if c.strip()]
@@ -424,6 +426,7 @@ class ChunkingResult:
 
 def count_tokens(text: str) -> int:
     import tiktoken
+
     enc = tiktoken.get_encoding("cl100k_base")
     return len(enc.encode(text))
 
@@ -462,8 +465,11 @@ def count_boundary_violations(chunks: list[str], language: str) -> int:
             # If first line is indented code (not a def/class/import/comment)
             if (
                 first_line
-                and not first_line.startswith(("def ", "class ", "import ", "from ", "#", '"""', "'''", "@"))
-                and first_line[0] == " " or first_line.startswith("    ")
+                and not first_line.startswith(
+                    ("def ", "class ", "import ", "from ", "#", '"""', "'''", "@")
+                )
+                and first_line[0] == " "
+                or first_line.startswith("    ")
             ):
                 violations += 1
 
@@ -476,7 +482,9 @@ def count_boundary_violations(chunks: list[str], language: str) -> int:
             # If starts mid-function (indented, not a top-level decl)
             if (
                 first_line
-                and not first_line.startswith(("package ", "import ", "func ", "type ", "//", "var ", "const "))
+                and not first_line.startswith(
+                    ("package ", "import ", "func ", "type ", "//", "var ", "const ")
+                )
                 and first_line not in (")", "}")
             ):
                 violations += 1
@@ -500,53 +508,61 @@ def evaluate_chunking(
 
         # Naive search
         naive_chunks = store_naive.search(
-            query_embedding=emb, query_text=q, top_k=top_k, scoring=None,
+            query_embedding=emb,
+            query_text=q,
+            top_k=top_k,
+            scoring=None,
         )
         naive_texts = [c.text for c in naive_chunks]
         naive_recall = sum(
-            1 for fn in expected_fns
-            if any(check_function_in_chunk(t, fn) for t in naive_texts)
+            1 for fn in expected_fns if any(check_function_in_chunk(t, fn) for t in naive_texts)
         ) / len(expected_fns)
         naive_precision = sum(
-            1 for t in naive_texts
-            if any(check_function_in_chunk(t, fn) for fn in expected_fns)
+            1 for t in naive_texts if any(check_function_in_chunk(t, fn) for fn in expected_fns)
         ) / max(len(naive_texts), 1)
 
-        naive_results.append(ChunkingResult(
-            query=q,
-            strategy="naive",
-            n_chunks=len(naive_chunks),
-            avg_chunk_tokens=sum(count_tokens(c.text) for c in naive_chunks) / max(len(naive_chunks), 1),
-            function_recall=naive_recall,
-            function_precision=naive_precision,
-            top_chunks_preview=[c.text[:80].replace("\n", " ") for c in naive_chunks],
-            boundary_violations=0,
-        ))
+        naive_results.append(
+            ChunkingResult(
+                query=q,
+                strategy="naive",
+                n_chunks=len(naive_chunks),
+                avg_chunk_tokens=sum(count_tokens(c.text) for c in naive_chunks)
+                / max(len(naive_chunks), 1),
+                function_recall=naive_recall,
+                function_precision=naive_precision,
+                top_chunks_preview=[c.text[:80].replace("\n", " ") for c in naive_chunks],
+                boundary_violations=0,
+            )
+        )
 
         # Code-aware search
         code_chunks = store_code.search(
-            query_embedding=emb, query_text=q, top_k=top_k, scoring=None,
+            query_embedding=emb,
+            query_text=q,
+            top_k=top_k,
+            scoring=None,
         )
         code_texts = [c.text for c in code_chunks]
         code_recall = sum(
-            1 for fn in expected_fns
-            if any(check_function_in_chunk(t, fn) for t in code_texts)
+            1 for fn in expected_fns if any(check_function_in_chunk(t, fn) for t in code_texts)
         ) / len(expected_fns)
         code_precision = sum(
-            1 for t in code_texts
-            if any(check_function_in_chunk(t, fn) for fn in expected_fns)
+            1 for t in code_texts if any(check_function_in_chunk(t, fn) for fn in expected_fns)
         ) / max(len(code_texts), 1)
 
-        code_results.append(ChunkingResult(
-            query=q,
-            strategy="code_aware",
-            n_chunks=len(code_chunks),
-            avg_chunk_tokens=sum(count_tokens(c.text) for c in code_chunks) / max(len(code_chunks), 1),
-            function_recall=code_recall,
-            function_precision=code_precision,
-            top_chunks_preview=[c.text[:80].replace("\n", " ") for c in code_chunks],
-            boundary_violations=0,
-        ))
+        code_results.append(
+            ChunkingResult(
+                query=q,
+                strategy="code_aware",
+                n_chunks=len(code_chunks),
+                avg_chunk_tokens=sum(count_tokens(c.text) for c in code_chunks)
+                / max(len(code_chunks), 1),
+                function_recall=code_recall,
+                function_precision=code_precision,
+                top_chunks_preview=[c.text[:80].replace("\n", " ") for c in code_chunks],
+                boundary_violations=0,
+            )
+        )
 
     return naive_results, code_results
 
@@ -606,20 +622,24 @@ def main() -> None:
         chunking_stats[filename] = stats
 
         print(f"  {filename} ({lang}):")
-        print(f"    Naive:      {len(naive_chunks)} chunks, "
-              f"avg {stats['naive']['avg_tokens']:.0f} tokens, "
-              f"{naive_violations} boundary violations")
-        print(f"    Code-aware: {len(code_chunks)} chunks, "
-              f"avg {stats['code_aware']['avg_tokens']:.0f} tokens, "
-              f"{code_violations} boundary violations")
+        print(
+            f"    Naive:      {len(naive_chunks)} chunks, "
+            f"avg {stats['naive']['avg_tokens']:.0f} tokens, "
+            f"{naive_violations} boundary violations"
+        )
+        print(
+            f"    Code-aware: {len(code_chunks)} chunks, "
+            f"avg {stats['code_aware']['avg_tokens']:.0f} tokens, "
+            f"{code_violations} boundary violations"
+        )
         print()
 
         # Show chunk boundaries
-        print(f"    Naive chunks first lines:")
+        print("    Naive chunks first lines:")
         for i, c in enumerate(naive_chunks):
             first_line = c.strip().split("\n")[0][:70]
             print(f"      [{i}] {first_line}")
-        print(f"    Code-aware chunks first lines:")
+        print("    Code-aware chunks first lines:")
         for i, c in enumerate(code_chunks):
             first_line = c.strip().split("\n")[0][:70]
             print(f"      [{i}] {first_line}")
@@ -647,7 +667,6 @@ def main() -> None:
     import struct
 
     from vstash.embed import embed_texts
-    from vstash.store import SearchResult
 
     def _ingest_chunks(store, doc_id, filename, code, chunks_list, embeddings_list):
         """Insert chunks with vector + FTS5 indexes."""
@@ -680,7 +699,9 @@ def main() -> None:
         # Naive
         naive_chunks = chunk_naive(code)
         naive_embeddings = embed_texts(naive_chunks, MODEL)
-        _ingest_chunks(store_naive, f"naive_{filename}", filename, code, naive_chunks, naive_embeddings)
+        _ingest_chunks(
+            store_naive, f"naive_{filename}", filename, code, naive_chunks, naive_embeddings
+        )
 
         # Code-aware
         code_chunks = chunk_code_aware(code, lang)
@@ -702,8 +723,12 @@ def main() -> None:
     print(f"  {'─' * 82}")
 
     for nr, cr in zip(naive_results, code_results):
-        print(f"  {nr.query[:50]:<50} {'naive':<12} {nr.function_recall:>8.2f} {nr.function_precision:>8.2f}")
-        print(f"  {'':<50} {'code-aware':<12} {cr.function_recall:>8.2f} {cr.function_precision:>8.2f}")
+        print(
+            f"  {nr.query[:50]:<50} {'naive':<12} {nr.function_recall:>8.2f} {nr.function_precision:>8.2f}"
+        )
+        print(
+            f"  {'':<50} {'code-aware':<12} {cr.function_recall:>8.2f} {cr.function_precision:>8.2f}"
+        )
         print()
 
     # Summary
