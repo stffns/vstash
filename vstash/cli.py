@@ -231,9 +231,7 @@ def ask(
             result_count=len(chunks),
         )
         if tier == "low":
-            console.print(
-                "[dim]⚠ Low relevance — context may not match your question well.[/dim]"
-            )
+            console.print("[dim]⚠ Low relevance — context may not match your question well.[/dim]")
         elif tier == "medium":
             console.print("[dim]? Uncertain relevance — results may be tangential.[/dim]")
 
@@ -328,6 +326,7 @@ def search(
 
         if json_output:
             import json
+
             out = {
                 "chunks": [c.model_dump() for c in chunks],
                 "relevance": tier,
@@ -352,9 +351,7 @@ def search(
         table.add_column("Text", max_width=80)
 
         for i, c in enumerate(chunks, 1):
-            display_score = (
-                (c.score - min_score) / score_range if score_range > 0 else 1.0
-            )
+            display_score = (c.score - min_score) / score_range if score_range > 0 else 1.0
             # Ghost warning: medium tier gets a subtle ? next to the rank
             rank_label = f"{i}?" if tier == "medium" else str(i)
             text_preview = c.text.replace("\n", " ").strip()
@@ -384,8 +381,7 @@ def search(
                 bar_filled = pct // 5  # 20-char bar
                 bar = "█" * bar_filled + "░" * (20 - bar_filled)
                 console.print(
-                    f"\n[dim]Learning preferences: {bar} {pct}% "
-                    f"({total_accesses}/{target})[/dim]"
+                    f"\n[dim]Learning preferences: {bar} {pct}% ({total_accesses}/{target})[/dim]"
                 )
 
 
@@ -472,9 +468,7 @@ def chat(
                 )
                 last_tier = tier
                 if tier == "low":
-                    console.print(
-                        "[dim]⚠ Low relevance — context may not match well.[/dim]"
-                    )
+                    console.print("[dim]⚠ Low relevance — context may not match well.[/dim]")
                 elif tier == "medium":
                     console.print("[dim]? Uncertain relevance — results may be tangential.[/dim]")
 
@@ -713,7 +707,9 @@ def show_config() -> None:
 @app.command()
 def reindex(
     model: str | None = typer.Option(
-        None, "--model", "-m",
+        None,
+        "--model",
+        "-m",
         help="New embedding model (default: use vstash.toml setting)",
     ),
     batch_size: int = typer.Option(256, "--batch-size", help="Chunks per embedding batch"),

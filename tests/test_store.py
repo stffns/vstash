@@ -477,9 +477,7 @@ class TestAdaptiveRelevanceThreshold:
         """Only last 50 entries should be kept."""
         for i in range(60):
             sample_store.record_spread(float(i) / 100)
-        count = sample_store._conn.execute(
-            "SELECT COUNT(*) AS n FROM search_stats"
-        ).fetchone()["n"]
+        count = sample_store._conn.execute("SELECT COUNT(*) AS n FROM search_stats").fetchone()["n"]
         assert count == 50
 
 
@@ -653,13 +651,19 @@ class TestSearchTelemetry:
 
     def test_record_search_event(self, sample_store: VstashStore) -> None:
         event_id = sample_store.record_search_event(
-            query="test", best_distance=0.5, relevance_tier="high", result_count=5,
+            query="test",
+            best_distance=0.5,
+            relevance_tier="high",
+            result_count=5,
         )
         assert event_id > 0
 
     def test_mark_search_dismissed(self, sample_store: VstashStore) -> None:
         event_id = sample_store.record_search_event(
-            query="test", best_distance=0.99, relevance_tier="low", result_count=3,
+            query="test",
+            best_distance=0.99,
+            relevance_tier="low",
+            result_count=3,
         )
         sample_store.mark_search_dismissed(event_id)
         row = sample_store._conn.execute(
@@ -720,8 +724,7 @@ class TestScoringMaturity:
         # mean ≈ 3.4, max=30, ratio ≈ 8.82 → between 8 and 15
         sample_store._conn.execute("UPDATE chunks SET access_count = 2")
         sample_store._conn.execute(
-            "UPDATE chunks SET access_count = 30 WHERE id = ("
-            "SELECT id FROM chunks LIMIT 1)"
+            "UPDATE chunks SET access_count = 30 WHERE id = (SELECT id FROM chunks LIMIT 1)"
         )
         sample_store._conn.commit()
         gamma = sample_store.scoring_maturity()
@@ -740,8 +743,7 @@ class TestScoringMaturity:
         # mean ≈ 10.95, max=200, ratio ≈ 18.3 → well above 15
         sample_store._conn.execute("UPDATE chunks SET access_count = 1")
         sample_store._conn.execute(
-            "UPDATE chunks SET access_count = 200 WHERE id = ("
-            "SELECT id FROM chunks LIMIT 1)"
+            "UPDATE chunks SET access_count = 200 WHERE id = (SELECT id FROM chunks LIMIT 1)"
         )
         sample_store._conn.commit()
         gamma = sample_store.scoring_maturity()
@@ -758,8 +760,7 @@ class TestScoringMaturity:
         )
         sample_store._conn.execute("UPDATE chunks SET access_count = 1")
         sample_store._conn.execute(
-            "UPDATE chunks SET access_count = 100 WHERE id = ("
-            "SELECT id FROM chunks LIMIT 1)"
+            "UPDATE chunks SET access_count = 100 WHERE id = (SELECT id FROM chunks LIMIT 1)"
         )
         sample_store._conn.commit()
         assert sample_store.scoring_maturity() == 0.0

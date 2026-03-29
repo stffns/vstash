@@ -202,15 +202,27 @@ TOPIC_NAMES = list(WIKI_ARTICLES.keys())
 EVAL_QUERIES = [
     {
         "query": "optimization algorithms for training deep neural networks",
-        "relevant_clusters": {"transformer_architecture": 3, "reinforcement_learning": 2, "computer_vision": 1},
+        "relevant_clusters": {
+            "transformer_architecture": 3,
+            "reinforcement_learning": 2,
+            "computer_vision": 1,
+        },
     },
     {
         "query": "learning representations from sequential data",
-        "relevant_clusters": {"natural_language_processing": 3, "transformer_architecture": 2, "reinforcement_learning": 1},
+        "relevant_clusters": {
+            "natural_language_processing": 3,
+            "transformer_architecture": 2,
+            "reinforcement_learning": 1,
+        },
     },
     {
         "query": "scalable indexing structures for fast similarity search",
-        "relevant_clusters": {"database_systems": 3, "information_retrieval": 2, "distributed_systems": 1},
+        "relevant_clusters": {
+            "database_systems": 3,
+            "information_retrieval": 2,
+            "distributed_systems": 1,
+        },
     },
     {
         "query": "security protocols for network communication",
@@ -218,23 +230,43 @@ EVAL_QUERIES = [
     },
     {
         "query": "resource allocation and scheduling in computing systems",
-        "relevant_clusters": {"operating_systems": 3, "distributed_systems": 2, "database_systems": 1},
+        "relevant_clusters": {
+            "operating_systems": 3,
+            "distributed_systems": 2,
+            "database_systems": 1,
+        },
     },
     {
         "query": "graph neural networks for structured prediction",
-        "relevant_clusters": {"graph_algorithms": 3, "transformer_architecture": 2, "natural_language_processing": 1},
+        "relevant_clusters": {
+            "graph_algorithms": 3,
+            "transformer_architecture": 2,
+            "natural_language_processing": 1,
+        },
     },
     {
         "query": "feature extraction and pattern recognition in images",
-        "relevant_clusters": {"computer_vision": 3, "natural_language_processing": 1, "transformer_architecture": 1},
+        "relevant_clusters": {
+            "computer_vision": 3,
+            "natural_language_processing": 1,
+            "transformer_architecture": 1,
+        },
     },
     {
         "query": "ranking models and relevance feedback in search",
-        "relevant_clusters": {"information_retrieval": 3, "natural_language_processing": 2, "database_systems": 1},
+        "relevant_clusters": {
+            "information_retrieval": 3,
+            "natural_language_processing": 2,
+            "database_systems": 1,
+        },
     },
     {
         "query": "reward signals and policy optimization under uncertainty",
-        "relevant_clusters": {"reinforcement_learning": 3, "graph_algorithms": 1, "operating_systems": 1},
+        "relevant_clusters": {
+            "reinforcement_learning": 3,
+            "graph_algorithms": 1,
+            "operating_systems": 1,
+        },
     },
     {
         "query": "hash functions and authenticated data structures",
@@ -265,9 +297,7 @@ def _fetch_wikipedia_article(title: str) -> str | None:
     )
     for attempt in range(3):
         try:
-            req = urllib.request.Request(
-                url, headers={"User-Agent": "vstash-experiment/1.0"}
-            )
+            req = urllib.request.Request(url, headers={"User-Agent": "vstash-experiment/1.0"})
             with urllib.request.urlopen(req, timeout=30) as resp:
                 data = json.loads(resp.read())
                 pages = data["query"]["pages"]
@@ -365,8 +395,10 @@ def build_corpus(store: VstashStore) -> int:
 
     # Print corpus stats
     avg_chunks = sum(chunk_counts) / len(chunk_counts) if chunk_counts else 0
-    print(f"  Corpus stats: {total_docs} docs, {total_chunks} total chunks, "
-          f"{avg_chunks:.1f} avg chunks/doc")
+    print(
+        f"  Corpus stats: {total_docs} docs, {total_chunks} total chunks, "
+        f"{avg_chunks:.1f} avg chunks/doc"
+    )
 
     return total_chunks
 
@@ -510,13 +542,21 @@ def run_experiment(
     """Run the adaptive vs fixed scoring experiment."""
 
     fixed_scoring = ScoringConfig(
-        enabled=True, alpha=alpha, beta=beta,
-        decay_lambda=decay_lambda, over_fetch=50, track_access=False,
+        enabled=True,
+        alpha=alpha,
+        beta=beta,
+        decay_lambda=decay_lambda,
+        over_fetch=50,
+        track_access=False,
     )
     # Baseline uses same over_fetch pool but gamma=0 (pure RRF + dedup)
     baseline_scoring = ScoringConfig(
-        enabled=True, alpha=alpha, beta=beta,
-        decay_lambda=decay_lambda, over_fetch=50, track_access=False,
+        enabled=True,
+        alpha=alpha,
+        beta=beta,
+        decay_lambda=decay_lambda,
+        over_fetch=50,
+        track_access=False,
     )
 
     # Pre-compute query embeddings
@@ -529,8 +569,10 @@ def run_experiment(
     for eq in EVAL_QUERIES:
         q = eq["query"]
         results = store.search(
-            query_embedding=query_embeddings[q], query_text=q,
-            top_k=top_k, scoring=baseline_scoring,
+            query_embedding=query_embeddings[q],
+            query_text=q,
+            top_k=top_k,
+            scoring=baseline_scoring,
             _gamma_override=0.0,  # force pure RRF
         )
         clusters = [get_cluster_for_path(r.path) for r in results]
@@ -566,8 +608,10 @@ def run_experiment(
         for eq in EVAL_QUERIES:
             q = eq["query"]
             results = store.search(
-                query_embedding=query_embeddings[q], query_text=q,
-                top_k=top_k, scoring=fixed_scoring,
+                query_embedding=query_embeddings[q],
+                query_text=q,
+                top_k=top_k,
+                scoring=fixed_scoring,
                 _gamma_override=1.0,  # force full beta — simulates pre-v0.7
             )
             clusters = [get_cluster_for_path(r.path) for r in results]
@@ -579,25 +623,29 @@ def run_experiment(
         for eq in EVAL_QUERIES:
             q = eq["query"]
             results = store.search(
-                query_embedding=query_embeddings[q], query_text=q,
-                top_k=top_k, scoring=fixed_scoring,
+                query_embedding=query_embeddings[q],
+                query_text=q,
+                top_k=top_k,
+                scoring=fixed_scoring,
                 # _gamma_override not set -> uses real scoring_maturity()
             )
             clusters = [get_cluster_for_path(r.path) for r in results]
             adaptive_ndcgs.append(ndcg_at_k(clusters, eq["relevant_clusters"], k=top_k))
         avg_adaptive = sum(adaptive_ndcgs) / len(adaptive_ndcgs)
 
-        rounds.append(RoundResult(
-            round_num=round_num + 1,
-            baseline_ndcg=avg_baseline,
-            fixed_ndcg=avg_fixed,
-            adaptive_ndcg=avg_adaptive,
-            gamma=gamma,
-            effective_beta=effective_beta,
-            total_accesses=cumulative_accesses,
-            max_access=max_acc,
-            mean_access=round(mean_acc, 2),
-        ))
+        rounds.append(
+            RoundResult(
+                round_num=round_num + 1,
+                baseline_ndcg=avg_baseline,
+                fixed_ndcg=avg_fixed,
+                adaptive_ndcg=avg_adaptive,
+                gamma=gamma,
+                effective_beta=effective_beta,
+                total_accesses=cumulative_accesses,
+                max_access=max_acc,
+                mean_access=round(mean_acc, 2),
+            )
+        )
 
     # Phase D: inject a strong outlier to simulate a "power user" pattern
     # (one topic queried 50x more than others — like a researcher's focus area)
@@ -628,15 +676,20 @@ def run_experiment(
         q = eq["query"]
         # Fixed
         r_fixed = store.search(
-            query_embedding=query_embeddings[q], query_text=q,
-            top_k=top_k, scoring=fixed_scoring, _gamma_override=1.0,
+            query_embedding=query_embeddings[q],
+            query_text=q,
+            top_k=top_k,
+            scoring=fixed_scoring,
+            _gamma_override=1.0,
         )
         clusters = [get_cluster_for_path(r.path) for r in r_fixed]
         fixed_post.append(ndcg_at_k(clusters, eq["relevant_clusters"], k=top_k))
         # Adaptive
         r_adapt = store.search(
-            query_embedding=query_embeddings[q], query_text=q,
-            top_k=top_k, scoring=fixed_scoring,
+            query_embedding=query_embeddings[q],
+            query_text=q,
+            top_k=top_k,
+            scoring=fixed_scoring,
         )
         clusters = [get_cluster_for_path(r.path) for r in r_adapt]
         adaptive_post.append(ndcg_at_k(clusters, eq["relevant_clusters"], k=top_k))
@@ -645,12 +698,16 @@ def run_experiment(
     avg_adaptive_post = sum(adaptive_post) / len(adaptive_post)
     eff_beta_post = beta * gamma_post
 
-    print(f"  After power-user injection:")
+    print("  After power-user injection:")
     print(f"    gamma = {gamma_post:.3f}, effective beta = {eff_beta_post:.3f}")
-    print(f"    max/mean = {max_post}/{mean_post:.1f} (ratio = {max_post/mean_post:.1f}x)")
+    print(f"    max/mean = {max_post}/{mean_post:.1f} (ratio = {max_post / mean_post:.1f}x)")
     print(f"    Baseline:  {avg_baseline:.4f}")
-    print(f"    Fixed beta:   {avg_fixed_post:.4f} ({(avg_fixed_post-avg_baseline)/avg_baseline*100:+.1f}%)")
-    print(f"    Adaptive:  {avg_adaptive_post:.4f} ({(avg_adaptive_post-avg_baseline)/avg_baseline*100:+.1f}%)")
+    print(
+        f"    Fixed beta:   {avg_fixed_post:.4f} ({(avg_fixed_post - avg_baseline) / avg_baseline * 100:+.1f}%)"
+    )
+    print(
+        f"    Adaptive:  {avg_adaptive_post:.4f} ({(avg_adaptive_post - avg_baseline) / avg_baseline * 100:+.1f}%)"
+    )
 
     # Analyze crossover and degradation
     def find_crossover(values: list[float], baseline: float) -> int | None:
@@ -691,7 +748,9 @@ def run_experiment(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Adaptive Cold Start Experiment")
     parser.add_argument("--rounds", type=int, default=30)
-    parser.add_argument("--output", type=str, default="experiments/results/adaptive_cold_start.json")
+    parser.add_argument(
+        "--output", type=str, default="experiments/results/adaptive_cold_start.json"
+    )
     args = parser.parse_args()
 
     dim = get_embedding_dim(MODEL)
@@ -722,8 +781,10 @@ def main() -> None:
     print(f"  Corpus: {result.corpus_docs} docs, {result.corpus_chunks} chunks")
     print(f"  Queries: {result.n_queries}\n")
 
-    print(f"  {'Rnd':>4} {'Baseline':>9} {'Fixed':>8} {'d%':>7} {'Adaptive':>9} {'d%':>7} "
-          f"{'gamma':>5} {'eff_b':>6} {'max/mean':>10} {'Accesses':>9}")
+    print(
+        f"  {'Rnd':>4} {'Baseline':>9} {'Fixed':>8} {'d%':>7} {'Adaptive':>9} {'d%':>7} "
+        f"{'gamma':>5} {'eff_b':>6} {'max/mean':>10} {'Accesses':>9}"
+    )
     print(f"  {'-' * 85}")
 
     for r in result.rounds:
@@ -737,10 +798,14 @@ def main() -> None:
         )
 
     print(f"\n{sep}")
-    print(f"  Fixed beta:    crossover={result.fixed_crossover or 'never'}, "
-          f"degradation={result.fixed_degradation_rounds}/{result.total_rounds} rounds")
-    print(f"  Adaptive gamma: crossover={result.adaptive_crossover or 'never'}, "
-          f"degradation={result.adaptive_degradation_rounds}/{result.total_rounds} rounds")
+    print(
+        f"  Fixed beta:    crossover={result.fixed_crossover or 'never'}, "
+        f"degradation={result.fixed_degradation_rounds}/{result.total_rounds} rounds"
+    )
+    print(
+        f"  Adaptive gamma: crossover={result.adaptive_crossover or 'never'}, "
+        f"degradation={result.adaptive_degradation_rounds}/{result.total_rounds} rounds"
+    )
 
     if result.adaptive_degradation_rounds < result.fixed_degradation_rounds:
         improvement = result.fixed_degradation_rounds - result.adaptive_degradation_rounds

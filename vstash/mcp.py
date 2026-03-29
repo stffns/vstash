@@ -477,12 +477,14 @@ def vstash_search(
             result_count=len(chunks),
         )
 
-        return _ok({
-            "chunks": [c.model_dump() for c in chunks],
-            "relevance": relevance,
-            "hint": hint,
-            "best_distance": round(best_distance, 4),
-        })
+        return _ok(
+            {
+                "chunks": [c.model_dump() for c in chunks],
+                "relevance": relevance,
+                "hint": hint,
+                "best_distance": round(best_distance, 4),
+            }
+        )
 
     except FileNotFoundError:
         return _error("vstash database not found. Ingest documents first with vstash_add.")
