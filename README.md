@@ -208,6 +208,7 @@ PDF, DOCX, PPTX, XLSX, Markdown, TXT, HTML, CSV, Python, JavaScript, TypeScript,
 | [MCP Server](docs/mcp-server.md) | Claude Desktop integration setup |
 | [LangChain](docs/langchain.md) | VstashRetriever for chains and agents |
 | [Embedding Models](docs/embedding-models.md) | Model comparison and backend selection |
+| [Experiments](docs/experiments.md) | Retrieval benchmarks — hypotheses, results, conclusions |
 
 ---
 
