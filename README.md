@@ -29,18 +29,23 @@ Most RAG tools are slow, cloud-dependent, or require a running server. vstash is
 
 **Zero cloud required for search. Inference is optional.**
 
+### What's new in v0.8
+
+- **Multilingual embeddings** — search in any language. Queries in English and Spanish return the same results. Cross-lingual similarity improves ~40%.
+- **`vstash reindex`** — switch embedding models without re-ingesting. Re-embeds all chunks in-place with a progress bar.
+- **Intra-document MMR dedup** — replaces hard per-document dedup. Semantically diverse sections from the same long document now surface in results (3-5× more for cross-section queries).
+
 ### What's new in v0.7
 
-- **Adaptive scoring** — maturity gate (γ) suppresses frequency+decay until access patterns show genuine signal (max/mean ≥ 8×). Eliminates the -8.6% cold start degradation from fixed scoring. Scoring is now safe to enable by default.
-- **Zero-cost cold start** — when γ = 0, scoring is completely short-circuited: no metadata lookups, no decay computation. Pure RRF with zero overhead.
+- **Adaptive scoring** — maturity gate (γ) suppresses frequency+decay until access patterns show genuine signal (max/mean ≥ 8×). Scoring is now safe to enable by default.
+- **Zero-cost cold start** — when γ = 0, scoring is completely short-circuited. Pure RRF with zero overhead.
 
 ### What's new in v0.6
 
-- **Relevance signal** — distance-based confidence (F1=0.952) warns when results may not match your query. Works from the first search, no setup needed.
-- **Document deduplication** — one result per document, improving diversity from ~3.2 to 5.0 unique docs per top-5.
+- **Relevance signal** — distance-based confidence (F1=0.952) warns when results may not match your query.
+- **Document deduplication** — improving diversity from ~3.2 to 5.0 unique docs per top-5.
 - **Context expansion** — adjacent chunks (±1) automatically included for LLM answers, 2.64× richer context.
 - **Tiered feedback** — high (silent), medium (`?` indicator), low (full warning) in CLI and MCP.
-- **LLM grounding** — system prompt rules enforce source citation and correct wrong-document attributions, passing 9/9 anti-hallucination trap tests.
 - **Discard telemetry** — search events tracked for real-world relevance signal validation.
 
 ---
@@ -134,6 +139,7 @@ vstash chat                 Interactive Q&A session
 vstash list                 Show all documents in memory
 vstash stats                Memory statistics (docs, chunks, DB size)
 vstash forget <file>        Remove a document from memory
+vstash reindex              Re-embed all chunks with a new model
 vstash watch <dir>          Auto-ingest on file changes
 vstash export               Export chunks as JSONL for training data curation
 vstash config               Show current configuration
@@ -213,7 +219,8 @@ PDF, DOCX, PPTX, XLSX, Markdown, TXT, HTML, CSV, Python, JavaScript, TypeScript,
 - **Phase 4 ✅:** LangChain integration — `VstashRetriever`
 - **Phase 5 ✅:** Memory scoring — frequency + temporal decay re-ranking
 - **Phase 6 ✅:** Retrieval quality — distance-based relevance signal, document dedup, context expansion
-- **Phase 7:** Sync — cr-sqlite CRDT peer-to-peer sync, multiple profiles
+- **Phase 7 ✅:** Multilingual — cross-lingual embeddings, `vstash reindex`, MMR dedup
+- **Phase 8:** Sync — cr-sqlite CRDT peer-to-peer sync, multiple profiles
 
 ---
 
