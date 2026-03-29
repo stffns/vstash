@@ -160,8 +160,9 @@ class ScoringConfig(BaseModel):
         le=1,
         description=(
             "MMR diversity parameter for intra-document dedup. "
-            "1.0 = pure relevance (no diversity penalty), "
-            "0.0 = maximum diversity. Default 0.5 balances both."
+            "1.0 = hard dedup (at most one chunk per document), "
+            "0.0 = maximum diversity (no relevance weight). "
+            "Default 0.5 balances relevance and diversity."
         ),
     )
 

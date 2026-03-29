@@ -12,7 +12,7 @@ so subsequent runs require no network access.
 
 Each article is chunked through vstash's real chunking pipeline (chunk_text)
 with default parameters (1024-token chunks, 128-token overlap).
-Target: ~3,000-5,000 total chunks from 120 articles.
+Target: ~900-1,000 total chunks from 120 articles with this configuration.
 
 Usage:
     python -m experiments.adaptive_cold_start [--rounds 30] [--output results/adaptive_cold_start.json]
@@ -26,13 +26,14 @@ import math
 import random
 import tempfile
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from vstash.config import ScoringConfig
-from vstash.embed import embed_query, get_embedding_dim
+from vstash.embed import embed_query, embed_texts, get_embedding_dim
 from vstash.ingest import chunk_text
 from vstash.store import VstashStore
 
@@ -274,7 +275,7 @@ def _fetch_wikipedia_article(title: str) -> str | None:
                     if page_id != "-1" and "extract" in page:
                         return page["extract"]
             break  # Got a response but no valid extract — don't retry
-        except Exception:
+        except (urllib.error.URLError, json.JSONDecodeError):
             if attempt < 2:
                 time.sleep(2)  # Wait before retry on network errors
     return None
@@ -344,8 +345,8 @@ def build_corpus(store: VstashStore) -> int:
                 # Fallback: if chunking produces nothing, use the whole text
                 chunks = [text]
 
-            # Embed each chunk
-            embeddings = [embed_query(c, MODEL) for c in chunks]
+            # Embed chunks using batch API (not query API)
+            embeddings = embed_texts(chunks, MODEL)
 
             # Use a sanitized title for the path
             safe_title = title.replace("/", "_").replace(" ", "_")
