@@ -6,13 +6,23 @@ vstash uses [FastEmbed](https://github.com/qdrant/fastembed) for local embedding
 
 ## Supported Models
 
+### English-only
+
 | Model | Dimensions | Speed | Quality |
 |-------|-----------|-------|---------|
 | `BAAI/bge-small-en-v1.5` (default) | 384 | ~700 chunks/s | Great |
 | `BAAI/bge-base-en-v1.5` | 768 | ~300 chunks/s | Excellent |
 | `nomic-ai/nomic-embed-text-v1.5` | 768 | ~300 chunks/s | Excellent |
 
-The default (`bge-small-en-v1.5`) offers the best speed/quality tradeoff for most use cases. Switch to a larger model if you need higher retrieval precision on technical or domain-specific content.
+### Multilingual
+
+| Model | Dimensions | Languages | Speed | Quality |
+|-------|-----------|-----------|-------|---------|
+| `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` | 384 | 50+ | ~600 chunks/s | Great |
+| `sentence-transformers/paraphrase-multilingual-mpnet-base-v2` | 768 | 50+ | ~250 chunks/s | Excellent |
+| `intfloat/multilingual-e5-large` | 1024 | 100+ | ~100 chunks/s | Best |
+
+**Recommendation:** For multilingual corpora, use `paraphrase-multilingual-MiniLM-L12-v2`. Same 384 dimensions as the default model = zero latency impact on search. Cross-lingual query similarity improves ~40% over English-only models.
 
 ---
 
@@ -22,14 +32,37 @@ In `vstash.toml`:
 
 ```toml
 [embeddings]
-model = "BAAI/bge-base-en-v1.5"
+model = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 ```
 
-> **Important:** Changing the embedding model requires re-ingesting all documents. The vector dimensions must match between stored embeddings and query embeddings. After changing the model, remove your database and re-add your files:
-> ```bash
-> rm ~/.vstash/memory.db
-> vstash add <your files>
-> ```
+Then re-embed your existing chunks:
+
+```bash
+vstash reindex
+```
+
+The `reindex` command drops and recreates the vector index with the new model's dimensions, re-embeds all chunks in batches, and shows a progress bar. Text, metadata, and FTS index are preserved.
+
+Options:
+
+```bash
+vstash reindex                          # uses model from vstash.toml
+vstash reindex --model BAAI/bge-base-en-v1.5  # override model
+vstash reindex --batch-size 128         # smaller batches (less RAM)
+vstash reindex --yes                    # skip confirmation prompt
+```
+
+---
+
+## When to upgrade dimensions
+
+| Corpus size | Recommended dims | Model |
+|-------------|:---:|-------|
+| < 5,000 chunks | 384 | `bge-small-en-v1.5` or `multilingual-MiniLM` |
+| 5,000 - 50,000 | 768 | `bge-base-en-v1.5` or `multilingual-mpnet` |
+| 50,000+ | 1024 | `multilingual-e5-large` |
+
+Higher dimensions give better discrimination between semantically similar chunks, but the improvement is negligible on small corpora. Search latency scales linearly with dimensions (~0.3ms at 384, ~0.7ms at 1024).
 
 ---
 
