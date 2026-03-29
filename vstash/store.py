@@ -667,9 +667,9 @@ class VstashStore:
         This allows two distant chapters of a book to both appear in results,
         while still preventing near-duplicate chunks from flooding top-k.
 
-        When ``mmr_lambda = 1.0`` this degrades to pure score ranking (no
-        diversity penalty).  The method falls back to hard per-document dedup
-        if embedding lookup fails.
+        When ``mmr_lambda = 1.0`` this degrades to hard per-document dedup
+        (at most one chunk per document, highest-scoring wins).  The method
+        also falls back to hard dedup if embedding lookup fails.
         """
         if not ranked:
             return []
@@ -707,7 +707,7 @@ class VstashStore:
                 ).fetchall()
                 for row in rows:
                     embeddings[row["rowid"]] = _deserialize(row["embedding"])
-            except Exception:
+            except sqlite3.Error:
                 logging.getLogger(__name__).debug(
                     "MMR embedding fetch failed, falling back to hard dedup",
                     exc_info=True,
