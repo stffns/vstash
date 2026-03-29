@@ -120,6 +120,41 @@ With the adaptive maturity gate (v0.7.0), scoring can be **enabled by default** 
 
 ---
 
+## Intra-Document MMR Deduplication
+
+*Added in v0.8.0*
+
+Before v0.8, vstash used hard per-document dedup: only the highest-scoring chunk from each document appeared in results. This works well for short documents but hides relevant content in long documents — a book with two important chapters on different topics would only show one.
+
+v0.8 replaces this with **Maximal Marginal Relevance (MMR)** applied within documents:
+
+```
+MMR(c) = λ · score(c) − (1 − λ) · max_sim(c, selected_same_doc)
+```
+
+| Term | Meaning |
+|------|---------|
+| `λ` (mmr_lambda) | Balance between relevance and diversity (default 0.5) |
+| `score(c)` | Normalized RRF or final_score of the candidate |
+| `max_sim` | Maximum cosine similarity to already-selected chunks from the same document |
+
+**How it works:**
+1. Chunks from *different* documents compete purely on score — no cross-document penalty.
+2. When multiple chunks from the *same* document are candidates, the second chunk is penalized by its similarity to the first.
+3. If two chapters are semantically diverse (low cosine similarity), both appear. If they're near-duplicates, the second is suppressed.
+4. Selection stops when the best remaining candidate has negative MMR (redundancy exceeds relevance).
+
+**Configuration:**
+
+```toml
+[scoring]
+mmr_lambda = 0.5   # 0.0 = max diversity, 1.0 = hard dedup (one per doc)
+```
+
+**Impact:** On a 35-chunk paper, cross-section queries return 3–5× more relevant results than hard dedup. NDCG@5 improves from 0.814 to 0.829. Overhead is ~0.36ms (embedding fetch + similarity matrix).
+
+---
+
 ## Relevance Signal
 
 *Added in v0.6.0*

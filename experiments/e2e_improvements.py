@@ -70,12 +70,14 @@ def test_dedup_diverse_results(store: VstashStore) -> TestResult:
         results = store.search(emb, eq["query"], top_k=5)
         titles = [r.title for r in results]
         unique_titles = set(titles)
-        results_all.append({
-            "query": eq["query"][:50],
-            "total": len(titles),
-            "unique": len(unique_titles),
-            "duplicated": len(titles) != len(unique_titles),
-        })
+        results_all.append(
+            {
+                "query": eq["query"][:50],
+                "total": len(titles),
+                "unique": len(unique_titles),
+                "duplicated": len(titles) != len(unique_titles),
+            }
+        )
 
     n_duped = sum(1 for r in results_all if r["duplicated"])
     passed = n_duped == 0
@@ -171,7 +173,12 @@ def test_expand_context_preserves_metadata(store: VstashStore) -> TestResult:
     all_match = True
     mismatches = []
     for orig, exp in zip(original, expanded):
-        if orig.title != exp.title or orig.path != exp.path or orig.chunk != exp.chunk or orig.score != exp.score:
+        if (
+            orig.title != exp.title
+            or orig.path != exp.path
+            or orig.chunk != exp.chunk
+            or orig.score != exp.score
+        ):
             all_match = False
             mismatches.append(f"{orig.title}: title/path/chunk/score mismatch")
 
@@ -207,7 +214,10 @@ def test_relevance_signal_off_without_scoring(store: VstashStore) -> TestResult:
         name="relevance_signal_off_without_scoring",
         passed=passed,
         detail=f"Avg spread without scoring: {avg_spread:.6f} (confirms signal is useless here)",
-        metrics={"avg_spread": round(avg_spread, 6), "max_spread": round(max(spreads), 6) if spreads else 0},
+        metrics={
+            "avg_spread": round(avg_spread, 6),
+            "max_spread": round(max(spreads), 6) if spreads else 0,
+        },
     )
 
 
@@ -558,7 +568,9 @@ def main() -> None:
     for bench_fn in benchmarks:
         print(f"  Running: {bench_fn.__name__}...", end=" ", flush=True)
         br = bench_fn(store)
-        print(f"avg={br.avg_ms:.3f}ms  p50={br.p50_ms:.3f}ms  p95={br.p95_ms:.3f}ms  p99={br.p99_ms:.3f}ms")
+        print(
+            f"avg={br.avg_ms:.3f}ms  p50={br.p50_ms:.3f}ms  p95={br.p95_ms:.3f}ms  p99={br.p99_ms:.3f}ms"
+        )
         bench_results.append(br)
 
     # Summary table
@@ -568,13 +580,17 @@ def main() -> None:
     print(f"  {'Pipeline':<35} {'Avg':>8} {'P50':>8} {'P95':>8} {'P99':>8}")
     print(f"  {'─' * 69}")
     for br in bench_results:
-        print(f"  {br.name:<35} {br.avg_ms:>7.3f}ms {br.p50_ms:>7.3f}ms {br.p95_ms:>7.3f}ms {br.p99_ms:>7.3f}ms")
+        print(
+            f"  {br.name:<35} {br.avg_ms:>7.3f}ms {br.p50_ms:>7.3f}ms {br.p95_ms:>7.3f}ms {br.p99_ms:>7.3f}ms"
+        )
 
     # Overhead calculation
     base = next(b for b in bench_results if b.name == "search_with_dedup")
     full = next(b for b in bench_results if b.name == "full_pipeline_search_dedup_expand")
     expand = next(b for b in bench_results if b.name == "expand_context_window1")
-    print(f"\n  Context expansion overhead: +{expand.avg_ms:.3f}ms ({expand.avg_ms / base.avg_ms * 100:.1f}% of search)")
+    print(
+        f"\n  Context expansion overhead: +{expand.avg_ms:.3f}ms ({expand.avg_ms / base.avg_ms * 100:.1f}% of search)"
+    )
     print(f"  Full pipeline vs base search: +{full.avg_ms - base.avg_ms:.3f}ms")
 
     # Save results

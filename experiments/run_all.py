@@ -80,7 +80,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run all experiments")
     parser.add_argument("--db", type=str, help="Shared DB path (skip re-ingestion)")
     parser.add_argument(
-        "--only", type=str, nargs="*",
+        "--only",
+        type=str,
+        nargs="*",
         help="Run only specified experiments",
         choices=[e["name"] for e in EXPERIMENTS],
     )
@@ -99,12 +101,14 @@ def main() -> None:
     for exp in experiments:
         success, elapsed = run_experiment(exp, db_path=args.db)
         status = "PASS" if success else "FAIL"
-        results_summary.append({
-            "name": exp["name"],
-            "status": status,
-            "elapsed_s": round(elapsed, 1),
-            "output": exp.get("output"),
-        })
+        results_summary.append(
+            {
+                "name": exp["name"],
+                "status": status,
+                "elapsed_s": round(elapsed, 1),
+                "output": exp.get("output"),
+            }
+        )
         print(f"\n  [{status}] {exp['name']} completed in {elapsed:.1f}s")
 
     total_elapsed = time.time() - total_start
@@ -127,7 +131,7 @@ def main() -> None:
     if results_dir.exists():
         files = sorted(results_dir.glob("*.json"))
         if files:
-            print(f"\n  Output files:")
+            print("\n  Output files:")
             for f in files:
                 size = f.stat().st_size
                 print(f"    {f} ({size:,} bytes)")

@@ -16,17 +16,14 @@ from __future__ import annotations
 import argparse
 import json
 import tempfile
-import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from vstash.config import VstashConfig
+from experiments.scoring_grid import PAPERS, ingest_papers
 from vstash.embed import embed_query, get_embedding_dim
 from vstash.store import VstashStore
 
 MODEL = "BAAI/bge-small-en-v1.5"
-
-from experiments.scoring_grid import PAPERS, ingest_papers
 
 # ------------------------------------------------------------------ #
 # Query sets                                                           #
@@ -132,7 +129,10 @@ def evaluate_queries_scored(
     for q in queries:
         emb = embed_query(q, MODEL)
         chunks = store.search(
-            query_embedding=emb, query_text=q, top_k=top_k, scoring=scoring,
+            query_embedding=emb,
+            query_text=q,
+            top_k=top_k,
+            scoring=scoring,
         )
         scores = [c.score for c in chunks]
         stats = compute_spread_stats(scores)
@@ -276,12 +276,16 @@ def main() -> None:
     irr_spreads = [r.spread for r in irrelevant_results]
 
     print(f"\n  Relevant queries (n={len(rel_spreads)}):")
-    print(f"    Spread — mean: {sum(rel_spreads)/len(rel_spreads):.4f}, "
-          f"min: {min(rel_spreads):.4f}, max: {max(rel_spreads):.4f}")
+    print(
+        f"    Spread — mean: {sum(rel_spreads) / len(rel_spreads):.4f}, "
+        f"min: {min(rel_spreads):.4f}, max: {max(rel_spreads):.4f}"
+    )
 
     print(f"  Irrelevant queries (n={len(irr_spreads)}):")
-    print(f"    Spread — mean: {sum(irr_spreads)/len(irr_spreads):.4f}, "
-          f"min: {min(irr_spreads):.4f}, max: {max(irr_spreads):.4f}")
+    print(
+        f"    Spread — mean: {sum(irr_spreads) / len(irr_spreads):.4f}, "
+        f"min: {min(irr_spreads):.4f}, max: {max(irr_spreads):.4f}"
+    )
 
     # ============================================================== #
     # Phase 2a: Threshold sweep on RAW RRF (no scoring)                #
@@ -298,8 +302,10 @@ def main() -> None:
         metrics_list.append(m)
 
     best_f1_raw = max(metrics_list, key=lambda m: m.f1)
-    print(f"  Raw RRF spread is ~{sum(r.spread for r in all_results)/len(all_results):.4f} for ALL queries.")
-    print(f"  No threshold can discriminate relevant from irrelevant.")
+    print(
+        f"  Raw RRF spread is ~{sum(r.spread for r in all_results) / len(all_results):.4f} for ALL queries."
+    )
+    print("  No threshold can discriminate relevant from irrelevant.")
     print(f"  Best F1: {best_f1_raw.f1:.4f} (Acc={best_f1_raw.accuracy:.4f})")
 
     # ============================================================== #
@@ -312,15 +318,27 @@ def main() -> None:
     from vstash.config import ScoringConfig
 
     scoring_cfg = ScoringConfig(
-        enabled=True, alpha=0.7, beta=0.3, decay_lambda=0.07,
-        over_fetch=50, track_access=False,
+        enabled=True,
+        alpha=0.7,
+        beta=0.3,
+        decay_lambda=0.07,
+        over_fetch=50,
+        track_access=False,
     )
 
     scored_relevant_results = evaluate_queries_scored(
-        store, RELEVANT_QUERIES, is_relevant=True, top_k=args.top_k, scoring=scoring_cfg,
+        store,
+        RELEVANT_QUERIES,
+        is_relevant=True,
+        top_k=args.top_k,
+        scoring=scoring_cfg,
     )
     scored_irrelevant_results = evaluate_queries_scored(
-        store, IRRELEVANT_QUERIES, is_relevant=False, top_k=args.top_k, scoring=scoring_cfg,
+        store,
+        IRRELEVANT_QUERIES,
+        is_relevant=False,
+        top_k=args.top_k,
+        scoring=scoring_cfg,
     )
     all_scored_results = scored_relevant_results + scored_irrelevant_results
 
@@ -329,8 +347,10 @@ def main() -> None:
         m = compute_threshold_metrics(all_scored_results, t)
         scored_metrics_list.append(m)
 
-    print(f"  {'Threshold':>10} {'Prec':>8} {'Recall':>8} {'F1':>8} {'Acc':>8} "
-          f"{'TP':>4} {'FP':>4} {'TN':>4} {'FN':>4}")
+    print(
+        f"  {'Threshold':>10} {'Prec':>8} {'Recall':>8} {'F1':>8} {'Acc':>8} "
+        f"{'TP':>4} {'FP':>4} {'TN':>4} {'FN':>4}"
+    )
     print(f"  {'─' * 72}")
 
     best_f1 = max(scored_metrics_list, key=lambda m: m.f1)
@@ -346,14 +366,20 @@ def main() -> None:
                 f"{m.true_negatives:>4} {m.false_negatives:>4}{marker}"
             )
 
-    print(f"\n  ★ Best F1 threshold: {best_f1.threshold:.2f} "
-          f"(F1={best_f1.f1:.4f}, Acc={best_f1.accuracy:.4f})")
-    print(f"    Best accuracy threshold: {best_acc.threshold:.2f} "
-          f"(Acc={best_acc.accuracy:.4f}, F1={best_acc.f1:.4f})")
-    print(f"\n  Key finding: scoring is a PREREQUISITE for the relevance signal.")
-    print(f"  Raw RRF spread: ~0.0006 (no discrimination)")
-    print(f"  Scored spread: relevant={sum(r.spread for r in scored_relevant_results)/len(scored_relevant_results):.4f}, "
-          f"irrelevant={sum(r.spread for r in scored_irrelevant_results)/len(scored_irrelevant_results):.4f}")
+    print(
+        f"\n  ★ Best F1 threshold: {best_f1.threshold:.2f} "
+        f"(F1={best_f1.f1:.4f}, Acc={best_f1.accuracy:.4f})"
+    )
+    print(
+        f"    Best accuracy threshold: {best_acc.threshold:.2f} "
+        f"(Acc={best_acc.accuracy:.4f}, F1={best_acc.f1:.4f})"
+    )
+    print("\n  Key finding: scoring is a PREREQUISITE for the relevance signal.")
+    print("  Raw RRF spread: ~0.0006 (no discrimination)")
+    print(
+        f"  Scored spread: relevant={sum(r.spread for r in scored_relevant_results) / len(scored_relevant_results):.4f}, "
+        f"irrelevant={sum(r.spread for r in scored_irrelevant_results) / len(scored_irrelevant_results):.4f}"
+    )
 
     # Update metrics_list for output (use scored version as primary)
     metrics_list = scored_metrics_list
@@ -420,11 +446,17 @@ def main() -> None:
     scored_relevant = [r.spread for r in scored_relevant_results]
     scored_irrelevant = [r.spread for r in scored_irrelevant_results]
 
-    print(f"  With scoring — relevant spread mean:   {sum(scored_relevant)/len(scored_relevant):.4f}")
-    print(f"  With scoring — irrelevant spread mean: {sum(scored_irrelevant)/len(scored_irrelevant):.4f}")
-    print(f"  Without scoring — relevant spread mean:   {sum(rel_spreads)/len(rel_spreads):.4f}")
-    print(f"  Without scoring — irrelevant spread mean: {sum(irr_spreads)/len(irr_spreads):.4f}")
-    print(f"\n  Separation ratio (scored): {sum(scored_relevant)/len(scored_relevant) / max(sum(scored_irrelevant)/len(scored_irrelevant), 0.0001):.2f}x")
+    print(
+        f"  With scoring — relevant spread mean:   {sum(scored_relevant) / len(scored_relevant):.4f}"
+    )
+    print(
+        f"  With scoring — irrelevant spread mean: {sum(scored_irrelevant) / len(scored_irrelevant):.4f}"
+    )
+    print(f"  Without scoring — relevant spread mean:   {sum(rel_spreads) / len(rel_spreads):.4f}")
+    print(f"  Without scoring — irrelevant spread mean: {sum(irr_spreads) / len(irr_spreads):.4f}")
+    print(
+        f"\n  Separation ratio (scored): {sum(scored_relevant) / len(scored_relevant) / max(sum(scored_irrelevant) / len(scored_irrelevant), 0.0001):.2f}x"
+    )
 
     # Save results
     output_path = Path(args.output)

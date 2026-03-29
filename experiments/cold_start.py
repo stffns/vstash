@@ -27,23 +27,20 @@ import argparse
 import json
 import random
 import tempfile
-import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from vstash.config import ScoringConfig, VstashConfig
-from vstash.embed import embed_query, get_embedding_dim
-from vstash.store import VstashStore
-
-MODEL = "BAAI/bge-small-en-v1.5"
-
 from experiments.scoring_grid import (
     EVAL_QUERIES,
-    NAME_TO_URL,
     PAPERS,
     ingest_papers,
     ndcg_at_k,
 )
+from vstash.config import ScoringConfig
+from vstash.embed import embed_query, get_embedding_dim
+from vstash.store import VstashStore
+
+MODEL = "BAAI/bge-small-en-v1.5"
 
 
 # ------------------------------------------------------------------ #
@@ -82,16 +79,16 @@ class ColdStartResult:
 # Some topics get queried much more than others.
 # Weights roughly follow Zipf distribution.
 QUERY_WEIGHTS = [
-    5,   # "long-term memory systems" — heavily queried
-    4,   # "temporal decay and forgetting" — frequently queried
-    3,   # "benchmarks for evaluating memory" — moderate
-    3,   # "episodic memory architecture" — moderate
-    2,   # "personalization and user modeling" — occasional
-    2,   # "knowledge graph approaches" — occasional
-    1,   # "memory compression" — rare
-    1,   # "multi-agent memory sharing" — rare
-    1,   # "read-write memory interfaces" — rare
-    1,   # "self-organizing and adaptive" — rare
+    5,  # "long-term memory systems" — heavily queried
+    4,  # "temporal decay and forgetting" — frequently queried
+    3,  # "benchmarks for evaluating memory" — moderate
+    3,  # "episodic memory architecture" — moderate
+    2,  # "personalization and user modeling" — occasional
+    2,  # "knowledge graph approaches" — occasional
+    1,  # "memory compression" — rare
+    1,  # "multi-agent memory sharing" — rare
+    1,  # "read-write memory interfaces" — rare
+    1,  # "self-organizing and adaptive" — rare
 ]
 
 
@@ -192,9 +189,7 @@ def run_cold_start(
 
     for round_num in range(n_rounds):
         # Phase A: Simulate non-uniform usage (builds access history)
-        usage_accesses = simulate_usage_round(
-            store, query_embeddings, round_num, top_k
-        )
+        usage_accesses = simulate_usage_round(store, query_embeddings, round_num, top_k)
         cumulative_accesses += usage_accesses
 
         # Phase B: Evaluate — run all queries with scoring ON
@@ -291,11 +286,15 @@ def main() -> None:
 
     # Print results
     print(f"  Baseline NDCG@5 (no scoring): {result.rounds[0].baseline_ndcg_5:.4f}")
-    print(f"  Scoring config: α={result.scoring_config['alpha']}, "
-          f"β={result.scoring_config['beta']}, "
-          f"λ={result.scoring_config['decay_lambda']}\n")
+    print(
+        f"  Scoring config: α={result.scoring_config['alpha']}, "
+        f"β={result.scoring_config['beta']}, "
+        f"λ={result.scoring_config['decay_lambda']}\n"
+    )
 
-    print(f"  {'Round':>5} {'Scored':>8} {'Base':>8} {'Δ':>8} {'Δ%':>8} {'Uses':>6} {'Accesses':>10}")
+    print(
+        f"  {'Round':>5} {'Scored':>8} {'Base':>8} {'Δ':>8} {'Δ%':>8} {'Uses':>6} {'Accesses':>10}"
+    )
     print(f"  {'─' * 58}")
     for r in result.rounds:
         marker = " ◄" if r.round_num == result.crossover_round else ""
@@ -308,18 +307,23 @@ def main() -> None:
     print(f"\n{sep}")
     if result.crossover_round is not None:
         crossover_data = result.rounds[result.crossover_round - 1]
-        print(f"  CROSSOVER at round {result.crossover_round} "
-              f"({crossover_data.total_accesses} cumulative accesses)")
-        print(f"  Scoring starts consistently helping after "
-              f"~{result.crossover_round} usage sessions")
+        print(
+            f"  CROSSOVER at round {result.crossover_round} "
+            f"({crossover_data.total_accesses} cumulative accesses)"
+        )
+        print(
+            f"  Scoring starts consistently helping after ~{result.crossover_round} usage sessions"
+        )
     else:
         positive_rounds = sum(1 for r in result.rounds if r.delta > 0)
         if positive_rounds > 0:
             print(f"  No stable crossover found in {result.total_rounds} rounds")
             print(f"  Scoring was positive in {positive_rounds}/{result.total_rounds} rounds")
             best = max(result.rounds, key=lambda r: r.delta)
-            print(f"  Best improvement: round {best.round_num} "
-                  f"(Δ={best.delta:+.4f}, {best.delta_pct:+.2f}%)")
+            print(
+                f"  Best improvement: round {best.round_num} "
+                f"(Δ={best.delta:+.4f}, {best.delta_pct:+.2f}%)"
+            )
         else:
             print(f"  Scoring did not outperform baseline in {result.total_rounds} rounds")
             print("  This may indicate the corpus needs more diverse access patterns")
