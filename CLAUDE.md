@@ -92,6 +92,8 @@ Key sections: `[inference]`, `[cerebras]`, `[ollama]`, `[openai]`, `[embeddings]
 - **Change search behavior**: Modify `VstashStore.search()` in `store.py`. The pipeline is: vector search → FTS search → RRF merge → scoring → MMR dedup → context expansion.
 - **Add a config field**: Add to the relevant Pydantic model in `config.py`, update `docs/configuration.md`.
 - **Run experiments**: `python -m experiments.<name>` (e.g., `experiments.scoring_grid`).
+- **Run Kaggle-scale benchmarks**: `python -m experiments.arxiv_retrieval_bench` (1K papers, 3 models) or `python -m experiments.dataset_discovery` (954 HuggingFace datasets, interactive mode with `--interactive`).
+- **Run all experiments**: `python -m experiments.run_all`.
 
 ## CI
 
