@@ -198,6 +198,27 @@ PDF, DOCX, PPTX, XLSX, Markdown, TXT, HTML, CSV, Python, JavaScript, TypeScript,
 
 ---
 
+## Experiments
+
+vstash retrieval quality has been validated at Kaggle scale:
+
+| Experiment | Corpus | Best P@5 | Best MRR | Command |
+|---|---|---|---|---|
+| [ArXiv Retrieval Bench](experiments/arxiv_retrieval_bench.py) | 1,000 ML papers, 10 topics | 0.703 | 0.895 | `python -m experiments.arxiv_retrieval_bench` |
+| [Dataset Discovery](experiments/dataset_discovery.py) | 954 HuggingFace datasets, 10 task categories | 0.629 | 0.777 | `python -m experiments.dataset_discovery` |
+
+The dataset discovery engine also has an interactive mode — describe what you need, get the right dataset:
+
+```bash
+python -m experiments.dataset_discovery --interactive
+> time series forecasting for retail sales
+1. walmart-sales-dataset (time-series-forecasting) — 0.87
+```
+
+Run all experiments: `python -m experiments.run_all`
+
+---
+
 ## Documentation
 
 | Guide | Description |
