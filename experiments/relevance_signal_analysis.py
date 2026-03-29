@@ -12,9 +12,7 @@ Usage:
 from __future__ import annotations
 
 import json
-import math
 import tempfile
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -48,10 +46,11 @@ IRRELEVANT_QUERIES = [
 @dataclass
 class SignalMetrics:
     """Classification metrics for the relevance signal."""
+
     threshold: float
-    true_positives: int   # relevant correctly flagged as high
+    true_positives: int  # relevant correctly flagged as high
     false_positives: int  # irrelevant incorrectly flagged as high
-    true_negatives: int   # irrelevant correctly flagged as low
+    true_negatives: int  # irrelevant correctly flagged as low
     false_negatives: int  # relevant incorrectly flagged as low
     relevant_spreads: list[float]
     irrelevant_spreads: list[float]
@@ -75,7 +74,9 @@ class SignalMetrics:
 
     @property
     def accuracy(self) -> float:
-        total = self.true_positives + self.false_positives + self.true_negatives + self.false_negatives
+        total = (
+            self.true_positives + self.false_positives + self.true_negatives + self.false_negatives
+        )
         correct = self.true_positives + self.true_negatives
         return correct / total if total > 0 else 0.0
 
@@ -166,18 +167,28 @@ def main() -> None:
     avg_irr = sum(irr_spreads_cold) / len(irr_spreads_cold)
     ratio_cold = avg_rel / avg_irr if avg_irr > 0 else float("inf")
 
-    print(f"  Relevant spreads:   min={min(rel_spreads_cold):.4f}  avg={avg_rel:.4f}  max={max(rel_spreads_cold):.4f}")
-    print(f"  Irrelevant spreads: min={min(irr_spreads_cold):.4f}  avg={avg_irr:.4f}  max={max(irr_spreads_cold):.4f}")
+    print(
+        f"  Relevant spreads:   min={min(rel_spreads_cold):.4f}  avg={avg_rel:.4f}  max={max(rel_spreads_cold):.4f}"
+    )
+    print(
+        f"  Irrelevant spreads: min={min(irr_spreads_cold):.4f}  avg={avg_irr:.4f}  max={max(irr_spreads_cold):.4f}"
+    )
     print(f"  Discrimination ratio: {ratio_cold:.2f}x")
-    print(f"  Overlap: {sum(1 for s in irr_spreads_cold if s >= min(rel_spreads_cold))}/{len(irr_spreads_cold)} irrelevant exceed min relevant")
+    print(
+        f"  Overlap: {sum(1 for s in irr_spreads_cold if s >= min(rel_spreads_cold))}/{len(irr_spreads_cold)} irrelevant exceed min relevant"
+    )
 
     # Fixed threshold
     m_fixed = evaluate_threshold(rel_spreads_cold, irr_spreads_cold, 0.15)
-    print(f"\n  Fixed τ=0.15:   Precision={m_fixed.precision:.3f}  Recall={m_fixed.recall:.3f}  F1={m_fixed.f1:.3f}  Acc={m_fixed.accuracy:.3f}")
+    print(
+        f"\n  Fixed τ=0.15:   Precision={m_fixed.precision:.3f}  Recall={m_fixed.recall:.3f}  F1={m_fixed.f1:.3f}  Acc={m_fixed.accuracy:.3f}"
+    )
 
     # Optimal threshold
     opt_t, m_opt = find_optimal_threshold(rel_spreads_cold, irr_spreads_cold)
-    print(f"  Optimal τ={opt_t:.4f}: Precision={m_opt.precision:.3f}  Recall={m_opt.recall:.3f}  F1={m_opt.f1:.3f}  Acc={m_opt.accuracy:.3f}")
+    print(
+        f"  Optimal τ={opt_t:.4f}: Precision={m_opt.precision:.3f}  Recall={m_opt.recall:.3f}  F1={m_opt.f1:.3f}  Acc={m_opt.accuracy:.3f}"
+    )
 
     # ── Phase 2: Build access history (warm up) ──
     print(f"\n{sep}")
@@ -197,16 +208,26 @@ def main() -> None:
     avg_irr_w = sum(irr_spreads_warm) / len(irr_spreads_warm)
     ratio_warm = avg_rel_w / avg_irr_w if avg_irr_w > 0 else float("inf")
 
-    print(f"  Relevant spreads:   min={min(rel_spreads_warm):.4f}  avg={avg_rel_w:.4f}  max={max(rel_spreads_warm):.4f}")
-    print(f"  Irrelevant spreads: min={min(irr_spreads_warm):.4f}  avg={avg_irr_w:.4f}  max={max(irr_spreads_warm):.4f}")
+    print(
+        f"  Relevant spreads:   min={min(rel_spreads_warm):.4f}  avg={avg_rel_w:.4f}  max={max(rel_spreads_warm):.4f}"
+    )
+    print(
+        f"  Irrelevant spreads: min={min(irr_spreads_warm):.4f}  avg={avg_irr_w:.4f}  max={max(irr_spreads_warm):.4f}"
+    )
     print(f"  Discrimination ratio: {ratio_warm:.2f}x")
-    print(f"  Overlap: {sum(1 for s in irr_spreads_warm if s >= min(rel_spreads_warm))}/{len(irr_spreads_warm)} irrelevant exceed min relevant")
+    print(
+        f"  Overlap: {sum(1 for s in irr_spreads_warm if s >= min(rel_spreads_warm))}/{len(irr_spreads_warm)} irrelevant exceed min relevant"
+    )
 
     m_fixed_w = evaluate_threshold(rel_spreads_warm, irr_spreads_warm, 0.15)
-    print(f"\n  Fixed τ=0.15:   Precision={m_fixed_w.precision:.3f}  Recall={m_fixed_w.recall:.3f}  F1={m_fixed_w.f1:.3f}  Acc={m_fixed_w.accuracy:.3f}")
+    print(
+        f"\n  Fixed τ=0.15:   Precision={m_fixed_w.precision:.3f}  Recall={m_fixed_w.recall:.3f}  F1={m_fixed_w.f1:.3f}  Acc={m_fixed_w.accuracy:.3f}"
+    )
 
     opt_t_w, m_opt_w = find_optimal_threshold(rel_spreads_warm, irr_spreads_warm)
-    print(f"  Optimal τ={opt_t_w:.4f}: Precision={m_opt_w.precision:.3f}  Recall={m_opt_w.recall:.3f}  F1={m_opt_w.f1:.3f}  Acc={m_opt_w.accuracy:.3f}")
+    print(
+        f"  Optimal τ={opt_t_w:.4f}: Precision={m_opt_w.precision:.3f}  Recall={m_opt_w.recall:.3f}  F1={m_opt_w.f1:.3f}  Acc={m_opt_w.accuracy:.3f}"
+    )
 
     # Adaptive threshold (from stored spreads during warm-up)
     # Feed the warm spreads into the adaptive system
@@ -214,7 +235,9 @@ def main() -> None:
         store.record_spread(s)
     adaptive_t = store.adaptive_relevance_threshold()
     m_adaptive = evaluate_threshold(rel_spreads_warm, irr_spreads_warm, adaptive_t)
-    print(f"  Adaptive τ={adaptive_t:.4f}: Precision={m_adaptive.precision:.3f}  Recall={m_adaptive.recall:.3f}  F1={m_adaptive.f1:.3f}  Acc={m_adaptive.accuracy:.3f}")
+    print(
+        f"  Adaptive τ={adaptive_t:.4f}: Precision={m_adaptive.precision:.3f}  Recall={m_adaptive.recall:.3f}  F1={m_adaptive.f1:.3f}  Acc={m_adaptive.accuracy:.3f}"
+    )
 
     # ── Phase 3: Heavy usage (30 rounds) ──
     print(f"\n{sep}")
@@ -233,22 +256,34 @@ def main() -> None:
     avg_irr_h = sum(irr_spreads_heavy) / len(irr_spreads_heavy)
     ratio_heavy = avg_rel_h / avg_irr_h if avg_irr_h > 0 else float("inf")
 
-    print(f"  Relevant spreads:   min={min(rel_spreads_heavy):.4f}  avg={avg_rel_h:.4f}  max={max(rel_spreads_heavy):.4f}")
-    print(f"  Irrelevant spreads: min={min(irr_spreads_heavy):.4f}  avg={avg_irr_h:.4f}  max={max(irr_spreads_heavy):.4f}")
+    print(
+        f"  Relevant spreads:   min={min(rel_spreads_heavy):.4f}  avg={avg_rel_h:.4f}  max={max(rel_spreads_heavy):.4f}"
+    )
+    print(
+        f"  Irrelevant spreads: min={min(irr_spreads_heavy):.4f}  avg={avg_irr_h:.4f}  max={max(irr_spreads_heavy):.4f}"
+    )
     print(f"  Discrimination ratio: {ratio_heavy:.2f}x")
-    print(f"  Overlap: {sum(1 for s in irr_spreads_heavy if s >= min(rel_spreads_heavy))}/{len(irr_spreads_heavy)} irrelevant exceed min relevant")
+    print(
+        f"  Overlap: {sum(1 for s in irr_spreads_heavy if s >= min(rel_spreads_heavy))}/{len(irr_spreads_heavy)} irrelevant exceed min relevant"
+    )
 
     m_fixed_h = evaluate_threshold(rel_spreads_heavy, irr_spreads_heavy, 0.15)
-    print(f"\n  Fixed τ=0.15:   Precision={m_fixed_h.precision:.3f}  Recall={m_fixed_h.recall:.3f}  F1={m_fixed_h.f1:.3f}  Acc={m_fixed_h.accuracy:.3f}")
+    print(
+        f"\n  Fixed τ=0.15:   Precision={m_fixed_h.precision:.3f}  Recall={m_fixed_h.recall:.3f}  F1={m_fixed_h.f1:.3f}  Acc={m_fixed_h.accuracy:.3f}"
+    )
 
     opt_t_h, m_opt_h = find_optimal_threshold(rel_spreads_heavy, irr_spreads_heavy)
-    print(f"  Optimal τ={opt_t_h:.4f}: Precision={m_opt_h.precision:.3f}  Recall={m_opt_h.recall:.3f}  F1={m_opt_h.f1:.3f}  Acc={m_opt_h.accuracy:.3f}")
+    print(
+        f"  Optimal τ={opt_t_h:.4f}: Precision={m_opt_h.precision:.3f}  Recall={m_opt_h.recall:.3f}  F1={m_opt_h.f1:.3f}  Acc={m_opt_h.accuracy:.3f}"
+    )
 
     for s in rel_spreads_heavy + irr_spreads_heavy:
         store.record_spread(s)
     adaptive_t_h = store.adaptive_relevance_threshold()
     m_adaptive_h = evaluate_threshold(rel_spreads_heavy, irr_spreads_heavy, adaptive_t_h)
-    print(f"  Adaptive τ={adaptive_t_h:.4f}: Precision={m_adaptive_h.precision:.3f}  Recall={m_adaptive_h.recall:.3f}  F1={m_adaptive_h.f1:.3f}  Acc={m_adaptive_h.accuracy:.3f}")
+    print(
+        f"  Adaptive τ={adaptive_t_h:.4f}: Precision={m_adaptive_h.precision:.3f}  Recall={m_adaptive_h.recall:.3f}  F1={m_adaptive_h.f1:.3f}  Acc={m_adaptive_h.accuracy:.3f}"
+    )
 
     # ── Per-query spread breakdown ──
     print(f"\n{sep}")
@@ -267,30 +302,57 @@ def main() -> None:
     print(f"{sep}\n")
     print(f"  {'Phase':<25} {'Ratio':>8} {'Fixed F1':>10} {'Optimal F1':>12} {'Adaptive F1':>13}")
     print(f"  {'─' * 70}")
-    print(f"  {'Cold (0 rounds)':<25} {ratio_cold:>8.2f}x {m_fixed.f1:>10.3f} {m_opt.f1:>12.3f} {'n/a':>13}")
-    print(f"  {'Warm (10 rounds)':<25} {ratio_warm:>8.2f}x {m_fixed_w.f1:>10.3f} {m_opt_w.f1:>12.3f} {m_adaptive.f1:>13.3f}")
-    print(f"  {'Heavy (30 rounds)':<25} {ratio_heavy:>8.2f}x {m_fixed_h.f1:>10.3f} {m_opt_h.f1:>12.3f} {m_adaptive_h.f1:>13.3f}")
+    print(
+        f"  {'Cold (0 rounds)':<25} {ratio_cold:>8.2f}x {m_fixed.f1:>10.3f} {m_opt.f1:>12.3f} {'n/a':>13}"
+    )
+    print(
+        f"  {'Warm (10 rounds)':<25} {ratio_warm:>8.2f}x {m_fixed_w.f1:>10.3f} {m_opt_w.f1:>12.3f} {m_adaptive.f1:>13.3f}"
+    )
+    print(
+        f"  {'Heavy (30 rounds)':<25} {ratio_heavy:>8.2f}x {m_fixed_h.f1:>10.3f} {m_opt_h.f1:>12.3f} {m_adaptive_h.f1:>13.3f}"
+    )
 
     # ── Verdict ──
     print(f"\n  Optimal thresholds: cold={opt_t:.4f}, warm={opt_t_w:.4f}, heavy={opt_t_h:.4f}")
     print(f"  Adaptive thresholds: warm={adaptive_t:.4f}, heavy={adaptive_t_h:.4f}")
 
     if ratio_heavy < 1.5:
-        print(f"\n  ⚠ VERDICT: Even with heavy usage, discrimination ratio ({ratio_heavy:.2f}x) stays below 1.5x.")
-        print(f"    The spread signal has limited discriminative power on this corpus.")
-        print(f"    Consider: (a) showing it only as metadata, not as a warning,")
-        print(f"    or (b) combining spread with other signals (e.g., top-1 absolute score).")
+        print(
+            f"\n  ⚠ VERDICT: Even with heavy usage, discrimination ratio ({ratio_heavy:.2f}x) stays below 1.5x."
+        )
+        print("    The spread signal has limited discriminative power on this corpus.")
+        print("    Consider: (a) showing it only as metadata, not as a warning,")
+        print("    or (b) combining spread with other signals (e.g., top-1 absolute score).")
     else:
-        print(f"\n  ✓ VERDICT: Discrimination ratio improved to {ratio_heavy:.2f}x with usage history.")
+        print(
+            f"\n  ✓ VERDICT: Discrimination ratio improved to {ratio_heavy:.2f}x with usage history."
+        )
 
     # Save
     output_path = Path("experiments/results/relevance_signal_analysis.json")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_data = {
         "phases": {
-            "cold": {"ratio": round(ratio_cold, 4), "fixed_f1": round(m_fixed.f1, 4), "optimal_f1": round(m_opt.f1, 4), "optimal_threshold": round(opt_t, 4)},
-            "warm": {"ratio": round(ratio_warm, 4), "fixed_f1": round(m_fixed_w.f1, 4), "optimal_f1": round(m_opt_w.f1, 4), "adaptive_f1": round(m_adaptive.f1, 4), "adaptive_threshold": round(adaptive_t, 4)},
-            "heavy": {"ratio": round(ratio_heavy, 4), "fixed_f1": round(m_fixed_h.f1, 4), "optimal_f1": round(m_opt_h.f1, 4), "adaptive_f1": round(m_adaptive_h.f1, 4), "adaptive_threshold": round(adaptive_t_h, 4)},
+            "cold": {
+                "ratio": round(ratio_cold, 4),
+                "fixed_f1": round(m_fixed.f1, 4),
+                "optimal_f1": round(m_opt.f1, 4),
+                "optimal_threshold": round(opt_t, 4),
+            },
+            "warm": {
+                "ratio": round(ratio_warm, 4),
+                "fixed_f1": round(m_fixed_w.f1, 4),
+                "optimal_f1": round(m_opt_w.f1, 4),
+                "adaptive_f1": round(m_adaptive.f1, 4),
+                "adaptive_threshold": round(adaptive_t, 4),
+            },
+            "heavy": {
+                "ratio": round(ratio_heavy, 4),
+                "fixed_f1": round(m_fixed_h.f1, 4),
+                "optimal_f1": round(m_opt_h.f1, 4),
+                "adaptive_f1": round(m_adaptive_h.f1, 4),
+                "adaptive_threshold": round(adaptive_t_h, 4),
+            },
         },
         "relevant_spreads_heavy": [round(s, 4) for s in rel_spreads_heavy],
         "irrelevant_spreads_heavy": [round(s, 4) for s in irr_spreads_heavy],

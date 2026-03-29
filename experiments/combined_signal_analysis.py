@@ -14,7 +14,6 @@ Usage:
 from __future__ import annotations
 
 import json
-import math
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -66,13 +65,15 @@ def collect_signals(
             continue
         scores = [r.score for r in results]
         spread = max(scores) - min(scores) if len(scores) > 1 else 0.0
-        signals.append(QuerySignal(
-            query=query_text,
-            relevant=relevant,
-            spread=spread,
-            best_distance=store.last_best_distance,
-            top1_score=scores[0],
-        ))
+        signals.append(
+            QuerySignal(
+                query=query_text,
+                relevant=relevant,
+                spread=spread,
+                best_distance=store.last_best_distance,
+                top1_score=scores[0],
+            )
+        )
     return signals
 
 
@@ -98,7 +99,10 @@ def evaluate_signal(
     accuracy = (tp + tn) / len(signals) if signals else 0
     return {
         "method": label,
-        "tp": tp, "fp": fp, "tn": tn, "fn": fn,
+        "tp": tp,
+        "fp": fp,
+        "tn": tn,
+        "fn": fn,
         "precision": round(precision, 3),
         "recall": round(recall, 3),
         "f1": round(f1, 3),
@@ -132,14 +136,20 @@ def main() -> None:
     print(f"  {'─' * 88}")
     for s in sorted(all_signals, key=lambda x: x.best_distance):
         label = "relevant" if s.relevant else "IRRELEVANT"
-        print(f"  {s.query[:55]:<55} {s.best_distance:>6.4f} {s.spread:>8.4f} {s.top1_score:>7.4f} {label:>10}")
+        print(
+            f"  {s.query[:55]:<55} {s.best_distance:>6.4f} {s.spread:>8.4f} {s.top1_score:>7.4f} {label:>10}"
+        )
 
     rel_dists = [s.best_distance for s in rel_signals]
     irr_dists = [s.best_distance for s in irr_signals]
     dist_ratio = (sum(irr_dists) / len(irr_dists)) / (sum(rel_dists) / len(rel_dists))
 
-    print(f"\n  Distance: relevant avg={sum(rel_dists)/len(rel_dists):.4f}, irrelevant avg={sum(irr_dists)/len(irr_dists):.4f}, ratio={dist_ratio:.2f}x")
-    print(f"  Overlap: {sum(1 for d in irr_dists if d <= max(rel_dists))}/{len(irr_dists)} irrelevant within relevant range")
+    print(
+        f"\n  Distance: relevant avg={sum(rel_dists) / len(rel_dists):.4f}, irrelevant avg={sum(irr_dists) / len(irr_dists):.4f}, ratio={dist_ratio:.2f}x"
+    )
+    print(
+        f"  Overlap: {sum(1 for d in irr_dists if d <= max(rel_dists))}/{len(irr_dists)} irrelevant within relevant range"
+    )
 
     # ── Test different classification strategies ──
     print(f"\n{sep}")
@@ -159,11 +169,17 @@ def main() -> None:
     strategies = [
         ("spread > 0.15 (fixed)", lambda s: s.spread > 0.15),
         (f"distance < {best_dist_t:.4f} (optimal)", lambda s: s.best_distance < best_dist_t),
-        (f"distance < 0.90", lambda s: s.best_distance < 0.90),
-        (f"distance < 0.95", lambda s: s.best_distance < 0.95),
-        (f"distance < 1.00", lambda s: s.best_distance < 1.00),
-        ("distance < 0.95 AND spread > 0.005", lambda s: s.best_distance < 0.95 and s.spread > 0.005),
-        ("distance < 1.00 AND spread > 0.005", lambda s: s.best_distance < 1.00 and s.spread > 0.005),
+        ("distance < 0.90", lambda s: s.best_distance < 0.90),
+        ("distance < 0.95", lambda s: s.best_distance < 0.95),
+        ("distance < 1.00", lambda s: s.best_distance < 1.00),
+        (
+            "distance < 0.95 AND spread > 0.005",
+            lambda s: s.best_distance < 0.95 and s.spread > 0.005,
+        ),
+        (
+            "distance < 1.00 AND spread > 0.005",
+            lambda s: s.best_distance < 1.00 and s.spread > 0.005,
+        ),
     ]
 
     print(f"  {'Strategy':<45} {'Prec':>6} {'Rec':>6} {'F1':>6} {'Acc':>6}")
@@ -172,7 +188,9 @@ def main() -> None:
     results = []
     for label, fn in strategies:
         m = evaluate_signal(all_signals, fn, label)
-        print(f"  {label:<45} {m['precision']:>6.3f} {m['recall']:>6.3f} {m['f1']:>6.3f} {m['accuracy']:>6.3f}")
+        print(
+            f"  {label:<45} {m['precision']:>6.3f} {m['recall']:>6.3f} {m['f1']:>6.3f} {m['accuracy']:>6.3f}"
+        )
         results.append(m)
 
     # ── Now with scoring enabled + usage history ──
@@ -194,7 +212,9 @@ def main() -> None:
     print(f"  {'─' * 88}")
     for s in sorted(all_signals_s, key=lambda x: x.best_distance):
         label = "relevant" if s.relevant else "IRRELEVANT"
-        print(f"  {s.query[:55]:<55} {s.best_distance:>6.4f} {s.spread:>8.4f} {s.top1_score:>7.4f} {label:>10}")
+        print(
+            f"  {s.query[:55]:<55} {s.best_distance:>6.4f} {s.spread:>8.4f} {s.top1_score:>7.4f} {label:>10}"
+        )
 
     rel_dists_s = [s.best_distance for s in rel_signals_s]
     irr_dists_s = [s.best_distance for s in irr_signals_s]
@@ -226,7 +246,9 @@ def main() -> None:
     results_s = []
     for label, fn in strategies_s:
         m = evaluate_signal(all_signals_s, fn, label)
-        print(f"  {label:<45} {m['precision']:>6.3f} {m['recall']:>6.3f} {m['f1']:>6.3f} {m['accuracy']:>6.3f}")
+        print(
+            f"  {label:<45} {m['precision']:>6.3f} {m['recall']:>6.3f} {m['f1']:>6.3f} {m['accuracy']:>6.3f}"
+        )
         results_s.append(m)
 
     # Save
@@ -234,11 +256,27 @@ def main() -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_data = {
         "raw_rrf": {
-            "signals": [{"query": s.query, "relevant": s.relevant, "distance": round(s.best_distance, 4), "spread": round(s.spread, 4)} for s in all_signals],
+            "signals": [
+                {
+                    "query": s.query,
+                    "relevant": s.relevant,
+                    "distance": round(s.best_distance, 4),
+                    "spread": round(s.spread, 4),
+                }
+                for s in all_signals
+            ],
             "strategies": results,
         },
         "with_scoring": {
-            "signals": [{"query": s.query, "relevant": s.relevant, "distance": round(s.best_distance, 4), "spread": round(s.spread, 4)} for s in all_signals_s],
+            "signals": [
+                {
+                    "query": s.query,
+                    "relevant": s.relevant,
+                    "distance": round(s.best_distance, 4),
+                    "spread": round(s.spread, 4),
+                }
+                for s in all_signals_s
+            ],
             "strategies": results_s,
         },
     }

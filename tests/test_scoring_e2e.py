@@ -64,7 +64,10 @@ def e2e_store(tmp_path, e2e_config: VstashConfig) -> VstashStore:
     # Ingest docs with real embeddings.  We need ≥10 chunks with access
     # history so that scoring_maturity() can detect outlier patterns.
     docs = [
-        ("Python decorators simplify function wrapping and metaprogramming.", "python_decorators.md"),
+        (
+            "Python decorators simplify function wrapping and metaprogramming.",
+            "python_decorators.md",
+        ),
         ("Rust ownership model prevents memory leaks at compile time.", "rust_ownership.md"),
         ("Machine learning requires large datasets for training models.", "ml_basics.md"),
         ("Database indexing improves query performance significantly.", "db_indexing.md"),
@@ -147,9 +150,7 @@ class TestScoringDisabled:
         }
         assert any(after[cid] > before[cid] for cid in before)
 
-    def test_no_access_tracking_when_track_access_false(
-        self, e2e_store: VstashStore
-    ) -> None:
+    def test_no_access_tracking_when_track_access_false(self, e2e_store: VstashStore) -> None:
         """Access counts should not change when track_access is explicitly False."""
         cfg = ScoringConfig(enabled=False, track_access=False)
         query_emb = embed_query("Python decorators", VstashConfig().embeddings.model)

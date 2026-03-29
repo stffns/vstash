@@ -17,6 +17,7 @@ import sqlite3
 import struct
 from datetime import datetime, timezone
 from pathlib import Path
+from collections.abc import Callable
 from types import TracebackType
 
 import threading
@@ -44,6 +45,16 @@ def _deserialize(data: bytes) -> list[float]:
         raise ValueError(msg)
     count = len(data) // item_size
     return list(struct.unpack(f"{count}f", data))
+
+
+def _cosine_sim(a: list[float], b: list[float]) -> float:
+    """Cosine similarity between two vectors. Returns value in [-1, 1]."""
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a < 1e-9 or norm_b < 1e-9:
+        return 0.0
+    return dot / (norm_a * norm_b)
 
 
 # Standard RRF constant — balances precision vs recall
@@ -535,7 +546,9 @@ class VstashStore:
         # while allowing keyword-level matching instead of exact-phrase.
         words = query_text.split()
         quoted_words = ['"' + w.replace('"', '""') + '"' for w in words if len(w) > 1]
-        safe_query = " OR ".join(quoted_words) if quoted_words else '"' + query_text.replace('"', '""') + '"'
+        safe_query = (
+            " OR ".join(quoted_words) if quoted_words else '"' + query_text.replace('"', '""') + '"'
+        )
         try:
             fts_rows = self._conn.execute(
                 f"""
@@ -605,17 +618,12 @@ class VstashStore:
                     decay_lambda=scoring.decay_lambda,
                 )
 
-        # Document-level deduplication: keep only the highest-scoring chunk
-        # per document so that a single long document doesn't flood top-k.
-        seen_docs: set[str] = set()
-        deduped: list[dict[str, str | int | float]] = []
-        for r in ranked:
-            doc_key = str(r["path"])
-            if doc_key not in seen_docs:
-                seen_docs.add(doc_key)
-                deduped.append(r)
-
-        ranked = deduped[:top_k]
+        # Intra-document MMR deduplication: allow multiple chunks from the
+        # same document only when they are semantically diverse (e.g. different
+        # chapters of a book).  Chunks from different documents compete purely
+        # on score — no cross-document penalty.
+        mmr_lambda = scoring.mmr_lambda if scoring is not None else 0.5
+        ranked = self._mmr_dedup(ranked, top_k, mmr_lambda)
 
         results = [
             SearchResult(
@@ -640,6 +648,135 @@ class VstashStore:
                 logging.getLogger(__name__).debug("Access tracking failed", exc_info=True)
 
         return results
+
+    # ------------------------------------------------------------------ #
+    # MMR intra-document deduplication                                      #
+    # ------------------------------------------------------------------ #
+
+    def _mmr_dedup(
+        self,
+        ranked: list[dict[str, str | int | float]],
+        top_k: int,
+        mmr_lambda: float,
+    ) -> list[dict[str, str | int | float]]:
+        """Select top-k results using intra-document MMR diversity.
+
+        Chunks from *different* documents compete purely on score.  When
+        multiple chunks from the *same* document appear, the second (and
+        subsequent) chunks are penalised by their cosine similarity to the
+        already-selected chunk(s) from that document.
+
+        This allows two distant chapters of a book to both appear in results,
+        while still preventing near-duplicate chunks from flooding top-k.
+
+        When ``mmr_lambda = 1.0`` this degrades to hard per-document dedup
+        (at most one chunk per document, highest-scoring wins).  The method
+        also falls back to hard dedup if embedding lookup fails.
+        """
+        if not ranked:
+            return []
+
+        # Fast path: if mmr_lambda == 1.0, no diversity penalty — just dedup.
+        # Also fast-path when there are no same-doc duplicates.
+        from collections import Counter
+
+        doc_counts = Counter(str(r["path"]) for r in ranked)
+        has_duplicates = any(c > 1 for c in doc_counts.values())
+
+        if mmr_lambda >= 1.0 or not has_duplicates:
+            # Hard dedup: keep first (highest-scoring) chunk per document.
+            seen: set[str] = set()
+            deduped: list[dict[str, str | int | float]] = []
+            for r in ranked:
+                doc_key = str(r["path"])
+                if doc_key not in seen:
+                    seen.add(doc_key)
+                    deduped.append(r)
+            return deduped[:top_k]
+
+        # --- Fetch embeddings for chunks with same-doc duplicates ---
+        dup_doc_paths = {p for p, c in doc_counts.items() if c > 1}
+        dup_ids = [int(r["id"]) for r in ranked if str(r["path"]) in dup_doc_paths]
+
+        embeddings: dict[int, list[float]] = {}
+        if dup_ids:
+            placeholders = ",".join("?" * len(dup_ids))
+            try:
+                rows = self._conn.execute(
+                    f"SELECT rowid, embedding FROM vec_chunks WHERE rowid IN ({placeholders})",
+                    dup_ids,
+                ).fetchall()
+                for row in rows:
+                    embeddings[row["rowid"]] = _deserialize(row["embedding"])
+            except sqlite3.Error:
+                logging.getLogger(__name__).debug(
+                    "MMR embedding fetch failed, falling back to hard dedup",
+                    exc_info=True,
+                )
+                # Fallback: hard dedup
+                seen_fb: set[str] = set()
+                deduped_fb: list[dict[str, str | int | float]] = []
+                for r in ranked:
+                    doc_key = str(r["path"])
+                    if doc_key not in seen_fb:
+                        seen_fb.add(doc_key)
+                        deduped_fb.append(r)
+                return deduped_fb[:top_k]
+
+        # --- Greedy MMR selection ---
+        # Normalise scores to [0, 1] for MMR balancing.
+        score_key = "final_score" if "final_score" in ranked[0] else "rrf"
+        scores = [float(r[score_key]) for r in ranked]
+        s_min, s_max = min(scores), max(scores)
+        s_range = s_max - s_min if s_max > s_min else 1.0
+
+        selected: list[dict[str, str | int | float]] = []
+        # Track selected embeddings per document for similarity comparison.
+        selected_embs_by_doc: dict[str, list[list[float]]] = {}
+        remaining = list(range(len(ranked)))
+
+        for _ in range(min(top_k, len(ranked))):
+            best_idx = -1
+            best_mmr = -float("inf")
+
+            for idx in remaining:
+                r = ranked[idx]
+                norm_score = (float(r[score_key]) - s_min) / s_range
+                doc_key = str(r["path"])
+
+                # Diversity penalty: only against same-document selections.
+                max_sim = 0.0
+                if doc_key in selected_embs_by_doc:
+                    chunk_id = int(r["id"])
+                    emb = embeddings.get(chunk_id)
+                    if emb is not None:
+                        for sel_emb in selected_embs_by_doc[doc_key]:
+                            sim = _cosine_sim(emb, sel_emb)
+                            if sim > max_sim:
+                                max_sim = sim
+
+                mmr_score = mmr_lambda * norm_score - (1 - mmr_lambda) * max_sim
+                if mmr_score > best_mmr:
+                    best_mmr = mmr_score
+                    best_idx = idx
+
+            if best_idx < 0 or best_mmr < 0:
+                # Stop when the best remaining candidate has negative MMR,
+                # meaning its redundancy penalty exceeds its relevance.
+                break
+
+            chosen = ranked[best_idx]
+            selected.append(chosen)
+            remaining.remove(best_idx)
+
+            # Track embedding for future similarity checks.
+            doc_key = str(chosen["path"])
+            chunk_id = int(chosen["id"])
+            emb = embeddings.get(chunk_id)
+            if emb is not None:
+                selected_embs_by_doc.setdefault(doc_key, []).append(emb)
+
+        return selected
 
     # ------------------------------------------------------------------ #
     # Filter builder                                                       #
@@ -1108,7 +1245,7 @@ class VstashStore:
         spreads = [r["spread"] for r in rows]
         mean = sum(spreads) / len(spreads)
         variance = sum((s - mean) ** 2 for s in spreads) / len(spreads)
-        std = variance ** 0.5
+        std = variance**0.5
 
         # Threshold at mean - 1σ: spreads below this are unusually low
         threshold = max(0.01, mean - std)
@@ -1211,6 +1348,81 @@ class VstashStore:
                 expanded.append(r)
 
         return expanded
+
+    # ------------------------------------------------------------------ #
+    # Reindex                                                              #
+    # ------------------------------------------------------------------ #
+
+    def reindex(
+        self,
+        embed_fn: Callable[[list[str]], list[list[float]]],
+        new_dim: int,
+        batch_size: int = 256,
+        progress_cb: Callable[[int, int], None] | None = None,
+    ) -> int:
+        """Re-embed all chunks with a new embedding model.
+
+        Drops and recreates ``vec_chunks`` with the new dimensionality,
+        then re-embeds all chunk text in batches.
+
+        Args:
+            embed_fn: Function that takes a list of texts and returns
+                a list of embedding vectors.
+            new_dim: Dimensionality of the new embedding model.
+            batch_size: Number of chunks to embed per batch.
+            progress_cb: Optional callback ``(processed, total)`` for
+                progress reporting.
+
+        Returns:
+            Number of chunks re-embedded.
+        """
+        with self._write_lock:
+            # Count total chunks
+            total = self._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+            if total == 0:
+                return 0
+
+            try:
+                # Drop and recreate vec_chunks with new dimensions
+                self._conn.execute("DROP TABLE IF EXISTS vec_chunks")
+                self._conn.execute(
+                    f"CREATE VIRTUAL TABLE vec_chunks USING vec0(embedding float[{new_dim}])"
+                )
+
+                # Re-embed in batches
+                processed = 0
+                offset = 0
+                while offset < total:
+                    rows = self._conn.execute(
+                        "SELECT id, text FROM chunks ORDER BY id LIMIT ? OFFSET ?",
+                        [batch_size, offset],
+                    ).fetchall()
+                    if not rows:
+                        break
+
+                    texts = [row["text"] for row in rows]
+                    ids = [row["id"] for row in rows]
+                    embeddings = embed_fn(texts)
+
+                    for chunk_id, embedding in zip(ids, embeddings):
+                        self._conn.execute(
+                            "INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)",
+                            [chunk_id, _serialize(embedding)],
+                        )
+
+                    processed += len(rows)
+                    offset += batch_size
+                    if progress_cb:
+                        progress_cb(processed, total)
+
+                # Update stored dimension
+                self.embedding_dim = new_dim
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
+            return processed
 
     def close(self) -> None:
         """Close the database connection."""

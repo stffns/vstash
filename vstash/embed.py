@@ -27,10 +27,15 @@ if TYPE_CHECKING:
 # ------------------------------------------------------------------ #
 
 KNOWN_DIMS: dict[str, int] = {
+    # English-only models
     "BAAI/bge-small-en-v1.5": 384,
     "BAAI/bge-base-en-v1.5": 768,
     "BAAI/bge-large-en-v1.5": 1024,
     "nomic-ai/nomic-embed-text-v1.5": 768,
+    # Multilingual models (FastEmbed-supported)
+    "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2": 384,
+    "sentence-transformers/paraphrase-multilingual-mpnet-base-v2": 768,
+    "intfloat/multilingual-e5-large": 1024,
 }
 
 # Mapping from standard model names to MLX community variants
@@ -38,6 +43,7 @@ _MLX_MODEL_MAP: dict[str, str] = {
     "BAAI/bge-small-en-v1.5": "mlx-community/bge-small-en-v1.5-bf16",
     "BAAI/bge-base-en-v1.5": "mlx-community/bge-base-en-v1.5-bf16",
     "BAAI/bge-large-en-v1.5": "mlx-community/bge-large-en-v1.5-bf16",
+    "intfloat/multilingual-e5-large": "mlx-community/multilingual-e5-large-bf16",
 }
 
 BackendType = Literal["onnx", "mlx", "auto"]
