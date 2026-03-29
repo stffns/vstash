@@ -129,6 +129,7 @@ Frequency + temporal decay re-ranking. See [Memory Scoring](scoring.md) for a fu
 | `decay_lambda` | float | `0.05` | Temporal decay rate (higher = faster forgetting) |
 | `over_fetch` | int | `50` | Candidates to retrieve before re-ranking |
 | `track_access` | bool | `true` | Record access counts on each search |
+| `mmr_lambda` | float | `0.5` | MMR diversity for intra-document dedup. 1.0 = hard dedup (one chunk per doc), 0.0 = maximum diversity |
 
 ```toml
 [scoring]
@@ -138,9 +139,10 @@ beta = 0.2
 decay_lambda = 0.05
 over_fetch = 50
 track_access = true
+mmr_lambda = 0.5
 ```
 
-Set `enabled = false` to revert to pure RRF ranking.
+Set `enabled = false` to revert to pure RRF ranking. Set `mmr_lambda = 1.0` to restore the pre-v0.8 hard dedup behavior (at most one chunk per document).
 
 ---
 

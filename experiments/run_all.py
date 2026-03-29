@@ -17,7 +17,21 @@ import time
 from pathlib import Path
 
 
-EXPERIMENTS = [
+EXPERIMENTS: list[dict] = [
+    {
+        "name": "arxiv_bench",
+        "module": "experiments.arxiv_retrieval_bench",
+        "description": "ArXiv retrieval benchmark — P@k, NDCG, MRR across models",
+        "output": "experiments/results/arxiv_bench.json",
+        "needs_corpus": False,  # manages its own corpus
+    },
+    {
+        "name": "dataset_discovery",
+        "module": "experiments.dataset_discovery",
+        "description": "Dataset discovery engine — P@k, NDCG, MRR, discovery rate",
+        "output": "experiments/results/dataset_discovery.json",
+        "needs_corpus": False,
+    },
     {
         "name": "chunking_eval",
         "module": "experiments.chunking_eval",

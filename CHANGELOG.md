@@ -2,6 +2,59 @@
 
 All notable changes to vstash are documented here.
 
+## [0.8.0] — 2026-03-29
+
+### Added
+- **Multilingual embedding support** — new models in registry:
+  - `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` (384 dims, 50+ languages)
+  - `sentence-transformers/paraphrase-multilingual-mpnet-base-v2` (768 dims, 50+ languages)
+  - `intfloat/multilingual-e5-large` (1024 dims, 100+ languages)
+- **`vstash reindex` command** — re-embed all chunks with a new model without re-ingesting. Supports `--model`, `--batch-size`, `--yes` flags. Progress bar via Rich.
+- **Intra-document MMR deduplication** — replaces hard per-document dedup. Greedy MMR selection penalizes same-document chunks by cosine similarity, allowing diverse sections from long documents to surface. Configurable via `scoring.mmr_lambda` (default 0.5).
+- **Negative MMR cutoff** — stops selecting when best remaining candidate has MMR < 0 (redundancy exceeds relevance).
+- **`_cosine_sim()` helper** for MMR similarity computation.
+- **4 reindex tests** and **4 MMR dedup tests** (312 total).
+- **ArXiv retrieval benchmark** (`experiments/arxiv_retrieval_bench.py`) — 1,000 ML papers from HuggingFace, 10 topic clusters, 3 models × 5 configs. BGE-base (768d) P@5=0.703, MRR=0.895. Validates hybrid RRF, scoring, and model comparison.
+- **Dataset discovery engine** (`experiments/dataset_discovery.py`) — 954 HuggingFace Hub datasets, 10 task categories. P@5=0.629, MRR=0.777, 91.4% discovery rate. Interactive REPL mode with `--interactive`.
+
+### Changed
+- `_mmr_dedup()` replaces the hard dedup block in search pipeline. `mmr_lambda=1.0` degrades to hard dedup for backwards compatibility.
+- Narrower exception handling: `sqlite3.Error` in MMR fallback, `URLError/JSONDecodeError` in experiment fetch (PR review feedback).
+
+### Paper
+- §3.4: Rewritten as "Intra-Document MMR Deduplication" with formula and comparison table.
+- §6: Code-aware chunking regex justification and Tree-sitter tradeoff analysis.
+- §8.6: Updated with real Wikipedia experiment data (120 articles, 919 chunks).
+- §9: MMR λ design rationale with Carbonell & Goldstein 1998 reference.
+- §10: Updated conclusions with real Wikipedia and MMR results.
+
+---
+
+## [0.7.0] — 2026-03-28
+
+### Added
+- **Adaptive scoring maturity gate (γ)** — suppresses frequency+decay scoring until access patterns show genuine outlier signal (max/mean ≥ 8×). Linear ramp between 8× and 15×.
+- **Zero-cost cold start** — when γ = 0, scoring is short-circuited entirely: no metadata lookups, no decay computation.
+- **Cold start experiment** — 120 real Wikipedia articles across 12 CS topic clusters (919 chunks), 30 rounds, Zipf-weighted queries. Adaptive γ maintains 0.0% degradation vs fixed β which degrades in 6/30 rounds.
+- Experiment scripts and cached Wikipedia corpus in `experiments/`.
+
+### Changed
+- Scoring is now safe to enable by default — γ eliminates the -8.6% cold start degradation from fixed β.
+
+---
+
+## [0.6.0] — 2026-03-27
+
+### Added
+- **Relevance signal** — distance-based confidence tier (F1=0.952) using cosine distance of best vector match. Tiers: high (≤0.95), medium (0.95-0.98), low (>0.98).
+- **Document deduplication** — one result per document in search, improving diversity from ~3.2 to 5.0 unique docs per top-5.
+- **Context expansion** — adjacent chunks (±1 window) automatically included for LLM answers. 2.64× richer context at +0.12ms.
+- **Tiered ghost warning** — high (silent), medium (`?` indicator), low (full `⚠` warning) in CLI and MCP.
+- **LLM grounding** — system prompt rules enforce source citation, passing 9/9 anti-hallucination trap tests.
+- **Discard telemetry** — `search_events` table tracks query, distance, tier, result count. Chat mode marks dismissed events.
+
+---
+
 ## [0.5.3] — 2026-03-27
 
 ### Added
