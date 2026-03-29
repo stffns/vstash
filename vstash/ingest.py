@@ -598,6 +598,101 @@ def ingest(
     )
 
 
+def ingest_text(
+    text: str,
+    title: str,
+    cfg: VstashConfig,
+    store: VstashStore,
+    *,
+    collection: str = "default",
+    project: str | None = None,
+    layer: str | None = None,
+    tags: str | None = None,
+) -> IngestResult:
+    """Ingest raw text directly — no file or URL needed.
+
+    This is the agent-friendly ingestion path. Instead of writing text
+    to a temp file and then ingesting, callers pass the text directly.
+
+    Args:
+        text: The content to ingest.
+        title: Human-readable title for the document.
+        cfg: Vex configuration.
+        store: Vector store instance.
+        collection: Named collection to group this document.
+        project: Project identifier.
+        layer: Layer/category tag.
+        tags: Comma-separated tags.
+
+    Returns:
+        IngestResult with status, chunk count, timing, etc.
+    """
+    start_time = time.time()
+
+    if not text or not text.strip():
+        return IngestResult(status="empty", source=f"text://{title}")
+
+    # Use a synthetic path so the store can deduplicate by title+collection
+    source_path = f"text://{title}"
+    char_count = len(text)
+
+    # Extract frontmatter if present
+    frontmatter = _extract_frontmatter(text)
+    fm_project = project or frontmatter.get("project")
+    fm_layer = layer or frontmatter.get("layer")
+    if fm_project is not None:
+        if isinstance(fm_project, (dict, list)):
+            fm_project = None
+        else:
+            fm_project = str(fm_project)
+    if fm_layer is not None:
+        if isinstance(fm_layer, (dict, list)):
+            fm_layer = None
+        else:
+            fm_layer = str(fm_layer)
+    fm_tags_raw = tags or frontmatter.get("tags")
+    fm_tags: str | None = None
+    if fm_tags_raw:
+        if isinstance(fm_tags_raw, list):
+            fm_tags = ",".join(str(t) for t in fm_tags_raw)
+        elif not isinstance(fm_tags_raw, (dict,)):
+            fm_tags = str(fm_tags_raw)
+    text = _strip_frontmatter(text)
+
+    # Chunk
+    chunks = chunk_text(text, cfg.chunking.size, cfg.chunking.overlap)
+    if not chunks:
+        return IngestResult(status="empty", source=source_path)
+
+    # Embed
+    embeddings = _embed_with_progress(chunks, cfg.embeddings.model)
+
+    # Store
+    doc_id = store.add_document(
+        path=source_path,
+        title=title,
+        chunks=chunks,
+        embeddings=embeddings,
+        source_type="text",
+        collection=collection,
+        project=fm_project,
+        layer=fm_layer,
+        tags=fm_tags,
+    )
+
+    elapsed = round(time.time() - start_time, 2)
+
+    return IngestResult(
+        status="ok",
+        doc_id=doc_id,
+        source=source_path,
+        title=title,
+        chunks=len(chunks),
+        chars=char_count,
+        elapsed_s=elapsed,
+    )
+
+
 def _load_gitignore(directory: Path) -> list[str]:
     """Load top-level .gitignore patterns from directory.
 
