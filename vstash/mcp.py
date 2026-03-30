@@ -314,6 +314,57 @@ def vstash_add(
 
 
 @mcp_server.tool()
+def vstash_remember(
+    text: str,
+    title: str | None = None,
+    collection: str = "default",
+    project: str | None = None,
+    layer: str | None = None,
+    tags: str | None = None,
+) -> str:
+    """Ingest text directly into vstash memory — no file needed.
+
+    Agent-friendly alternative to vstash_add. Pass text content directly
+    instead of writing to a temp file first. Ideal for storing notes,
+    decisions, code snippets, or any text an agent wants to remember.
+
+    Args:
+        text: The content to ingest and remember.
+        title: Human-readable title for the document (used in search results).
+            When not provided, a descriptive title is auto-generated from
+            the text content plus a UTC timestamp.
+        collection: Named collection to group this document (default: 'default').
+        project: Project tag for this document.
+        layer: Layer/category for this document.
+        tags: Comma-separated tags.
+
+    Returns:
+        JSON string with ingestion result (chunks created, timing, etc.).
+    """
+    try:
+        from .ingest import ingest_text
+
+        cfg = _get_config()
+        store = _get_store()
+
+        result = ingest_text(
+            text,
+            cfg,
+            store,
+            title=title,
+            collection=collection,
+            project=project,
+            layer=layer,
+            tags=tags,
+        )
+        return _ok(result)
+
+    except Exception as exc:
+        logger.exception("vstash_remember failed")
+        return _error(f"Ingestion failed: {exc}")
+
+
+@mcp_server.tool()
 def vstash_job(job_id: str) -> str:
     """Check the status of a background ingestion job.
 

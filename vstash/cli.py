@@ -3,6 +3,7 @@ cli.py — vstash command line interface.
 
 Commands:
   vstash add <file/url>   → ingest document
+  vstash remember "text"  → ingest text directly (no file needed)
   vstash search "<query>" → semantic search (no LLM, free)
   vstash ask "<query>"    → single question (requires LLM)
   vstash chat             → interactive mode
@@ -813,6 +814,65 @@ def watch(
             extensions=extensions,
             debounce_s=debounce,
         )
+
+
+@app.command()
+def remember(
+    text: str | None = typer.Argument(None, help="Text to ingest (or pipe via stdin)"),
+    title: str | None = typer.Option(
+        None, "--title", "-t", help="Title for the document (auto-generated if omitted)"
+    ),
+    collection: str = typer.Option("default", "--collection", "-c", help="Collection to add to"),
+    project: str | None = typer.Option(None, "--project", "-p", help="Project tag"),
+    layer: str | None = typer.Option(None, "--layer", "-l", help="Layer tag"),
+    tags: str | None = typer.Option(None, "--tags", help="Comma-separated tags"),
+) -> None:
+    """Ingest text directly — no file needed.
+
+    Pass text as an argument, or pipe it via stdin:
+
+        vstash remember "The API uses OAuth2 with PKCE" --title "auth-notes"
+        echo "deployment steps..." | vstash remember --title "deploy"
+        cat notes.md | vstash remember --title "meeting-notes" --project myproj
+    """
+    import sys
+
+    # Read from argument or stdin
+    if text is None:
+        if sys.stdin.isatty():
+            console.print("[red]✗ No text provided. Pass as argument or pipe via stdin.[/red]")
+            raise typer.Exit(1)
+        text = sys.stdin.read()
+
+    if not text.strip():
+        console.print("[yellow]⚠ Empty text, nothing to ingest.[/yellow]")
+        raise typer.Exit(1)
+
+    from .ingest import ingest_text
+
+    cfg, store = _get_store()
+    meta = {"project": project, "layer": layer, "tags": tags}
+
+    with store:
+        result = ingest_text(
+            text,
+            cfg,
+            store,
+            title=title,
+            collection=collection,
+            **meta,
+        )
+
+        if result.status == "ok":
+            parts = (
+                f"[green]✓[/green] [bold]{result.title}[/bold] — "
+                f"{result.chunks} chunks in {result.elapsed_s}s"
+            )
+            if collection != "default":
+                parts += f" [cyan]→ {collection}[/cyan]"
+            console.print(parts)
+        else:
+            console.print(f"[yellow]⚠ {result.status}: {result.source}[/yellow]")
 
 
 # ------------------------------------------------------------------ #
