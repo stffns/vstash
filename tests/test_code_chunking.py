@@ -1,9 +1,11 @@
-"""Tests for code-aware chunking (Phase 1 — regex-based)."""
+"""Tests for code-aware chunking (hybrid: tree-sitter → parso → regex)."""
 
 from __future__ import annotations
 
 
-from vstash.ingest import _EXT_TO_LANG, _split_code_blocks, chunk_code
+from vstash.code_split import EXT_TO_LANG as _EXT_TO_LANG
+from vstash.code_split import split_code_blocks as _split_code_blocks
+from vstash.ingest import chunk_code
 
 
 # ------------------------------------------------------------------ #
