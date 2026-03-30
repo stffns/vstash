@@ -148,6 +148,54 @@ class Memory:
         )
         return [result]
 
+    def remember(
+        self,
+        text: str,
+        title: str | None = None,
+        *,
+        collection: object = _UNSET,
+        project: object = _UNSET,
+        layer: str | None = None,
+        tags: str | None = None,
+    ) -> IngestResult:
+        """Ingest raw text directly — no file needed.
+
+        Agent-friendly alternative to ``add()``. Chunks and embeds the text
+        in-memory without writing a temporary file to disk.
+
+        Args:
+            text: The content to ingest.
+            title: Human-readable title for the document. When *None*,
+                a descriptive title is auto-generated from the text content.
+            collection: Override the default collection. Pass None for no collection.
+            project: Override the default project tag. Pass None for no project.
+            layer: Layer/category tag.
+            tags: Comma-separated tags.
+
+        Returns:
+            Single IngestResult.
+
+        Example::
+
+            mem = Memory(project="myproj")
+            mem.remember("OAuth2 uses PKCE for public clients", title="auth-notes")
+        """
+        from .ingest import ingest_text
+
+        col = self._collection if collection is _UNSET else collection
+        proj = self._project if project is _UNSET else project
+
+        return ingest_text(
+            text,
+            self._cfg,
+            self._store,
+            title=title,
+            collection=col,
+            project=proj,
+            layer=layer,
+            tags=tags,
+        )
+
     def search(
         self,
         query: str,
@@ -238,7 +286,8 @@ class Memory:
         """
         source_str = str(source)
         # Normalize file paths to match ingest() behavior
-        if not source_str.startswith(("http://", "https://")):
+        # Skip normalization for URLs and text:// synthetic paths
+        if not source_str.startswith(("http://", "https://", "text://")):
             source_str = str(Path(source_str).resolve())
         return self._store.delete_document(source_str)
 
