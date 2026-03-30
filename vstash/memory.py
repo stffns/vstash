@@ -151,7 +151,7 @@ class Memory:
     def remember(
         self,
         text: str,
-        title: str = "note",
+        title: str | None = None,
         *,
         collection: object = _UNSET,
         project: object = _UNSET,
@@ -165,7 +165,8 @@ class Memory:
 
         Args:
             text: The content to ingest.
-            title: Human-readable title for the document.
+            title: Human-readable title for the document. When *None*,
+                a descriptive title is auto-generated from the text content.
             collection: Override the default collection. Pass None for no collection.
             project: Override the default project tag. Pass None for no project.
             layer: Layer/category tag.
@@ -186,9 +187,9 @@ class Memory:
 
         return ingest_text(
             text,
-            title,
             self._cfg,
             self._store,
+            title=title,
             collection=col,
             project=proj,
             layer=layer,
@@ -285,7 +286,8 @@ class Memory:
         """
         source_str = str(source)
         # Normalize file paths to match ingest() behavior
-        if not source_str.startswith(("http://", "https://")):
+        # Skip normalization for URLs and text:// synthetic paths
+        if not source_str.startswith(("http://", "https://", "text://")):
             source_str = str(Path(source_str).resolve())
         return self._store.delete_document(source_str)
 
