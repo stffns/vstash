@@ -598,11 +598,29 @@ def ingest(
     )
 
 
+def _generate_title(text: str) -> str:
+    """Generate a descriptive title from text content.
+
+    Produces a slug from the first meaningful words plus a timestamp,
+    e.g. ``"oauth2-uses-pkce-20260330-143052"``.
+    """
+    import re
+    from datetime import datetime, timezone
+
+    preview = text.strip()[:60].lower()
+    preview = re.sub(r"[^a-z0-9\s]", "", preview)
+    words = preview.split()[:5]
+    slug = "-".join(words) if words else "note"
+
+    ts = datetime.now(tz=timezone.utc).strftime("%Y%m%d-%H%M%S")
+    return f"{slug}-{ts}"
+
+
 def ingest_text(
     text: str,
-    title: str,
-    cfg: VstashConfig,
-    store: VstashStore,
+    title: str | None = None,
+    cfg: VstashConfig | None = None,
+    store: VstashStore | None = None,
     *,
     collection: str = "default",
     project: str | None = None,
@@ -616,7 +634,9 @@ def ingest_text(
 
     Args:
         text: The content to ingest.
-        title: Human-readable title for the document.
+        title: Human-readable title for the document. When *None* (the
+            default), a descriptive title is auto-generated from the first
+            words of *text* plus a UTC timestamp.
         cfg: Vex configuration.
         store: Vector store instance.
         collection: Named collection to group this document.
@@ -628,6 +648,9 @@ def ingest_text(
         IngestResult with status, chunk count, timing, etc.
     """
     start_time = time.time()
+
+    if title is None:
+        title = _generate_title(text) if (text and text.strip()) else "note"
 
     if not text or not text.strip():
         return IngestResult(status="empty", source=f"text://{title}")

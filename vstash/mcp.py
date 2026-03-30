@@ -316,7 +316,7 @@ def vstash_add(
 @mcp_server.tool()
 def vstash_remember(
     text: str,
-    title: str = "note",
+    title: str | None = None,
     collection: str = "default",
     project: str | None = None,
     layer: str | None = None,
@@ -331,6 +331,8 @@ def vstash_remember(
     Args:
         text: The content to ingest and remember.
         title: Human-readable title for the document (used in search results).
+            When not provided, a descriptive title is auto-generated from
+            the text content plus a UTC timestamp.
         collection: Named collection to group this document (default: 'default').
         project: Project tag for this document.
         layer: Layer/category for this document.

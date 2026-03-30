@@ -819,7 +819,7 @@ def watch(
 @app.command()
 def remember(
     text: str | None = typer.Argument(None, help="Text to ingest (or pipe via stdin)"),
-    title: str = typer.Option("note", "--title", "-t", help="Title for the document"),
+    title: str | None = typer.Option(None, "--title", "-t", help="Title for the document (auto-generated if omitted)"),
     collection: str = typer.Option("default", "--collection", "-c", help="Collection to add to"),
     project: str | None = typer.Option(None, "--project", "-p", help="Project tag"),
     layer: str | None = typer.Option(None, "--layer", "-l", help="Layer tag"),

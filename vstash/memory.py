@@ -151,7 +151,7 @@ class Memory:
     def remember(
         self,
         text: str,
-        title: str = "note",
+        title: str | None = None,
         *,
         collection: object = _UNSET,
         project: object = _UNSET,
@@ -165,7 +165,8 @@ class Memory:
 
         Args:
             text: The content to ingest.
-            title: Human-readable title for the document.
+            title: Human-readable title for the document. When *None*,
+                a descriptive title is auto-generated from the text content.
             collection: Override the default collection. Pass None for no collection.
             project: Override the default project tag. Pass None for no project.
             layer: Layer/category tag.
