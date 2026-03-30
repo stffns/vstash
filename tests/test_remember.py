@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from unittest.mock import MagicMock, patch
 
 from vstash.ingest import ingest_text
@@ -13,13 +15,13 @@ class TestIngestText:
     def test_empty_text_returns_empty(self) -> None:
         cfg = MagicMock()
         store = MagicMock()
-        result = ingest_text("", "title", cfg, store)
+        result = ingest_text("", cfg, store, title="title")
         assert result.status == "empty"
 
     def test_whitespace_only_returns_empty(self) -> None:
         cfg = MagicMock()
         store = MagicMock()
-        result = ingest_text("   \n  ", "title", cfg, store)
+        result = ingest_text("   \n  ", cfg, store, title="title")
         assert result.status == "empty"
 
     @patch("vstash.ingest._embed_with_progress")
@@ -36,9 +38,9 @@ class TestIngestText:
 
         result = ingest_text(
             "This is some important text about architecture decisions.",
-            "arch-notes",
             cfg,
             store,
+            title="arch-notes",
             collection="docs",
             project="myproj",
         )
@@ -76,7 +78,7 @@ tags: [api, design]
 
 The API uses REST with JSON payloads."""
 
-        result = ingest_text(text, "api-notes", cfg, store)
+        result = ingest_text(text, cfg, store, title="api-notes")
         assert result.status == "ok"
 
         call_kwargs = store.add_document.call_args
@@ -101,14 +103,11 @@ project: frontmatter-project
 
 This is enough content to generate at least one chunk for the embedding pipeline to process correctly."""
 
-        result = ingest_text(
-            text, "note", cfg, store, project="override-project"
-        )
+        result = ingest_text(text, cfg, store, title="note", project="override-project")
         assert result.status == "ok"
 
         call_kwargs = store.add_document.call_args
         assert call_kwargs[1]["project"] == "override-project"
-
 
     @patch("vstash.ingest._embed_with_progress")
     def test_auto_generated_title(self, mock_embed) -> None:
@@ -125,7 +124,6 @@ This is enough content to generate at least one chunk for the embedding pipeline
 
         result = ingest_text(
             "OAuth2 uses PKCE for public clients",
-            None,
             cfg,
             store,
         )
@@ -153,9 +151,9 @@ This is enough content to generate at least one chunk for the embedding pipeline
 
         result = ingest_text(
             "Some content here that is long enough to be chunked properly by the ingestion pipeline.",
-            "my-custom-title",
             cfg,
             store,
+            title="my-custom-title",
         )
 
         assert result.status == "ok"
@@ -184,19 +182,24 @@ class TestGenerateTitle:
         from vstash.ingest import _generate_title
 
         title = _generate_title("one two three four five six seven eight")
-        # Slug part (before timestamp) should have at most 5 words
-        slug_part = title.rsplit("-", 1)[0]  # remove timestamp portion
-        # Count slug segments (words) before the date portion
-        parts = slug_part.split("-")
-        # Last two are date and time, rest are words
-        word_parts = parts[:-2]
-        assert len(word_parts) <= 5
+        # Strip the YYYYMMDD-HHMMSSffffff timestamp suffix
+        slug_part = re.sub(r"-\d{8}-\d{12,}$", "", title)
+        word_parts = slug_part.split("-")
+        assert len(word_parts) == 5
 
     def test_fallback_for_empty_slug(self) -> None:
         from vstash.ingest import _generate_title
 
         title = _generate_title("!!! @@@")
         assert title.startswith("note-")
+
+    def test_includes_microseconds(self) -> None:
+        from vstash.ingest import _generate_title
+
+        title = _generate_title("test content")
+        # Timestamp should include microseconds (14+ digits after last slug word)
+        match = re.search(r"-(\d{8}-\d{12,})$", title)
+        assert match is not None
 
 
 class TestRememberCLI:

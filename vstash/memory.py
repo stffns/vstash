@@ -187,9 +187,9 @@ class Memory:
 
         return ingest_text(
             text,
-            title,
             self._cfg,
             self._store,
+            title=title,
             collection=col,
             project=proj,
             layer=layer,
@@ -286,7 +286,8 @@ class Memory:
         """
         source_str = str(source)
         # Normalize file paths to match ingest() behavior
-        if not source_str.startswith(("http://", "https://")):
+        # Skip normalization for URLs and text:// synthetic paths
+        if not source_str.startswith(("http://", "https://", "text://")):
             source_str = str(Path(source_str).resolve())
         return self._store.delete_document(source_str)
 

@@ -349,9 +349,9 @@ def vstash_remember(
 
         result = ingest_text(
             text,
-            title,
             cfg,
             store,
+            title=title,
             collection=collection,
             project=project,
             layer=layer,

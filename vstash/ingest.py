@@ -602,9 +602,8 @@ def _generate_title(text: str) -> str:
     """Generate a descriptive title from text content.
 
     Produces a slug from the first meaningful words plus a timestamp,
-    e.g. ``"oauth2-uses-pkce-20260330-143052"``.
+    e.g. ``"oauth2-uses-pkce-20260330-143052123"``.
     """
-    import re
     from datetime import datetime, timezone
 
     preview = text.strip()[:60].lower()
@@ -612,16 +611,16 @@ def _generate_title(text: str) -> str:
     words = preview.split()[:5]
     slug = "-".join(words) if words else "note"
 
-    ts = datetime.now(tz=timezone.utc).strftime("%Y%m%d-%H%M%S")
+    ts = datetime.now(tz=timezone.utc).strftime("%Y%m%d-%H%M%S%f")
     return f"{slug}-{ts}"
 
 
 def ingest_text(
     text: str,
-    title: str | None = None,
-    cfg: VstashConfig | None = None,
-    store: VstashStore | None = None,
+    cfg: VstashConfig,
+    store: VstashStore,
     *,
+    title: str | None = None,
     collection: str = "default",
     project: str | None = None,
     layer: str | None = None,
@@ -650,7 +649,7 @@ def ingest_text(
     start_time = time.time()
 
     if title is None:
-        title = _generate_title(text) if (text and text.strip()) else "note"
+        title = _generate_title(text) if text and text.strip() else "note"
 
     if not text or not text.strip():
         return IngestResult(status="empty", source=f"text://{title}")
