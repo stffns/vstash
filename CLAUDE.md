@@ -25,7 +25,7 @@ vstash stats
 
 ```
 vstash/
-  __init__.py       # version (__version__ = "0.10.0")
+  __init__.py       # version (__version__ = "0.10.1")
   cli.py            # typer CLI — add, search, ask, chat, list, stats, forget, reindex, watch, config, export, remember
   store.py          # VstashStore — SQLite + sqlite-vec + FTS5, RRF, scoring, MMR dedup, reindex
   ingest.py         # parse → chunk → embed pipeline
@@ -46,6 +46,7 @@ tests/
   test_code_chunking.py # Code-aware chunking integration
   test_cli_commands.py  # CLI command tests
   test_scoring_e2e.py   # End-to-end scoring scenarios
+  test_snapvec_backend.py # Optional snapvec backend tests
   conftest.py       # Fixtures (tmp_db_path, sample_store)
 
 experiments/        # Research experiment scripts + results
@@ -61,6 +62,7 @@ docs/               # User-facing documentation
 - **Embeddings**: FastEmbed (ONNX) or MLX (Apple Silicon). Default `BAAI/bge-small-en-v1.5` (384 dims). Multilingual models available via `vstash reindex`.
 - **Code-aware chunking**: Hybrid 3-tier splitting — tree-sitter AST (25+ languages, optional) → parso AST (Python) → regex (6 languages). Graceful degradation. See `code_split.py`.
 - **Single SQLite file**: WAL mode, foreign keys, all data in one `.db`.
+- **Optional snapvec backend**: Compressed ANN via PolarQuant. Opt-in with `storage.vector_backend = "snapvec"`. sqlite-vec stays default.
 
 ## Conventions
 
@@ -68,7 +70,7 @@ docs/               # User-facing documentation
 - **Pydantic v2** for all config and data models (frozen=True)
 - **Type hints** on all public functions
 - **ruff** for linting and formatting (enforced in CI)
-- **pytest** for testing (356 tests as of v0.10.0)
+- **pytest** for testing (368 tests as of v0.10.1)
 - **Conventional commits** with emoji prefixes (feat, fix, docs, chore, perf)
 
 ## Database schema
