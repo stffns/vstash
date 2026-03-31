@@ -319,12 +319,15 @@ def _ask_openai(
     model = cfg.openai.model
 
     try:
-        response = client.chat.completions.create(
+        kwargs: dict = dict(
             model=model,
-            messages=messages,  # type: ignore[arg-type]
+            messages=messages,
             max_completion_tokens=2048,
             temperature=0.2,
         )
+        if cfg.openai.extra_body:
+            kwargs["extra_body"] = cfg.openai.extra_body
+        response = client.chat.completions.create(**kwargs)  # type: ignore[arg-type]
         return response.choices[0].message.content or ""
     except Exception as exc:
         raise ConnectionError(f"OpenAI API error: {exc}") from exc
@@ -368,13 +371,16 @@ def _stream_openai(
     model = cfg.openai.model
 
     try:
-        response_stream = client.chat.completions.create(
+        kwargs: dict = dict(
             model=model,
-            messages=messages,  # type: ignore[arg-type]
+            messages=messages,
             max_completion_tokens=2048,
             temperature=0.2,
             stream=True,
         )
+        if cfg.openai.extra_body:
+            kwargs["extra_body"] = cfg.openai.extra_body
+        response_stream = client.chat.completions.create(**kwargs)  # type: ignore[arg-type]
         for chunk in response_stream:
             if chunk.choices and chunk.choices[0].delta.content:
                 yield chunk.choices[0].delta.content
