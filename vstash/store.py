@@ -22,10 +22,21 @@ from types import TracebackType
 
 import threading
 
+import numpy as np
 import sqlite_vec
 
 from .config import ScoringConfig
 from .models import DocumentInfo, SearchResult, StoreStats
+
+# Probe for snapvec availability (optional dependency)
+try:
+    from snapvec import SnapIndex
+
+    _HAS_SNAPVEC = True
+except ImportError:
+    _HAS_SNAPVEC = False
+
+logger = logging.getLogger(__name__)
 
 
 def _serialize(vector: list[float]) -> bytes:
@@ -88,7 +99,13 @@ class VstashStore:
         embedding_dim: Dimensionality of embedding vectors.
     """
 
-    def __init__(self, db_path: str, embedding_dim: int = 384) -> None:
+    def __init__(
+        self,
+        db_path: str,
+        embedding_dim: int = 384,
+        vector_backend: str = "sqlite-vec",
+        snapvec_bits: int = 4,
+    ) -> None:
         self.db_path = Path(db_path).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.embedding_dim = embedding_dim
@@ -98,6 +115,53 @@ class VstashStore:
         self._thread_local = threading.local()
         self._thread_local.last_best_distance = 0.0
         self._conn = self._connect()
+
+        # --- SnapVec backend (optional) ---
+        self._snap: SnapIndex | None = None  # type: ignore[name-defined]
+        self._vector_backend = vector_backend
+        self._snapvec_bits = snapvec_bits
+        if vector_backend == "snapvec":
+            self._init_snapvec()
+
+    @property
+    def _snapvec_path(self) -> Path:
+        """Path to the snapvec index file (next to the .db file)."""
+        return self.db_path.with_suffix(".snpv")
+
+    def _init_snapvec(self) -> None:
+        """Load or create the SnapIndex for the snapvec backend."""
+        if not _HAS_SNAPVEC:
+            logger.warning(
+                "snapvec backend requested but snapvec is not installed. "
+                "Install with: pip install vstash[snapvec]. Falling back to sqlite-vec."
+            )
+            self._vector_backend = "sqlite-vec"
+            return
+
+        path = self._snapvec_path
+        if path.exists():
+            try:
+                self._snap = SnapIndex.load(str(path))
+                # Verify dimension match
+                if self._snap.dim != self.embedding_dim:
+                    logger.warning(
+                        "SnapIndex dim=%d != embedding_dim=%d. Rebuilding index.",
+                        self._snap.dim,
+                        self.embedding_dim,
+                    )
+                    self._snap = SnapIndex(dim=self.embedding_dim, bits=self._snapvec_bits, seed=0)
+            except Exception:
+                logger.warning(
+                    "Failed to load SnapIndex from %s, creating new.", path, exc_info=True
+                )
+                self._snap = SnapIndex(dim=self.embedding_dim, bits=self._snapvec_bits, seed=0)
+        else:
+            self._snap = SnapIndex(dim=self.embedding_dim, bits=self._snapvec_bits, seed=0)
+
+    def _save_snapvec(self) -> None:
+        """Persist the SnapIndex to disk. Must be called BEFORE SQLite commit."""
+        if self._snap is not None:
+            self._snap.save(str(self._snapvec_path))
 
     @property
     def last_best_distance(self) -> float:
@@ -387,6 +451,20 @@ class VstashStore:
                         [rowid, text],
                     )
 
+                # Persist snapvec BEFORE SQLite commit for atomicity:
+                # if snapvec save fails, we rollback SQLite too.
+                if self._snap is not None:
+                    snap_ids = [
+                        row[0]
+                        for row in self._conn.execute(
+                            "SELECT id FROM chunks WHERE doc_id = ? ORDER BY seq",
+                            [doc_id],
+                        ).fetchall()
+                    ]
+                    snap_vecs = np.array(embeddings, dtype=np.float32)
+                    self._snap.add_batch(snap_ids, snap_vecs)
+                    self._save_snapvec()
+
                 self._conn.commit()
             except Exception:
                 self._conn.rollback()
@@ -417,6 +495,8 @@ class VstashStore:
                 self._conn.execute("BEGIN IMMEDIATE")
                 for doc_id in doc_ids:
                     self._delete_by_doc_id(doc_id)
+                # Persist snapvec BEFORE SQLite commit for atomicity
+                self._save_snapvec()
                 self._conn.commit()
             except Exception:
                 self._conn.rollback()
@@ -442,6 +522,10 @@ class VstashStore:
             placeholders = ",".join("?" * len(chunk_ids))
             # Delete vec_chunks first (no trigger involved)
             self._conn.execute(f"DELETE FROM vec_chunks WHERE rowid IN ({placeholders})", chunk_ids)
+            # Delete from snapvec index
+            if self._snap is not None:
+                for cid in chunk_ids:
+                    self._snap.delete(cid)
             # Delete chunks — trg_chunks_delete trigger auto-syncs FTS5
             self._conn.execute("DELETE FROM chunks WHERE doc_id = ?", [doc_id])
         cursor = self._conn.execute("DELETE FROM documents WHERE id = ?", [doc_id])
@@ -510,19 +594,52 @@ class VstashStore:
         )
 
         # --- Vector search ---
-        vec_rows = self._conn.execute(
-            f"""
-            SELECT c.id, c.text, d.title, d.path, c.seq, v.distance
-            FROM vec_chunks v
-            JOIN chunks c ON c.id = v.rowid
-            JOIN documents d ON d.id = c.doc_id
-            WHERE v.embedding MATCH ?
-              AND k = ?
-              {vec_clause}
-            ORDER BY v.distance
-            """,
-            [_serialize(query_embedding), candidate_pool, *filter_params],
-        ).fetchall()
+        if self._snap is not None and len(self._snap) > 0:
+            # SnapVec ANN search — returns list[(id, distance)]
+            snap_results = self._snap.search(
+                np.array(query_embedding, dtype=np.float32), k=candidate_pool
+            )
+            snap_ids = [int(r[0]) for r in snap_results]
+            snap_dists = {int(r[0]): float(r[1]) for r in snap_results}
+
+            if snap_ids:
+                placeholders = ",".join("?" * len(snap_ids))
+                # Build filter clause adapted for snapvec (no v.rowid)
+                snap_filter = vec_clause.replace("v.rowid", "c.id") if vec_clause else ""
+                rows = self._conn.execute(
+                    f"""
+                    SELECT c.id, c.text, d.title, d.path, c.seq
+                    FROM chunks c
+                    JOIN documents d ON d.id = c.doc_id
+                    WHERE c.id IN ({placeholders})
+                      {snap_filter}
+                    """,
+                    [*snap_ids, *filter_params],
+                ).fetchall()
+                # Build dict for fast lookup, attach distance, preserve snap order
+                row_by_id = {r["id"]: dict(r) for r in rows}
+                vec_rows = []
+                for sid in snap_ids:
+                    if sid in row_by_id:
+                        entry = row_by_id[sid]
+                        entry["distance"] = snap_dists.get(sid, 2.0)
+                        vec_rows.append(entry)
+            else:
+                vec_rows = []
+        else:
+            vec_rows = self._conn.execute(
+                f"""
+                SELECT c.id, c.text, d.title, d.path, c.seq, v.distance
+                FROM vec_chunks v
+                JOIN chunks c ON c.id = v.rowid
+                JOIN documents d ON d.id = c.doc_id
+                WHERE v.embedding MATCH ?
+                  AND k = ?
+                  {vec_clause}
+                ORDER BY v.distance
+                """,
+                [_serialize(query_embedding), candidate_pool, *filter_params],
+            ).fetchall()
 
         # --- Filter by vector distance gap ---
         # The best (closest) result has the smallest distance.
@@ -1389,6 +1506,10 @@ class VstashStore:
                     f"CREATE VIRTUAL TABLE vec_chunks USING vec0(embedding float[{new_dim}])"
                 )
 
+                # Rebuild snapvec index if active
+                if self._snap is not None:
+                    self._snap = SnapIndex(dim=new_dim, bits=self._snapvec_bits, seed=0)
+
                 # Re-embed in batches
                 processed = 0
                 offset = 0
@@ -1410,6 +1531,10 @@ class VstashStore:
                             [chunk_id, _serialize(embedding)],
                         )
 
+                    # Add batch to snapvec index
+                    if self._snap is not None:
+                        self._snap.add_batch(ids, np.array(embeddings, dtype=np.float32))
+
                     processed += len(rows)
                     offset += batch_size
                     if progress_cb:
@@ -1417,6 +1542,8 @@ class VstashStore:
 
                 # Update stored dimension
                 self.embedding_dim = new_dim
+                # Persist snapvec BEFORE SQLite commit
+                self._save_snapvec()
                 self._conn.commit()
             except Exception:
                 self._conn.rollback()
@@ -1425,5 +1552,6 @@ class VstashStore:
             return processed
 
     def close(self) -> None:
-        """Close the database connection."""
+        """Close the database connection and persist snapvec index."""
+        self._save_snapvec()
         self._conn.close()

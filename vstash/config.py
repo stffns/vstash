@@ -128,6 +128,16 @@ class StorageConfig(BaseModel):
         default_factory=lambda: os.getenv("VSTASH_DB_PATH") or "~/.vstash/memory.db",
         description="Path to SQLite database file",
     )
+    vector_backend: Literal["sqlite-vec", "snapvec"] = Field(
+        default="sqlite-vec",
+        description="Vector search backend: 'sqlite-vec' (default) or 'snapvec' (compressed ANN)",
+    )
+    snapvec_bits: int = Field(
+        default=4,
+        ge=2,
+        le=4,
+        description="Quantization bits for snapvec backend (2, 3, or 4)",
+    )
 
 
 class ScoringConfig(BaseModel):
