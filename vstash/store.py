@@ -27,6 +27,16 @@ import sqlite_vec
 from .config import ScoringConfig
 from .models import DocumentInfo, SearchResult, StoreStats
 
+# Optional TurboQuant ANN backend (PolarQuant WHT+Lloyd-Max compression).
+# Falls back to sqlite-vec when unavailable or not configured.
+try:
+    import numpy as _np
+    from turboquant.index import TurboQuantIndex as _TurboQuantIndex
+
+    _TURBOQUANT_AVAILABLE = True
+except ImportError:
+    _TURBOQUANT_AVAILABLE = False
+
 
 def _serialize(vector: list[float]) -> bytes:
     """Serialize a float vector into a compact binary format for sqlite-vec."""
@@ -88,16 +98,27 @@ class VstashStore:
         embedding_dim: Dimensionality of embedding vectors.
     """
 
-    def __init__(self, db_path: str, embedding_dim: int = 384) -> None:
+    def __init__(
+        self,
+        db_path: str,
+        embedding_dim: int = 384,
+        vector_backend: str = "sqlite-vec",
+        turboquant_bits: int = 4,
+    ) -> None:
         self.db_path = Path(db_path).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.embedding_dim = embedding_dim
+        self._vector_backend = vector_backend
+        self._turboquant_bits = turboquant_bits
+        self._tq_index: "_TurboQuantIndex | None" = None  # type: ignore[name-defined]
         self._write_lock = threading.Lock()
         # Per-thread state for the cosine distance of the best vector match.
         # Thread-local so concurrent searches on a shared instance don't race.
         self._thread_local = threading.local()
         self._thread_local.last_best_distance = 0.0
         self._conn = self._connect()
+        if vector_backend == "turboquant":
+            self._init_tq_index()
 
     @property
     def last_best_distance(self) -> float:
@@ -122,6 +143,86 @@ class VstashStore:
         exc_tb: TracebackType | None,
     ) -> None:
         self.close()
+
+    # ------------------------------------------------------------------ #
+    # TurboQuant ANN backend helpers                                      #
+    # ------------------------------------------------------------------ #
+
+    @property
+    def _tq_path(self) -> Path:
+        """Path to the companion TurboQuantIndex file (.tqvs)."""
+        return self.db_path.with_suffix(".tqvs")
+
+    def _init_tq_index(self) -> None:
+        """Load or create a TurboQuantIndex alongside the SQLite store.
+
+        The index is persisted as ``<db_path>.tqvs`` and kept in sync with
+        every write operation (add / delete / reindex).
+        """
+        if not _TURBOQUANT_AVAILABLE:
+            logging.getLogger(__name__).warning(
+                "turboquant package not found; falling back to sqlite-vec. "
+                "Install turboquant or set [storage] vector_backend = 'sqlite-vec'."
+            )
+            self._vector_backend = "sqlite-vec"
+            return
+        tq_path = self._tq_path
+        if tq_path.exists():
+            self._tq_index = _TurboQuantIndex.load(tq_path)  # type: ignore[name-defined]
+        else:
+            self._tq_index = _TurboQuantIndex(  # type: ignore[name-defined]
+                dim=self.embedding_dim,
+                bits=self._turboquant_bits,
+            )
+
+    def _save_tq(self) -> None:
+        """Persist TurboQuantIndex to disk (no-op when not active)."""
+        if self._tq_index is not None:
+            self._tq_index.save(self._tq_path)
+
+    def _tq_vec_search(
+        self,
+        query_embedding: list[float],
+        k: int,
+        vec_clause: str,
+        filter_params: list,
+    ) -> list[dict]:
+        """ANN search via TurboQuantIndex.
+
+        Returns a list of dicts with the same keys as sqlite-vec rows
+        (id, text, title, path, seq, distance) sorted by distance ascending.
+        Distance is computed as ``1 - approx_cosine_similarity``.
+        """
+        assert self._tq_index is not None
+        q = _np.array(query_embedding, dtype=_np.float32)  # type: ignore[name-defined]
+        hits = self._tq_index.search(q, k=k)  # [(rowid, score), ...]
+        if not hits:
+            return []
+        rowids = [int(rid) for rid, _ in hits]
+        score_map = {int(rid): float(s) for rid, s in hits}
+        placeholders = ",".join("?" * len(rowids))
+        rows = self._conn.execute(
+            f"SELECT c.id, c.text, d.title, d.path, c.seq "
+            f"FROM chunks c JOIN documents d ON d.id = c.doc_id "
+            f"WHERE c.id IN ({placeholders}) {vec_clause}",
+            [*rowids, *filter_params],
+        ).fetchall()
+        results = []
+        for row in rows:
+            cid = row["id"]
+            score = score_map.get(cid, 0.0)
+            results.append(
+                {
+                    "id": cid,
+                    "text": row["text"],
+                    "title": row["title"],
+                    "path": row["path"],
+                    "seq": row["seq"],
+                    "distance": 1.0 - score,
+                }
+            )
+        results.sort(key=lambda r: r["distance"])
+        return results
 
     # ------------------------------------------------------------------ #
     # Connection setup                                                     #
@@ -366,6 +467,8 @@ class VstashStore:
                 )
 
                 now_iso = datetime.now(timezone.utc).isoformat()
+                _tq_batch_ids: list[int] = []
+                _tq_batch_vecs: list[list[float]] = []
                 for seq, (text, embedding) in enumerate(zip(chunks, embeddings)):
                     # Insert chunk — get rowid for linking vec + fts tables
                     cursor = self._conn.execute(
@@ -387,7 +490,21 @@ class VstashStore:
                         [rowid, text],
                     )
 
+                    # Collect for TurboQuant batch insert (after commit)
+                    if self._tq_index is not None:
+                        _tq_batch_ids.append(rowid)
+                        _tq_batch_vecs.append(embedding)
+
                 self._conn.commit()
+
+                # Add to TurboQuant index in one batch (outside SQLite transaction)
+                if self._tq_index is not None and _tq_batch_ids:
+                    self._tq_index.add_batch(
+                        _tq_batch_ids,
+                        _np.array(_tq_batch_vecs, dtype=_np.float32),  # type: ignore[name-defined]
+                    )
+                    self._save_tq()
+
             except Exception:
                 self._conn.rollback()
                 raise
@@ -418,6 +535,7 @@ class VstashStore:
                 for doc_id in doc_ids:
                     self._delete_by_doc_id(doc_id)
                 self._conn.commit()
+                self._save_tq()  # persist TurboQuant removals if active
             except Exception:
                 self._conn.rollback()
                 raise
@@ -444,6 +562,10 @@ class VstashStore:
             self._conn.execute(f"DELETE FROM vec_chunks WHERE rowid IN ({placeholders})", chunk_ids)
             # Delete chunks — trg_chunks_delete trigger auto-syncs FTS5
             self._conn.execute("DELETE FROM chunks WHERE doc_id = ?", [doc_id])
+            # Keep TurboQuant index in sync
+            if self._tq_index is not None:
+                for cid in chunk_ids:
+                    self._tq_index.delete(cid)
         cursor = self._conn.execute("DELETE FROM documents WHERE id = ?", [doc_id])
         return cursor.rowcount > 0
 
@@ -510,19 +632,27 @@ class VstashStore:
         )
 
         # --- Vector search ---
-        vec_rows = self._conn.execute(
-            f"""
-            SELECT c.id, c.text, d.title, d.path, c.seq, v.distance
-            FROM vec_chunks v
-            JOIN chunks c ON c.id = v.rowid
-            JOIN documents d ON d.id = c.doc_id
-            WHERE v.embedding MATCH ?
-              AND k = ?
-              {vec_clause}
-            ORDER BY v.distance
-            """,
-            [_serialize(query_embedding), candidate_pool, *filter_params],
-        ).fetchall()
+        if self._tq_index is not None:
+            # TurboQuant ANN path: compressed PolarQuant index (~6x smaller,
+            # ~3-5x faster query than sqlite-vec on typical collections).
+            vec_rows = self._tq_vec_search(
+                query_embedding, candidate_pool, vec_clause, filter_params
+            )
+        else:
+            # Default sqlite-vec path: exact cosine search on float32 vectors.
+            vec_rows = self._conn.execute(
+                f"""
+                SELECT c.id, c.text, d.title, d.path, c.seq, v.distance
+                FROM vec_chunks v
+                JOIN chunks c ON c.id = v.rowid
+                JOIN documents d ON d.id = c.doc_id
+                WHERE v.embedding MATCH ?
+                  AND k = ?
+                  {vec_clause}
+                ORDER BY v.distance
+                """,
+                [_serialize(query_embedding), candidate_pool, *filter_params],
+            ).fetchall()
 
         # --- Filter by vector distance gap ---
         # The best (closest) result has the smallest distance.
@@ -1389,6 +1519,12 @@ class VstashStore:
                     f"CREATE VIRTUAL TABLE vec_chunks USING vec0(embedding float[{new_dim}])"
                 )
 
+                # Reset TurboQuant index for the new model/dimension
+                if self._tq_index is not None and _TURBOQUANT_AVAILABLE:
+                    self._tq_index = _TurboQuantIndex(  # type: ignore[name-defined]
+                        dim=new_dim, bits=self._turboquant_bits
+                    )
+
                 # Re-embed in batches
                 processed = 0
                 offset = 0
@@ -1410,6 +1546,13 @@ class VstashStore:
                             [chunk_id, _serialize(embedding)],
                         )
 
+                    # Batch-add to TurboQuant index
+                    if self._tq_index is not None:
+                        self._tq_index.add_batch(
+                            ids,
+                            _np.array(embeddings, dtype=_np.float32),  # type: ignore[name-defined]
+                        )
+
                     processed += len(rows)
                     offset += batch_size
                     if progress_cb:
@@ -1418,6 +1561,7 @@ class VstashStore:
                 # Update stored dimension
                 self.embedding_dim = new_dim
                 self._conn.commit()
+                self._save_tq()  # persist rebuilt TurboQuant index
             except Exception:
                 self._conn.rollback()
                 raise

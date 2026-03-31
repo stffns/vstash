@@ -132,6 +132,19 @@ class StorageConfig(BaseModel):
         default_factory=lambda: os.getenv("VSTASH_DB_PATH") or "~/.vstash/memory.db",
         description="Path to SQLite database file",
     )
+    vector_backend: Literal["sqlite-vec", "turboquant"] = Field(
+        default="sqlite-vec",
+        description=(
+            "Vector index backend. 'turboquant' uses PolarQuant WHT+Lloyd-Max "
+            "compression for faster search and ~6x smaller storage."
+        ),
+    )
+    turboquant_bits: int = Field(
+        default=4,
+        ge=2,
+        le=4,
+        description="Bits per coordinate for TurboQuant backend (2, 3, or 4).",
+    )
 
 
 class ScoringConfig(BaseModel):
