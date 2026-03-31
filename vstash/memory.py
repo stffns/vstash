@@ -64,7 +64,12 @@ class Memory:
         # Allow db override (useful for tests and isolated agents)
         db_path = str(db) if db else self._cfg.db_path
         dim = get_embedding_dim(self._cfg.embeddings.model)
-        self._store = VstashStore(db_path, embedding_dim=dim)
+        self._store = VstashStore(
+            db_path,
+            embedding_dim=dim,
+            vector_backend=self._cfg.storage.vector_backend,
+            snapvec_bits=self._cfg.storage.snapvec_bits,
+        )
 
     # ------------------------------------------------------------------ #
     # Context manager                                                      #

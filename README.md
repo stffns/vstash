@@ -29,6 +29,10 @@ Most RAG tools are slow, cloud-dependent, or require a running server. vstash is
 
 **Zero cloud required for search. Inference is optional.**
 
+### What's new in v0.10.1
+
+- **Optional snapvec backend** — compressed ANN vector search via `pip install vstash[snapvec]`. Opt-in with `storage.vector_backend = "snapvec"` in `vstash.toml`. sqlite-vec remains the default for most users.
+
 ### What's new in v0.10
 
 - **Hybrid code splitting** — 3-tier backend: tree-sitter AST → parso AST → regex fallback. Each backend gracefully degrades to the next.
