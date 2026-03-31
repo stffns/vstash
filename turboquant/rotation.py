@@ -8,6 +8,8 @@ Complexity: O(d log d) — no matrix multiplication needed.
 """
 from __future__ import annotations
 
+from functools import lru_cache
+
 import numpy as np
 
 
@@ -34,8 +36,9 @@ def _fwht_inplace(x: np.ndarray) -> None:
         h *= 2
 
 
+@lru_cache(maxsize=64)
 def _generate_signs(dim: int, seed: int) -> np.ndarray:
-    """Generate a deterministic ±1 sign vector from a seed."""
+    """Generate a deterministic ±1 sign vector from a seed (cached)."""
     rng = np.random.default_rng(seed)
     return rng.choice([-1.0, 1.0], size=dim).astype(np.float32)
 
