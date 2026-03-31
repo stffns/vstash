@@ -171,14 +171,49 @@ class TurboQuantIndex:
     # Persistence                                                         #
     # ------------------------------------------------------------------ #
 
+    @staticmethod
+    def _pack_indices(mat: np.ndarray, bits: int) -> bytes:
+        """Pack uint8 index matrix to a bit-packed byte string.
+
+        bits=4 → 2 indices/byte, bits=2 → 4 indices/byte, bits=8 → 1 index/byte.
+        """
+        if bits == 8:
+            return mat.tobytes()
+        indices_per_byte = 8 // bits
+        mask = (1 << bits) - 1
+        flat = mat.ravel()
+        pad = (-len(flat)) % indices_per_byte
+        if pad:
+            flat = np.concatenate([flat, np.zeros(pad, dtype=np.uint8)])
+        out = np.zeros(len(flat) // indices_per_byte, dtype=np.uint8)
+        for i in range(indices_per_byte):
+            out |= (flat[i::indices_per_byte] & mask).astype(np.uint8) << (i * bits)
+        return out.tobytes()
+
+    @staticmethod
+    def _unpack_indices(data: bytes, n_rows: int, n_cols: int, bits: int) -> np.ndarray:
+        """Unpack bit-packed bytes back to uint8 matrix."""
+        if bits == 8:
+            return np.frombuffer(data, dtype=np.uint8).reshape(n_rows, n_cols).copy()
+        indices_per_byte = 8 // bits
+        mask = (1 << bits) - 1
+        packed = np.frombuffer(data, dtype=np.uint8)
+        total = n_rows * n_cols
+        out = np.zeros(len(packed) * indices_per_byte, dtype=np.uint8)
+        for i in range(indices_per_byte):
+            out[i::indices_per_byte] = (packed >> (i * bits)) & mask
+        return out[:total].reshape(n_rows, n_cols).copy()
+
     def save(self, path: str | Path) -> None:
-        """Persist index to binary file."""
+        """Persist index to binary file (bit-packed indices)."""
         path = Path(path)
         n = len(self._ids)
+        packed = self._pack_indices(self._indices_matrix, self.bits)
         with open(path, "wb") as f:
             f.write(_MAGIC)
             f.write(struct.pack("<IIIII", _VERSION, self.dim, self.bits, self.seed, n))
-            f.write(self._indices_matrix.tobytes())
+            f.write(struct.pack("<I", len(packed)))
+            f.write(packed)
             f.write(self._norms.tobytes())
             for id_val in self._ids:
                 encoded = str(id_val).encode("utf-8")
@@ -198,11 +233,10 @@ class TurboQuantIndex:
                 raise ValueError(f"Unsupported version: {version}")
             index = cls(dim=dim, bits=bits, seed=seed)
             pdim = index.quantizer.padded_dim
-            indices_bytes = f.read(n * pdim)
+            (packed_len,) = struct.unpack("<I", f.read(4))
+            packed_bytes = f.read(packed_len)
             norms_bytes = f.read(n * 4)
-            index._indices_matrix = (
-                np.frombuffer(indices_bytes, dtype=np.uint8).reshape(n, pdim).copy()
-            )
+            index._indices_matrix = cls._unpack_indices(packed_bytes, n, pdim, bits)
             index._norms = np.frombuffer(norms_bytes, dtype=np.float32).copy()
             for _ in range(n):
                 (id_len,) = struct.unpack("<H", f.read(2))
