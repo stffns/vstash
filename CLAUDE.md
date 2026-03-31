@@ -25,10 +25,11 @@ vstash stats
 
 ```
 vstash/
-  __init__.py       # version (__version__ = "0.8.0")
-  cli.py            # typer CLI — add, search, ask, chat, list, stats, forget, reindex, watch, config, export
+  __init__.py       # version (__version__ = "0.10.1")
+  cli.py            # typer CLI — add, search, ask, chat, list, stats, forget, reindex, watch, config, export, remember
   store.py          # VstashStore — SQLite + sqlite-vec + FTS5, RRF, scoring, MMR dedup, reindex
-  ingest.py         # parse → chunk → embed pipeline, code-aware chunking (6 languages)
+  ingest.py         # parse → chunk → embed pipeline
+  code_split.py     # hybrid code splitting: tree-sitter → parso → regex (25+ languages)
   embed.py          # FastEmbed ONNX + MLX backends, model registry (English + multilingual)
   config.py         # Pydantic v2 config from vstash.toml, all defaults
   chat.py           # LLM chat/ask with retrieval context
@@ -40,9 +41,12 @@ vstash/
 
 tests/
   test_store.py     # Store CRUD, search, MMR dedup, reindex, scoring, context expansion
-  test_ingest.py    # Ingestion, chunking, code-aware splitting
+  test_ingest.py    # Ingestion, chunking
+  test_code_split.py  # Hybrid code splitting backends (tree-sitter / parso / regex)
+  test_code_chunking.py # Code-aware chunking integration
   test_cli_commands.py  # CLI command tests
   test_scoring_e2e.py   # End-to-end scoring scenarios
+  test_snapvec_backend.py # Optional snapvec backend tests
   conftest.py       # Fixtures (tmp_db_path, sample_store)
 
 experiments/        # Research experiment scripts + results
@@ -56,8 +60,9 @@ docs/               # User-facing documentation
 - **Scoring**: Post-RRF re-ranking with frequency + temporal decay. Adaptive maturity gate (γ) suppresses scoring until access patterns show outlier signal.
 - **MMR dedup**: Intra-document Maximal Marginal Relevance replaces hard per-document dedup. `mmr_lambda=0.5` default, configurable.
 - **Embeddings**: FastEmbed (ONNX) or MLX (Apple Silicon). Default `BAAI/bge-small-en-v1.5` (384 dims). Multilingual models available via `vstash reindex`.
-- **Code-aware chunking**: Regex-based splitting at column-0 definitions for Python, JS/TS, Go, Rust, Java. 3-tier fallback: regex → paragraph → fixed-window.
+- **Code-aware chunking**: Hybrid 3-tier splitting — tree-sitter AST (25+ languages, optional) → parso AST (Python) → regex (6 languages). Graceful degradation. See `code_split.py`.
 - **Single SQLite file**: WAL mode, foreign keys, all data in one `.db`.
+- **Optional snapvec backend**: Compressed ANN via PolarQuant. Opt-in with `storage.vector_backend = "snapvec"`. sqlite-vec stays default.
 
 ## Conventions
 
@@ -65,7 +70,7 @@ docs/               # User-facing documentation
 - **Pydantic v2** for all config and data models (frozen=True)
 - **Type hints** on all public functions
 - **ruff** for linting and formatting (enforced in CI)
-- **pytest** for testing (312 tests as of v0.8.0)
+- **pytest** for testing (368 tests as of v0.10.1)
 - **Conventional commits** with emoji prefixes (feat, fix, docs, chore, perf)
 
 ## Database schema
