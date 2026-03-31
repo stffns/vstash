@@ -120,6 +120,7 @@ class VstashStore:
         self._snap: SnapIndex | None = None  # type: ignore[name-defined]
         self._vector_backend = vector_backend
         self._snapvec_bits = snapvec_bits
+        self._snap_dirty = False
         if vector_backend == "snapvec":
             self._init_snapvec()
 
@@ -150,18 +151,40 @@ class VstashStore:
                         self.embedding_dim,
                     )
                     self._snap = SnapIndex(dim=self.embedding_dim, bits=self._snapvec_bits, seed=0)
+                    self._save_snapvec()
             except Exception:
                 logger.warning(
                     "Failed to load SnapIndex from %s, creating new.", path, exc_info=True
                 )
                 self._snap = SnapIndex(dim=self.embedding_dim, bits=self._snapvec_bits, seed=0)
+                self._save_snapvec()
         else:
             self._snap = SnapIndex(dim=self.embedding_dim, bits=self._snapvec_bits, seed=0)
 
     def _save_snapvec(self) -> None:
-        """Persist the SnapIndex to disk. Must be called BEFORE SQLite commit."""
+        """Persist the SnapIndex to disk. Called after successful SQLite commit."""
         if self._snap is not None:
             self._snap.save(str(self._snapvec_path))
+            self._snap_dirty = False
+
+    def _reload_snapvec(self) -> None:
+        """Reload SnapIndex from disk after a failed transaction.
+
+        Restores the on-disk state so the in-memory index matches SQLite
+        after a rollback.
+        """
+        if self._snap is None:
+            return
+        path = self._snapvec_path
+        if path.exists():
+            try:
+                self._snap = SnapIndex.load(str(path))
+            except Exception:
+                logger.warning("Failed to reload SnapIndex after rollback, creating empty.")
+                self._snap = SnapIndex(dim=self.embedding_dim, bits=self._snapvec_bits, seed=0)
+        else:
+            self._snap = SnapIndex(dim=self.embedding_dim, bits=self._snapvec_bits, seed=0)
+        self._snap_dirty = False
 
     @property
     def last_best_distance(self) -> float:
@@ -451,8 +474,7 @@ class VstashStore:
                         [rowid, text],
                     )
 
-                # Persist snapvec BEFORE SQLite commit for atomicity:
-                # if snapvec save fails, we rollback SQLite too.
+                # Add to snapvec in-memory (persisted after successful commit)
                 if self._snap is not None:
                     snap_ids = [
                         row[0]
@@ -463,11 +485,15 @@ class VstashStore:
                     ]
                     snap_vecs = np.array(embeddings, dtype=np.float32)
                     self._snap.add_batch(snap_ids, snap_vecs)
-                    self._save_snapvec()
+                    self._snap_dirty = True
 
                 self._conn.commit()
+                # Persist snapvec AFTER successful SQLite commit
+                if self._snap_dirty:
+                    self._save_snapvec()
             except Exception:
                 self._conn.rollback()
+                self._reload_snapvec()
                 raise
         return doc_id
 
@@ -495,11 +521,13 @@ class VstashStore:
                 self._conn.execute("BEGIN IMMEDIATE")
                 for doc_id in doc_ids:
                     self._delete_by_doc_id(doc_id)
-                # Persist snapvec BEFORE SQLite commit for atomicity
-                self._save_snapvec()
                 self._conn.commit()
+                # Persist snapvec AFTER successful SQLite commit
+                if self._snap_dirty:
+                    self._save_snapvec()
             except Exception:
                 self._conn.rollback()
+                self._reload_snapvec()
                 raise
             return True
 
@@ -522,10 +550,11 @@ class VstashStore:
             placeholders = ",".join("?" * len(chunk_ids))
             # Delete vec_chunks first (no trigger involved)
             self._conn.execute(f"DELETE FROM vec_chunks WHERE rowid IN ({placeholders})", chunk_ids)
-            # Delete from snapvec index
+            # Delete from snapvec index (in-memory, persisted after commit)
             if self._snap is not None:
                 for cid in chunk_ids:
                     self._snap.delete(cid)
+                self._snap_dirty = True
             # Delete chunks — trg_chunks_delete trigger auto-syncs FTS5
             self._conn.execute("DELETE FROM chunks WHERE doc_id = ?", [doc_id])
         cursor = self._conn.execute("DELETE FROM documents WHERE id = ?", [doc_id])
@@ -1542,16 +1571,17 @@ class VstashStore:
 
                 # Update stored dimension
                 self.embedding_dim = new_dim
-                # Persist snapvec BEFORE SQLite commit
-                self._save_snapvec()
                 self._conn.commit()
+                # Persist snapvec AFTER successful SQLite commit
+                if self._snap is not None:
+                    self._save_snapvec()
             except Exception:
                 self._conn.rollback()
+                self._reload_snapvec()
                 raise
 
             return processed
 
     def close(self) -> None:
-        """Close the database connection and persist snapvec index."""
-        self._save_snapvec()
+        """Close the database connection."""
         self._conn.close()
