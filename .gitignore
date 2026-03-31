@@ -1,34 +1,47 @@
 # Python
 __pycache__/
 *.py[cod]
+*.pyo
+*.pyd
+.Python
 *.egg-info/
 dist/
 build/
-*.egg
 .eggs/
-
-# Virtual environments
+*.egg
 .venv/
 venv/
 env/
+
+# Models (large binary files)
+*.gguf
+models/
+
+# vstash database
+*.db
+*.db-shm
+*.db-wal
+
+# llama-server runtime
+server.pid
+
+# macOS
+.DS_Store
+.AppleDouble
 
 # IDE
 .vscode/
 .idea/
 *.swp
-*.swo
-.DS_Store
 
-# Testing & tools
-.pytest_cache/
-.ruff_cache/
-.mypy_cache/
-htmlcov/
+# Test / coverage
 .coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-# vstash data
-*.db
+# Secrets — use vstash.toml.example as template
 vstash.toml
-
-# ONNX model cache
-.fastembed_cache/
+*.env
+.env

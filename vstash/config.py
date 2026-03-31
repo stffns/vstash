@@ -28,9 +28,9 @@ class InferenceConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    backend: Literal["cerebras", "ollama", "openai"] = Field(
+    backend: Literal["cerebras", "ollama", "openai", "local"] = Field(
         default="cerebras",
-        description="Inference backend: 'cerebras', 'ollama', or 'openai'",
+        description="Inference backend: 'cerebras', 'ollama', 'openai', or 'local'",
     )
     model: str = Field(
         default="llama3.1-8b",
@@ -76,6 +76,10 @@ class OpenAIConfig(BaseModel):
     base_url: str | None = Field(
         default=None,
         description="Custom base URL for OpenAI-compatible APIs",
+    )
+    extra_body: dict | None = Field(
+        default=None,
+        description="Extra JSON body fields passed to chat completions (e.g., chat_template_kwargs for Qwen thinking mode)",
     )
 
 
@@ -174,6 +178,57 @@ class ScoringConfig(BaseModel):
         return self
 
 
+class LocalConfig(BaseModel):
+    """Configuration for the managed local llama-server backend."""
+
+    model_config = ConfigDict(frozen=True)
+
+    model_repo: str = Field(
+        default="unsloth/Qwen3.5-9B-GGUF",
+        description="Hugging Face repo ID to download the model from",
+    )
+    model_file: str = Field(
+        default="Qwen3.5-9B-Q4_K_M.gguf",
+        description="GGUF filename within the repo",
+    )
+    model_size_hint: float = Field(
+        default=5.3,
+        description="Approximate model size in GB (used in download progress message)",
+    )
+    models_dir: str = Field(
+        default="~/.vstash/models",
+        description="Directory where model files are stored",
+    )
+    llama_server_path: str | None = Field(
+        default=None,
+        description="Explicit path to llama-server binary (auto-detected if None)",
+    )
+    port: int = Field(
+        default=8787,
+        description="Port for the local llama-server",
+    )
+    context: int = Field(
+        default=32768,
+        description="Context window size in tokens",
+    )
+    cache_type: str = Field(
+        default="turbo4",
+        description="KV cache quantization type (turbo4, turbo3, q8_0, f16)",
+    )
+    gpu_layers: int | str = Field(
+        default="auto",
+        description="Number of layers to offload to GPU ('auto' detects hardware)",
+    )
+    n_parallel: int = Field(
+        default=4,
+        description="Number of parallel inference slots",
+    )
+    chat_template_kwargs: dict | None = Field(
+        default=None,
+        description="Extra chat template kwargs (e.g. {enable_thinking: false} for Qwen)",
+    )
+
+
 class VstashConfig(BaseModel):
     """Root configuration for vstash."""
 
@@ -183,6 +238,7 @@ class VstashConfig(BaseModel):
     cerebras: CerebrasConfig = Field(default_factory=CerebrasConfig)
     ollama: OllamaConfig = Field(default_factory=OllamaConfig)
     openai: OpenAIConfig = Field(default_factory=OpenAIConfig)
+    local: LocalConfig = Field(default_factory=LocalConfig)
     embeddings: EmbeddingsConfig = Field(default_factory=EmbeddingsConfig)
     chunking: ChunkingConfig = Field(default_factory=ChunkingConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)

@@ -876,6 +876,46 @@ def remember(
 
 
 # ------------------------------------------------------------------ #
+# Local server management                                             #
+# ------------------------------------------------------------------ #
+
+
+@app.command()
+def serve() -> None:
+    """Start the local llama-server and keep it running.
+
+    Downloads the model on first run (~5-6 GB). Once running, vstash ask
+    and vstash chat with backend='local' will connect automatically.
+
+    Press Ctrl+C to stop.
+    """
+    import signal
+    import time
+
+    from .local import LocalServer
+
+    cfg = load_config()
+    server = LocalServer(cfg.local)
+
+    try:
+        base_url = server.ensure_running()
+        console.print(f"[green]✓[/green] Local server running at [bold]{base_url}[/bold]")
+        console.print(
+            f"  Model:   [cyan]{cfg.local.model_file}[/cyan]\n"
+            f"  Context: [cyan]{cfg.local.context:,} tokens[/cyan]\n"
+            f"  Cache:   [cyan]{cfg.local.cache_type}[/cyan]\n"
+        )
+        console.print("[dim]Press Ctrl+C to stop.[/dim]")
+
+        # Keep running until interrupted
+        signal.pause()
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Shutting down…[/yellow]")
+        server.shutdown()
+        console.print("[green]✓[/green] Server stopped.")
+
+
+# ------------------------------------------------------------------ #
 # Entry point                                                         #
 # ------------------------------------------------------------------ #
 

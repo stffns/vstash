@@ -319,12 +319,15 @@ def _ask_openai(
     model = cfg.openai.model
 
     try:
-        response = client.chat.completions.create(
+        kwargs: dict = dict(
             model=model,
-            messages=messages,  # type: ignore[arg-type]
+            messages=messages,
             max_completion_tokens=2048,
             temperature=0.2,
         )
+        if cfg.openai.extra_body:
+            kwargs["extra_body"] = cfg.openai.extra_body
+        response = client.chat.completions.create(**kwargs)  # type: ignore[arg-type]
         return response.choices[0].message.content or ""
     except Exception as exc:
         raise ConnectionError(f"OpenAI API error: {exc}") from exc
@@ -368,18 +371,112 @@ def _stream_openai(
     model = cfg.openai.model
 
     try:
-        response_stream = client.chat.completions.create(
+        kwargs: dict = dict(
             model=model,
-            messages=messages,  # type: ignore[arg-type]
+            messages=messages,
             max_completion_tokens=2048,
             temperature=0.2,
             stream=True,
         )
+        if cfg.openai.extra_body:
+            kwargs["extra_body"] = cfg.openai.extra_body
+        response_stream = client.chat.completions.create(**kwargs)  # type: ignore[arg-type]
         for chunk in response_stream:
             if chunk.choices and chunk.choices[0].delta.content:
                 yield chunk.choices[0].delta.content
     except Exception as exc:
         raise ConnectionError(f"OpenAI streaming error: {exc}") from exc
+
+
+# ------------------------------------------------------------------ #
+# Local backend (managed llama-server)                               #
+# ------------------------------------------------------------------ #
+
+# Module-level singleton so the server is only started once per process.
+_local_server: object = None
+
+
+def _get_local_server(cfg: VstashConfig) -> object:
+    global _local_server
+    if _local_server is None:
+        from .local import LocalServer
+        _local_server = LocalServer(cfg.local)
+    return _local_server
+
+
+def _ask_local(
+    query: str,
+    chunks: list[SearchResult],
+    cfg: VstashConfig,
+    history: list[dict[str, str]] | None = None,
+) -> str:
+    server = _get_local_server(cfg)
+    base_url = server.ensure_running()  # type: ignore[attr-defined]
+
+    try:
+        from openai import OpenAI
+    except ImportError as exc:
+        raise ImportError(
+            "Local backend requires the openai package. "
+            "Install it with: pip install vstash[openai]"
+        ) from exc
+
+    client = OpenAI(api_key="not-needed", base_url=base_url)
+    messages = _build_messages(query, chunks, history)
+
+    kwargs: dict = dict(
+        model=cfg.local.model_file,
+        messages=messages,
+        max_completion_tokens=2048,
+        temperature=0.2,
+    )
+    if cfg.local.chat_template_kwargs:
+        kwargs["extra_body"] = {"chat_template_kwargs": cfg.local.chat_template_kwargs}
+
+    try:
+        response = client.chat.completions.create(**kwargs)  # type: ignore[arg-type]
+        return response.choices[0].message.content or ""
+    except Exception as exc:
+        raise ConnectionError(f"Local inference error: {exc}") from exc
+
+
+def _stream_local(
+    query: str,
+    chunks: list[SearchResult],
+    cfg: VstashConfig,
+    history: list[dict[str, str]] | None = None,
+) -> Generator[str, None, None]:
+    server = _get_local_server(cfg)
+    base_url = server.ensure_running()  # type: ignore[attr-defined]
+
+    try:
+        from openai import OpenAI
+    except ImportError as exc:
+        raise ImportError(
+            "Local backend requires the openai package. "
+            "Install it with: pip install vstash[openai]"
+        ) from exc
+
+    client = OpenAI(api_key="not-needed", base_url=base_url)
+    messages = _build_messages(query, chunks, history)
+
+    kwargs: dict = dict(
+        model=cfg.local.model_file,
+        messages=messages,
+        max_completion_tokens=2048,
+        temperature=0.2,
+        stream=True,
+    )
+    if cfg.local.chat_template_kwargs:
+        kwargs["extra_body"] = {"chat_template_kwargs": cfg.local.chat_template_kwargs}
+
+    try:
+        response_stream = client.chat.completions.create(**kwargs)  # type: ignore[arg-type]
+        for chunk in response_stream:
+            if chunk.choices and chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+    except Exception as exc:
+        raise ConnectionError(f"Local inference streaming error: {exc}") from exc
 
 
 # ------------------------------------------------------------------ #
@@ -390,6 +487,7 @@ _BACKENDS = {
     "cerebras": (_ask_cerebras, _stream_cerebras),
     "ollama": (_ask_ollama, _stream_ollama),
     "openai": (_ask_openai, _stream_openai),
+    "local": (_ask_local, _stream_local),
 }
 
 
@@ -419,7 +517,7 @@ def ask(
     if not backend_funcs:
         raise ValueError(
             f"Unknown inference backend: '{backend}'. "
-            "Use 'cerebras', 'ollama', or 'openai' in vstash.toml."
+            "Use 'cerebras', 'ollama', 'openai', or 'local' in vstash.toml."
         )
 
     ask_fn, _ = backend_funcs
@@ -452,7 +550,7 @@ def stream(
     if not backend_funcs:
         raise ValueError(
             f"Unknown inference backend: '{backend}'. "
-            "Use 'cerebras', 'ollama', or 'openai' in vstash.toml."
+            "Use 'cerebras', 'ollama', 'openai', or 'local' in vstash.toml."
         )
 
     _, stream_fn = backend_funcs
