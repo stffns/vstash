@@ -151,11 +151,17 @@ Set `enabled = false` to revert to pure RRF ranking. Set `mmr_lambda = 1.0` to r
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `db_path` | string | `"~/.vstash/memory.db"` | Path to SQLite database file |
+| `vector_backend` | string | `"sqlite-vec"` | `"sqlite-vec"` (default) or `"snapvec"` (compressed ANN) |
+| `snapvec_bits` | int | `4` | Quantization bits for snapvec (2, 3, or 4) |
 
 ```toml
 [storage]
 db_path = "~/.vstash/memory.db"
+vector_backend = "sqlite-vec"  # or "snapvec" for compressed ANN
+# snapvec_bits = 4             # only used when vector_backend = "snapvec"
 ```
+
+> **snapvec** uses PolarQuant compression for ~8x smaller vector storage at slightly reduced recall. Install with `pip install vstash[snapvec]`. sqlite-vec is the correct default for most users.
 
 ---
 

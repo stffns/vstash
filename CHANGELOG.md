@@ -2,6 +2,19 @@
 
 All notable changes to vstash are documented here.
 
+## [0.10.1] — 2026-03-31
+
+### Added
+- **Optional snapvec vector backend** — compressed ANN search via [snapvec](https://pypi.org/project/snapvec/) (PolarQuant). Opt-in with `storage.vector_backend = "snapvec"` in `vstash.toml`. sqlite-vec remains the default.
+- New config fields: `storage.vector_backend` (`"sqlite-vec"` | `"snapvec"`) and `storage.snapvec_bits` (2–4)
+- Optional dependency: `pip install vstash[snapvec]`
+- 12 new tests for snapvec backend (add, search, delete, persistence, reindex, dim mismatch)
+
+### Changed
+- 368 tests (up from 356)
+
+---
+
 ## [0.10.0] — 2026-03-31
 
 ### Added
