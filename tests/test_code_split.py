@@ -12,6 +12,8 @@ from vstash.code_split import (
     split_code_blocks,
 )
 
+from unittest.mock import patch
+
 
 # ------------------------------------------------------------------ #
 # Backend detection                                                    #
@@ -191,3 +193,80 @@ class TestConsistency:
         assert "package main" in blocks[0]
         assert "func main" in blocks[1]
         assert "func helper" in blocks[2]
+
+
+# ------------------------------------------------------------------ #
+# Backend-forcing tests                                                #
+# ------------------------------------------------------------------ #
+
+
+class TestForcedRegexBackend:
+    """Run split_code_blocks with tree-sitter and parso disabled to test regex."""
+
+    PYTHON_CODE = "def foo():\n    pass\n\ndef bar():\n    pass\n"
+    GO_CODE = 'package main\n\nimport "fmt"\n\nfunc main() {\n    fmt.Println("hi")\n}\n\nfunc helper() int {\n    return 1\n}\n'
+
+    def test_python_regex_split(self) -> None:
+        with (
+            patch("vstash.code_split._HAS_TREE_SITTER", False),
+            patch("vstash.code_split._HAS_PARSO", False),
+        ):
+            blocks = split_code_blocks(self.PYTHON_CODE, "python")
+        assert len(blocks) == 2
+        assert "def foo" in blocks[0]
+        assert "def bar" in blocks[1]
+
+    def test_go_regex_split(self) -> None:
+        with (
+            patch("vstash.code_split._HAS_TREE_SITTER", False),
+            patch("vstash.code_split._HAS_PARSO", False),
+        ):
+            blocks = split_code_blocks(self.GO_CODE, "go")
+        assert len(blocks) == 3
+        assert "package main" in blocks[0]
+        assert "func main" in blocks[1]
+        assert "func helper" in blocks[2]
+
+
+class TestForcedParsoBackend:
+    """Run split_code_blocks with tree-sitter disabled to test parso fallback."""
+
+    @pytest.mark.skipif(not _HAS_PARSO, reason="parso not installed")
+    def test_python_parso_split(self) -> None:
+        code = "def foo():\n    pass\n\ndef bar():\n    pass\n"
+        with patch("vstash.code_split._HAS_TREE_SITTER", False):
+            blocks = split_code_blocks(code, "python")
+        assert len(blocks) == 2
+        assert "def foo" in blocks[0]
+        assert "def bar" in blocks[1]
+
+    @pytest.mark.skipif(not _HAS_PARSO, reason="parso not installed")
+    def test_python_parso_preamble(self) -> None:
+        code = "import os\nimport sys\n\ndef main():\n    pass\n"
+        with patch("vstash.code_split._HAS_TREE_SITTER", False):
+            blocks = split_code_blocks(code, "python")
+        assert len(blocks) == 2
+        assert "import os" in blocks[0]
+        assert "def main" in blocks[1]
+
+
+class TestForcedTreeSitterBackend:
+    """Run split_code_blocks with tree-sitter explicitly."""
+
+    @pytest.mark.skipif(not _HAS_TREE_SITTER, reason="tree-sitter not installed")
+    def test_python_tree_sitter_split(self) -> None:
+        code = "def foo():\n    pass\n\ndef bar():\n    pass\n"
+        blocks = split_code_blocks(code, "python")
+        assert len(blocks) == 2
+        assert "def foo" in blocks[0]
+        assert "def bar" in blocks[1]
+
+    @pytest.mark.skipif(not _HAS_TREE_SITTER, reason="tree-sitter not installed")
+    def test_unicode_content(self) -> None:
+        """Verify byte offset handling with multi-byte characters."""
+        code = '# Comentário com acentuação\ndef saudação():\n    return "olá"\n\ndef despedida():\n    return "tchau"\n'
+        blocks = split_code_blocks(code, "python")
+        assert len(blocks) == 3
+        assert "Comentário" in blocks[0]
+        assert "saudação" in blocks[1]
+        assert "despedida" in blocks[2]

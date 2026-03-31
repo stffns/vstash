@@ -146,11 +146,13 @@ _DEFINITION_NODE_TYPES: dict[str, set[str]] = {
     },
     "c": {
         "function_definition",
+        "declaration",
         "struct_specifier",
         "enum_specifier",
     },
     "cpp": {
         "function_definition",
+        "declaration",
         "class_specifier",
         "struct_specifier",
         "namespace_definition",
@@ -220,36 +222,40 @@ def _split_tree_sitter(text: str, language: str) -> list[str] | None:
     except Exception:
         return None
 
-    tree = parser.parse(text.encode("utf-8"))
+    encoded = text.encode("utf-8")
+    tree = parser.parse(encoded)
     root = tree.root_node
 
     definition_types = _DEFINITION_NODE_TYPES.get(language)
     if definition_types is None:
-        # Use a generic heuristic: top-level children that aren't comments
-        definition_types = set()
+        return None
+
+    # Collect byte-offset boundaries for definition nodes
+    def_starts: list[int] = []
+    for child in root.children:
+        if child.type in definition_types:
+            def_starts.append(child.start_byte)
+
+    if not def_starts:
+        return None
 
     blocks: list[str] = []
 
-    for child in root.children:
-        if definition_types and child.type in definition_types:
-            # Capture preamble before first definition
-            if not blocks and child.start_byte > 0:
-                preamble = text[: child.start_byte].strip()
-                if preamble:
-                    blocks.append(preamble)
+    # Preamble: everything before the first definition
+    if def_starts[0] > 0:
+        preamble = encoded[: def_starts[0]].decode("utf-8").strip()
+        if preamble:
+            blocks.append(preamble)
 
-            block_text = text[child.start_byte : child.end_byte].strip()
-            if block_text:
-                blocks.append(block_text)
-        elif not definition_types:
-            # No known definition types — skip tree-sitter for this lang
-            return None
+    # Each definition block spans from its start to the next definition's start
+    # (or end of file for the last one). This preserves inter-definition text.
+    for i, start in enumerate(def_starts):
+        end = def_starts[i + 1] if i + 1 < len(def_starts) else len(encoded)
+        block = encoded[start:end].decode("utf-8").strip()
+        if block:
+            blocks.append(block)
 
-    # If no definitions found, return None to fall through
-    if not blocks:
-        return None
-
-    return blocks
+    return blocks or None
 
 
 # ------------------------------------------------------------------ #
