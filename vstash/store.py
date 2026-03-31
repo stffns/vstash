@@ -478,11 +478,13 @@ class VstashStore:
                     )
                     rowid = cursor.lastrowid
 
-                    # Vector index entry
-                    self._conn.execute(
-                        "INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)",
-                        [rowid, _serialize(embedding)],
-                    )
+                    # Vector index entry — skipped when TurboQuant is active
+                    # (TQ replaces vec_chunks for ANN; saves ~85% of .db size)
+                    if self._tq_index is None:
+                        self._conn.execute(
+                            "INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)",
+                            [rowid, _serialize(embedding)],
+                        )
 
                     # FTS5 entry (rowid must match chunks.id)
                     self._conn.execute(
@@ -558,8 +560,11 @@ class VstashStore:
         ]
         if chunk_ids:
             placeholders = ",".join("?" * len(chunk_ids))
-            # Delete vec_chunks first (no trigger involved)
-            self._conn.execute(f"DELETE FROM vec_chunks WHERE rowid IN ({placeholders})", chunk_ids)
+            # Delete vec_chunks only when it was populated (sqlite-vec backend)
+            if self._tq_index is None:
+                self._conn.execute(
+                    f"DELETE FROM vec_chunks WHERE rowid IN ({placeholders})", chunk_ids
+                )
             # Delete chunks — trg_chunks_delete trigger auto-syncs FTS5
             self._conn.execute("DELETE FROM chunks WHERE doc_id = ?", [doc_id])
             # Keep TurboQuant index in sync
@@ -1540,11 +1545,13 @@ class VstashStore:
                     ids = [row["id"] for row in rows]
                     embeddings = embed_fn(texts)
 
-                    for chunk_id, embedding in zip(ids, embeddings):
-                        self._conn.execute(
-                            "INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)",
-                            [chunk_id, _serialize(embedding)],
-                        )
+                    # Populate vec_chunks only for sqlite-vec backend
+                    if self._tq_index is None:
+                        for chunk_id, embedding in zip(ids, embeddings):
+                            self._conn.execute(
+                                "INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)",
+                                [chunk_id, _serialize(embedding)],
+                            )
 
                     # Batch-add to TurboQuant index
                     if self._tq_index is not None:
