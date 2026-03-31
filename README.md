@@ -29,6 +29,17 @@ Most RAG tools are slow, cloud-dependent, or require a running server. vstash is
 
 **Zero cloud required for search. Inference is optional.**
 
+### What's new in v0.10
+
+- **Hybrid code splitting** — 3-tier backend: tree-sitter AST → parso AST → regex fallback. Each backend gracefully degrades to the next.
+- **25+ languages** — tree-sitter support for C, C++, Ruby, PHP, Swift, Kotlin, Scala, Lua, R, C#, Bash, Zig, Elixir, Erlang, Haskell, OCaml, Dart, Vue, Svelte (plus all previously supported).
+- **Optional install** — `pip install vstash[treesitter]` for tree-sitter, or use parso (Python) + regex (6 languages) by default.
+
+### What's new in v0.9
+
+- **Auto-generated titles** — `vstash remember` generates descriptive slugs when no `--title` is provided.
+- **Forget remembered text** — `vstash forget "text://<title>"` removes text ingested via `remember`.
+
 ### What's new in v0.8
 
 - **Multilingual embeddings** — search in any language. Queries in English and Spanish return the same results. Cross-lingual similarity improves ~40%.
@@ -194,7 +205,9 @@ For full privacy, use `backend = "ollama"` or skip inference entirely and use `v
 
 ## Supported File Types
 
-PDF, DOCX, PPTX, XLSX, Markdown, TXT, HTML, CSV, Python, JavaScript, TypeScript, Go, Rust, Java — and any URL.
+PDF, DOCX, PPTX, XLSX, Markdown, TXT, HTML, CSV — and any URL.
+
+**Code files (25+ languages with tree-sitter):** Python, JavaScript, TypeScript, Go, Rust, Java, C, C++, Ruby, PHP, Swift, Kotlin, Scala, Lua, R, C#, Bash, Zig, Elixir, Erlang, Haskell, OCaml, Dart, Vue, Svelte.
 
 ---
 
@@ -242,7 +255,8 @@ Run all experiments: `python -m experiments.run_all`
 - **Phase 5 ✅:** Memory scoring — frequency + temporal decay re-ranking
 - **Phase 6 ✅:** Retrieval quality — distance-based relevance signal, document dedup, context expansion
 - **Phase 7 ✅:** Multilingual — cross-lingual embeddings, `vstash reindex`, MMR dedup
-- **Phase 8:** Sync — cr-sqlite CRDT peer-to-peer sync, multiple profiles
+- **Phase 8 ✅:** Hybrid code splitting — tree-sitter + parso + regex, 25+ languages
+- **Phase 9:** Sync — cr-sqlite CRDT peer-to-peer sync, multiple profiles
 
 ---
 

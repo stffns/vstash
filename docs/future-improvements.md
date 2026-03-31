@@ -1,6 +1,6 @@
 # Future Improvements
 
-Consolidated from past reviews, plans, and brainstorms. Only items that remain relevant as of v0.5.1.
+Consolidated from past reviews, plans, and brainstorms. Only items that remain relevant as of v0.10.0.
 
 ---
 
