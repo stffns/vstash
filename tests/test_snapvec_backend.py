@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np  # noqa: E402
 import pytest
 
-snapvec = pytest.importorskip("snapvec", reason="snapvec not installed")
+pytest.importorskip("snapvec", reason="snapvec not installed")
 
 from vstash.store import VstashStore, _HAS_SNAPVEC  # noqa: E402
 
