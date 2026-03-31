@@ -77,6 +77,10 @@ class OpenAIConfig(BaseModel):
         default=None,
         description="Custom base URL for OpenAI-compatible APIs",
     )
+    extra_body: dict | None = Field(
+        default=None,
+        description="Extra JSON body fields passed to chat completions (e.g., chat_template_kwargs for Qwen thinking mode)",
+    )
 
 
 class EmbeddingsConfig(BaseModel):
