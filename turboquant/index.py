@@ -44,6 +44,8 @@ class TurboQuantIndex:
         self.seed = seed
         self.quantizer = PolarQuantizer(dim=dim, bits=bits, seed=seed)
         self._ids: list = []
+        # O(1) id→position lookup; kept in sync with self._ids on every write
+        self._id_to_pos: dict = {}
         self._indices_matrix = np.zeros((0, self.quantizer.padded_dim), dtype=np.uint8)
         self._norms = np.zeros(0, dtype=np.float32)
         self._centroids, _ = get_codebook(bits)
@@ -60,6 +62,7 @@ class TurboQuantIndex:
     def add(self, id: object, vector: np.ndarray) -> None:
         """Add a single vector to the index."""
         cv = self.quantizer.quantize(vector)
+        self._id_to_pos[id] = len(self._ids)
         self._ids.append(id)
         row = cv.indices.reshape(1, -1)
         norm_row = np.array([cv.norm], dtype=np.float32)
@@ -101,7 +104,10 @@ class TurboQuantIndex:
         batch_indices = flat_indices.reshape(n, pdim)
         batch_norms = np.where(norms > 1e-10, norms, 0.0).astype(np.float32)
 
+        start = len(self._ids)
         self._ids.extend(ids)
+        for i, id_val in enumerate(ids):
+            self._id_to_pos[id_val] = start + i
         if len(self._indices_matrix) == 0:
             self._indices_matrix = batch_indices
             self._norms = batch_norms
@@ -112,13 +118,17 @@ class TurboQuantIndex:
         self._stored_scaled = None  # invalidate cache
 
     def delete(self, id: object) -> bool:
-        """Remove a vector by ID. Returns True if found."""
-        if id not in self._ids:
+        """Remove a vector by ID. Returns True if found. O(1) lookup, O(n) compaction."""
+        if id not in self._id_to_pos:
             return False
-        idx = self._ids.index(id)
+        idx = self._id_to_pos.pop(id)
         self._ids.pop(idx)
         self._indices_matrix = np.delete(self._indices_matrix, idx, 0)
         self._norms = np.delete(self._norms, idx)
+        # Shift all positions above the removed index down by 1
+        for id_val, pos in self._id_to_pos.items():
+            if pos > idx:
+                self._id_to_pos[id_val] = pos - 1
         self._stored_scaled = None  # invalidate cache
         return True
 
@@ -238,16 +248,18 @@ class TurboQuantIndex:
             norms_bytes = f.read(n * 4)
             index._indices_matrix = cls._unpack_indices(packed_bytes, n, pdim, bits)
             index._norms = np.frombuffer(norms_bytes, dtype=np.float32).copy()
-            for _ in range(n):
+            for pos in range(n):
                 (id_len,) = struct.unpack("<H", f.read(2))
                 raw = f.read(id_len).decode("utf-8")
                 try:
-                    index._ids.append(int(raw))
+                    id_val: object = int(raw)
                 except ValueError:
                     try:
-                        index._ids.append(float(raw))
+                        id_val = float(raw)
                     except ValueError:
-                        index._ids.append(raw)
+                        id_val = raw
+                index._ids.append(id_val)
+                index._id_to_pos[id_val] = pos  # O(1) lookup on future deletes
         return index
 
     def stats(self) -> dict:

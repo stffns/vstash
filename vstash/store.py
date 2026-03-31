@@ -168,7 +168,32 @@ class VstashStore:
             return
         tq_path = self._tq_path
         if tq_path.exists():
-            self._tq_index = _TurboQuantIndex.load(tq_path)  # type: ignore[name-defined]
+            loaded = _TurboQuantIndex.load(tq_path)  # type: ignore[name-defined]
+            # Validate that the persisted index matches the store's current config.
+            if loaded.dim != self.embedding_dim:
+                raise ValueError(
+                    f"TurboQuantIndex dim mismatch: file has dim={loaded.dim}, "
+                    f"store expects dim={self.embedding_dim}. "
+                    "Delete the .tqvs file or run `vstash reindex` to rebuild."
+                )
+            if loaded.bits != self._turboquant_bits:
+                logging.getLogger(__name__).warning(
+                    "TurboQuantIndex bits mismatch: file has bits=%d, config requests %d. "
+                    "Using file's bits. Run `vstash reindex` to change compression.",
+                    loaded.bits,
+                    self._turboquant_bits,
+                )
+            # Sanity-check size against the SQLite chunks table
+            db_count = self._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+            if db_count != len(loaded):
+                logging.getLogger(__name__).warning(
+                    "TurboQuantIndex has %d entries but SQLite has %d chunks. "
+                    "The indexes may be out of sync (e.g. interrupted write). "
+                    "Run `vstash reindex` to rebuild cleanly.",
+                    len(loaded),
+                    db_count,
+                )
+            self._tq_index = loaded
         else:
             self._tq_index = _TurboQuantIndex(  # type: ignore[name-defined]
                 dim=self.embedding_dim,
@@ -176,9 +201,18 @@ class VstashStore:
             )
 
     def _save_tq(self) -> None:
-        """Persist TurboQuantIndex to disk (no-op when not active)."""
-        if self._tq_index is not None:
-            self._tq_index.save(self._tq_path)
+        """Persist TurboQuantIndex atomically via temp-file + rename.
+
+        Writing directly to the target path risks a corrupt .tqvs if the
+        process is killed mid-write.  Write to a sibling .tqvs.tmp first,
+        then os.replace() which is atomic on POSIX (rename(2)) and as close
+        as possible on Windows (via MoveFileEx).
+        """
+        if self._tq_index is None:
+            return
+        tmp_path = self._tq_path.with_suffix(".tqvs.tmp")
+        self._tq_index.save(tmp_path)
+        tmp_path.replace(self._tq_path)  # atomic on POSIX
 
     def _tq_vec_search(
         self,
@@ -640,8 +674,17 @@ class VstashStore:
         if self._tq_index is not None:
             # TurboQuant ANN path: compressed PolarQuant index (~6x smaller,
             # ~3-5x faster query than sqlite-vec on typical collections).
+            #
+            # Post-filtering: TQ searches globally; SQL applies collection/
+            # project/layer filters afterwards.  When filters are selective,
+            # the global top-K may miss good neighbors inside the subset.
+            # Mitigate with 5x oversampling whenever a filter is active.
+            # Use col_clause (d.col = ?) not vec_clause (v.rowid IN (...))
+            # because the TQ query has no vec_chunks alias 'v'.
+            tq_k = candidate_pool * 5 if col_clause.strip() else candidate_pool
+            tq_k = min(tq_k, len(self._tq_index))
             vec_rows = self._tq_vec_search(
-                query_embedding, candidate_pool, vec_clause, filter_params
+                query_embedding, tq_k, col_clause, filter_params
             )
         else:
             # Default sqlite-vec path: exact cosine search on float32 vectors.
