@@ -2,6 +2,57 @@
 
 All notable changes to vstash are documented here.
 
+## [0.10.1] — 2026-03-31
+
+### Added
+- **Optional snapvec vector backend** — compressed ANN search via [snapvec](https://pypi.org/project/snapvec/) (PolarQuant). Opt-in with `storage.vector_backend = "snapvec"` in `vstash.toml`. sqlite-vec remains the default.
+- New config fields: `storage.vector_backend` (`"sqlite-vec"` | `"snapvec"`) and `storage.snapvec_bits` (2–4)
+- Optional dependency: `pip install vstash[snapvec]`
+- 12 new tests for snapvec backend (add, search, delete, persistence, reindex, dim mismatch)
+
+### Changed
+- 368 tests (up from 356)
+
+---
+
+## [0.10.0] — 2026-03-31
+
+### Added
+- **Hybrid code splitting** — 3-tier backend with graceful degradation:
+  1. **tree-sitter** (AST-level, 25+ languages) via optional `tree-sitter-language-pack`
+  2. **parso** (AST-level, Python only) — now a base dependency
+  3. **regex** (pattern-based, 6 languages) — original fallback
+- New `vstash/code_split.py` module with clean separation from `ingest.py`
+- **25+ language support** via tree-sitter: Python, JS/TS, Go, Rust, Java, C, C++, Ruby, PHP, Swift, Kotlin, Scala, Lua, R, C#, Bash, Zig, Elixir, Erlang, Haskell, OCaml, Dart, Vue, Svelte
+- **Backend-forcing tests** — each splitting tier tested independently via monkeypatching
+- **Unicode safety** — tree-sitter byte-offset handling correctly handles multi-byte characters
+- Optional dependency: `pip install vstash[treesitter]` for tree-sitter support
+
+### Fixed
+- UTF-8 byte vs char offset bug in tree-sitter backend (multi-byte characters safe)
+- Data loss between definitions — full source preserved by slicing between definition boundaries
+- C/C++ `declaration` node type added for proper function prototype recognition
+
+### Changed
+- `parso>=0.8.0` moved to base dependencies (was not included before)
+- Code splitting logic extracted from `ingest.py` into dedicated `code_split.py` module
+- 356 tests (up from 326)
+
+---
+
+## [0.9.0] — 2026-03-31
+
+### Added
+- **Auto-generated titles for `vstash remember`** — when no `--title` is provided, generates a slug from the first 5 words + UTC timestamp with microsecond precision (e.g. `oauth2-uses-pkce-20260330-143052474102`)
+- **`vstash forget` support for remembered text** — use `text://<title>` path prefix
+
+### Fixed
+- `Memory.remove()` no longer mangles `text://` synthetic paths via `Path.resolve()`
+- `ingest_text()` signature: `title` is now keyword-only, `cfg` and `store` are required positional params
+- Added missing `tests/__init__.py` — all tests now collect correctly
+
+---
+
 ## [0.8.0] — 2026-03-29
 
 ### Added

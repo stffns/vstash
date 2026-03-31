@@ -39,19 +39,28 @@ text
 
 Headers stay with their body content. Paragraphs aren't torn mid-sentence. Tiny fragments are merged to avoid low-quality embeddings.
 
-**Code-aware chunking** (Python, JS/TS, Go, Rust, Java):
+**Code-aware chunking** (25+ languages):
 
 ```
 source code
-  → split at function/class definitions   (regex at column 0)
+  → detect language from extension        (.py → python, .go → go, etc.)
+  → try tree-sitter AST splitting         (25+ languages, optional dependency)
+  → try parso AST splitting               (Python only, base dependency)
+  → fall back to regex splitting          (Python, JS/TS, Go, Rust, Java)
   → attach decorators to their function   (Python @decorator, Java @Annotation)
   → fallback for oversized functions      (paragraph → fixed-window)
   → merge small chunks                    (imports, constants get merged)
 ```
 
-Each chunk starts at a top-level definition (`def`, `class`, `func`, `fn`, etc.). Indented methods stay inside their class. Decorators and annotations stay attached to their function.
+The splitting backend is selected automatically with graceful degradation:
 
-Supported languages: Python, JavaScript, TypeScript (including JSX/TSX), Go, Rust, Java.
+| Backend | Languages | Resolution | Install |
+|---------|-----------|------------|---------|
+| **tree-sitter** | 25+ (C, C++, Ruby, PHP, Swift, Kotlin, Scala, etc.) | AST-level — exact definition boundaries | `pip install vstash[treesitter]` |
+| **parso** | Python only | AST-level — funcdef, classdef, decorated | Included by default |
+| **regex** | Python, JS/TS, Go, Rust, Java | Pattern-based — column-0 definitions | Included by default |
+
+Each chunk starts at a top-level definition (`def`, `class`, `func`, `fn`, etc.). Indented methods stay inside their class. Decorators and annotations stay attached to their function. Preambles (imports, package declarations) are preserved as a separate chunk.
 
 Disable code-aware chunking with `code_aware = false` in `[chunking]` — files will fall back to markitdown + semantic chunking.
 

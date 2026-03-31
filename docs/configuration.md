@@ -113,7 +113,7 @@ top_k = 5
 code_aware = true
 ```
 
-When `code_aware` is enabled, source code files (Python, JS/TS, Go, Rust, Java) are split at top-level function and class definitions. Non-code files use semantic chunking (Markdown headers → paragraphs → fixed-window fallback).
+When `code_aware` is enabled, source code files are split at top-level function and class definitions using a 3-tier backend: tree-sitter AST (25+ languages, requires `pip install vstash[treesitter]`) → parso AST (Python, included by default) → regex (Python, JS/TS, Go, Rust, Java). Non-code files use semantic chunking (Markdown headers → paragraphs → fixed-window fallback).
 
 ---
 
@@ -151,11 +151,17 @@ Set `enabled = false` to revert to pure RRF ranking. Set `mmr_lambda = 1.0` to r
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `db_path` | string | `"~/.vstash/memory.db"` | Path to SQLite database file |
+| `vector_backend` | string | `"sqlite-vec"` | `"sqlite-vec"` (default) or `"snapvec"` (compressed ANN) |
+| `snapvec_bits` | int | `4` | Quantization bits for snapvec (2, 3, or 4) |
 
 ```toml
 [storage]
 db_path = "~/.vstash/memory.db"
+vector_backend = "sqlite-vec"  # or "snapvec" for compressed ANN
+# snapvec_bits = 4             # only used when vector_backend = "snapvec"
 ```
+
+> **snapvec** uses PolarQuant compression for ~8x smaller vector storage at slightly reduced recall. Install with `pip install vstash[snapvec]`. sqlite-vec is the correct default for most users.
 
 ---
 

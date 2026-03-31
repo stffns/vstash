@@ -103,7 +103,12 @@ def _get_store() -> VstashStore:
             if _store is None:
                 cfg = _get_config()
                 dim = get_embedding_dim(cfg.embeddings.model)
-                _store = VstashStore(cfg.db_path, embedding_dim=dim)
+                _store = VstashStore(
+                    cfg.db_path,
+                    embedding_dim=dim,
+                    vector_backend=cfg.storage.vector_backend,
+                    snapvec_bits=cfg.storage.snapvec_bits,
+                )
                 atexit.register(_store.close)
     return _store
 
@@ -178,7 +183,12 @@ def _run_directory_job(
         from .ingest import ingest_directory
 
         dim = get_embedding_dim(cfg.embeddings.model)
-        store = VstashStore(cfg.db_path, embedding_dim=dim)
+        store = VstashStore(
+            cfg.db_path,
+            embedding_dim=dim,
+            vector_backend=cfg.storage.vector_backend,
+            snapvec_bits=cfg.storage.snapvec_bits,
+        )
         try:
             results = ingest_directory(
                 directory,
