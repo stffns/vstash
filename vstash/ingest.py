@@ -104,108 +104,11 @@ _MIN_CHUNK_CHARS = 20
 _HEADER_RE = re.compile(r"^(#{1,6})\s+", re.MULTILINE)
 
 # ------------------------------------------------------------------ #
-# Code-aware splitting (Phase 1 — regex, zero deps)                   #
+# Code-aware splitting — hybrid: tree-sitter → parso → regex          #
 # ------------------------------------------------------------------ #
 
-# Language-specific patterns matching top-level definitions at column 0.
-# Uses MULTILINE so ^ anchors to start-of-line; indented methods don't match.
-_CODE_SPLIT_PATTERNS: dict[str, re.Pattern[str]] = {
-    "python": re.compile(r"^(?=class |def |async def )", re.MULTILINE),
-    "javascript": re.compile(
-        r"^(?=function |class |const \w+ = (?:async )?\(|export (?:default )?(?:function |class |const ))",
-        re.MULTILINE,
-    ),
-    "typescript": re.compile(
-        r"^(?=function |class |const \w+ = (?:async )?\(|export (?:default )?(?:function |class |const )|interface |type \w+ )",
-        re.MULTILINE,
-    ),
-    "go": re.compile(r"^(?=func |type \w+ (?:struct|interface))", re.MULTILINE),
-    "rust": re.compile(r"^(?=(?:pub\s+)?(?:fn |struct |enum |impl |trait |mod ))", re.MULTILINE),
-    "java": re.compile(
-        r"^(?=(?:public |private |protected |static |abstract |final )*(?:class |interface |enum |void |int |String |boolean |long |double |float )\w)",
-        re.MULTILINE,
-    ),
-}
-
-# Map file extensions to language keys for _CODE_SPLIT_PATTERNS
-_EXT_TO_LANG: dict[str, str] = {
-    ".py": "python",
-    ".js": "javascript",
-    ".ts": "typescript",
-    ".tsx": "typescript",
-    ".jsx": "javascript",
-    ".go": "go",
-    ".rs": "rust",
-    ".java": "java",
-}
-
-
-def _split_code_blocks(text: str, language: str) -> list[str]:
-    """Split source code at top-level definition boundaries.
-
-    Uses regex lookahead to find function/class/method starts for the
-    given language.  Falls back to returning the whole text as a single
-    block if no patterns match.
-    """
-    pattern = _CODE_SPLIT_PATTERNS.get(language)
-    if pattern is None:
-        return [text]
-
-    positions = [m.start() for m in pattern.finditer(text)]
-    if not positions:
-        return [text]
-
-    blocks: list[str] = []
-
-    # Preamble (imports, module-level code before first definition)
-    if positions[0] > 0:
-        preamble = text[: positions[0]].strip()
-        if preamble:
-            blocks.append(preamble)
-
-    # Each definition block runs until the next definition starts
-    for i, start in enumerate(positions):
-        end = positions[i + 1] if i + 1 < len(positions) else len(text)
-        block = text[start:end].strip()
-        if block:
-            blocks.append(block)
-
-    # Post-process: attach trailing @decorator / @annotation lines from
-    # previous block to the next block (Python decorators, Java annotations).
-    if language in ("python", "java") and len(blocks) > 1:
-        blocks = _attach_decorators(blocks)
-
-    return blocks
-
-
-def _attach_decorators(blocks: list[str]) -> list[str]:
-    """Move trailing @decorator lines from each block to the next block."""
-    result: list[str] = []
-    for i, block in enumerate(blocks):
-        lines = block.split("\n")
-        # Find trailing decorator lines
-        decorator_start = len(lines)
-        for j in range(len(lines) - 1, -1, -1):
-            stripped = lines[j].strip()
-            if stripped.startswith("@") and not stripped.startswith(
-                "@="
-            ):  # exclude @= (matrix mul operator)
-                decorator_start = j
-            elif stripped:
-                break
-
-        if decorator_start < len(lines) and i + 1 < len(blocks):
-            # Split: keep non-decorator part, move decorators to next block
-            main_part = "\n".join(lines[:decorator_start]).strip()
-            decorator_part = "\n".join(lines[decorator_start:]).strip()
-            if main_part:
-                result.append(main_part)
-            # Prepend decorators to next block
-            blocks[i + 1] = decorator_part + "\n" + blocks[i + 1]
-        else:
-            result.append(block)
-
-    return result
+from .code_split import EXT_TO_LANG as _EXT_TO_LANG  # noqa: E402
+from .code_split import split_code_blocks as _split_code_blocks  # noqa: E402
 
 
 def chunk_code(text: str, chunk_size: int, overlap: int, language: str) -> list[str]:
