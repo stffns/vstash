@@ -113,7 +113,7 @@ top_k = 5
 code_aware = true
 ```
 
-When `code_aware` is enabled, source code files (Python, JS/TS, Go, Rust, Java) are split at top-level function and class definitions. Non-code files use semantic chunking (Markdown headers → paragraphs → fixed-window fallback).
+When `code_aware` is enabled, source code files are split at top-level function and class definitions using a 3-tier backend: tree-sitter AST (25+ languages, requires `pip install vstash[treesitter]`) → parso AST (Python, included by default) → regex (Python, JS/TS, Go, Rust, Java). Non-code files use semantic chunking (Markdown headers → paragraphs → fixed-window fallback).
 
 ---
 
