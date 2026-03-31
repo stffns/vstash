@@ -1,11 +1,11 @@
 """Tests for the TurboQuant ANN backend in VstashStore.
 
 Covers:
-- add / search / delete coherence between SQLite and .tqvs
+- add / search / delete coherence between SQLite and .snpv
 - persistence round-trip (save → reload → search)
 - dim/bits mismatch detection on load
 - post-filtering correctness (collection filter)
-- atomic save (no .tqvs.tmp left on disk after write)
+- atomic save (no .snpv.tmp left on disk after write)
 - fallback to sqlite-vec when backend is not "turboquant"
 - O(1) delete via _id_to_pos dict
 """
@@ -153,18 +153,18 @@ class TestTurboQuantPersistence:
         store2.close()
 
     def test_atomic_save_no_tmp_leftover(self, tmp_path):
-        """No .tqvs.tmp file should remain after a successful save."""
+        """No .snpv.tmp file should remain after a successful save."""
         store = _store(tmp_path)
         store.add_document("/doc.txt", "Doc", ["hello"], _rand_embs(1))
         store.close()
-        tmp_file = tmp_path / "mem.tqvs.tmp"
-        assert not tmp_file.exists(), ".tqvs.tmp must be cleaned up after atomic rename"
+        tmp_file = tmp_path / "mem.snpv.tmp"
+        assert not tmp_file.exists(), ".snpv.tmp must be cleaned up after atomic rename"
 
     def test_tqvs_file_created_on_disk(self, tmp_path):
         store = _store(tmp_path)
         store.add_document("/doc.txt", "Doc", ["hello"], _rand_embs(1))
         store.close()
-        assert (tmp_path / "mem.tqvs").exists()
+        assert (tmp_path / "mem.snpv").exists()
 
 
 # ------------------------------------------------------------------ #
@@ -173,7 +173,7 @@ class TestTurboQuantPersistence:
 
 class TestTurboQuantValidation:
     def test_dim_mismatch_raises(self, tmp_path):
-        """Loading a .tqvs with wrong dim must raise ValueError."""
+        """Loading a .snpv with wrong dim must raise ValueError."""
         # Create index with dim=32
         store = _store(tmp_path)
         store.add_document("/doc.txt", "Doc", ["hello"], _rand_embs(1, dim=DIM))
@@ -188,7 +188,7 @@ class TestTurboQuantValidation:
             )
 
     def test_bits_mismatch_warns(self, tmp_path, caplog):
-        """Loading a .tqvs with different bits emits a warning, not an error."""
+        """Loading a .snpv with different bits emits a warning, not an error."""
         import logging
         store = _store(tmp_path)
         store.add_document("/doc.txt", "Doc", ["hello"], _rand_embs(1))

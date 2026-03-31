@@ -27,11 +27,12 @@ import sqlite_vec
 from .config import ScoringConfig
 from .models import DocumentInfo, SearchResult, StoreStats
 
-# Optional TurboQuant ANN backend (PolarQuant WHT+Lloyd-Max compression).
+# Optional snapvec ANN backend (WHT+Lloyd-Max compressed vector index).
+# Install with: pip install "vstash[turboquant]"
 # Falls back to sqlite-vec when unavailable or not configured.
 try:
     import numpy as _np
-    from turboquant.index import TurboQuantIndex as _TurboQuantIndex
+    from snapvec import SnapIndex as _SnapIndex
 
     _TURBOQUANT_AVAILABLE = True
 except ImportError:
@@ -110,7 +111,7 @@ class VstashStore:
         self.embedding_dim = embedding_dim
         self._vector_backend = vector_backend
         self._turboquant_bits = turboquant_bits
-        self._tq_index: "_TurboQuantIndex | None" = None  # type: ignore[name-defined]
+        self._tq_index: "_SnapIndex | None" = None  # type: ignore[name-defined]
         self._write_lock = threading.Lock()
         # Per-thread state for the cosine distance of the best vector match.
         # Thread-local so concurrent searches on a shared instance don't race.
@@ -150,35 +151,41 @@ class VstashStore:
 
     @property
     def _tq_path(self) -> Path:
-        """Path to the companion TurboQuantIndex file (.tqvs)."""
-        return self.db_path.with_suffix(".tqvs")
+        """Path to the companion snapvec index file (.snpv)."""
+        return self.db_path.with_suffix(".snpv")
 
     def _init_tq_index(self) -> None:
-        """Load or create a TurboQuantIndex alongside the SQLite store.
+        """Load or create a SnapIndex alongside the SQLite store.
 
-        The index is persisted as ``<db_path>.tqvs`` and kept in sync with
+        The index is persisted as ``<db_path>.snpv`` and kept in sync with
         every write operation (add / delete / reindex).
         """
         if not _TURBOQUANT_AVAILABLE:
             logging.getLogger(__name__).warning(
-                "turboquant package not found; falling back to sqlite-vec. "
-                "Install turboquant or set [storage] vector_backend = 'sqlite-vec'."
+                "snapvec package not found; falling back to sqlite-vec. "
+                "Install with: pip install 'vstash[turboquant]'"
             )
             self._vector_backend = "sqlite-vec"
             return
         tq_path = self._tq_path
+        # Backward compat: migrate legacy .tqvs files
+        legacy_path = self.db_path.with_suffix(".tqvs")
+        if not tq_path.exists() and legacy_path.exists():
+            logging.getLogger(__name__).warning(
+                "Found legacy .tqvs index — run `vstash reindex` to migrate to .snpv format."
+            )
         if tq_path.exists():
-            loaded = _TurboQuantIndex.load(tq_path)  # type: ignore[name-defined]
+            loaded = _SnapIndex.load(tq_path)  # type: ignore[name-defined]
             # Validate that the persisted index matches the store's current config.
             if loaded.dim != self.embedding_dim:
                 raise ValueError(
-                    f"TurboQuantIndex dim mismatch: file has dim={loaded.dim}, "
+                    f"dim mismatch: .snpv has dim={loaded.dim}, "
                     f"store expects dim={self.embedding_dim}. "
-                    "Delete the .tqvs file or run `vstash reindex` to rebuild."
+                    "Delete the .snpv file or run `vstash reindex` to rebuild."
                 )
             if loaded.bits != self._turboquant_bits:
                 logging.getLogger(__name__).warning(
-                    "TurboQuantIndex bits mismatch: file has bits=%d, config requests %d. "
+                    "bits mismatch: .snpv has bits=%d, config requests %d. "
                     "Using file's bits. Run `vstash reindex` to change compression.",
                     loaded.bits,
                     self._turboquant_bits,
@@ -187,7 +194,7 @@ class VstashStore:
             db_count = self._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
             if db_count != len(loaded):
                 logging.getLogger(__name__).warning(
-                    "TurboQuantIndex has %d entries but SQLite has %d chunks. "
+                    "SnapIndex has %d entries but SQLite has %d chunks. "
                     "The indexes may be out of sync (e.g. interrupted write). "
                     "Run `vstash reindex` to rebuild cleanly.",
                     len(loaded),
@@ -195,22 +202,20 @@ class VstashStore:
                 )
             self._tq_index = loaded
         else:
-            self._tq_index = _TurboQuantIndex(  # type: ignore[name-defined]
+            self._tq_index = _SnapIndex(  # type: ignore[name-defined]
                 dim=self.embedding_dim,
                 bits=self._turboquant_bits,
             )
 
     def _save_tq(self) -> None:
-        """Persist TurboQuantIndex atomically via temp-file + rename.
+        """Persist SnapIndex atomically via temp-file + rename.
 
-        Writing directly to the target path risks a corrupt .tqvs if the
-        process is killed mid-write.  Write to a sibling .tqvs.tmp first,
-        then os.replace() which is atomic on POSIX (rename(2)) and as close
-        as possible on Windows (via MoveFileEx).
+        Writes to a sibling .snpv.tmp first, then os.replace() which is
+        atomic on POSIX (rename(2)) and safe against mid-write crashes.
         """
         if self._tq_index is None:
             return
-        tmp_path = self._tq_path.with_suffix(".tqvs.tmp")
+        tmp_path = self._tq_path.with_suffix(".snpv.tmp")
         self._tq_index.save(tmp_path)
         tmp_path.replace(self._tq_path)  # atomic on POSIX
 
@@ -1569,7 +1574,7 @@ class VstashStore:
 
                 # Reset TurboQuant index for the new model/dimension
                 if self._tq_index is not None and _TURBOQUANT_AVAILABLE:
-                    self._tq_index = _TurboQuantIndex(  # type: ignore[name-defined]
+                    self._tq_index = _SnapIndex(  # type: ignore[name-defined]
                         dim=new_dim, bits=self._turboquant_bits
                     )
 
