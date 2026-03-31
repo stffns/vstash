@@ -98,7 +98,12 @@ def _get_store(
     if warm:
         warmup(cfg.embeddings.model)
     dim = get_embedding_dim(cfg.embeddings.model)
-    store = VstashStore(cfg.storage.db_path, embedding_dim=dim)
+    store = VstashStore(
+        cfg.storage.db_path,
+        embedding_dim=dim,
+        vector_backend=cfg.storage.vector_backend,
+        snapvec_bits=cfg.storage.snapvec_bits,
+    )
     return cfg, store
 
 
@@ -733,7 +738,12 @@ def reindex(
 
     # Open store with current dim (to read existing data)
     current_dim = get_embedding_dim(cfg.embeddings.model) if model else new_dim
-    store = VstashStore(cfg.storage.db_path, embedding_dim=current_dim)
+    store = VstashStore(
+        cfg.storage.db_path,
+        embedding_dim=current_dim,
+        vector_backend=cfg.storage.vector_backend,
+        snapvec_bits=cfg.storage.snapvec_bits,
+    )
 
     with store:
         total = store._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
