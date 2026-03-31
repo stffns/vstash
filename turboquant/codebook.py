@@ -1,62 +1,103 @@
 """Lloyd-Max optimal scalar quantizer for Gaussian distribution.
 
 After the randomized Hadamard transform, each coordinate of a unit vector
-is approximately i.i.d. N(0, 1/d).  We precompute Lloyd-Max codebooks
-for the standard normal and scale at runtime.
+is approximately i.i.d. N(0, 1/d).  We use precomputed Lloyd–Max codebooks
+for the standard normal (2, 3, 4 bits) so runtime needs only NumPy — no SciPy.
 
-The codebook consists of:
-  - centroids: 2^bits reconstruction values
-  - boundaries: 2^bits - 1 decision thresholds
+Centroids and boundaries match the former scipy.integrate implementation
+(float32); see ``scripts/precompute_lloyd_max_codebooks.py`` to regenerate.
 """
 from __future__ import annotations
 
-from functools import lru_cache
-
 import numpy as np
-from scipy.integrate import quad
-from scipy.stats import norm
+
+# Precomputed Lloyd–Max codebooks for N(0,1), dtype float32 (legacy-compatible).
+_PRECOMPUTED: dict[int, tuple[np.ndarray, np.ndarray]] = {
+    2: (
+        np.array(
+            [-1.5104176, -0.45278004, 0.45278004, 1.5104176],
+            dtype=np.float32,
+        ),
+        np.array(
+            [-0.9815988, 0.0, 0.9815988],
+            dtype=np.float32,
+        ),
+    ),
+    3: (
+        np.array(
+            [
+                -2.1519468,
+                -1.3439103,
+                -0.75600606,
+                -0.24509446,
+                0.24509446,
+                0.75600606,
+                1.3439103,
+                2.1519468,
+            ],
+            dtype=np.float32,
+        ),
+        np.array(
+            [
+                -1.7479285,
+                -1.0499582,
+                -0.50055027,
+                0.0,
+                0.50055027,
+                1.0499582,
+                1.7479285,
+            ],
+            dtype=np.float32,
+        ),
+    ),
+    4: (
+        np.array(
+            [
+                -2.7455692,
+                -2.0836654,
+                -1.6329745,
+                -1.2702826,
+                -0.95448357,
+                -0.66611624,
+                -0.39394602,
+                -0.13040923,
+                0.13040923,
+                0.39394602,
+                0.66611624,
+                0.95448357,
+                1.2702826,
+                1.6329745,
+                2.0836654,
+                2.7455692,
+            ],
+            dtype=np.float32,
+        ),
+        np.array(
+            [
+                -2.4146173,
+                -1.8583199,
+                -1.4516286,
+                -1.1123831,
+                -0.81029987,
+                -0.53003114,
+                -0.26217762,
+                1.2490009e-16,
+                0.26217762,
+                0.53003114,
+                0.81029987,
+                1.1123831,
+                1.4516286,
+                1.8583199,
+                2.4146173,
+            ],
+            dtype=np.float32,
+        ),
+    ),
+}
 
 
-def _lloyd_max_gaussian(bits: int, n_iter: int = 100) -> tuple[np.ndarray, np.ndarray]:
-    """Compute Lloyd-Max optimal quantizer for standard normal N(0,1).
-
-    Parameters
-    ----------
-    bits : int
-        Number of bits (2, 3, or 4).
-    n_iter : int
-        Lloyd iterations.
-
-    Returns
-    -------
-    centroids : array of shape (2^bits,)
-        Reconstruction values, sorted ascending.
-    boundaries : array of shape (2^bits - 1,)
-        Decision thresholds between adjacent centroids.
-    """
-    n_levels = 2**bits
-    centroids = np.linspace(-3.0, 3.0, n_levels)
-
-    for _ in range(n_iter):
-        boundaries = (centroids[:-1] + centroids[1:]) / 2.0
-        edges = np.concatenate([[-np.inf], boundaries, [np.inf]])
-        new_centroids = np.empty_like(centroids)
-        for i in range(n_levels):
-            lo, hi = edges[i], edges[i + 1]
-            num, _ = quad(lambda x: x * norm.pdf(x), lo, hi)
-            den, _ = quad(norm.pdf, lo, hi)
-            new_centroids[i] = num / (den + 1e-15)
-        if np.max(np.abs(new_centroids - centroids)) < 1e-15:
-            break
-        centroids = new_centroids
-
-    boundaries = (centroids[:-1] + centroids[1:]) / 2.0
-    return centroids.astype(np.float32), boundaries.astype(np.float32)
-
-
-@lru_cache(maxsize=None)
 def get_codebook(bits: int) -> tuple[np.ndarray, np.ndarray]:
-    """Get (or compute and cache) the Lloyd-Max codebook for N(0,1).
+    """Return (centroids, boundaries) for Lloyd–Max N(0,1) quantizer.
 
     Parameters
     ----------
@@ -64,11 +105,11 @@ def get_codebook(bits: int) -> tuple[np.ndarray, np.ndarray]:
 
     Returns
     -------
-    (centroids, boundaries) — both float32 arrays.
+    (centroids, boundaries) — both float32 arrays; shared read-only views.
     """
-    if bits not in (2, 3, 4):
+    if bits not in _PRECOMPUTED:
         raise ValueError(f"bits must be 2, 3, or 4, got {bits}")
-    return _lloyd_max_gaussian(bits)
+    return _PRECOMPUTED[bits]
 
 
 def quantize_scalar(values: np.ndarray, bits: int) -> tuple[np.ndarray, np.ndarray]:
