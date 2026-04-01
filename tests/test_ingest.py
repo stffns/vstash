@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from vstash.ingest import (
+    _extract_title_from_content,
     _fixed_window_chunks,
     _merge_small_chunks,
     _split_by_headers,
@@ -308,3 +309,37 @@ class TestGetSourceType:
     )
     def test_source_types(self, path: str, expected: str) -> None:
         assert _get_source_type(path) == expected
+
+
+class TestExtractTitleFromContent:
+    """Test title extraction from parsed document content."""
+
+    def test_markdown_h1(self) -> None:
+        text = "# Introduction to Machine Learning\n\nSome body text."
+        assert _extract_title_from_content(text) == "Introduction to Machine Learning"
+
+    def test_markdown_h1_with_leading_blank_lines(self) -> None:
+        text = "\n\n# My Title\n\nContent here."
+        assert _extract_title_from_content(text) == "My Title"
+
+    def test_first_non_empty_line_as_fallback(self) -> None:
+        text = "Wikipedia: The Free Encyclopedia\n\nLots of content."
+        assert _extract_title_from_content(text) == "Wikipedia: The Free Encyclopedia"
+
+    def test_empty_text_returns_none(self) -> None:
+        assert _extract_title_from_content("") is None
+
+    def test_whitespace_only_returns_none(self) -> None:
+        assert _extract_title_from_content("   \n  \n  ") is None
+
+    def test_too_short_first_line_skipped(self) -> None:
+        text = "Hi\n\nActual content follows."
+        assert _extract_title_from_content(text) is None
+
+    def test_too_long_first_line_skipped(self) -> None:
+        text = "x" * 201 + "\n\nContent."
+        assert _extract_title_from_content(text) is None
+
+    def test_h1_takes_priority_over_first_line(self) -> None:
+        text = "# Actual Title\n\nThis is the first paragraph."
+        assert _extract_title_from_content(text) == "Actual Title"
