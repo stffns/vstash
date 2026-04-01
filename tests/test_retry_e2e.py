@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from vstash.chat import _is_retryable, _retry_ask, ask, stream
+from vstash.chat import _is_retryable, _retry_call, ask
 from vstash.config import VstashConfig
 from vstash.models import SearchResult
 
@@ -47,7 +47,7 @@ class TestRetryE2E:
             return "answer"
 
         success.__name__ = "success"
-        assert _retry_ask(success) == "answer"
+        assert _retry_call(success) == "answer"
 
     def test_retry_transient_then_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Simulate: first call gets 429, second succeeds."""
@@ -61,7 +61,7 @@ class TestRetryE2E:
             return "ok after retry"
 
         backend.__name__ = "backend"
-        result = _retry_ask(backend)
+        result = _retry_call(backend)
         assert result == "ok after retry"
         assert len(attempts) == 2
 
@@ -76,7 +76,7 @@ class TestRetryE2E:
 
         backend.__name__ = "backend"
         with pytest.raises(ConnectionError, match="503"):
-            _retry_ask(backend)
+            _retry_call(backend)
         assert len(attempts) == 3
 
     def test_non_retryable_error_fails_immediately(self) -> None:
@@ -89,7 +89,7 @@ class TestRetryE2E:
 
         backend.__name__ = "backend"
         with pytest.raises(ConnectionError, match="401"):
-            _retry_ask(backend)
+            _retry_call(backend)
         assert len(attempts) == 1
 
     def test_timeout_error_is_retried(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -104,7 +104,7 @@ class TestRetryE2E:
             return "recovered"
 
         backend.__name__ = "backend"
-        result = _retry_ask(backend)
+        result = _retry_call(backend)
         assert result == "recovered"
         assert len(attempts) == 2
 
@@ -120,7 +120,7 @@ class TestRetryE2E:
             return "reconnected"
 
         backend.__name__ = "backend"
-        result = _retry_ask(backend)
+        result = _retry_call(backend)
         assert result == "reconnected"
 
 

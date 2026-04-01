@@ -334,25 +334,27 @@ def _extract_title_from_content(text: str) -> str | None:
     """Extract a meaningful title from parsed document content.
 
     Checks for:
-      1. Markdown H1 heading (``# Title``)
-      2. First non-empty line (often the document title from markitdown)
+      1. Markdown H1 heading (``# Title``) — scanned within first 20 lines
+      2. First non-empty line with 3-200 chars (often the page title from markitdown)
 
     Returns None if no suitable title is found.
     """
-    for line in text.splitlines():
+    first_candidate: str | None = None
+    for i, line in enumerate(text.splitlines()):
+        if i >= 20:
+            break
         stripped = line.strip()
         if not stripped:
             continue
-        # Markdown H1
+        # Markdown H1 — always preferred
         if stripped.startswith("# "):
             title = stripped[2:].strip()
             if title:
                 return title
-        # First non-empty line as fallback (often the page title)
-        if len(stripped) >= 3 and len(stripped) <= 200:
-            return stripped
-        break
-    return None
+        # Remember first suitable line as fallback
+        if first_candidate is None and 3 <= len(stripped) <= 200:
+            first_candidate = stripped
+    return first_candidate
 
 
 def _get_source_type(source: str) -> str:
