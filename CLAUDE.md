@@ -25,7 +25,7 @@ vstash stats
 
 ```
 vstash/
-  __init__.py       # version (__version__ = "0.10.2")
+  __init__.py       # version (__version__ = "0.10.3")
   cli.py            # typer CLI — add, search, ask, chat, list, stats, forget, reindex, watch, config, export, remember
   store.py          # VstashStore — SQLite + sqlite-vec + FTS5, RRF, scoring, MMR dedup, reindex
   ingest.py         # parse → chunk → embed pipeline
@@ -74,7 +74,7 @@ docs/               # User-facing documentation
 - **Pydantic v2** for all config and data models (frozen=True)
 - **Type hints** on all public functions
 - **ruff** for linting and formatting (enforced in CI)
-- **pytest** for testing (447 tests as of v0.10.2)
+- **pytest** for testing (447 tests as of v0.10.3)
 - **Conventional commits** with emoji prefixes (feat, fix, docs, chore, perf)
 
 ## Database schema
