@@ -340,7 +340,7 @@ def _extract_title_from_content(text: str) -> str | None:
     Returns None if no suitable title is found.
     """
     first_candidate: str | None = None
-    for i, line in enumerate(text.splitlines()):
+    for i, line in enumerate(text[:8000].splitlines()):
         if i >= 20:
             break
         stripped = line.strip()
