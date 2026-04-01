@@ -11,10 +11,75 @@ The prompt is assembled here: system context + history + retrieved chunks + user
 
 from __future__ import annotations
 
+import logging
+import sys
+import time
 from collections.abc import Generator
 
 from .config import VstashConfig
 from .models import SearchResult
+
+logger = logging.getLogger(__name__)
+
+# Retry configuration
+_MAX_RETRIES = 3
+_BASE_DELAY = 1.0  # seconds
+_MAX_DELAY = 10.0  # seconds
+
+# Transient error strings that warrant a retry (case-insensitive substring match)
+_RETRYABLE_PATTERNS = (
+    "rate limit",
+    "429",
+    "503",
+    "502",
+    "timeout",
+    "timed out",
+    "connection reset",
+    "connection refused",
+    "temporarily unavailable",
+    "server error",
+    "overloaded",
+)
+
+# Exception types that are always retryable regardless of message content
+_RETRYABLE_TYPES = (TimeoutError,)
+
+
+def _is_retryable(exc: Exception) -> bool:
+    """Check if an exception represents a transient failure worth retrying."""
+    if isinstance(exc, _RETRYABLE_TYPES):
+        return True
+    msg = str(exc).lower()
+    return any(p in msg for p in _RETRYABLE_PATTERNS)
+
+
+def _retry_call(fn, *args, **kwargs):  # type: ignore[no-untyped-def]
+    """Retry a function with exponential backoff on transient errors."""
+    for attempt in range(_MAX_RETRIES):
+        try:
+            return fn(*args, **kwargs)
+        except (ConnectionError, TimeoutError, OSError) as exc:
+            if attempt < _MAX_RETRIES - 1 and _is_retryable(exc):
+                delay = min(_BASE_DELAY * (2**attempt), _MAX_DELAY)
+                logger.warning(
+                    "Retry %d/%d for %s after %.1fs: %s",
+                    attempt + 1,
+                    _MAX_RETRIES,
+                    fn.__name__,
+                    delay,
+                    exc,
+                )
+                print(
+                    f"\r⟳ Retry {attempt + 1}/{_MAX_RETRIES} in {delay:.0f}s...",
+                    end="",
+                    flush=True,
+                    file=sys.stderr,
+                )
+                time.sleep(delay)
+            else:
+                raise
+    # Unreachable: loop always returns or raises
+    raise RuntimeError("unreachable")  # pragma: no cover
 
 SYSTEM_PROMPT = """You are a precise document assistant. Answer questions based strictly on the provided context.
 
@@ -425,7 +490,7 @@ def ask(
         )
 
     ask_fn, _ = backend_funcs
-    return ask_fn(query, chunks, cfg, history)
+    return _retry_call(ask_fn, query, chunks, cfg, history)
 
 
 def stream(
@@ -458,4 +523,7 @@ def stream(
         )
 
     _, stream_fn = backend_funcs
-    yield from stream_fn(query, chunks, cfg, history)
+    # Retry the initial connection — once the generator starts yielding,
+    # a mid-stream failure is not retried (partial output already sent).
+    gen = _retry_call(stream_fn, query, chunks, cfg, history)
+    yield from gen

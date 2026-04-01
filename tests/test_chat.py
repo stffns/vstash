@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from vstash.chat import _build_messages, _build_prompt
+from vstash.chat import _build_messages, _build_prompt, _is_retryable, _retry_call
 from vstash.config import VstashConfig
 from vstash.models import SearchResult
 
@@ -82,3 +82,68 @@ class TestBackendDispatch:
         assert "cerebras" in _BACKENDS
         assert "ollama" in _BACKENDS
         assert "openai" in _BACKENDS
+
+
+class TestRetryLogic:
+    """Test retry with exponential backoff."""
+
+    def test_is_retryable_rate_limit(self) -> None:
+        assert _is_retryable(ConnectionError("rate limit exceeded"))
+
+    def test_is_retryable_429(self) -> None:
+        assert _is_retryable(ConnectionError("HTTP 429 Too Many Requests"))
+
+    def test_is_retryable_503(self) -> None:
+        assert _is_retryable(ConnectionError("503 Service Unavailable"))
+
+    def test_is_retryable_timeout(self) -> None:
+        assert _is_retryable(TimeoutError("connection timed out"))
+
+    def test_is_retryable_timeout_empty_message(self) -> None:
+        """TimeoutError with no message should still be retryable (by type)."""
+        assert _is_retryable(TimeoutError())
+
+    def test_not_retryable_auth_error(self) -> None:
+        assert not _is_retryable(ConnectionError("401 Unauthorized"))
+
+    def test_not_retryable_bad_request(self) -> None:
+        assert not _is_retryable(ConnectionError("400 Bad Request"))
+
+    def test_retry_succeeds_on_second_attempt(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("vstash.chat._BASE_DELAY", 0.01)
+        call_count = 0
+
+        def flaky(*args, **kwargs):  # type: ignore[no-untyped-def]
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise ConnectionError("503 Service Unavailable")
+            return "success"
+
+        flaky.__name__ = "flaky"
+        result = _retry_call(flaky)
+        assert result == "success"
+        assert call_count == 2
+
+    def test_retry_gives_up_after_max(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("vstash.chat._BASE_DELAY", 0.01)
+
+        def always_fail(*args, **kwargs):  # type: ignore[no-untyped-def]
+            raise ConnectionError("503 Service Unavailable")
+
+        always_fail.__name__ = "always_fail"
+        with pytest.raises(ConnectionError, match="503"):
+            _retry_call(always_fail)
+
+    def test_no_retry_on_non_retryable(self) -> None:
+        call_count = 0
+
+        def auth_error(*args, **kwargs):  # type: ignore[no-untyped-def]
+            nonlocal call_count
+            call_count += 1
+            raise ConnectionError("401 Unauthorized")
+
+        auth_error.__name__ = "auth_error"
+        with pytest.raises(ConnectionError, match="401"):
+            _retry_call(auth_error)
+        assert call_count == 1

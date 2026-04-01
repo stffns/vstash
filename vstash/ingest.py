@@ -330,6 +330,33 @@ def _get_title(source: str) -> str:
     return path.stem.replace("_", " ").replace("-", " ").title()
 
 
+def _extract_title_from_content(text: str) -> str | None:
+    """Extract a meaningful title from parsed document content.
+
+    Checks for:
+      1. Markdown H1 heading (``# Title``) — scanned within first 20 lines
+      2. First non-empty line with 3-200 chars (often the page title from markitdown)
+
+    Returns None if no suitable title is found.
+    """
+    first_candidate: str | None = None
+    for i, line in enumerate(text.splitlines()):
+        if i >= 20:
+            break
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # Markdown H1 — always preferred
+        if stripped.startswith("# "):
+            title = stripped[2:].strip()
+            if title:
+                return title
+        # Remember first suitable line as fallback
+        if first_candidate is None and 3 <= len(stripped) <= 200:
+            first_candidate = stripped
+    return first_candidate
+
+
 def _get_source_type(source: str) -> str:
     """Determine the document type from a file extension or URL."""
     if _is_url(source):
@@ -429,6 +456,12 @@ def ingest(
     if not text or not text.strip():
         console.print(f"[yellow]⚠ No text extracted from {source}[/yellow]")
         return IngestResult(status="empty", source=source)
+
+    # For URLs, try to extract a real title from the parsed content
+    if _is_url(source):
+        extracted = _extract_title_from_content(text)
+        if extracted:
+            title = extracted
 
     char_count = len(text)
 
