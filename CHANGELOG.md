@@ -2,6 +2,14 @@
 
 All notable changes to vstash are documented here.
 
+## [0.10.2] — 2026-04-01
+
+### Added
+- **`openai.extra_body` config** — pass arbitrary JSON fields to OpenAI-compatible chat completions (e.g., `chat_template_kwargs` for Qwen thinking mode, vLLM sampling params)
+- 2 new config tests for `extra_body` loading
+
+---
+
 ## [0.10.1] — 2026-03-31
 
 ### Added
