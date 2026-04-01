@@ -45,7 +45,10 @@ It was designed by Graydon Hoare at Mozilla Research.
     def test_extract_skips_very_short_lines(self) -> None:
         """Lines shorter than 3 chars are skipped, but longer lines are found."""
         content = "OK\n\nThis is the real content about something important."
-        assert _extract_title_from_content(content) == "This is the real content about something important."
+        assert (
+            _extract_title_from_content(content)
+            == "This is the real content about something important."
+        )
 
     def test_extract_skips_very_long_lines_but_finds_fallback(self) -> None:
         """Lines over 200 chars are skipped, shorter lines below are found."""

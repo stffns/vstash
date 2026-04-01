@@ -236,7 +236,10 @@ class TestVstashAsk:
         self, mock_config: MagicMock, mock_store: MagicMock, mock_embed: MagicMock
     ) -> None:
         chunks = [_make_search_result("context about Python", "PythonGuide")]
-        mock_store.return_value.search.return_value = chunks
+        store_inst = mock_store.return_value
+        store_inst.search.return_value = chunks
+        store_inst.last_best_distance = 0.5
+        store_inst.expand_context.return_value = chunks
         mock_config.return_value.embeddings.model = "BAAI/bge-small-en-v1.5"
 
         with patch("vstash.chat.ask", return_value="Python is great."):
@@ -245,6 +248,8 @@ class TestVstashAsk:
         assert result["answer"] == "Python is great."
         assert len(result["sources"]) == 1
         assert result["sources"][0]["title"] == "PythonGuide"
+        store_inst.record_search_event.assert_called_once()
+        store_inst.expand_context.assert_called_once()
 
     @patch("vstash.mcp.embed_query", return_value=[0.1] * 384)
     @patch("vstash.mcp._get_store")
@@ -270,7 +275,10 @@ class TestVstashAsk:
             _make_search_result("chunk 1", "SameDoc"),
             _make_search_result("chunk 2", "SameDoc"),
         ]
-        mock_store.return_value.search.return_value = chunks
+        store_inst = mock_store.return_value
+        store_inst.search.return_value = chunks
+        store_inst.last_best_distance = 0.5
+        store_inst.expand_context.return_value = chunks
         mock_config.return_value.embeddings.model = "BAAI/bge-small-en-v1.5"
 
         with patch("vstash.chat.ask", return_value="Answer."):

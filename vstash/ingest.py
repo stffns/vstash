@@ -470,14 +470,22 @@ def ingest(
     # Explicit params override frontmatter values
     fm_project = project or frontmatter.get("project")
     fm_layer = layer or frontmatter.get("layer")
-    # Coerce non-string scalars to str; ignore dicts/lists
+    # Coerce non-string scalars to str; warn on dicts/lists
     if fm_project is not None:
         if isinstance(fm_project, (dict, list)):
+            console.print(
+                f"[yellow]⚠ Frontmatter 'project' is a {type(fm_project).__name__}, "
+                f"expected string — ignoring.[/yellow]"
+            )
             fm_project = None
         else:
             fm_project = str(fm_project)
     if fm_layer is not None:
         if isinstance(fm_layer, (dict, list)):
+            console.print(
+                f"[yellow]⚠ Frontmatter 'layer' is a {type(fm_layer).__name__}, "
+                f"expected string — ignoring.[/yellow]"
+            )
             fm_layer = None
         else:
             fm_layer = str(fm_layer)

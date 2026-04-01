@@ -56,9 +56,19 @@ def get_embedding_dim(model_name: str) -> int:
         model_name: FastEmbed model identifier.
 
     Returns:
-        Embedding dimension (defaults to 384 for unknown models).
+        Embedding dimension for known models.
+
+    Raises:
+        ValueError: If the model is not in the known registry.
     """
-    return KNOWN_DIMS.get(model_name, 384)
+    dim = KNOWN_DIMS.get(model_name)
+    if dim is None:
+        raise ValueError(
+            f"Unknown embedding model: '{model_name}'. "
+            f"Known models: {', '.join(sorted(KNOWN_DIMS))}. "
+            "Add it to KNOWN_DIMS in embed.py with its dimension."
+        )
+    return dim
 
 
 def _is_apple_silicon() -> bool:
