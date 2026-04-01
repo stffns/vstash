@@ -169,7 +169,10 @@ class VstashStore:
                     self._save_snapvec()
             except Exception:
                 logger.warning(
-                    "Failed to load SnapIndex from %s, creating new.", path, exc_info=True
+                    "Failed to load SnapIndex from %s — creating empty. "
+                    "Existing vectors lost; run 'vstash reindex' to rebuild.",
+                    path,
+                    exc_info=True,
                 )
                 self._snap = SnapIndex(dim=self.embedding_dim, bits=self._snapvec_bits, seed=0)
                 self._save_snapvec()
@@ -195,7 +198,10 @@ class VstashStore:
             try:
                 self._snap = SnapIndex.load(str(path))
             except Exception:
-                logger.warning("Failed to reload SnapIndex after rollback, creating empty.")
+                logger.warning(
+                    "Failed to reload SnapIndex after rollback — creating empty index. "
+                    "Run 'vstash reindex' to rebuild vector search."
+                )
                 self._snap = SnapIndex(dim=self.embedding_dim, bits=self._snapvec_bits, seed=0)
         else:
             self._snap = SnapIndex(dim=self.embedding_dim, bits=self._snapvec_bits, seed=0)
@@ -873,8 +879,9 @@ class VstashStore:
                 for row in rows:
                     embeddings[row["rowid"]] = _deserialize(row["embedding"])
             except sqlite3.Error:
-                logging.getLogger(__name__).debug(
-                    "MMR embedding fetch failed, falling back to hard dedup",
+                logging.getLogger(__name__).warning(
+                    "MMR embedding fetch failed — falling back to hard dedup. "
+                    "Results may be less diverse.",
                     exc_info=True,
                 )
                 # Fallback: hard dedup
@@ -1238,10 +1245,13 @@ class VstashStore:
             "FROM chunks WHERE access_count > 0"
         ).fetchone()
 
-        if not row or not row["mean"] or row["n"] < 10:
+        if not row or not row["mean"] or not row["max_val"] or row["n"] < 10:
             return 0.0
 
-        ratio = row["max_val"] / row["mean"]
+        mean = float(row["mean"])
+        if mean < 1e-9:
+            return 0.0
+        ratio = float(row["max_val"]) / mean
         if ratio < SCORING_SIGNAL_RATIO:
             return 0.0
 
@@ -1492,12 +1502,20 @@ class VstashStore:
 
         expanded = []
         for r in results:
+            # Resolve doc_id via chunk text match to avoid cross-collection
+            # leakage when the same path exists in multiple collections.
+            doc_row = self._conn.execute(
+                "SELECT c.doc_id FROM chunks c JOIN documents d ON d.id = c.doc_id "
+                "WHERE d.path = ? AND c.seq = ? AND c.text = ? LIMIT 1",
+                [r.path, r.chunk, r.text],
+            ).fetchone()
+            if not doc_row:
+                expanded.append(r)
+                continue
+
             row = self._conn.execute(
-                "SELECT text FROM chunks WHERE doc_id = ("
-                "  SELECT doc_id FROM chunks c JOIN documents d ON d.id = c.doc_id "
-                "  WHERE d.path = ? AND c.seq = ? LIMIT 1"
-                ") AND seq BETWEEN ? AND ? ORDER BY seq",
-                [r.path, r.chunk, r.chunk - window, r.chunk + window],
+                "SELECT text FROM chunks WHERE doc_id = ? AND seq BETWEEN ? AND ? ORDER BY seq",
+                [doc_row["doc_id"], r.chunk - window, r.chunk + window],
             ).fetchall()
 
             if row:
@@ -1590,14 +1608,15 @@ class VstashStore:
                     if progress_cb:
                         progress_cb(processed, total)
 
-                # Update stored dimension
-                self.embedding_dim = new_dim
                 self._conn.commit()
+                # Update stored dimension only after successful commit
+                self.embedding_dim = new_dim
                 # Persist snapvec AFTER successful SQLite commit
                 if self._snap is not None:
                     self._save_snapvec()
             except Exception:
                 self._conn.rollback()
+                # Restore old dimension so _reload_snapvec uses correct dim
                 self._reload_snapvec()
                 raise
 
