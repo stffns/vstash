@@ -33,6 +33,24 @@ from .store import VstashStore
 from . import __version__
 
 
+def _inference_hint(exc: ConnectionError, cfg: VstashConfig) -> str:
+    """Return a user-friendly hint based on the inference error and backend."""
+    msg = str(exc).lower()
+    backend = cfg.inference.backend.lower()
+
+    if "connection refused" in msg or "connect" in msg:
+        if backend == "ollama":
+            return "Is Ollama running? Try: ollama serve"
+        return f"Could not reach {backend} server. Check your connection."
+    if "rate limit" in msg or "429" in msg:
+        return "Rate limited — wait a moment and try again."
+    if "api key" in msg or "unauthorized" in msg or "401" in msg:
+        return f"Check your API key for {backend}."
+    if "timeout" in msg or "timed out" in msg:
+        return "Request timed out — the server may be overloaded."
+    return ""
+
+
 def _relevance_tier(distance: float) -> str:
     """Classify vector distance into a relevance tier.
 
@@ -258,6 +276,9 @@ def ask(
                 print()  # newline after stream
             except ConnectionError as exc:
                 console.print(f"\n[red]✗ Inference error: {exc}[/red]")
+                hint = _inference_hint(exc, cfg)
+                if hint:
+                    console.print(f"[dim]  Hint: {hint}[/dim]")
                 raise typer.Exit(1) from exc
         else:
             with console.status("[dim]Thinking...[/dim]", spinner="dots"):
@@ -265,6 +286,9 @@ def ask(
                     response = chat_module.ask(query, chunks, cfg)
                 except ConnectionError as exc:
                     console.print(f"[red]✗ Inference error: {exc}[/red]")
+                    hint = _inference_hint(exc, cfg)
+                    if hint:
+                        console.print(f"[dim]  Hint: {hint}[/dim]")
                     raise typer.Exit(1) from exc
             console.print(Markdown(response))
 
@@ -494,6 +518,9 @@ def chat(
                     print()
                 except ConnectionError as exc:
                     console.print(f"\n[red]✗ Inference error: {exc}[/red]")
+                    hint = _inference_hint(exc, cfg)
+                    if hint:
+                        console.print(f"[dim]  Hint: {hint}[/dim]")
                     continue
 
                 # Accumulate history for multi-turn context
