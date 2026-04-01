@@ -2,10 +2,9 @@
 
 All notable changes to vstash are documented here.
 
-## [0.10.2] — 2026-04-01
+## [0.10.3] — 2026-04-01
 
 ### Added
-- **`openai.extra_body` config** — pass arbitrary JSON fields to OpenAI-compatible chat completions (e.g., `chat_template_kwargs` for Qwen thinking mode, vLLM sampling params)
 - **Watch mode file deletion** — `on_deleted` handler automatically removes deleted files from the store
 - **Stream interruption warning** — shows "Stream interrupted after N tokens" on mid-stream errors
 - **Frontmatter validation warnings** — warns when `project`/`layer` is a dict/list instead of silently dropping
@@ -25,6 +24,14 @@ All notable changes to vstash are documented here.
 
 ### Changed
 - 447 tests (up from 368), including 9 watch e2e integration tests and 13 robustness tests
+
+---
+
+## [0.10.2] — 2026-04-01
+
+### Added
+- **`openai.extra_body` config** — pass arbitrary JSON fields to OpenAI-compatible chat completions (e.g., `chat_template_kwargs` for Qwen thinking mode, vLLM sampling params)
+- 2 new config tests for `extra_body` loading
 
 ---
 
