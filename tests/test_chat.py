@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from vstash.chat import _build_messages, _build_prompt, _is_retryable, _retry_ask
+from vstash.chat import _build_messages, _build_prompt, _is_retryable, _retry_call
 from vstash.config import VstashConfig
 from vstash.models import SearchResult
 
@@ -99,6 +99,10 @@ class TestRetryLogic:
     def test_is_retryable_timeout(self) -> None:
         assert _is_retryable(TimeoutError("connection timed out"))
 
+    def test_is_retryable_timeout_empty_message(self) -> None:
+        """TimeoutError with no message should still be retryable (by type)."""
+        assert _is_retryable(TimeoutError())
+
     def test_not_retryable_auth_error(self) -> None:
         assert not _is_retryable(ConnectionError("401 Unauthorized"))
 
@@ -117,7 +121,7 @@ class TestRetryLogic:
             return "success"
 
         flaky.__name__ = "flaky"
-        result = _retry_ask(flaky)
+        result = _retry_call(flaky)
         assert result == "success"
         assert call_count == 2
 
@@ -129,7 +133,7 @@ class TestRetryLogic:
 
         always_fail.__name__ = "always_fail"
         with pytest.raises(ConnectionError, match="503"):
-            _retry_ask(always_fail)
+            _retry_call(always_fail)
 
     def test_no_retry_on_non_retryable(self) -> None:
         call_count = 0
@@ -141,5 +145,5 @@ class TestRetryLogic:
 
         auth_error.__name__ = "auth_error"
         with pytest.raises(ConnectionError, match="401"):
-            _retry_ask(auth_error)
+            _retry_call(auth_error)
         assert call_count == 1

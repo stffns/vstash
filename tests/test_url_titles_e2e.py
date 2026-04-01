@@ -6,8 +6,6 @@ parsed content instead of the raw URL.
 
 from __future__ import annotations
 
-import pytest
-
 from vstash.ingest import _extract_title_from_content, _get_title
 
 
@@ -45,15 +43,15 @@ It was designed by Graydon Hoare at Mozilla Research.
         assert title == "Rust (programming language) - Wikipedia"
 
     def test_extract_skips_very_short_lines(self) -> None:
-        """Lines shorter than 3 chars are not good titles."""
+        """Lines shorter than 3 chars are skipped, but longer lines are found."""
         content = "OK\n\nThis is the real content about something important."
-        assert _extract_title_from_content(content) is None
+        assert _extract_title_from_content(content) == "This is the real content about something important."
 
-    def test_extract_skips_very_long_lines(self) -> None:
-        """Lines over 200 chars are likely not titles."""
+    def test_extract_skips_very_long_lines_but_finds_fallback(self) -> None:
+        """Lines over 200 chars are skipped, shorter lines below are found."""
         long_line = "A" * 201
         content = f"{long_line}\n\nReal content here."
-        assert _extract_title_from_content(content) is None
+        assert _extract_title_from_content(content) == "Real content here."
 
     def test_extract_prefers_h1_over_plain_text(self) -> None:
         """If first non-empty line is H1, use it."""

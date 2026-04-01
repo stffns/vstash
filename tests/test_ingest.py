@@ -332,14 +332,24 @@ class TestExtractTitleFromContent:
     def test_whitespace_only_returns_none(self) -> None:
         assert _extract_title_from_content("   \n  \n  ") is None
 
-    def test_too_short_first_line_skipped(self) -> None:
+    def test_too_short_first_line_skipped_but_finds_fallback(self) -> None:
         text = "Hi\n\nActual content follows."
-        assert _extract_title_from_content(text) is None
+        assert _extract_title_from_content(text) == "Actual content follows."
 
-    def test_too_long_first_line_skipped(self) -> None:
+    def test_too_long_first_line_skipped_but_finds_fallback(self) -> None:
         text = "x" * 201 + "\n\nContent."
-        assert _extract_title_from_content(text) is None
+        assert _extract_title_from_content(text) == "Content."
 
     def test_h1_takes_priority_over_first_line(self) -> None:
         text = "# Actual Title\n\nThis is the first paragraph."
         assert _extract_title_from_content(text) == "Actual Title"
+
+    def test_h1_found_after_short_first_line(self) -> None:
+        """H1 heading below a short breadcrumb line should still be found."""
+        text = "Ok\n\n# The Real Title\n\nContent here."
+        assert _extract_title_from_content(text) == "The Real Title"
+
+    def test_h1_found_after_non_title_lines(self) -> None:
+        """H1 found after navigation lines should be preferred over first line."""
+        text = "Navigation breadcrumb here\nSome other line\n# Deep Learning Guide\n\nContent."
+        assert _extract_title_from_content(text) == "Deep Learning Guide"
