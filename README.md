@@ -29,6 +29,11 @@ Most RAG tools are slow, cloud-dependent, or require a running server. vstash is
 
 **Zero cloud required for search. Inference is optional.**
 
+### What's new in v0.10.4
+
+- **`delete_by_path_prefix` safety** — empty-prefix guard prevents accidental full-wipe; SQL LIKE wildcards properly escaped.
+- **4 new tests** — prefix matching, zero-match, special character escaping, empty-prefix ValueError.
+
 ### What's new in v0.10.3
 
 - **API retry with backoff** — transient errors (429, 503, timeout) are retried automatically across all inference backends.
