@@ -455,10 +455,13 @@ class VstashStore:
                 now_iso = datetime.now(timezone.utc).isoformat()
                 for seq, (text, embedding) in enumerate(zip(chunks, embeddings)):
                     # Insert chunk — get rowid for linking vec + fts tables
+                    # last_accessed_at is NULL until the chunk is actually accessed
+                    # via search, so the decay formula doesn't treat new chunks as
+                    # "recently accessed".
                     cursor = self._conn.execute(
                         "INSERT INTO chunks (doc_id, seq, text, access_count, created_at, last_accessed_at)"
-                        " VALUES (?, ?, ?, 0, ?, ?)",
-                        [doc_id, seq, text, now_iso, now_iso],
+                        " VALUES (?, ?, ?, 0, ?, NULL)",
+                        [doc_id, seq, text, now_iso],
                     )
                     rowid = cursor.lastrowid
 

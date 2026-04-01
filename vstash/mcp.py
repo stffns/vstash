@@ -444,6 +444,24 @@ def vstash_ask(
                 }
             )
 
+        # Record search telemetry (same as vstash_search)
+        best_distance = store.last_best_distance
+        if best_distance <= 0.95:
+            relevance_tier = "high"
+        elif best_distance <= 0.98:
+            relevance_tier = "medium"
+        else:
+            relevance_tier = "low"
+        store.record_search_event(
+            query=query,
+            best_distance=best_distance,
+            relevance_tier=relevance_tier,
+            result_count=len(chunks),
+        )
+
+        # Expand context with adjacent chunks for richer LLM answers
+        chunks = store.expand_context(chunks, window=1)
+
         # Get LLM answer
         answer = ask(query, chunks, cfg)
 
