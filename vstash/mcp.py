@@ -29,7 +29,7 @@ except ImportError as _exc:
 from .config import VstashConfig, load_config
 from .embed import embed_query, get_embedding_dim, warmup
 from .models import DocumentInfo, IngestResult, SearchResult, StoreStats
-from .store import VstashStore
+from .store import VstashStore, relevance_tier
 
 logger = logging.getLogger(__name__)
 
@@ -446,16 +446,11 @@ def vstash_ask(
 
         # Record search telemetry (same as vstash_search)
         best_distance = store.last_best_distance
-        if best_distance <= 0.95:
-            relevance_tier = "high"
-        elif best_distance <= 0.98:
-            relevance_tier = "medium"
-        else:
-            relevance_tier = "low"
+        tier = relevance_tier(best_distance)
         store.record_search_event(
             query=query,
             best_distance=best_distance,
-            relevance_tier=relevance_tier,
+            relevance_tier=tier,
             result_count=len(chunks),
         )
 
@@ -537,17 +532,14 @@ def vstash_search(
         chunks = store.expand_context(chunks, window=1)
 
         # Tiered relevance signal based on vector distance.
-        # high (<=0.95): confident. medium (0.95-0.98): uncertain. low (>0.98): off-topic.
         best_distance = store.last_best_distance
-        if best_distance <= 0.95:
-            relevance = "high"
-            hint = "Results appear relevant to the query."
-        elif best_distance <= 0.98:
-            relevance = "medium"
-            hint = "Results may be tangential — consider refining your query."
-        else:
-            relevance = "low"
-            hint = "Results may not be relevant — best match is semantically distant."
+        relevance = relevance_tier(best_distance)
+        _hints = {
+            "high": "Results appear relevant to the query.",
+            "medium": "Results may be tangential — consider refining your query.",
+            "low": "Results may not be relevant — best match is semantically distant.",
+        }
+        hint = _hints[relevance]
 
         store.record_search_event(
             query=query,

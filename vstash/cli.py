@@ -28,7 +28,7 @@ from . import chat as chat_module
 from .config import VstashConfig, load_config
 from .embed import embed_query, get_embedding_dim, warmup
 from .ingest import ingest, ingest_directory
-from .store import VstashStore
+from .store import VstashStore, relevance_tier
 
 from . import __version__
 
@@ -50,21 +50,6 @@ def _inference_hint(exc: ConnectionError, cfg: VstashConfig) -> str:
         return "Request timed out — the server may be overloaded."
     return ""
 
-
-def _relevance_tier(distance: float) -> str:
-    """Classify vector distance into a relevance tier.
-
-    Tiers:
-        "high"   — distance <= 0.95: confident match, no indicator shown.
-        "medium" — 0.95 < distance <= 0.98: uncertain, subtle ? indicator.
-        "low"    — distance > 0.98: likely off-topic, full warning shown.
-    """
-    if distance <= 0.95:
-        return "high"
-    elif distance <= 0.98:
-        return "medium"
-    else:
-        return "low"
 
 
 def _version_callback(value: bool) -> None:
@@ -247,7 +232,7 @@ def ask(
             raise typer.Exit()
 
         # Tiered relevance signal
-        tier = _relevance_tier(store.last_best_distance)
+        tier = relevance_tier(store.last_best_distance)
         store.record_search_event(
             query=query,
             best_distance=store.last_best_distance,
@@ -343,7 +328,7 @@ def search(
         # high (<=0.95): confident, no warning. medium (0.95-0.98): subtle ?.
         # low (>0.98): full warning. Works from day zero, no scoring needed.
         best_distance = store.last_best_distance
-        tier = _relevance_tier(best_distance)
+        tier = relevance_tier(best_distance)
         scoring_enabled = cfg.scoring is not None and cfg.scoring.enabled
 
         # Telemetry: record search event for discard rate analysis
@@ -489,7 +474,7 @@ def chat(
                     continue
 
                 # Tiered relevance signal
-                tier = _relevance_tier(store.last_best_distance)
+                tier = relevance_tier(store.last_best_distance)
                 last_event_id = store.record_search_event(
                     query=query,
                     best_distance=store.last_best_distance,

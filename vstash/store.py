@@ -68,6 +68,21 @@ def _cosine_sim(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
+def relevance_tier(distance: float) -> str:
+    """Classify vector distance into a relevance tier.
+
+    Tiers:
+        "high"   — distance <= 0.95: confident match.
+        "medium" — 0.95 < distance <= 0.98: uncertain.
+        "low"    — distance > 0.98: likely off-topic.
+    """
+    if distance <= 0.95:
+        return "high"
+    if distance <= 0.98:
+        return "medium"
+    return "low"
+
+
 # Standard RRF constant — balances precision vs recall
 RRF_K = 60
 
@@ -1306,20 +1321,23 @@ class VstashStore:
             # Normalize RRF to [0, 1]
             normalized_rrf = (float(c["rrf"]) - min_rrf) / rrf_range if rrf_range > 0 else 1.0
 
-            # Temporal decay (clamp to 0 to guard against clock skew / future dates)
-            ref_str = last_accessed or created
-            if ref_str is None:
-                days_ago = 0.0
+            # Never-accessed chunks get zero frequency boost — no access
+            # history means no signal to boost with.
+            if access_count == 0:
+                freq_normalized = 0.0
             else:
-                ref_dt = datetime.fromisoformat(ref_str)
-                if ref_dt.tzinfo is None:
-                    ref_dt = ref_dt.replace(tzinfo=timezone.utc)
-                days_ago = max(0.0, (now - ref_dt).total_seconds() / 86400)
+                # Temporal decay (clamp to 0 to guard against clock skew)
+                ref_str = last_accessed or created
+                if ref_str is None:
+                    days_ago = 0.0
+                else:
+                    ref_dt = datetime.fromisoformat(ref_str)
+                    if ref_dt.tzinfo is None:
+                        ref_dt = ref_dt.replace(tzinfo=timezone.utc)
+                    days_ago = max(0.0, (now - ref_dt).total_seconds() / 86400)
 
-            # +1 baseline so zero-access chunks still get a small nonzero score
-            freq_score = (1 + access_count) * math.exp(-decay_lambda * days_ago)
-            # Normalize frequency component to [0, 1] via log1p, capped at 1.0
-            freq_normalized = min(1.0, math.log1p(freq_score) / math.log1p(FREQ_SATURATION))
+                freq_score = access_count * math.exp(-decay_lambda * days_ago)
+                freq_normalized = min(1.0, math.log1p(freq_score) / math.log1p(FREQ_SATURATION))
             c["final_score"] = alpha * normalized_rrf + beta * freq_normalized
 
         candidates.sort(key=lambda c: float(c["final_score"]), reverse=True)
