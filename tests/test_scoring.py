@@ -63,10 +63,10 @@ class TestScoringMigration:
         rows = scoring_store._conn.execute("SELECT created_at FROM chunks").fetchall()
         assert all(row["created_at"] is not None for row in rows)
 
-    def test_chunks_have_last_accessed_at(self, scoring_store: VstashStore) -> None:
-        """New chunks should have last_accessed_at set to creation time."""
+    def test_new_chunks_have_null_last_accessed_at(self, scoring_store: VstashStore) -> None:
+        """New chunks should have last_accessed_at = NULL (not yet accessed)."""
         rows = scoring_store._conn.execute("SELECT last_accessed_at FROM chunks").fetchall()
-        assert all(row["last_accessed_at"] is not None for row in rows)
+        assert all(row["last_accessed_at"] is None for row in rows)
 
     def test_migration_on_existing_db(self, tmp_path) -> None:
         """Opening an old DB (pre-scoring schema) should add scoring columns via migration."""

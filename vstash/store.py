@@ -68,6 +68,21 @@ def _cosine_sim(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
+def relevance_tier(distance: float) -> str:
+    """Classify vector distance into a relevance tier.
+
+    Tiers:
+        "high"   — distance <= 0.95: confident match.
+        "medium" — 0.95 < distance <= 0.98: uncertain.
+        "low"    — distance > 0.98: likely off-topic.
+    """
+    if distance <= 0.95:
+        return "high"
+    if distance <= 0.98:
+        return "medium"
+    return "low"
+
+
 # Standard RRF constant — balances precision vs recall
 RRF_K = 60
 
@@ -154,7 +169,10 @@ class VstashStore:
                     self._save_snapvec()
             except Exception:
                 logger.warning(
-                    "Failed to load SnapIndex from %s, creating new.", path, exc_info=True
+                    "Failed to load SnapIndex from %s — creating empty. "
+                    "Existing vectors lost; run 'vstash reindex' to rebuild.",
+                    path,
+                    exc_info=True,
                 )
                 self._snap = SnapIndex(dim=self.embedding_dim, bits=self._snapvec_bits, seed=0)
                 self._save_snapvec()
@@ -180,7 +198,10 @@ class VstashStore:
             try:
                 self._snap = SnapIndex.load(str(path))
             except Exception:
-                logger.warning("Failed to reload SnapIndex after rollback, creating empty.")
+                logger.warning(
+                    "Failed to reload SnapIndex after rollback — creating empty index. "
+                    "Run 'vstash reindex' to rebuild vector search."
+                )
                 self._snap = SnapIndex(dim=self.embedding_dim, bits=self._snapvec_bits, seed=0)
         else:
             self._snap = SnapIndex(dim=self.embedding_dim, bits=self._snapvec_bits, seed=0)
@@ -455,10 +476,13 @@ class VstashStore:
                 now_iso = datetime.now(timezone.utc).isoformat()
                 for seq, (text, embedding) in enumerate(zip(chunks, embeddings)):
                     # Insert chunk — get rowid for linking vec + fts tables
+                    # last_accessed_at is NULL until the chunk is actually accessed
+                    # via search, so the decay formula doesn't treat new chunks as
+                    # "recently accessed".
                     cursor = self._conn.execute(
                         "INSERT INTO chunks (doc_id, seq, text, access_count, created_at, last_accessed_at)"
-                        " VALUES (?, ?, ?, 0, ?, ?)",
-                        [doc_id, seq, text, now_iso, now_iso],
+                        " VALUES (?, ?, ?, 0, ?, NULL)",
+                        [doc_id, seq, text, now_iso],
                     )
                     rowid = cursor.lastrowid
 
@@ -855,8 +879,9 @@ class VstashStore:
                 for row in rows:
                     embeddings[row["rowid"]] = _deserialize(row["embedding"])
             except sqlite3.Error:
-                logging.getLogger(__name__).debug(
-                    "MMR embedding fetch failed, falling back to hard dedup",
+                logging.getLogger(__name__).warning(
+                    "MMR embedding fetch failed — falling back to hard dedup. "
+                    "Results may be less diverse.",
                     exc_info=True,
                 )
                 # Fallback: hard dedup
@@ -1220,10 +1245,13 @@ class VstashStore:
             "FROM chunks WHERE access_count > 0"
         ).fetchone()
 
-        if not row or not row["mean"] or row["n"] < 10:
+        if not row or not row["mean"] or not row["max_val"] or row["n"] < 10:
             return 0.0
 
-        ratio = row["max_val"] / row["mean"]
+        mean = float(row["mean"])
+        if mean < 1e-9:
+            return 0.0
+        ratio = float(row["max_val"]) / mean
         if ratio < SCORING_SIGNAL_RATIO:
             return 0.0
 
@@ -1303,20 +1331,23 @@ class VstashStore:
             # Normalize RRF to [0, 1]
             normalized_rrf = (float(c["rrf"]) - min_rrf) / rrf_range if rrf_range > 0 else 1.0
 
-            # Temporal decay (clamp to 0 to guard against clock skew / future dates)
-            ref_str = last_accessed or created
-            if ref_str is None:
-                days_ago = 0.0
+            # Never-accessed chunks get zero frequency boost — no access
+            # history means no signal to boost with.
+            if access_count == 0:
+                freq_normalized = 0.0
             else:
-                ref_dt = datetime.fromisoformat(ref_str)
-                if ref_dt.tzinfo is None:
-                    ref_dt = ref_dt.replace(tzinfo=timezone.utc)
-                days_ago = max(0.0, (now - ref_dt).total_seconds() / 86400)
+                # Temporal decay (clamp to 0 to guard against clock skew)
+                ref_str = last_accessed or created
+                if ref_str is None:
+                    days_ago = 0.0
+                else:
+                    ref_dt = datetime.fromisoformat(ref_str)
+                    if ref_dt.tzinfo is None:
+                        ref_dt = ref_dt.replace(tzinfo=timezone.utc)
+                    days_ago = max(0.0, (now - ref_dt).total_seconds() / 86400)
 
-            # +1 baseline so zero-access chunks still get a small nonzero score
-            freq_score = (1 + access_count) * math.exp(-decay_lambda * days_ago)
-            # Normalize frequency component to [0, 1] via log1p, capped at 1.0
-            freq_normalized = min(1.0, math.log1p(freq_score) / math.log1p(FREQ_SATURATION))
+                freq_score = access_count * math.exp(-decay_lambda * days_ago)
+                freq_normalized = min(1.0, math.log1p(freq_score) / math.log1p(FREQ_SATURATION))
             c["final_score"] = alpha * normalized_rrf + beta * freq_normalized
 
         candidates.sort(key=lambda c: float(c["final_score"]), reverse=True)
@@ -1471,12 +1502,20 @@ class VstashStore:
 
         expanded = []
         for r in results:
+            # Resolve doc_id via chunk text match to avoid cross-collection
+            # leakage when the same path exists in multiple collections.
+            doc_row = self._conn.execute(
+                "SELECT c.doc_id FROM chunks c JOIN documents d ON d.id = c.doc_id "
+                "WHERE d.path = ? AND c.seq = ? AND c.text = ? LIMIT 1",
+                [r.path, r.chunk, r.text],
+            ).fetchone()
+            if not doc_row:
+                expanded.append(r)
+                continue
+
             row = self._conn.execute(
-                "SELECT text FROM chunks WHERE doc_id = ("
-                "  SELECT doc_id FROM chunks c JOIN documents d ON d.id = c.doc_id "
-                "  WHERE d.path = ? AND c.seq = ? LIMIT 1"
-                ") AND seq BETWEEN ? AND ? ORDER BY seq",
-                [r.path, r.chunk, r.chunk - window, r.chunk + window],
+                "SELECT text FROM chunks WHERE doc_id = ? AND seq BETWEEN ? AND ? ORDER BY seq",
+                [doc_row["doc_id"], r.chunk - window, r.chunk + window],
             ).fetchall()
 
             if row:
@@ -1569,14 +1608,15 @@ class VstashStore:
                     if progress_cb:
                         progress_cb(processed, total)
 
-                # Update stored dimension
-                self.embedding_dim = new_dim
                 self._conn.commit()
+                # Update stored dimension only after successful commit
+                self.embedding_dim = new_dim
                 # Persist snapvec AFTER successful SQLite commit
                 if self._snap is not None:
                     self._save_snapvec()
             except Exception:
                 self._conn.rollback()
+                # Restore old dimension so _reload_snapvec uses correct dim
                 self._reload_snapvec()
                 raise
 
