@@ -324,6 +324,7 @@ def _ask_openai(
             messages=messages,  # type: ignore[arg-type]
             max_completion_tokens=2048,
             temperature=0.2,
+            extra_body=cfg.openai.extra_body,
         )
         return response.choices[0].message.content or ""
     except Exception as exc:
@@ -374,6 +375,7 @@ def _stream_openai(
             max_completion_tokens=2048,
             temperature=0.2,
             stream=True,
+            extra_body=cfg.openai.extra_body,
         )
         for chunk in response_stream:
             if chunk.choices and chunk.choices[0].delta.content:
