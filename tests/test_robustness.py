@@ -261,6 +261,84 @@ class TestFrontmatterWarnings:
 
 
 # ------------------------------------------------------------------ #
+# delete_by_path_prefix                                               #
+# ------------------------------------------------------------------ #
+
+
+class TestDeleteByPathPrefix:
+    """Verify delete_by_path_prefix correctness and edge cases."""
+
+    def test_basic_prefix_match(self, sample_store: VstashStore) -> None:
+        """Deletes only documents whose path starts with the given prefix."""
+        dim = sample_store.embedding_dim
+
+        # 3 docs under /a/b/, 1 under /a/c/
+        for i, path in enumerate(
+            ["/a/b/one.md", "/a/b/two.md", "/a/b/sub/three.md", "/a/c/other.md"]
+        ):
+            sample_store.add_document(
+                path=path,
+                title=f"doc{i}",
+                chunks=[f"chunk {i}"],
+                embeddings=[[float(i + 1) / 10] * dim],
+                source_type="markdown",
+            )
+
+        deleted = sample_store.delete_by_path_prefix("/a/b/")
+        assert deleted == 3
+
+        # /a/c/other.md should still exist
+        docs = sample_store.list_documents()
+        assert len(docs) == 1
+        assert docs[0].path == "/a/c/other.md"
+
+    def test_zero_matches_returns_zero(self, sample_store: VstashStore) -> None:
+        """Returns 0 when no documents match the prefix."""
+        dim = sample_store.embedding_dim
+        sample_store.add_document(
+            path="/x/y/file.md",
+            title="doc",
+            chunks=["text"],
+            embeddings=[[0.1] * dim],
+            source_type="markdown",
+        )
+        assert sample_store.delete_by_path_prefix("/nonexistent/") == 0
+        assert len(sample_store.list_documents()) == 1
+
+    def test_special_chars_escaped(self, sample_store: VstashStore) -> None:
+        """Paths containing SQL LIKE wildcards (%, _) are escaped properly."""
+        dim = sample_store.embedding_dim
+
+        # Path with % and _ that could be misinterpreted as LIKE wildcards
+        sample_store.add_document(
+            path="/data/100%_done/report.md",
+            title="report",
+            chunks=["done"],
+            embeddings=[[0.1] * dim],
+            source_type="markdown",
+        )
+        sample_store.add_document(
+            path="/data/other/file.md",
+            title="other",
+            chunks=["other"],
+            embeddings=[[0.2] * dim],
+            source_type="markdown",
+        )
+
+        # Should only delete the doc under the literal "100%_done" path
+        deleted = sample_store.delete_by_path_prefix("/data/100%_done/")
+        assert deleted == 1
+        docs = sample_store.list_documents()
+        assert len(docs) == 1
+        assert docs[0].path == "/data/other/file.md"
+
+    def test_empty_prefix_raises(self, sample_store: VstashStore) -> None:
+        """Empty prefix raises ValueError to prevent accidental full wipe."""
+        with pytest.raises(ValueError, match="prefix must not be empty"):
+            sample_store.delete_by_path_prefix("")
+
+
+# ------------------------------------------------------------------ #
 # MMR fallback                                                        #
 # ------------------------------------------------------------------ #
 

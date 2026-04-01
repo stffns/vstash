@@ -30,9 +30,8 @@ class TestRetryE2E:
         with pytest.raises((ValueError, ImportError)):
             ask("test query", chunks, cfg)
 
-    def test_ask_invalid_backend_not_retried(self) -> None:
-        """Invalid backend should raise immediately without retry."""
-        # Bypass Pydantic validation by directly calling ask with bad config
+    def test_invalid_backend_not_registered(self) -> None:
+        """Ensure an 'invalid' backend is not registered in _BACKENDS."""
         from vstash.chat import _BACKENDS
 
         assert "invalid" not in _BACKENDS

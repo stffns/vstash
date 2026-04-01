@@ -29,7 +29,7 @@ Most RAG tools are slow, cloud-dependent, or require a running server. vstash is
 
 **Zero cloud required for search. Inference is optional.**
 
-### What's new in v0.10.2
+### What's new in v0.10.3
 
 - **API retry with backoff** — transient errors (429, 503, timeout) are retried automatically across all inference backends.
 - **Watch mode deletion** — `vstash watch` now removes documents from memory when files are deleted.
