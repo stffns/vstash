@@ -99,8 +99,12 @@ TASK_GROUPS: list[dict] = [
         "id": "vision",
         "name": "Computer Vision",
         "categories": [
-            "image-classification", "object-detection", "image-segmentation",
-            "image-to-text", "image-to-image", "depth-estimation",
+            "image-classification",
+            "object-detection",
+            "image-segmentation",
+            "image-to-text",
+            "image-to-image",
+            "depth-estimation",
         ],
         "queries": [
             "image classification dataset with labeled categories",
@@ -152,8 +156,10 @@ TASK_GROUPS: list[dict] = [
         "id": "audio",
         "name": "Audio & Speech",
         "categories": [
-            "automatic-speech-recognition", "audio-classification",
-            "text-to-speech", "voice-activity-detection",
+            "automatic-speech-recognition",
+            "audio-classification",
+            "text-to-speech",
+            "voice-activity-detection",
         ],
         "queries": [
             "speech recognition dataset with audio and transcriptions",
@@ -237,7 +243,7 @@ def fetch_datasets(target_count: int = 500) -> list[DatasetInfo]:
         for cat in g["categories"]:
             category_to_group.append((cat, g["id"]))
 
-    print(f"  Fetching datasets from HuggingFace Hub by task category...")
+    print("  Fetching datasets from HuggingFace Hub by task category...")
 
     for cat, group_id in category_to_group:
         # Fetch datasets for this specific task category
@@ -273,9 +279,7 @@ def fetch_datasets(target_count: int = 500) -> list[DatasetInfo]:
             # Extract task categories from tags
             tags = d.get("tags", [])
             task_cats = [
-                t.replace("task_categories:", "")
-                for t in tags
-                if t.startswith("task_categories:")
+                t.replace("task_categories:", "") for t in tags if t.startswith("task_categories:")
             ]
             if not task_cats:
                 task_cats = [cat]
@@ -326,9 +330,7 @@ MODEL = "BAAI/bge-small-en-v1.5"
 DIMS = 384
 
 
-def ingest_datasets(
-    datasets: list[DatasetInfo], store: VstashStore
-) -> dict[str, DatasetInfo]:
+def ingest_datasets(datasets: list[DatasetInfo], store: VstashStore) -> dict[str, DatasetInfo]:
     """Ingest datasets into vstash. Returns path → DatasetInfo mapping."""
     path_map: dict[str, DatasetInfo] = {}
 
@@ -445,9 +447,7 @@ def run_evaluation(
         for q in group["queries"]:
             all_queries.append({"query": q, "target_groups": [group["id"]]})
     for cq in CROSS_QUERIES:
-        all_queries.append(
-            {"query": cq["query"], "target_groups": cq["relevant_groups"]}
-        )
+        all_queries.append({"query": cq["query"], "target_groups": cq["relevant_groups"]})
 
     scoring = ScoringConfig(enabled=False)
 
@@ -471,19 +471,19 @@ def run_evaluation(
             if ds:
                 rel = 1.0 if ds.group in target_groups else 0.0
                 relevances.append(rel)
-                top_results.append({
-                    "dataset": ds.dataset_id,
-                    "group": ds.group,
-                    "tasks": ds.task_categories,
-                    "relevant": rel > 0,
-                    "score": round(chunk.score, 3),
-                })
+                top_results.append(
+                    {
+                        "dataset": ds.dataset_id,
+                        "group": ds.group,
+                        "tasks": ds.task_categories,
+                        "relevant": rel > 0,
+                        "score": round(chunk.score, 3),
+                    }
+                )
             else:
                 relevances.append(0.0)
 
-        total_relevant = sum(
-            1 for ds in path_map.values() if ds.group in target_groups
-        )
+        total_relevant = sum(1 for ds in path_map.values() if ds.group in target_groups)
         ideal = sorted(
             relevances + [1.0] * max(0, total_relevant - len(relevances)),
             reverse=True,
@@ -548,7 +548,7 @@ def interactive_mode(store: VstashStore, path_map: dict[str, DatasetInfo]) -> No
             if ds:
                 tasks = ", ".join(ds.task_categories[:3])
                 downloads = f"{ds.downloads:,}" if ds.downloads else "?"
-                print(f"  {i+1}. {ds.dataset_id}")
+                print(f"  {i + 1}. {ds.dataset_id}")
                 print(f"     Tasks: {tasks} | Downloads: {downloads} | Score: {chunk.score:.3f}")
                 # Show first 150 chars of description
                 desc_preview = ds.description[:150].replace("\n", " ")
@@ -566,15 +566,19 @@ def interactive_mode(store: VstashStore, path_map: dict[str, DatasetInfo]) -> No
 def main() -> None:
     parser = argparse.ArgumentParser(description="Dataset Discovery Engine")
     parser.add_argument(
-        "--datasets", type=int, default=500,
+        "--datasets",
+        type=int,
+        default=500,
         help="Number of datasets to fetch (default: 500)",
     )
     parser.add_argument(
-        "--skip-download", action="store_true",
+        "--skip-download",
+        action="store_true",
         help="Use cached corpus",
     )
     parser.add_argument(
-        "--interactive", action="store_true",
+        "--interactive",
+        action="store_true",
         help="Interactive discovery mode",
     )
     args = parser.parse_args()
@@ -587,7 +591,7 @@ def main() -> None:
     if args.skip_download:
         cache_file = CACHE_DIR / f"datasets_{args.datasets}.json"
         if not cache_file.exists():
-            print(f"  Cache not found, downloading...")
+            print("  Cache not found, downloading...")
             datasets = download_corpus(target_count=args.datasets)
         else:
             data = json.loads(cache_file.read_text())
@@ -623,9 +627,9 @@ def main() -> None:
     elapsed = time.time() - t0
 
     # Step 4: Results
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print("  RESULTS")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
     print(f"  Corpus:          {result.corpus_size} datasets")
     print(f"  Queries:         {result.num_queries}")
     print(f"  Precision@5:     {result.mean_precision_5:.3f}")
@@ -635,10 +639,12 @@ def main() -> None:
     print(f"  Time:            {elapsed:.1f}s")
 
     # Show sample queries
-    print(f"\n  Sample results:")
+    print("\n  Sample results:")
     for qr in result.per_query[:5]:
-        print(f"\n    Q: \"{qr.query}\"")
-        print(f"    Targets: {qr.target_groups} | P@5={qr.precision_5:.2f} | MRR={qr.mrr_score:.2f}")
+        print(f'\n    Q: "{qr.query}"')
+        print(
+            f"    Targets: {qr.target_groups} | P@5={qr.precision_5:.2f} | MRR={qr.mrr_score:.2f}"
+        )
         for tr in qr.top_results[:3]:
             marker = "✓" if tr["relevant"] else "✗"
             print(f"      {marker} {tr['dataset']} ({tr['group']}) — {tr['score']:.3f}")

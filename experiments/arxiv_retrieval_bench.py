@@ -58,11 +58,26 @@ TOPICS: list[dict] = [
         "id": "nlp",
         "name": "Natural Language Processing",
         "keywords": [
-            "language model", "text classification", "sentiment", "translation",
-            "named entity", "question answering", "summarization", "parsing",
-            "word embedding", "tokeniz", "bert", "gpt", "transformer",
-            "seq2seq", "attention mechanism", "corpus", "nlp", "dialogue",
-            "text generation", "language understanding",
+            "language model",
+            "text classification",
+            "sentiment",
+            "translation",
+            "named entity",
+            "question answering",
+            "summarization",
+            "parsing",
+            "word embedding",
+            "tokeniz",
+            "bert",
+            "gpt",
+            "transformer",
+            "seq2seq",
+            "attention mechanism",
+            "corpus",
+            "nlp",
+            "dialogue",
+            "text generation",
+            "language understanding",
         ],
         "queries": [
             "language models and text generation techniques",
@@ -74,11 +89,24 @@ TOPICS: list[dict] = [
         "id": "cv",
         "name": "Computer Vision",
         "keywords": [
-            "image classification", "object detection", "segmentation",
-            "convolutional neural", "cnn", "visual", "image recognition",
-            "face recognition", "image generation", "gan", "pixel",
-            "resnet", "yolo", "image feature", "scene understanding",
-            "optical flow", "video understanding", "pose estimation",
+            "image classification",
+            "object detection",
+            "segmentation",
+            "convolutional neural",
+            "cnn",
+            "visual",
+            "image recognition",
+            "face recognition",
+            "image generation",
+            "gan",
+            "pixel",
+            "resnet",
+            "yolo",
+            "image feature",
+            "scene understanding",
+            "optical flow",
+            "video understanding",
+            "pose estimation",
         ],
         "queries": [
             "image classification and object detection with deep learning",
@@ -90,10 +118,22 @@ TOPICS: list[dict] = [
         "id": "rl",
         "name": "Reinforcement Learning",
         "keywords": [
-            "reinforcement learning", "reward", "policy gradient", "q-learning",
-            "markov decision", "exploration", "multi-armed bandit", "actor-critic",
-            "temporal difference", "sarsa", "value function", "bellman",
-            "model-based rl", "model-free", "on-policy", "off-policy",
+            "reinforcement learning",
+            "reward",
+            "policy gradient",
+            "q-learning",
+            "markov decision",
+            "exploration",
+            "multi-armed bandit",
+            "actor-critic",
+            "temporal difference",
+            "sarsa",
+            "value function",
+            "bellman",
+            "model-based rl",
+            "model-free",
+            "on-policy",
+            "off-policy",
         ],
         "queries": [
             "reinforcement learning policy optimization and reward shaping",
@@ -105,10 +145,21 @@ TOPICS: list[dict] = [
         "id": "optimization",
         "name": "Optimization and Training",
         "keywords": [
-            "gradient descent", "stochastic optimization", "adam optimizer",
-            "learning rate", "convergence", "loss function", "backpropagation",
-            "batch normalization", "dropout", "regularization", "weight decay",
-            "hyperparameter", "momentum", "sgd", "optimization landscape",
+            "gradient descent",
+            "stochastic optimization",
+            "adam optimizer",
+            "learning rate",
+            "convergence",
+            "loss function",
+            "backpropagation",
+            "batch normalization",
+            "dropout",
+            "regularization",
+            "weight decay",
+            "hyperparameter",
+            "momentum",
+            "sgd",
+            "optimization landscape",
         ],
         "queries": [
             "stochastic gradient descent and optimization convergence",
@@ -120,10 +171,18 @@ TOPICS: list[dict] = [
         "id": "graphs",
         "name": "Graph Neural Networks",
         "keywords": [
-            "graph neural", "graph convolution", "node classification",
-            "link prediction", "graph embedding", "knowledge graph",
-            "message passing", "graph attention", "spectral graph",
-            "community detection", "graph generation", "molecular graph",
+            "graph neural",
+            "graph convolution",
+            "node classification",
+            "link prediction",
+            "graph embedding",
+            "knowledge graph",
+            "message passing",
+            "graph attention",
+            "spectral graph",
+            "community detection",
+            "graph generation",
+            "molecular graph",
         ],
         "queries": [
             "graph neural networks for node classification",
@@ -135,10 +194,20 @@ TOPICS: list[dict] = [
         "id": "generative",
         "name": "Generative Models",
         "keywords": [
-            "variational autoencoder", "vae", "generative adversarial",
-            "diffusion model", "flow-based", "normalizing flow",
-            "latent space", "decoder", "image synthesis", "score matching",
-            "denoising", "sampling", "likelihood", "generative model",
+            "variational autoencoder",
+            "vae",
+            "generative adversarial",
+            "diffusion model",
+            "flow-based",
+            "normalizing flow",
+            "latent space",
+            "decoder",
+            "image synthesis",
+            "score matching",
+            "denoising",
+            "sampling",
+            "likelihood",
+            "generative model",
         ],
         "queries": [
             "variational autoencoders and latent space representations",
@@ -150,10 +219,18 @@ TOPICS: list[dict] = [
         "id": "federated",
         "name": "Federated and Distributed Learning",
         "keywords": [
-            "federated learning", "distributed training", "communication efficiency",
-            "privacy preserving", "differential privacy", "data heterogeneity",
-            "model aggregation", "gradient compression", "decentralized",
-            "parallel training", "data parallel", "model parallel",
+            "federated learning",
+            "distributed training",
+            "communication efficiency",
+            "privacy preserving",
+            "differential privacy",
+            "data heterogeneity",
+            "model aggregation",
+            "gradient compression",
+            "decentralized",
+            "parallel training",
+            "data parallel",
+            "model parallel",
         ],
         "queries": [
             "federated learning with privacy preserving aggregation",
@@ -165,10 +242,19 @@ TOPICS: list[dict] = [
         "id": "transfer",
         "name": "Transfer Learning and Few-Shot",
         "keywords": [
-            "transfer learning", "domain adaptation", "few-shot", "zero-shot",
-            "meta-learning", "pre-training", "fine-tuning", "self-supervised",
-            "contrastive learning", "representation learning", "prompt",
-            "in-context learning", "foundation model",
+            "transfer learning",
+            "domain adaptation",
+            "few-shot",
+            "zero-shot",
+            "meta-learning",
+            "pre-training",
+            "fine-tuning",
+            "self-supervised",
+            "contrastive learning",
+            "representation learning",
+            "prompt",
+            "in-context learning",
+            "foundation model",
         ],
         "queries": [
             "transfer learning and domain adaptation strategies",
@@ -180,10 +266,21 @@ TOPICS: list[dict] = [
         "id": "fairness",
         "name": "Fairness and Interpretability",
         "keywords": [
-            "fairness", "bias", "interpretab", "explainab", "saliency",
-            "feature importance", "attention visualization", "lime", "shap",
-            "counterfactual", "causal", "algorithmic fairness", "transparency",
-            "trustworth", "accountability",
+            "fairness",
+            "bias",
+            "interpretab",
+            "explainab",
+            "saliency",
+            "feature importance",
+            "attention visualization",
+            "lime",
+            "shap",
+            "counterfactual",
+            "causal",
+            "algorithmic fairness",
+            "transparency",
+            "trustworth",
+            "accountability",
         ],
         "queries": [
             "algorithmic fairness and bias mitigation in ML models",
@@ -195,10 +292,20 @@ TOPICS: list[dict] = [
         "id": "timeseries",
         "name": "Time Series and Forecasting",
         "keywords": [
-            "time series", "forecasting", "temporal", "recurrent neural",
-            "lstm", "gru", "autoregressive", "anomaly detection",
-            "sequence modeling", "signal processing", "wavelet",
-            "seasonal", "trend", "prediction horizon",
+            "time series",
+            "forecasting",
+            "temporal",
+            "recurrent neural",
+            "lstm",
+            "gru",
+            "autoregressive",
+            "anomaly detection",
+            "sequence modeling",
+            "signal processing",
+            "wavelet",
+            "seasonal",
+            "trend",
+            "prediction horizon",
         ],
         "queries": [
             "time series forecasting with recurrent neural networks",
@@ -347,7 +454,7 @@ def download_corpus(total_papers: int = 1000) -> list[Paper]:
 
 
 def ingest_papers(
-    papers: list[Paper], store: VstashStore, model: str, backend: BackendType = "onnx"
+    papers: list[Paper], store: VstashStore, model: str, backend: str = "onnx"
 ) -> dict[str, str]:
     """Ingest papers into vstash store. Returns path → topic mapping."""
     path_to_topic: dict[str, str] = {}
@@ -484,13 +591,9 @@ def evaluate_queries(
     all_queries: list[dict] = []
     for topic_info in TOPICS:
         for q in topic_info["queries"]:
-            all_queries.append(
-                {"query": q, "target_topics": [topic_info["id"]]}
-            )
+            all_queries.append({"query": q, "target_topics": [topic_info["id"]]})
     for cq in CROSS_QUERIES:
-        all_queries.append(
-            {"query": cq["query"], "target_topics": cq["relevant_topics"]}
-        )
+        all_queries.append({"query": cq["query"], "target_topics": cq["relevant_topics"]})
 
     # Override scoring config mmr_lambda
     if scoring_config:
@@ -547,9 +650,7 @@ def evaluate_queries(
             relevances.append(rel)
 
         # Count total relevant in corpus for recall
-        total_relevant = sum(
-            1 for t in path_to_topic.values() if t in target_topics
-        )
+        total_relevant = sum(1 for t in path_to_topic.values() if t in target_topics)
 
         # Ideal ranking for NDCG
         ideal_rels = sorted(
@@ -612,9 +713,9 @@ def run_benchmark(
     model_name = model_cfg["name"]
     dims = model_cfg["dims"]
 
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(f"  Model: {model_cfg['label']}")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
 
     # Create temp DB and ingest
     db_path = Path(tempfile.mkdtemp()) / f"arxiv_bench_{model_key}.db"
@@ -700,14 +801,14 @@ def run_benchmark(
 
 def print_summary(all_results: list[BenchmarkResult]) -> None:
     """Print a comparison table."""
-    print(f"\n{'='*90}")
+    print(f"\n{'=' * 90}")
     print("  RESULTS SUMMARY")
-    print(f"{'='*90}")
+    print(f"{'=' * 90}")
     print(
         f"  {'Model':<28} {'Config':<22} {'P@5':>6} {'P@10':>6} "
         f"{'NDCG@5':>7} {'NDCG@10':>8} {'MRR':>6}"
     )
-    print(f"  {'─'*85}")
+    print(f"  {'─' * 85}")
 
     for r in all_results:
         label = f"{r.search_mode}"
