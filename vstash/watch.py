@@ -190,6 +190,21 @@ def start_watch(
         except Exception as exc:
             console.print(f"[red]✗ Watch delete error: {exc}[/red]")
 
+    def _handle_dir_delete(dir_path: str) -> None:
+        """Remove all documents under a deleted directory from the store."""
+        try:
+            resolved = str(Path(dir_path).resolve())
+            # Use SQL LIKE prefix match — thread-safe and O(index) via idx_documents_path
+            removed = store.delete_by_path_prefix(resolved + "/")
+            if removed:
+                ts = time.strftime("%H:%M:%S")
+                console.print(
+                    f"[dim]{ts}[/dim] [red]✗[/red] Removed {removed} docs from: "
+                    f"{Path(dir_path).name}/"
+                )
+        except Exception as exc:
+            console.print(f"[red]✗ Watch dir delete error: {exc}[/red]")
+
     class Handler(FileSystemEventHandler):
         """React to filesystem create/modify/delete events."""
 
@@ -208,10 +223,10 @@ def start_watch(
                 debounce.trigger(event.src_path, _enqueue_file)
 
         def on_deleted(self, event: FileSystemEvent) -> None:
-            """Handle file deletion — remove from store."""
+            """Handle file or directory deletion — remove from store."""
             if event.is_directory:
-                return
-            if _should_process(event.src_path, exts):
+                _handle_dir_delete(event.src_path)
+            elif _should_process(event.src_path, exts):
                 _handle_delete(event.src_path)
 
     observer = Observer()

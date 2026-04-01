@@ -303,6 +303,7 @@ class VstashStore:
             USING fts5(text, content=chunks, content_rowid=id, tokenize='porter ascii');
 
             CREATE INDEX IF NOT EXISTS idx_chunks_doc ON chunks(doc_id);
+            CREATE INDEX IF NOT EXISTS idx_documents_path ON documents(path);
 
             -- Search statistics for adaptive relevance threshold
             CREATE TABLE IF NOT EXISTS search_stats (
@@ -520,6 +521,37 @@ class VstashStore:
                 self._reload_snapvec()
                 raise
         return doc_id
+
+    def delete_by_path_prefix(self, prefix: str) -> int:
+        """Remove all documents whose path starts with *prefix*.
+
+        Useful for bulk-removing documents when a directory is deleted.
+
+        Args:
+            prefix: Path prefix (e.g. ``/home/user/docs/``).
+
+        Returns:
+            Number of documents deleted.
+        """
+        with self._write_lock:
+            rows = self._conn.execute(
+                "SELECT id FROM documents WHERE path LIKE ? ESCAPE '\\'",
+                [prefix.replace("%", "\\%").replace("_", "\\_") + "%"],
+            ).fetchall()
+            if not rows:
+                return 0
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                for row in rows:
+                    self._delete_by_doc_id(row[0])
+                self._conn.commit()
+                if self._snap_dirty:
+                    self._save_snapvec()
+            except Exception:
+                self._conn.rollback()
+                self._reload_snapvec()
+                raise
+            return len(rows)
 
     def delete_document(self, path: str) -> bool:
         """Remove a document and all its chunks from the store.
@@ -1609,16 +1641,24 @@ class VstashStore:
                         progress_cb(processed, total)
 
                 self._conn.commit()
-                # Update stored dimension only after successful commit
-                self.embedding_dim = new_dim
-                # Persist snapvec AFTER successful SQLite commit
-                if self._snap is not None:
-                    self._save_snapvec()
             except Exception:
                 self._conn.rollback()
-                # Restore old dimension so _reload_snapvec uses correct dim
                 self._reload_snapvec()
                 raise
+
+            # Update stored dimension only after successful commit
+            self.embedding_dim = new_dim
+            # Persist snapvec AFTER successful SQLite commit; failures here
+            # cannot be rolled back via SQLite, so we log them.
+            if self._snap is not None:
+                self._snap_dirty = True
+                try:
+                    self._save_snapvec()
+                except Exception:
+                    logger.exception(
+                        "Failed to persist snapvec after successful reindex; "
+                        "run 'vstash reindex' again to rebuild."
+                    )
 
             return processed
 
