@@ -52,6 +52,8 @@ def _is_retryable(exc: Exception) -> bool:
 
 def _retry_ask(fn, *args, **kwargs) -> str:  # type: ignore[no-untyped-def]
     """Retry a non-streaming ask function with exponential backoff."""
+    import sys
+
     last_exc: Exception | None = None
     for attempt in range(_MAX_RETRIES):
         try:
@@ -67,6 +69,13 @@ def _retry_ask(fn, *args, **kwargs) -> str:  # type: ignore[no-untyped-def]
                     fn.__name__,
                     delay,
                     exc,
+                )
+                # Print to stderr so the user sees retry progress
+                print(
+                    f"\r⟳ Retry {attempt + 1}/{_MAX_RETRIES} in {delay:.0f}s...",
+                    end="",
+                    flush=True,
+                    file=sys.stderr,
                 )
                 time.sleep(delay)
             else:
