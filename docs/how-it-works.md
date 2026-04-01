@@ -75,7 +75,7 @@ query
   → keyword search         (FTS5: top-k × 10 candidates by BM25)
   → RRF fusion             (merge both rankings)
   → memory scoring         (frequency + temporal decay re-ranking)
-  → document dedup         (one result per document path)
+  → MMR dedup              (intra-document diversity via Maximal Marginal Relevance)
   → relevance signal       (distance-based confidence: high/medium/low)
   → context expansion      (±1 adjacent chunks for LLM context)
   → top-k results          (default: 5 chunks)

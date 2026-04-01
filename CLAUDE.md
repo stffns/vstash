@@ -25,7 +25,7 @@ vstash stats
 
 ```
 vstash/
-  __init__.py       # version (__version__ = "0.10.1")
+  __init__.py       # version (__version__ = "0.10.3")
   cli.py            # typer CLI — add, search, ask, chat, list, stats, forget, reindex, watch, config, export, remember
   store.py          # VstashStore — SQLite + sqlite-vec + FTS5, RRF, scoring, MMR dedup, reindex
   ingest.py         # parse → chunk → embed pipeline
@@ -37,7 +37,7 @@ vstash/
   memory.py         # Python SDK (from vstash import Memory)
   langchain.py      # VstashRetriever for LangChain
   models.py         # Pydantic models (SearchResult, DocumentInfo, StoreStats, IngestResult)
-  watch.py          # File watcher for auto-ingestion
+  watch.py          # File watcher for auto-ingestion and deletion handling
 
 tests/
   test_store.py     # Store CRUD, search, MMR dedup, reindex, scoring, context expansion
@@ -47,6 +47,10 @@ tests/
   test_cli_commands.py  # CLI command tests
   test_scoring_e2e.py   # End-to-end scoring scenarios
   test_snapvec_backend.py # Optional snapvec backend tests
+  test_robustness.py  # Expand context isolation, reindex safety, scoring edge cases
+  test_watch_e2e.py   # Watch mode e2e: create, modify, delete, debounce, shutdown
+  test_retry_e2e.py   # Retry with backoff e2e tests
+  test_url_titles_e2e.py # URL title extraction e2e tests
   conftest.py       # Fixtures (tmp_db_path, sample_store)
 
 experiments/        # Research experiment scripts + results
@@ -70,7 +74,7 @@ docs/               # User-facing documentation
 - **Pydantic v2** for all config and data models (frozen=True)
 - **Type hints** on all public functions
 - **ruff** for linting and formatting (enforced in CI)
-- **pytest** for testing (368 tests as of v0.10.1)
+- **pytest** for testing (447 tests as of v0.10.3)
 - **Conventional commits** with emoji prefixes (feat, fix, docs, chore, perf)
 
 ## Database schema

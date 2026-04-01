@@ -123,19 +123,19 @@ class TestRelevanceTier:
     """Test the _relevance_tier helper."""
 
     def test_high_relevance(self) -> None:
-        from vstash.cli import _relevance_tier
+        from vstash.store import relevance_tier
 
-        assert _relevance_tier(0.50) == "high"
-        assert _relevance_tier(0.95) == "high"
+        assert relevance_tier(0.50) == "high"
+        assert relevance_tier(0.95) == "high"
 
     def test_medium_relevance(self) -> None:
-        from vstash.cli import _relevance_tier
+        from vstash.store import relevance_tier
 
-        assert _relevance_tier(0.96) == "medium"
-        assert _relevance_tier(0.98) == "medium"
+        assert relevance_tier(0.96) == "medium"
+        assert relevance_tier(0.98) == "medium"
 
     def test_low_relevance(self) -> None:
-        from vstash.cli import _relevance_tier
+        from vstash.store import relevance_tier
 
-        assert _relevance_tier(0.99) == "low"
-        assert _relevance_tier(1.20) == "low"
+        assert relevance_tier(0.99) == "low"
+        assert relevance_tier(1.20) == "low"

@@ -29,6 +29,12 @@ Most RAG tools are slow, cloud-dependent, or require a running server. vstash is
 
 **Zero cloud required for search. Inference is optional.**
 
+### What's new in v0.10.2
+
+- **API retry with backoff** — transient errors (429, 503, timeout) are retried automatically across all inference backends.
+- **Watch mode deletion** — `vstash watch` now removes documents from memory when files are deleted.
+- **12 robustness fixes** — cross-collection isolation, reindex safety, scoring edge cases, and more.
+
 ### What's new in v0.10.1
 
 - **Optional snapvec backend** — compressed ANN vector search via `pip install vstash[snapvec]`. Opt-in with `storage.vector_backend = "snapvec"` in `vstash.toml`. sqlite-vec remains the default for most users.

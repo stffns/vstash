@@ -133,11 +133,15 @@ def start_watch(
 
     # --- Serialised ingestion via queue (thread-safe for SQLite) ---
     ingest_queue: queue.Queue[str | None] = queue.Queue()
+    stop_event = threading.Event()
 
     def _worker() -> None:
         """Process files from the queue one at a time."""
-        while True:
-            file_path = ingest_queue.get()
+        while not stop_event.is_set():
+            try:
+                file_path = ingest_queue.get(timeout=1)
+            except queue.Empty:
+                continue
             if file_path is None:  # Poison pill → exit
                 break
             if not Path(file_path).exists():
@@ -175,8 +179,19 @@ def start_watch(
         """Push a file path into the ingestion queue."""
         ingest_queue.put(file_path)
 
+    def _handle_delete(file_path: str) -> None:
+        """Remove a deleted file from the store."""
+        try:
+            resolved = str(Path(file_path).resolve())
+            deleted = store.delete_document(resolved)
+            if deleted:
+                ts = time.strftime("%H:%M:%S")
+                console.print(f"[dim]{ts}[/dim] [red]✗[/red] Removed: {Path(file_path).name}")
+        except Exception as exc:
+            console.print(f"[red]✗ Watch delete error: {exc}[/red]")
+
     class Handler(FileSystemEventHandler):
-        """React to filesystem create/modify events."""
+        """React to filesystem create/modify/delete events."""
 
         def on_created(self, event: FileSystemEvent) -> None:
             """Handle file creation."""
@@ -191,6 +206,13 @@ def start_watch(
                 return
             if _should_process(event.src_path, exts):
                 debounce.trigger(event.src_path, _enqueue_file)
+
+        def on_deleted(self, event: FileSystemEvent) -> None:
+            """Handle file deletion — remove from store."""
+            if event.is_directory:
+                return
+            if _should_process(event.src_path, exts):
+                _handle_delete(event.src_path)
 
     observer = Observer()
     handler = Handler()
@@ -216,8 +238,17 @@ def start_watch(
             time.sleep(1)
     except KeyboardInterrupt:
         debounce.cancel_all()
-        ingest_queue.put(None)  # Signal worker to exit
-        worker_thread.join(timeout=5)
+        stop_event.set()  # Signal worker to check exit condition
+        # Drain pending items so worker doesn't process stale files
+        while not ingest_queue.empty():
+            try:
+                ingest_queue.get_nowait()
+            except queue.Empty:
+                break
+        ingest_queue.put(None)  # Poison pill for clean exit
+        worker_thread.join(timeout=10)
+        if worker_thread.is_alive():
+            console.print("[yellow]⚠ Worker still processing — forcing stop.[/yellow]")
         observer.stop()
         console.print("\n[dim]Watcher stopped.[/dim]")
     observer.join()

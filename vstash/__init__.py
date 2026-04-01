@@ -1,6 +1,6 @@
 """vstash — local document memory with instant semantic search."""
 
-__version__ = "0.10.1"
+__version__ = "0.10.3"
 
 from .memory import Memory
 from .models import DocumentInfo, IngestResult, SearchResult, StoreStats
