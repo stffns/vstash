@@ -529,10 +529,16 @@ class VstashStore:
 
         Args:
             prefix: Path prefix (e.g. ``/home/user/docs/``).
+                Must not be empty.
 
         Returns:
             Number of documents deleted.
+
+        Raises:
+            ValueError: If prefix is empty (would match all documents).
         """
+        if not prefix:
+            raise ValueError("prefix must not be empty")
         with self._write_lock:
             rows = self._conn.execute(
                 "SELECT id FROM documents WHERE path LIKE ? ESCAPE '\\'",
