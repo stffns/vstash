@@ -6,7 +6,25 @@ All notable changes to vstash are documented here.
 
 ### Added
 - **`openai.extra_body` config** — pass arbitrary JSON fields to OpenAI-compatible chat completions (e.g., `chat_template_kwargs` for Qwen thinking mode, vLLM sampling params)
-- 2 new config tests for `extra_body` loading
+- **Watch mode file deletion** — `on_deleted` handler automatically removes deleted files from the store
+- **Stream interruption warning** — shows "Stream interrupted after N tokens" on mid-stream errors
+- **Frontmatter validation warnings** — warns when `project`/`layer` is a dict/list instead of silently dropping
+- **URL title extraction** — URLs now get real titles from parsed content instead of raw URL
+- **API retry with exponential backoff** — retries transient errors (429, 503, timeout) for all inference backends
+
+### Fixed
+- **expand_context cross-collection isolation** — resolves doc_id via chunk text match to prevent leaking chunks across collections
+- **Reindex dim safety** — `embedding_dim` only updates after successful commit; rollback restores correct state
+- **Watch shutdown cleanup** — `stop_event` + queue drain for clean exit without orphaned threads or DB locks
+- **Scoring maturity gate** — guards against division-by-zero when access mean ≈ 0
+- **Scoring bias for new chunks** — new chunks get `freq_normalized=0.0` instead of artificial frequency boost
+- **Unknown embedding model** — raises `ValueError` with list of known models instead of silent 384-dim default
+- **MMR fallback visibility** — upgraded from debug to warning when falling back to hard dedup
+- **SnapIndex failure messages** — actionable "run vstash reindex" hint when `.snpv` file is corrupt
+- **Shared `relevance_tier()` helper** — deduplicated from cli.py, mcp.py into store.py
+
+### Changed
+- 447 tests (up from 368), including 9 watch e2e integration tests and 13 robustness tests
 
 ---
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from vstash.embed import KNOWN_DIMS, get_embedding_dim
 
 
@@ -20,8 +22,9 @@ class TestGetEmbeddingDim:
     def test_known_model_nomic(self) -> None:
         assert get_embedding_dim("nomic-ai/nomic-embed-text-v1.5") == 768
 
-    def test_unknown_model_defaults_to_384(self) -> None:
-        assert get_embedding_dim("unknown/model-name") == 384
+    def test_unknown_model_raises_value_error(self) -> None:
+        with pytest.raises(ValueError, match="Unknown embedding model"):
+            get_embedding_dim("unknown/model-name")
 
     def test_known_dims_dict_is_populated(self) -> None:
         assert len(KNOWN_DIMS) >= 4

@@ -81,6 +81,7 @@ def _retry_call(fn, *args, **kwargs):  # type: ignore[no-untyped-def]
     # Unreachable: loop always returns or raises
     raise RuntimeError("unreachable")  # pragma: no cover
 
+
 SYSTEM_PROMPT = """You are a precise document assistant. Answer questions based strictly on the provided context.
 
 Rules:
