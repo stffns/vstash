@@ -116,6 +116,20 @@ class TestConfigModelValidate:
         assert cfg.inference.backend == "cerebras"
         assert cfg.chunking.size == 1024
 
+    def test_openai_extra_body(self) -> None:
+        raw = {
+            "openai": {
+                "model": "Qwen/Qwen3-32B",
+                "extra_body": {"chat_template_kwargs": {"enable_thinking": True}},
+            }
+        }
+        cfg = VstashConfig.model_validate(raw)
+        assert cfg.openai.extra_body == {"chat_template_kwargs": {"enable_thinking": True}}
+
+    def test_openai_extra_body_default_none(self) -> None:
+        cfg = VstashConfig.model_validate({})
+        assert cfg.openai.extra_body is None
+
 
 class TestLoadConfig:
     """Test load_config file resolution."""
