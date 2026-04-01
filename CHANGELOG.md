@@ -2,6 +2,14 @@
 
 All notable changes to vstash are documented here.
 
+## [0.10.4] — 2026-04-01
+
+### Added
+- **`delete_by_path_prefix` empty-prefix guard** — raises `ValueError` on empty prefix to prevent accidental full wipe
+- **4 tests for `delete_by_path_prefix`** — basic prefix match, zero-match returns 0, SQL LIKE wildcard escaping (%, _), empty-prefix ValueError
+
+---
+
 ## [0.10.3] — 2026-04-01
 
 ### Added
