@@ -145,5 +145,7 @@ class TestLoadConfig:
 
     def test_falls_back_to_defaults(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.delenv("VSTASH_CONFIG", raising=False)
         cfg = load_config()
         assert cfg.inference.backend == "cerebras"
