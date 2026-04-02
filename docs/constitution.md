@@ -425,12 +425,22 @@ vstash as a building block for agents and pipelines.
 - [x] SDK benchmark suite
 - [x] 147 pytest tests across 9 test modules
 
-### Phase 4 — Sync & Integrations
+### Phase 4 — Profiles & Agent Memory ✅ Done (v0.11.0–v0.13.0)
+Multi-profile support, cross-session journal, and direct chunk access.
+
+- [x] Multiple memory profiles: `vstash --profile work ask "..."` (v0.11.0)
+- [x] Federated search across profiles (v0.11.0)
+- [x] Cross-session journal: save/recall/log/prune (v0.12.0)
+- [x] Transcript parsing for Claude Code sessions (v0.12.0)
+- [x] Direct chunk access: `get_chunk(id)` / `get_chunks(ids)` (v0.13.0)
+- [x] `ChunkInfo` model for typed chunk lookups (v0.13.0)
+- [x] 556 pytest tests across 14 test modules
+
+### Phase 5 — Sync & Integrations
 Share memory across machines and expose to non-Python tools.
 
 - [ ] `cr-sqlite` integration — CRDT-based SQLite sync (peer-to-peer)
 - [ ] `vstash sync` — merge two `.db` files intelligently
-- [ ] Multiple memory profiles: `vstash --profile work ask "..."`
 - [ ] REST API mode (opt-in, local only) for non-Python integrations
 - [ ] Web UI (optional, lightweight, localhost only)
 
@@ -448,7 +458,7 @@ Share memory across machines and expose to non-Python tools.
 - **sqlite-vec** is new and underused — devs will want to see it in production
 - **Backend agnostic** — Cerebras for speed, OpenAI for flexibility, Ollama for privacy
 - **Dead simple** — `pip install vstash`, one config file, running in 5 minutes
-- **Typed and tested** — Pydantic v2 models + 147 pytest tests across 9 modules
+- **Typed and tested** — Pydantic v2 models + 556 pytest tests across 14 modules
 - **Benchmarked** — E2E timing, grep comparison, chunking A/B, SDK overhead, scalability to 500K chunks
 
 ---
