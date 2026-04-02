@@ -1120,6 +1120,23 @@ class VstashStore:
         ).fetchone()
         return row["path"] if row else None
 
+    def get_document_chunks(self, path: str) -> list[str]:
+        """Get all chunk texts for a document by path.
+
+        Args:
+            path: Document path as stored in the database.
+
+        Returns:
+            List of chunk texts ordered by sequence number.
+        """
+        rows = self._conn.execute(
+            "SELECT text FROM chunks WHERE doc_id = ("
+            "  SELECT id FROM documents WHERE path = ?"
+            ") ORDER BY seq",
+            [path],
+        ).fetchall()
+        return [row["text"] for row in rows]
+
     # ------------------------------------------------------------------ #
     # Inspect                                                              #
     # ------------------------------------------------------------------ #
