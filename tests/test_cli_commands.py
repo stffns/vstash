@@ -23,7 +23,7 @@ def _patch_store(populated_store: VstashStore, monkeypatch) -> None:
     monkeypatch.setattr(
         cli_mod,
         "_get_store",
-        lambda cfg=None, warm=False: (load_config(), populated_store),
+        lambda cfg=None, warm=False, profile=None: (load_config(), populated_store),
     )
 
 
@@ -111,7 +111,7 @@ class TestAskErrorPaths:
         monkeypatch.setattr(
             cli_mod,
             "_get_store",
-            lambda cfg=None, warm=False: (load_config(), empty_store),
+            lambda cfg=None, warm=False, profile=None: (load_config(), empty_store),
         )
 
         result = runner.invoke(app, ["ask", "What is Python?"])
