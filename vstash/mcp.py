@@ -715,6 +715,136 @@ def vstash_export(
 
 
 # ------------------------------------------------------------------ #
+# Journal tools                                                        #
+# ------------------------------------------------------------------ #
+
+
+@mcp_server.tool()
+def vstash_journal_save(
+    text: str,
+    title: str | None = None,
+    project: str | None = None,
+    tags: str | None = None,
+    source: str | None = None,
+) -> str:
+    """Save a journal entry for cross-session memory.
+
+    Stores text in a dedicated journal profile with auto-timestamped titles.
+    Use this to persist decisions, context, and findings across sessions.
+
+    Args:
+        text: Content to save in the journal.
+        title: Optional title (auto-generated with timestamp if omitted).
+        project: Project tag (auto-detected from cwd if omitted).
+        tags: Comma-separated tags (journal tag added automatically).
+        source: Source identifier (e.g. 'agent', 'session', 'mcp').
+
+    Returns:
+        JSON with entry metadata (title, chunks, tags, added_at).
+    """
+    try:
+        from .journal import journal_save
+
+        result = journal_save(text, title=title, project=project, tags=tags, source=source or "mcp")
+        return _ok(result)
+    except Exception as exc:
+        logger.exception("vstash_journal_save failed")
+        return _error(f"Journal save failed: {exc}")
+
+
+@mcp_server.tool()
+def vstash_journal_recall(
+    query: str | None = None,
+    top_k: int = 5,
+    project: str | None = None,
+) -> str:
+    """Recall relevant journal entries from past sessions.
+
+    When query is omitted, returns the most recent entries.
+    When query is provided, performs semantic search over the journal.
+
+    Use this at the start of a session to recover context, or when
+    the user references prior work.
+
+    Args:
+        query: Search query (omit for most recent entries).
+        top_k: Number of entries to return (default: 5).
+        project: Filter by project tag.
+
+    Returns:
+        JSON array of journal entries with text, title, and score/date.
+    """
+    try:
+        from .journal import journal_recall
+
+        entries = journal_recall(query=query, top_k=top_k, project=project)
+        return _ok(entries)
+    except Exception as exc:
+        logger.exception("vstash_journal_recall failed")
+        return _error(f"Journal recall failed: {exc}")
+
+
+@mcp_server.tool()
+def vstash_journal_log(
+    limit: int = 20,
+    recent: str | None = None,
+    project: str | None = None,
+) -> str:
+    """List journal entries chronologically (newest first).
+
+    Shows entry titles, projects, tags, and dates — like git log
+    for your memory journal.
+
+    Args:
+        limit: Max entries to return (default: 20).
+        recent: Time window filter (e.g. '7d', '24h', '2w'). Only entries
+            within this window are returned.
+        project: Filter by project tag.
+
+    Returns:
+        JSON array of entry summaries.
+    """
+    try:
+        from .journal import journal_log
+
+        entries = journal_log(limit=limit, recent=recent, project=project)
+        return _ok(entries)
+    except Exception as exc:
+        logger.exception("vstash_journal_log failed")
+        return _error(f"Journal log failed: {exc}")
+
+
+@mcp_server.tool()
+def vstash_journal_prune(
+    age: str,
+    project: str | None = None,
+    dry_run: bool = False,
+) -> str:
+    """Remove old journal entries to keep the journal lean.
+
+    Deletes entries older than the specified age threshold.
+
+    Args:
+        age: Age threshold like '30d' (days), '2w' (weeks), '24h' (hours).
+        project: Only prune entries for this project.
+        dry_run: If true, report what would be deleted without deleting.
+
+    Returns:
+        JSON with count of deleted entries and their titles.
+    """
+    try:
+        from .journal import journal_prune
+
+        result = journal_prune(age, project=project, dry_run=dry_run)
+        return _ok(result)
+    except ValueError as exc:
+        return _error(str(exc))
+    except Exception as exc:
+        logger.exception("vstash_journal_prune failed")
+        return _error(f"Journal prune failed: {exc}")
+
+
+# ------------------------------------------------------------------ #
 # Entry point                                                          #
 # ------------------------------------------------------------------ #
 
