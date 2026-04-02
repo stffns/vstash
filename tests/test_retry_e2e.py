@@ -14,7 +14,7 @@ from vstash.models import SearchResult
 
 
 def _make_chunk(text: str = "test context") -> SearchResult:
-    return SearchResult(text=text, title="TestDoc", path="/test.md", chunk=0, score=0.5)
+    return SearchResult(chunk_id=0, text=text, title="TestDoc", path="/test.md", chunk=0, score=0.5)
 
 
 class TestRetryE2E:

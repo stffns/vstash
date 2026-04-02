@@ -835,6 +835,7 @@ class VstashStore:
 
         results = [
             SearchResult(
+                chunk_id=int(r["id"]),
                 text=str(r["text"]),
                 title=str(r["title"]),
                 path=str(r["path"]),
@@ -1577,6 +1578,7 @@ class VstashStore:
                 combined_text = "\n".join(chunk["text"] for chunk in row)
                 expanded.append(
                     SearchResult(
+                        chunk_id=r.chunk_id,
                         text=combined_text,
                         title=r.title,
                         path=r.path,

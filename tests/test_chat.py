@@ -11,7 +11,7 @@ from vstash.models import SearchResult
 
 def _make_chunk(text: str, title: str = "TestDoc") -> SearchResult:
     """Helper to create a SearchResult for testing."""
-    return SearchResult(text=text, title=title, path="/test/doc.md", chunk=0, score=0.5)
+    return SearchResult(chunk_id=0, text=text, title=title, path="/test/doc.md", chunk=0, score=0.5)
 
 
 class TestBuildPrompt:

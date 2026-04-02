@@ -44,7 +44,7 @@ def _clean_singletons() -> None:
 
 def _make_search_result(text: str = "chunk text", title: str = "Doc") -> SearchResult:
     """Helper to create a SearchResult for testing."""
-    return SearchResult(text=text, title=title, path="/test/doc.md", chunk=0, score=0.5)
+    return SearchResult(chunk_id=0, text=text, title=title, path="/test/doc.md", chunk=0, score=0.5)
 
 
 def _make_doc_info(path: str = "/test/doc.md", title: str = "Doc") -> DocumentInfo:
