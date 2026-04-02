@@ -38,6 +38,9 @@ class Memory:
         project: Default project tag for add/search operations.
         collection: Default collection name (default: "default").
         db: Override path to the SQLite database file.
+        profile: Named profile to use (e.g. "work", "research").
+            Resolves to ``~/.vstash/profiles/<name>/memory.db``.
+            ``db`` takes priority over ``profile`` if both are given.
 
     Example::
 
@@ -47,6 +50,9 @@ class Memory:
         mem.add("docs/spec.pdf")
         answer = mem.ask("What are the system requirements?")
         chunks = mem.search("deployment strategy", top_k=3)
+
+        # Named profile
+        work = Memory(profile="work")
     """
 
     def __init__(
@@ -56,13 +62,21 @@ class Memory:
         project: str | None = None,
         collection: str = "default",
         db: str | Path | None = None,
+        profile: str | None = None,
     ) -> None:
         self._cfg = _load_config_from(config)
         self._project = project
         self._collection = collection
 
-        # Allow db override (useful for tests and isolated agents)
-        db_path = str(db) if db else self._cfg.db_path
+        # Resolution: db > profile > config default
+        if db:
+            db_path = str(db)
+        elif profile:
+            from .profile import resolve_db_path
+
+            db_path = str(resolve_db_path(profile))
+        else:
+            db_path = self._cfg.db_path
         dim = get_embedding_dim(self._cfg.embeddings.model)
         self._store = VstashStore(
             db_path,
