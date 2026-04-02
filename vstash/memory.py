@@ -18,7 +18,7 @@ from pathlib import Path
 from types import TracebackType
 
 from .chat import ask as _chat_ask
-from .config import StorageConfig, VstashConfig, load_config
+from .config import VstashConfig, load_config
 from .embed import embed_query, get_embedding_dim
 from .ingest import ingest
 from .models import ChunkInfo, DocumentInfo, IngestResult, SearchResult, StoreStats
@@ -69,9 +69,10 @@ class Memory:
         self._collection = collection
 
         # Resolution: db > config db_path > profile > full resolution chain
+        _DEFAULT_DB = "~/.vstash/memory.db"
         if db:
             db_path = str(db)
-        elif self._cfg.storage.db_path != StorageConfig().db_path:
+        elif self._cfg.storage.db_path != _DEFAULT_DB:
             # User explicitly set storage.db_path in vstash.toml
             db_path = str(Path(self._cfg.storage.db_path).expanduser().resolve())
         else:

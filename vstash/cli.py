@@ -26,7 +26,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from . import chat as chat_module
-from .config import StorageConfig, VstashConfig, load_config
+from .config import VstashConfig, load_config
 from .embed import embed_query, get_embedding_dim, warmup
 from .ingest import ingest, ingest_directory
 from .profile import resolve_db_path
@@ -126,7 +126,8 @@ def _get_store(
         warmup(cfg.embeddings.model)
     dim = get_embedding_dim(cfg.embeddings.model)
     # Resolution: config db_path (if explicitly set) > profile resolution chain
-    if cfg.storage.db_path != StorageConfig().db_path:
+    _DEFAULT_DB = "~/.vstash/memory.db"
+    if cfg.storage.db_path != _DEFAULT_DB:
         db_path = str(Path(cfg.storage.db_path).expanduser().resolve())
     else:
         db_path = str(resolve_db_path(profile))

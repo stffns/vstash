@@ -28,6 +28,9 @@ import sqlite_vec
 from .config import ScoringConfig
 from .models import ChunkInfo, DocumentInfo, SearchResult, StoreStats
 
+# SQLite's SQLITE_LIMIT_VARIABLE_NUMBER default is 999; batch IN clauses below this.
+_SQLITE_PARAM_BATCH = 900
+
 # Probe for snapvec availability (optional dependency)
 try:
     from snapvec import SnapIndex
@@ -1166,7 +1169,7 @@ class VstashStore:
         """
         if not paths:
             return {}
-        _BATCH = 900
+        _BATCH = _SQLITE_PARAM_BATCH
         result: dict[str, str | None] = {p: None for p in paths}
         for i in range(0, len(paths), _BATCH):
             batch = paths[i : i + _BATCH]
@@ -1195,19 +1198,21 @@ class VstashStore:
         """
         if not paths:
             return {}
-        _BATCH = 900
+        _BATCH = _SQLITE_PARAM_BATCH
         result: dict[str, list[str]] = {p: [] for p in paths}
         for i in range(0, len(paths), _BATCH):
             batch = paths[i : i + _BATCH]
             placeholders = ",".join("?" * len(batch))
-            # Subquery picks the most recent doc_id per path
+            # Subquery picks the most recent doc_id per path.
+            # MAX(added_at) in SELECT triggers SQLite's bare-column guarantee:
+            # the `id` value comes from the row with the maximum added_at.
             rows = self._conn.execute(
                 f"SELECT d.path, c.text FROM chunks c "
                 f"JOIN documents d ON c.doc_id = d.id "
                 f"JOIN ("
-                f"  SELECT path, id FROM documents "
+                f"  SELECT path, id, MAX(added_at) FROM documents "
                 f"  WHERE path IN ({placeholders}) "
-                f"  GROUP BY path HAVING MAX(added_at)"
+                f"  GROUP BY path"
                 f") latest ON d.id = latest.id "
                 f"ORDER BY d.path, c.seq",
                 batch,
@@ -1255,7 +1260,9 @@ class VstashStore:
         """
         if not chunk_ids:
             return []
-        _BATCH = 900  # stay under SQLite's SQLITE_LIMIT_VARIABLE_NUMBER (default 999)
+        _BATCH = (
+            _SQLITE_PARAM_BATCH  # stay under SQLite's SQLITE_LIMIT_VARIABLE_NUMBER (default 999)
+        )
         lookup: dict[int, ChunkInfo] = {}
         for i in range(0, len(chunk_ids), _BATCH):
             batch = chunk_ids[i : i + _BATCH]
