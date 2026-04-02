@@ -28,6 +28,7 @@ class TestExpandContextIsolation:
         # Search results reference a known chunk
         results = [
             SearchResult(
+                chunk_id=0,
                 text="Machine learning is a subset of artificial intelligence.",
                 title="ML Introduction",
                 path="/test/ml_intro.pdf",
@@ -49,6 +50,7 @@ class TestExpandContextIsolation:
 
         results = [
             SearchResult(
+                chunk_id=0,
                 text="This text does not exist in any document",
                 title="Fake",
                 path="/nonexistent/path.md",
@@ -90,6 +92,7 @@ class TestExpandContextIsolation:
         # Request expansion for collection_a's chunk
         results = [
             SearchResult(
+                chunk_id=0,
                 text="Alpha chunk 1",
                 title="Doc A",
                 path=path,

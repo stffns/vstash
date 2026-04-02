@@ -32,6 +32,7 @@ class TestVstashRetrieverUnit:
         mock_memory = MagicMock(spec=Memory)
         mock_memory.search.return_value = [
             SearchResult(
+                chunk_id=0,
                 text="Python is a programming language.",
                 title="Python Guide",
                 path="/docs/python.md",
@@ -39,6 +40,7 @@ class TestVstashRetrieverUnit:
                 score=0.95,
             ),
             SearchResult(
+                chunk_id=1,
                 text="Python supports multiple paradigms.",
                 title="Python Guide",
                 path="/docs/python.md",
