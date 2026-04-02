@@ -108,6 +108,22 @@ Key sections: `[inference]`, `[cerebras]`, `[ollama]`, `[openai]`, `[embeddings]
 - **Run Kaggle-scale benchmarks**: `python -m experiments.arxiv_retrieval_bench` (1K papers, 3 models) or `python -m experiments.dataset_discovery` (954 HuggingFace datasets, interactive mode with `--interactive`).
 - **Run all experiments**: `python -m experiments.run_all`.
 
+## Branching strategy
+
+```
+feature/* ──→ develop ──→ main (via release PR)
+   │              │            │
+   │              │            └── protected, = PyPI published version
+   │              └── integration branch, all features merge here
+   └── short-lived, one feature per branch
+```
+
+- **Feature branches**: branch from `develop`, PR back to `develop`.
+- **develop**: integration branch. All feature PRs target `develop`.
+- **main**: protected. Only updated via release PRs from `develop`. Always matches the latest PyPI version.
+- **Release flow**: when `develop` is ready, create a version bump PR from `develop` → `main`, then publish to PyPI and create a GitHub release.
+- **NEVER merge features directly to `main`** — this causes `develop` to fall behind and creates conflicts.
+
 ## CI
 
 GitHub Actions: `lint` (ruff check + format) + `test` (pytest on Python 3.10, 3.11, 3.12). All must pass before merge.
@@ -115,6 +131,9 @@ GitHub Actions: `lint` (ruff check + format) + `test` (pytest on Python 3.10, 3.
 ## Publishing
 
 ```bash
+# 1. Bump version on develop
+# 2. Create PR: develop → main
+# 3. Merge PR, then from main:
 python -m build
 python -m twine upload dist/vstash-<version>*
 gh release create v<version> --title "v<version>" --notes "..."
