@@ -1121,25 +1121,42 @@ class VstashStore:
         ).fetchone()
         return row["path"] if row else None
 
-    def get_document_chunks(self, path: str) -> list[str]:
+    def get_document_chunks(self, path: str, collection: str | None = None) -> list[str]:
         """Get all chunk texts for a document by path.
 
         Args:
             path: Document path as stored in the database.
+            collection: Optional collection filter. If the same path exists in
+                multiple collections and no collection is given, returns chunks
+                from the most recently added document.
 
         Returns:
             List of chunk texts ordered by sequence number.
         """
+        if collection is not None:
+            doc_row = self._conn.execute(
+                "SELECT id FROM documents WHERE path = ? AND collection = ? "
+                "ORDER BY added_at DESC LIMIT 1",
+                [path, collection],
+            ).fetchone()
+        else:
+            doc_row = self._conn.execute(
+                "SELECT id FROM documents WHERE path = ? ORDER BY added_at DESC LIMIT 1",
+                [path],
+            ).fetchone()
+        if doc_row is None:
+            return []
         rows = self._conn.execute(
-            "SELECT text FROM chunks WHERE doc_id = ("
-            "  SELECT id FROM documents WHERE path = ? LIMIT 1"
-            ") ORDER BY seq",
-            [path],
+            "SELECT text FROM chunks WHERE doc_id = ? ORDER BY seq",
+            [doc_row["id"]],
         ).fetchall()
         return [row["text"] for row in rows]
 
     def get_document_added_at(self, paths: list[str]) -> dict[str, str | None]:
         """Look up added_at timestamps for documents by path.
+
+        When the same path exists in multiple collections, returns the most
+        recent added_at timestamp.
 
         Args:
             paths: List of document paths.
@@ -1149,18 +1166,26 @@ class VstashStore:
         """
         if not paths:
             return {}
-        placeholders = ",".join("?" * len(paths))
-        rows = self._conn.execute(
-            f"SELECT path, added_at FROM documents WHERE path IN ({placeholders})",
-            paths,
-        ).fetchall()
+        _BATCH = 900
         result: dict[str, str | None] = {p: None for p in paths}
-        for row in rows:
-            result[row["path"]] = row["added_at"]
+        for i in range(0, len(paths), _BATCH):
+            batch = paths[i : i + _BATCH]
+            placeholders = ",".join("?" * len(batch))
+            rows = self._conn.execute(
+                f"SELECT path, MAX(added_at) AS added_at "
+                f"FROM documents WHERE path IN ({placeholders}) "
+                f"GROUP BY path",
+                batch,
+            ).fetchall()
+            for row in rows:
+                result[row["path"]] = row["added_at"]
         return result
 
     def get_chunks_for_documents(self, paths: list[str]) -> dict[str, list[str]]:
         """Batch-fetch chunk texts for multiple documents (avoids N+1 queries).
+
+        When the same path exists in multiple collections, returns chunks from
+        the most recently added document for that path.
 
         Args:
             paths: List of document paths.
@@ -1170,17 +1195,25 @@ class VstashStore:
         """
         if not paths:
             return {}
-        placeholders = ",".join("?" * len(paths))
-        rows = self._conn.execute(
-            f"SELECT d.path, c.text FROM chunks c "
-            f"JOIN documents d ON c.doc_id = d.id "
-            f"WHERE d.path IN ({placeholders}) "
-            f"ORDER BY d.path, c.seq",
-            paths,
-        ).fetchall()
+        _BATCH = 900
         result: dict[str, list[str]] = {p: [] for p in paths}
-        for row in rows:
-            result[row["path"]].append(row["text"])
+        for i in range(0, len(paths), _BATCH):
+            batch = paths[i : i + _BATCH]
+            placeholders = ",".join("?" * len(batch))
+            # Subquery picks the most recent doc_id per path
+            rows = self._conn.execute(
+                f"SELECT d.path, c.text FROM chunks c "
+                f"JOIN documents d ON c.doc_id = d.id "
+                f"JOIN ("
+                f"  SELECT path, id FROM documents "
+                f"  WHERE path IN ({placeholders}) "
+                f"  GROUP BY path HAVING MAX(added_at)"
+                f") latest ON d.id = latest.id "
+                f"ORDER BY d.path, c.seq",
+                batch,
+            ).fetchall()
+            for row in rows:
+                result[row["path"]].append(row["text"])
         return result
 
     def get_chunk(self, chunk_id: int) -> ChunkInfo | None:

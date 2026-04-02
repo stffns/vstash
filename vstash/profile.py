@@ -328,7 +328,8 @@ def federated_search(
         # Results are already ranked by score within each profile
         for rank, (pname, result) in enumerate(group_list):
             # Key excludes profile — identical chunks get fused across profiles
-            key = (result.path, result.chunk)
+            # Include chunk_id to avoid collisions across collections
+            key = (result.path, result.chunk, result.chunk_id)
             rrf_scores[key] = rrf_scores.get(key, 0) + 1.0 / (k + rank)
             if key not in result_map:
                 result_map[key] = (pname, result)
