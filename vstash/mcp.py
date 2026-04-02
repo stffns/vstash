@@ -583,7 +583,7 @@ def vstash_get_document_chunks(path: str, collection: str | None = None) -> str:
     try:
         path_str = path
         if not path_str.startswith(("http://", "https://", "text://")):
-            path_str = str(Path(path_str).expanduser().resolve())
+            path_str = str(Path(path_str).resolve())
 
         store = _get_store()
         chunks = store.get_document_chunks(path_str, collection=collection)

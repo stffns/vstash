@@ -169,3 +169,13 @@ class TestGetDocumentChunksSDK:
         with Memory(db=tmp_db_path, collection="other") as mem:
             chunks = mem.get_document_chunks("tests/conftest.py")
             assert chunks == []
+
+    def test_sdk_get_document_chunks_text_path(self, tmp_db_path: str) -> None:
+        """text:// paths from remember() should be retrievable without normalization."""
+        from vstash import Memory
+
+        with Memory(db=tmp_db_path) as mem:
+            mem.remember("Hello world, this is a test note.", title="my note")
+            chunks = mem.get_document_chunks("text://my note")
+            assert len(chunks) > 0
+            assert "Hello world" in chunks[0]

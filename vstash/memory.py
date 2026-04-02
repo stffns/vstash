@@ -295,7 +295,7 @@ class Memory:
         """
         path_str = str(path)
         if not path_str.startswith(("http://", "https://", "text://")):
-            path_str = str(Path(path_str).expanduser().resolve())
+            path_str = str(Path(path_str).resolve())
         return self._store.get_document_chunks(
             path_str, collection=self._resolve_collection(collection)
         )

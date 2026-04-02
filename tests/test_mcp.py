@@ -479,6 +479,17 @@ class TestVstashGetDocumentChunks:
             "https://example.com/doc", collection=None
         )
 
+    @patch("vstash.mcp._get_store")
+    def test_get_document_chunks_text_path_no_normalization(self, mock_store: MagicMock) -> None:
+        """text:// paths should not be path-normalized."""
+        mock_store.return_value.get_document_chunks.return_value = ["note content"]
+
+        result = json.loads(vstash_get_document_chunks("text://my note"))
+        assert result["path"] == "text://my note"
+        mock_store.return_value.get_document_chunks.assert_called_once_with(
+            "text://my note", collection=None
+        )
+
 
 # ------------------------------------------------------------------ #
 # vstash_get_chunk                                                     #
