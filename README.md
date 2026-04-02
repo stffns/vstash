@@ -29,20 +29,21 @@ Most RAG tools are slow, cloud-dependent, or require a running server. vstash is
 
 **Zero cloud required for search. Inference is optional.**
 
-### What's new in v0.10.4
+### What's new in v0.13
 
-- **`delete_by_path_prefix` safety** — empty-prefix guard prevents accidental full-wipe; SQL LIKE wildcards properly escaped.
-- **4 new tests** — prefix matching, zero-match, special character escaping, empty-prefix ValueError.
+- **Direct chunk retrieval** — `get_chunk(id)` and `get_chunks(ids)` for O(1) access to specific chunks by database ID. Enables downstream apps (spaced repetition, pinned references) to retrieve knowledge atoms without re-running search.
+- **568 tests** across 14 test modules, all passing on Python 3.10–3.12.
 
-### What's new in v0.10.3
+### What's new in v0.12
 
-- **API retry with backoff** — transient errors (429, 503, timeout) are retried automatically across all inference backends.
-- **Watch mode deletion** — `vstash watch` now removes documents from memory when files are deleted.
-- **12 robustness fixes** — cross-collection isolation, reindex safety, scoring edge cases, and more.
+- **Cross-session journal** — `vstash journal save/recall/log/prune` for lightweight agent memory across sessions. Append-only entries with semantic recall, project tags, and time-window filtering.
+- **Transcript parsing** — automatically extract structured journal entries from conversation logs.
 
-### What's new in v0.10.1
+### What's new in v0.11
 
-- **Optional snapvec backend** — compressed ANN vector search via `pip install vstash[snapvec]`. Opt-in with `storage.vector_backend = "snapvec"` in `vstash.toml`. sqlite-vec remains the default for most users.
+- **Multi-profile support** — isolated databases per profile with `vstash profile create/list/switch/delete`.
+- **Federated search** — query across all profiles simultaneously with cross-profile deduplication.
+- **Profile resolution chain** — `--profile` flag → `VSTASH_PROFILE` env → `default`.
 
 ### What's new in v0.10
 
@@ -57,22 +58,14 @@ Most RAG tools are slow, cloud-dependent, or require a running server. vstash is
 
 ### What's new in v0.8
 
-- **Multilingual embeddings** — search in any language. Queries in English and Spanish return the same results. Cross-lingual similarity improves ~40%.
-- **`vstash reindex`** — switch embedding models without re-ingesting. Re-embeds all chunks in-place with a progress bar.
-- **Intra-document MMR dedup** — replaces hard per-document dedup. Semantically diverse sections from the same long document now surface in results (3-5× more for cross-section queries).
+- **Multilingual embeddings** — search in any language. Cross-lingual similarity improves ~40%.
+- **`vstash reindex`** — switch embedding models without re-ingesting.
+- **Intra-document MMR dedup** — replaces hard per-document dedup. Semantically diverse sections from the same long document now surface in results.
 
-### What's new in v0.7
+### Earlier versions
 
-- **Adaptive scoring** — maturity gate (γ) suppresses frequency+decay until access patterns show genuine signal (max/mean ≥ 8×). Scoring is now safe to enable by default.
-- **Zero-cost cold start** — when γ = 0, scoring is completely short-circuited. Pure RRF with zero overhead.
-
-### What's new in v0.6
-
-- **Relevance signal** — distance-based confidence (F1=0.952) warns when results may not match your query.
-- **Document deduplication** — improving diversity from ~3.2 to 5.0 unique docs per top-5.
-- **Context expansion** — adjacent chunks (±1) automatically included for LLM answers, 2.64× richer context.
-- **Tiered feedback** — high (silent), medium (`?` indicator), low (full warning) in CLI and MCP.
-- **Discard telemetry** — search events tracked for real-world relevance signal validation.
+- **v0.7** — Adaptive scoring maturity gate (γ), zero-cost cold start.
+- **v0.6** — Distance-based relevance signal (F1=0.952), document dedup, context expansion (±1 chunks).
 
 ---
 
@@ -138,14 +131,22 @@ from vstash import Memory
 
 mem = Memory(project="my_agent")
 mem.add("docs/spec.pdf")
+mem.remember("OAuth uses PKCE for public clients", title="Auth Decision")
 
 # Semantic search — free, no LLM
 chunks = mem.search("deployment strategy", top_k=5)
 for c in chunks:
-    print(c.text, c.score)
+    print(c.text, c.score, c.chunk_id)
+
+# Direct chunk access by ID (O(1) lookup)
+chunk = mem.get_chunk(chunks[0].chunk_id)
 
 # Search + LLM answer
 answer = mem.ask("What are the system requirements?")
+
+# Cross-session journal
+mem.journal_save("Decided to use FastAPI for the gateway")
+entries = mem.journal_recall("architecture decisions")
 
 # Management
 mem.list()                # → list[DocumentInfo]
@@ -159,6 +160,7 @@ mem.remove("docs/old.pdf")
 
 ```
 vstash add <file/dir/url>   Add documents to memory
+vstash remember "<text>"    Ingest text directly (no file needed)
 vstash ask "<question>"     Answer a question from your documents
 vstash search "<query>"     Semantic search without LLM (free, local)
 vstash chat                 Interactive Q&A session
@@ -169,6 +171,8 @@ vstash reindex              Re-embed all chunks with a new model
 vstash watch <dir>          Auto-ingest on file changes
 vstash export               Export chunks as JSONL for training data curation
 vstash config               Show current configuration
+vstash profile <cmd>        Manage named profiles (create, list, switch, delete)
+vstash journal <cmd>        Cross-session memory (save, recall, log, prune)
 vstash-mcp                  Start MCP server (for Claude Desktop integration)
 ```
 
@@ -254,7 +258,8 @@ Run all experiments: `python -m experiments.run_all`
 | [Configuration](docs/configuration.md) | Full TOML reference — all sections and options |
 | [How It Works](docs/how-it-works.md) | Ingestion pipeline, search pipeline, chunking strategies, RRF |
 | [Memory Scoring](docs/scoring.md) | Frequency + decay re-ranking — formula, tuning, disabling |
-| [MCP Server](docs/mcp-server.md) | Claude Desktop integration setup |
+| [MCP Server](docs/mcp-server.md) | Claude Desktop integration (15 tools) |
+| [Claude Integration](docs/claude-integration.md) | Claude Code hook + Claude Desktop setup |
 | [LangChain](docs/langchain.md) | VstashRetriever for chains and agents |
 | [Embedding Models](docs/embedding-models.md) | Model comparison and backend selection |
 | [Experiments](docs/experiments.md) | Retrieval benchmarks — hypotheses, results, conclusions |
@@ -271,7 +276,9 @@ Run all experiments: `python -m experiments.run_all`
 - **Phase 6 ✅:** Retrieval quality — distance-based relevance signal, document dedup, context expansion
 - **Phase 7 ✅:** Multilingual — cross-lingual embeddings, `vstash reindex`, MMR dedup
 - **Phase 8 ✅:** Hybrid code splitting — tree-sitter + parso + regex, 25+ languages
-- **Phase 9:** Sync — cr-sqlite CRDT peer-to-peer sync, multiple profiles
+- **Phase 9 ✅:** Multi-profile — isolated databases, federated search, profile management
+- **Phase 10 ✅:** Cross-session journal — save, recall, log, prune for agent memory
+- **Phase 11 ✅:** Direct chunk API — `get_chunk`/`get_chunks` for O(1) retrieval by ID
 
 ---
 

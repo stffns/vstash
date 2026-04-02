@@ -16,6 +16,10 @@ from vstash.mcp import (
     vstash_ask,
     vstash_forget,
     vstash_get_chunk,
+    vstash_journal_log,
+    vstash_journal_prune,
+    vstash_journal_recall,
+    vstash_journal_save,
     vstash_list,
     vstash_search,
     vstash_stats,
@@ -535,4 +539,129 @@ class TestErrorHandling:
     @patch("vstash.mcp._get_store")
     def test_add_unexpected_error(self, mock_store: MagicMock, mock_config: MagicMock) -> None:
         result = json.loads(vstash_add("/test"))
+        assert "error" in result
+
+
+# ------------------------------------------------------------------ #
+# vstash_journal_save                                                  #
+# ------------------------------------------------------------------ #
+
+
+class TestVstashJournalSave:
+    """Test vstash_journal_save tool."""
+
+    @patch("vstash.journal.journal_save")
+    def test_save_returns_metadata(self, mock_save: MagicMock) -> None:
+        mock_save.return_value = {
+            "title": "2026-04-02 — Test Entry",
+            "chunks": 1,
+            "tags": "journal",
+            "added_at": "2026-04-02T12:00:00",
+        }
+
+        result = json.loads(vstash_journal_save("some text", title="Test Entry"))
+        assert result["title"] == "2026-04-02 — Test Entry"
+        assert result["chunks"] == 1
+        mock_save.assert_called_once_with(
+            "some text", title="Test Entry", project=None, tags=None, source="mcp"
+        )
+
+    @patch("vstash.journal.journal_save", side_effect=Exception("write failed"))
+    def test_save_error(self, mock_save: MagicMock) -> None:
+        result = json.loads(vstash_journal_save("text"))
+        assert "error" in result
+        assert "failed" in result["error"]
+
+
+# ------------------------------------------------------------------ #
+# vstash_journal_recall                                                #
+# ------------------------------------------------------------------ #
+
+
+class TestVstashJournalRecall:
+    """Test vstash_journal_recall tool."""
+
+    @patch("vstash.journal.journal_recall")
+    def test_recall_with_query(self, mock_recall: MagicMock) -> None:
+        mock_recall.return_value = [
+            {"title": "Entry 1", "text": "some context", "score": 0.8},
+        ]
+
+        result = json.loads(vstash_journal_recall("past decisions"))
+        assert len(result) == 1
+        assert result[0]["title"] == "Entry 1"
+        mock_recall.assert_called_once_with(query="past decisions", top_k=5, project=None)
+
+    @patch("vstash.journal.journal_recall")
+    def test_recall_no_query_returns_recent(self, mock_recall: MagicMock) -> None:
+        mock_recall.return_value = []
+
+        result = json.loads(vstash_journal_recall())
+        assert result == []
+        mock_recall.assert_called_once_with(query=None, top_k=5, project=None)
+
+    @patch("vstash.journal.journal_recall", side_effect=Exception("search failed"))
+    def test_recall_error(self, mock_recall: MagicMock) -> None:
+        result = json.loads(vstash_journal_recall("query"))
+        assert "error" in result
+
+
+# ------------------------------------------------------------------ #
+# vstash_journal_log                                                   #
+# ------------------------------------------------------------------ #
+
+
+class TestVstashJournalLog:
+    """Test vstash_journal_log tool."""
+
+    @patch("vstash.journal.journal_log")
+    def test_log_returns_entries(self, mock_log: MagicMock) -> None:
+        mock_log.return_value = [
+            {"title": "Entry A", "added_at": "2026-04-02"},
+            {"title": "Entry B", "added_at": "2026-04-01"},
+        ]
+
+        result = json.loads(vstash_journal_log(limit=10))
+        assert len(result) == 2
+        mock_log.assert_called_once_with(limit=10, recent=None, project=None)
+
+    @patch("vstash.journal.journal_log", side_effect=Exception("read failed"))
+    def test_log_error(self, mock_log: MagicMock) -> None:
+        result = json.loads(vstash_journal_log())
+        assert "error" in result
+
+
+# ------------------------------------------------------------------ #
+# vstash_journal_prune                                                 #
+# ------------------------------------------------------------------ #
+
+
+class TestVstashJournalPrune:
+    """Test vstash_journal_prune tool."""
+
+    @patch("vstash.journal.journal_prune")
+    def test_prune_returns_count(self, mock_prune: MagicMock) -> None:
+        mock_prune.return_value = {"deleted": 3, "titles": ["A", "B", "C"]}
+
+        result = json.loads(vstash_journal_prune("30d"))
+        assert result["deleted"] == 3
+        mock_prune.assert_called_once_with("30d", project=None, dry_run=False)
+
+    @patch("vstash.journal.journal_prune")
+    def test_prune_dry_run(self, mock_prune: MagicMock) -> None:
+        mock_prune.return_value = {"deleted": 0, "would_delete": 5}
+
+        result = json.loads(vstash_journal_prune("7d", dry_run=True))
+        assert result["would_delete"] == 5
+        mock_prune.assert_called_once_with("7d", project=None, dry_run=True)
+
+    @patch("vstash.journal.journal_prune", side_effect=ValueError("invalid age format"))
+    def test_prune_invalid_age(self, mock_prune: MagicMock) -> None:
+        result = json.loads(vstash_journal_prune("xyz"))
+        assert "error" in result
+        assert "invalid" in result["error"]
+
+    @patch("vstash.journal.journal_prune", side_effect=Exception("unexpected"))
+    def test_prune_unexpected_error(self, mock_prune: MagicMock) -> None:
+        result = json.loads(vstash_journal_prune("30d"))
         assert "error" in result
