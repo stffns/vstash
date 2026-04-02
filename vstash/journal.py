@@ -501,10 +501,18 @@ def parse_transcript(transcript_path: str) -> str:
 
 
 def _detect_project() -> str | None:
-    """Auto-detect project name from current directory."""
+    """Auto-detect project name from current directory.
+
+    Returns None for root directories or generic paths (/, /home, /tmp)
+    that would produce meaningless project names. MCP and remote agents
+    should pass project explicitly instead of relying on this.
+    """
     try:
         cwd = Path.cwd()
-        # Use the directory name as project
-        return cwd.name
+        name = cwd.name
+        # Skip root or generic directories that aren't real projects
+        if not name or cwd == cwd.parent or name in ("home", "tmp", "root", "var"):
+            return None
+        return name
     except OSError:
         return None
