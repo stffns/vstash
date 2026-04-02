@@ -21,7 +21,7 @@ from .chat import ask as _chat_ask
 from .config import VstashConfig, load_config
 from .embed import embed_query, get_embedding_dim
 from .ingest import ingest
-from .models import DocumentInfo, IngestResult, SearchResult, StoreStats
+from .models import ChunkInfo, DocumentInfo, IngestResult, SearchResult, StoreStats
 from .store import VstashStore
 
 # Sentinel for distinguishing "parameter not provided" from explicit None.
@@ -248,6 +248,28 @@ class Memory:
             layer=layer,
             scoring=self._cfg.scoring,
         )
+
+    def get_chunk(self, chunk_id: int) -> ChunkInfo | None:
+        """Retrieve a single chunk by its database row ID.
+
+        Args:
+            chunk_id: Integer primary key of the chunk.
+
+        Returns:
+            ChunkInfo with text and document metadata, or None if not found.
+        """
+        return self._store.get_chunk(chunk_id)
+
+    def get_chunks(self, chunk_ids: list[int]) -> list[ChunkInfo]:
+        """Retrieve multiple chunks by their database row IDs.
+
+        Args:
+            chunk_ids: List of integer primary keys.
+
+        Returns:
+            List of ChunkInfo in input order. Missing IDs are skipped.
+        """
+        return self._store.get_chunks(chunk_ids)
 
     def ask(
         self,
