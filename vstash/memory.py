@@ -14,6 +14,7 @@ list, stats.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from types import TracebackType
 
@@ -21,7 +22,7 @@ from .chat import ask as _chat_ask
 from .config import VstashConfig, load_config
 from .embed import embed_query, get_embedding_dim
 from .ingest import ingest
-from .models import DocumentInfo, IngestResult, SearchResult, StoreStats
+from .models import ChunkInfo, DocumentInfo, IngestResult, SearchResult, StoreStats
 from .store import VstashStore
 
 # Sentinel for distinguishing "parameter not provided" from explicit None.
@@ -68,10 +69,17 @@ class Memory:
         self._project = project
         self._collection = collection
 
-        # Resolution: db > profile > full resolution chain
-        # (VSTASH_DB_PATH > profile > VSTASH_PROFILE > .vstash/ > default)
+        # Resolution: db > VSTASH_DB_PATH env > storage.db_path in toml > profile chain
+        _DEFAULT_DB = "~/.vstash/memory.db"
         if db:
             db_path = str(db)
+        elif os.getenv("VSTASH_DB_PATH"):
+            from .profile import resolve_db_path
+
+            db_path = str(resolve_db_path(profile))  # resolve_db_path handles env
+        elif self._cfg.storage.db_path != _DEFAULT_DB:
+            # User explicitly set storage.db_path in vstash.toml
+            db_path = str(Path(self._cfg.storage.db_path).expanduser().resolve())
         else:
             from .profile import resolve_db_path
 
@@ -248,6 +256,28 @@ class Memory:
             layer=layer,
             scoring=self._cfg.scoring,
         )
+
+    def get_chunk(self, chunk_id: int) -> ChunkInfo | None:
+        """Retrieve a single chunk by its database row ID.
+
+        Args:
+            chunk_id: Integer primary key of the chunk.
+
+        Returns:
+            ChunkInfo with text and document metadata, or None if not found.
+        """
+        return self._store.get_chunk(chunk_id)
+
+    def get_chunks(self, chunk_ids: list[int]) -> list[ChunkInfo]:
+        """Retrieve multiple chunks by their database row IDs.
+
+        Args:
+            chunk_ids: List of integer primary keys.
+
+        Returns:
+            List of ChunkInfo in input order. Missing IDs are skipped.
+        """
+        return self._store.get_chunks(chunk_ids)
 
     def ask(
         self,

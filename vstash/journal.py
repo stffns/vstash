@@ -443,45 +443,46 @@ def parse_transcript(transcript_path: str) -> str:
     errors = []
     line_count = 0
 
-    for line in open(path, encoding="utf-8", errors="replace"):  # noqa: SIM115
-        line_count += 1
-        if line_count > _MAX_LINES:
-            break
-        try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line_count += 1
+            if line_count > _MAX_LINES:
+                break
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
 
-        role = entry.get("role", "")
+            role = entry.get("role", "")
 
-        # Collect user messages
-        if role == "user":
-            content = entry.get("content", "")
-            if isinstance(content, str) and content.strip():
-                user_messages.append(content.strip()[:200])
-            elif isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") == "text":
-                        text = block.get("text", "").strip()
-                        if text:
-                            user_messages.append(text[:200])
+            # Collect user messages
+            if role == "user":
+                content = entry.get("content", "")
+                if isinstance(content, str) and content.strip():
+                    user_messages.append(content.strip()[:200])
+                elif isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            text = block.get("text", "").strip()
+                            if text:
+                                user_messages.append(text[:200])
 
-        # Collect file edits from tool use
-        if role == "assistant":
-            content = entry.get("content", [])
-            if isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") == "tool_use":
-                        tool_input = block.get("input", {})
-                        fp = tool_input.get("file_path") or tool_input.get("path")
-                        if fp:
-                            files_modified.add(fp)
+            # Collect file edits from tool use
+            if role == "assistant":
+                content = entry.get("content", [])
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "tool_use":
+                            tool_input = block.get("input", {})
+                            fp = tool_input.get("file_path") or tool_input.get("path")
+                            if fp:
+                                files_modified.add(fp)
 
-        # Collect errors from tool results
-        if role == "tool":
-            content = entry.get("content", "")
-            if isinstance(content, str) and "error" in content.lower()[:50]:
-                errors.append(content[:150])
+            # Collect errors from tool results
+            if role == "tool":
+                content = entry.get("content", "")
+                if isinstance(content, str) and "error" in content.lower()[:50]:
+                    errors.append(content[:150])
 
     # Build summary
     parts = []
