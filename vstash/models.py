@@ -59,7 +59,7 @@ class ChunkInfo(BaseModel):
 
     chunk_id: int = Field(description="Database row ID of the chunk")
     doc_id: str = Field(description="Parent document hash ID")
-    seq: int = Field(description="Chunk sequence number within document")
+    chunk: int = Field(description="Chunk sequence number within document")
     text: str = Field(description="Chunk text content")
     title: str = Field(description="Source document title")
     path: str = Field(description="Source document path")

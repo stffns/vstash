@@ -578,10 +578,14 @@ def vstash_get_chunk(chunk_id: int) -> str:
         JSON object with chunk text and document metadata, or error if not found.
     """
     try:
+        cid = int(chunk_id)
+    except (TypeError, ValueError):
+        return _error(f"chunk_id must be an integer, got: {chunk_id!r}")
+    try:
         store = _get_store()
-        chunk = store.get_chunk(int(chunk_id))
+        chunk = store.get_chunk(cid)
         if chunk is None:
-            return _error(f"Chunk {chunk_id} not found.")
+            return _error(f"Chunk {cid} not found.")
         return _ok(chunk.model_dump())
     except FileNotFoundError:
         return _error("vstash database not found. Ingest documents first with vstash_add.")

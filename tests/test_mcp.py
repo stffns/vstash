@@ -432,7 +432,7 @@ class TestVstashGetChunk:
         chunk = ChunkInfo(
             chunk_id=42,
             doc_id="abc123",
-            seq=0,
+            chunk=0,
             text="some text",
             title="Doc",
             path="/test/doc.md",
@@ -463,6 +463,11 @@ class TestVstashGetChunk:
     def test_get_chunk_unexpected_error(self, mock_store: MagicMock) -> None:
         result = json.loads(vstash_get_chunk(1))
         assert "error" in result
+
+    def test_get_chunk_invalid_type(self) -> None:
+        result = json.loads(vstash_get_chunk("not_a_number"))  # type: ignore[arg-type]
+        assert "error" in result
+        assert "integer" in result["error"]
 
 
 class TestVstashForgetFuzzy:

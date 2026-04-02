@@ -1203,7 +1203,7 @@ class VstashStore:
         return ChunkInfo(
             chunk_id=int(row["id"]),
             doc_id=row["doc_id"],
-            seq=int(row["seq"]),
+            chunk=int(row["seq"]),
             text=row["text"],
             title=row["title"],
             path=row["path"],
@@ -1237,7 +1237,7 @@ class VstashStore:
                 lookup[int(row["id"])] = ChunkInfo(
                     chunk_id=int(row["id"]),
                     doc_id=row["doc_id"],
-                    seq=int(row["seq"]),
+                    chunk=int(row["seq"]),
                     text=row["text"],
                     title=row["title"],
                     path=row["path"],

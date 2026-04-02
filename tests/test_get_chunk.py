@@ -17,7 +17,7 @@ class TestGetChunk:
         assert chunk is not None
         assert isinstance(chunk, ChunkInfo)
         assert chunk.chunk_id == 1
-        assert chunk.seq == 0
+        assert chunk.chunk == 0
         assert chunk.text == "Python is a high-level programming language known for its simplicity."
         assert chunk.title == "Python Guide"
         assert chunk.path == "/test/python_guide.md"
@@ -27,7 +27,7 @@ class TestGetChunk:
         assert chunk is not None
         assert chunk.title == "ML Introduction"
         assert chunk.path == "/test/ml_intro.pdf"
-        assert chunk.seq == 0
+        assert chunk.chunk == 0
 
     def test_get_chunk_not_found(self, populated_store: VstashStore) -> None:
         assert populated_store.get_chunk(9999) is None
@@ -70,6 +70,38 @@ class TestGetChunks:
 
     def test_get_chunks_all_missing(self, populated_store: VstashStore) -> None:
         assert populated_store.get_chunks([9998, 9999]) == []
+
+    def test_get_chunks_duplicate_ids_preserves_repeats(self, populated_store: VstashStore) -> None:
+        """Repeated IDs return one entry per occurrence (not deduplicated)."""
+        chunks = populated_store.get_chunks([1, 1, 1])
+        assert len(chunks) == 3
+        assert all(c.chunk_id == 1 for c in chunks)
+
+    def test_get_chunks_batch_boundary(self, sample_store: VstashStore) -> None:
+        """Batch logic handles >900 IDs across multiple batches."""
+        dim = sample_store.embedding_dim
+        # Add enough chunks to test batching (we only need IDs, not 900+ real chunks)
+        sample_store.add_document(
+            path="/test/big.md",
+            title="Big",
+            chunks=["chunk"] * 5,
+            embeddings=[[0.1] * dim] * 5,
+            source_type="markdown",
+        )
+        # Request 950 IDs — most won't exist, but the batching code path runs
+        ids = list(range(1, 951))
+        chunks = sample_store.get_chunks(ids)
+        assert len(chunks) == 5  # only the 5 real chunks
+
+
+class TestGetChunkEdgeCases:
+    """Edge case tests."""
+
+    def test_get_chunk_negative_id(self, populated_store: VstashStore) -> None:
+        assert populated_store.get_chunk(-1) is None
+
+    def test_get_chunk_zero_id(self, populated_store: VstashStore) -> None:
+        assert populated_store.get_chunk(0) is None
 
 
 class TestGetChunkSDK:
