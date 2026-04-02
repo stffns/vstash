@@ -8,13 +8,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from vstash.models import DocumentInfo, IngestResult, SearchResult, StoreStats
+from vstash.models import ChunkInfo, DocumentInfo, IngestResult, SearchResult, StoreStats
 from vstash.mcp import (
     _error,
     _ok,
     vstash_add,
     vstash_ask,
     vstash_forget,
+    vstash_get_chunk,
     vstash_list,
     vstash_search,
     vstash_stats,
@@ -416,6 +417,57 @@ class TestVstashAdd:
         assert result["status"] == "ok"
         # Verify force=True was passed to ingest
         assert mock_ingest.call_args.kwargs["force"] is True
+
+
+# ------------------------------------------------------------------ #
+# vstash_get_chunk                                                     #
+# ------------------------------------------------------------------ #
+
+
+class TestVstashGetChunk:
+    """Test vstash_get_chunk MCP tool."""
+
+    @patch("vstash.mcp._get_store")
+    def test_get_chunk_success(self, mock_store: MagicMock) -> None:
+        chunk = ChunkInfo(
+            chunk_id=42,
+            doc_id="abc123",
+            chunk=0,
+            text="some text",
+            title="Doc",
+            path="/test/doc.md",
+            collection="default",
+        )
+        mock_store.return_value.get_chunk.return_value = chunk
+
+        result = json.loads(vstash_get_chunk(42))
+        assert result["chunk_id"] == 42
+        assert result["text"] == "some text"
+        assert result["title"] == "Doc"
+
+    @patch("vstash.mcp._get_store")
+    def test_get_chunk_not_found(self, mock_store: MagicMock) -> None:
+        mock_store.return_value.get_chunk.return_value = None
+
+        result = json.loads(vstash_get_chunk(9999))
+        assert "error" in result
+        assert "9999" in result["error"]
+
+    @patch("vstash.mcp._get_store", side_effect=FileNotFoundError("no db"))
+    def test_get_chunk_db_not_found(self, mock_store: MagicMock) -> None:
+        result = json.loads(vstash_get_chunk(1))
+        assert "error" in result
+        assert "not found" in result["error"]
+
+    @patch("vstash.mcp._get_store", side_effect=Exception("unexpected"))
+    def test_get_chunk_unexpected_error(self, mock_store: MagicMock) -> None:
+        result = json.loads(vstash_get_chunk(1))
+        assert "error" in result
+
+    def test_get_chunk_invalid_type(self) -> None:
+        result = json.loads(vstash_get_chunk("not_a_number"))  # type: ignore[arg-type]
+        assert "error" in result
+        assert "integer" in result["error"]
 
 
 class TestVstashForgetFuzzy:

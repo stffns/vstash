@@ -26,7 +26,7 @@ import numpy as np
 import sqlite_vec
 
 from .config import ScoringConfig
-from .models import DocumentInfo, SearchResult, StoreStats
+from .models import ChunkInfo, DocumentInfo, SearchResult, StoreStats
 
 # Probe for snapvec availability (optional dependency)
 try:
@@ -1182,6 +1182,68 @@ class VstashStore:
         for row in rows:
             result[row["path"]].append(row["text"])
         return result
+
+    def get_chunk(self, chunk_id: int) -> ChunkInfo | None:
+        """Retrieve a single chunk by its database row ID.
+
+        Args:
+            chunk_id: The integer primary key of the chunk.
+
+        Returns:
+            ChunkInfo with chunk text and document metadata, or None if not found.
+        """
+        row = self._conn.execute(
+            "SELECT c.id, c.doc_id, c.seq, c.text, d.title, d.path, d.collection "
+            "FROM chunks c JOIN documents d ON c.doc_id = d.id "
+            "WHERE c.id = ?",
+            (chunk_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return ChunkInfo(
+            chunk_id=int(row["id"]),
+            doc_id=row["doc_id"],
+            chunk=int(row["seq"]),
+            text=row["text"],
+            title=row["title"],
+            path=row["path"],
+            collection=row["collection"],
+        )
+
+    def get_chunks(self, chunk_ids: list[int]) -> list[ChunkInfo]:
+        """Retrieve multiple chunks by their database row IDs.
+
+        Args:
+            chunk_ids: List of integer primary keys.
+
+        Returns:
+            List of ChunkInfo in the same order as input IDs.
+            Missing IDs are silently skipped.
+        """
+        if not chunk_ids:
+            return []
+        _BATCH = 900  # stay under SQLite's SQLITE_LIMIT_VARIABLE_NUMBER (default 999)
+        lookup: dict[int, ChunkInfo] = {}
+        for i in range(0, len(chunk_ids), _BATCH):
+            batch = chunk_ids[i : i + _BATCH]
+            placeholders = ",".join("?" * len(batch))
+            rows = self._conn.execute(
+                f"SELECT c.id, c.doc_id, c.seq, c.text, d.title, d.path, d.collection "
+                f"FROM chunks c JOIN documents d ON c.doc_id = d.id "
+                f"WHERE c.id IN ({placeholders})",
+                batch,
+            ).fetchall()
+            for row in rows:
+                lookup[int(row["id"])] = ChunkInfo(
+                    chunk_id=int(row["id"]),
+                    doc_id=row["doc_id"],
+                    chunk=int(row["seq"]),
+                    text=row["text"],
+                    title=row["title"],
+                    path=row["path"],
+                    collection=row["collection"],
+                )
+        return [lookup[cid] for cid in chunk_ids if cid in lookup]
 
     # ------------------------------------------------------------------ #
     # Inspect                                                              #
