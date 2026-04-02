@@ -166,6 +166,7 @@ After restart, Claude will have these tools available:
 | `vstash_add` | Ingest files, directories, or URLs |
 | `vstash_remember` | Ingest text directly without a file |
 | `vstash_get_chunk` | Retrieve a chunk by database row ID |
+| `vstash_get_document_chunks` | Get all chunk texts for a document by path |
 | `vstash_list` | List all documents in memory |
 | `vstash_stats` | Memory statistics |
 | `vstash_forget` | Remove a document (supports fuzzy matching) |

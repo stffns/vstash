@@ -141,6 +141,9 @@ for c in chunks:
 # Direct chunk access by ID (O(1) lookup)
 chunk = mem.get_chunk(chunks[0].chunk_id)
 
+# Full document reconstruction from chunks
+all_chunks = mem.get_document_chunks("notes/spec.md")
+
 # Search + LLM answer
 answer = mem.ask("What are the system requirements?")
 

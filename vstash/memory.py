@@ -279,6 +279,22 @@ class Memory:
         """
         return self._store.get_chunks(chunk_ids)
 
+    def get_document_chunks(
+        self, path: str, *, collection: str | None = None
+    ) -> list[str]:
+        """Get all chunk texts for a document by path.
+
+        Args:
+            path: Document path as stored in the database.
+            collection: Optional collection filter. If the same path exists in
+                multiple collections and no collection is given, returns chunks
+                from the most recently added document.
+
+        Returns:
+            List of chunk texts ordered by sequence number.
+        """
+        return self._store.get_document_chunks(path, collection=collection)
+
     def ask(
         self,
         query: str,
