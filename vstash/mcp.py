@@ -565,6 +565,39 @@ def vstash_search(
 
 
 @mcp_server.tool()
+def vstash_get_document_chunks(path: str, collection: str | None = None) -> str:
+    """Get all chunk texts for a document by its path.
+
+    Use this to retrieve the full content of a previously ingested document,
+    reconstructed from its chunks in order.
+
+    Args:
+        path: Document path as stored in the database.
+        collection: Optional collection filter. If the same path exists in
+            multiple collections and no collection is given, returns chunks
+            from the most recently added document.
+
+    Returns:
+        JSON object with the list of chunk texts, or error if not found.
+    """
+    try:
+        path_str = path
+        if not path_str.startswith(("http://", "https://", "text://")):
+            path_str = str(Path(path_str).resolve())
+
+        store = _get_store()
+        chunks = store.get_document_chunks(path_str, collection=collection)
+        if not chunks:
+            return _error(f"No chunks found for document: {path_str}")
+        return _ok({"path": path_str, "chunk_count": len(chunks), "chunks": chunks})
+    except FileNotFoundError:
+        return _error("vstash database not found. Ingest documents first with vstash_add.")
+    except Exception as exc:
+        logger.exception("vstash_get_document_chunks failed")
+        return _error(f"Get document chunks failed: {exc}")
+
+
+@mcp_server.tool()
 def vstash_get_chunk(chunk_id: int) -> str:
     """Retrieve a single chunk by its database row ID.
 

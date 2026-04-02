@@ -347,6 +347,9 @@ for r in results:
 answer = mem.ask("What are the system requirements?")
 
 # Management
+# Full document reconstruction from chunks
+chunks = mem.get_document_chunks("docs/spec.pdf")
+
 docs = mem.list()          # → list[DocumentInfo]
 info = mem.stats()         # → StoreStats
 mem.remove("docs/old.pdf")
