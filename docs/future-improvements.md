@@ -1,18 +1,14 @@
 # Future Improvements
 
-Consolidated from past reviews, plans, and brainstorms. Only items that remain relevant as of v0.10.0.
+Consolidated from past reviews, plans, and brainstorms. Updated as of v0.12.0.
 
 ---
 
 ## Engineering — High Impact
 
-### API Resilience (retry with backoff)
+### ~~API Resilience (retry with backoff)~~ ✅ Done (v0.11.0)
 
-API calls to Cerebras/OpenAI/Ollama are single-attempt with generic `try/except`. A transient timeout or rate limit crashes the CLI.
-
-**Fix:** Add `tenacity` with exponential backoff for remote inference calls in `chat.py`. Catch specific HTTP exceptions (429, 503, timeout) instead of bare `Exception`.
-
-**Impact:** Prevents CLI crashes on flaky connections. Essential for MCP server reliability.
+Implemented in `chat.py` via `_retry_call()` with exponential backoff and transient error detection (429, 503, timeout). Covered by `test_retry_e2e.py`.
 
 ### Domain-Specific Exceptions
 
@@ -24,6 +20,14 @@ All errors surface as generic `ValueError`, `ImportError`, or `Exception`. Calle
 - `VstashIngestError` — file parsing or encoding failures
 
 **Impact:** Better error messages, easier debugging, SDK consumers can catch specific errors.
+
+### Direct Chunk Access API (`get_chunk(id)`)
+
+The SDK and MCP server have no way to retrieve a single chunk by ID. Recall needs this to fetch card text at runtime via `vstash_chunk_id` without a full search query.
+
+**Fix:** Expose `get_chunk(chunk_id) → ChunkResult` in `VstashStore`, `Memory` SDK, and MCP server.
+
+**Impact:** Enables Recall (and any app that stores `chunk_id` references) to do O(1) lookups instead of search-based workarounds.
 
 ---
 
@@ -61,9 +65,9 @@ Auto-tune scoring weights based on implicit signals: if LLM cites memory-boosted
 
 ## Ingestion — v2
 
-### Real Titles for URL Documents
+### ~~Real Titles for URL Documents~~ ✅ Done (v0.11.0)
 
-URLs are stored with the URL as title. Extract `<title>` from HTML or metadata from PDFs during ingestion for better readability and semantic matching.
+Implemented in `ingest.py` via `_extract_title_from_content()`. Extracts real titles from HTML content during ingestion. Covered by `test_url_titles_e2e.py`.
 
 ---
 
@@ -79,6 +83,7 @@ For corpus >1M chunks, move `rerank_with_decay()` to a C/Rust SQLite extension. 
 
 Potential projects built on top of vstash:
 
+- **Recall** — Adaptive learning platform using vstash as knowledge store + FSRS scheduling + LLM Judge. In progress.
 - **Web UI** — Frontend talking directly to MCP server (FastAPI bridge ~50 lines)
 - **Multi-Agent Shared Memory** — vstash as persistence layer for LangGraph/Agno agent swarms (WAL mode supports concurrency)
 - **Research Assistant** — Papers + notes + transcripts with semantic search
@@ -86,4 +91,4 @@ Potential projects built on top of vstash:
 
 ---
 
-*Consolidated: March 2026 — Sources: REVIEW.md, NEXT_STEPS.md, brainstorm.md, frequency_decay_plan.md*
+*Consolidated: March 2026 — Updated: April 2026 — Sources: REVIEW.md, NEXT_STEPS.md, brainstorm.md, frequency_decay_plan.md*
