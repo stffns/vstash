@@ -137,3 +137,45 @@ class TestGetChunkSDK:
             assert len(chunks) == len(ids)
             for chunk, expected_id in zip(chunks, ids):
                 assert chunk.chunk_id == expected_id
+
+
+class TestGetDocumentChunksSDK:
+    """Test get_document_chunks via Memory SDK."""
+
+    def test_sdk_get_document_chunks(self, tmp_db_path: str) -> None:
+        from vstash import Memory
+
+        with Memory(db=tmp_db_path) as mem:
+            mem.add("tests/conftest.py")
+            chunks = mem.get_document_chunks("tests/conftest.py")
+            assert len(chunks) > 0
+            assert all(isinstance(c, str) for c in chunks)
+
+    def test_sdk_get_document_chunks_not_found(self, tmp_db_path: str) -> None:
+        from vstash import Memory
+
+        with Memory(db=tmp_db_path) as mem:
+            assert mem.get_document_chunks("/nonexistent.md") == []
+
+    def test_sdk_get_document_chunks_respects_collection(self, tmp_db_path: str) -> None:
+        from vstash import Memory
+
+        with Memory(db=tmp_db_path, collection="notes") as mem:
+            mem.add("tests/conftest.py")
+            chunks = mem.get_document_chunks("tests/conftest.py")
+            assert len(chunks) > 0
+
+        # Different collection should not find it
+        with Memory(db=tmp_db_path, collection="other") as mem:
+            chunks = mem.get_document_chunks("tests/conftest.py")
+            assert chunks == []
+
+    def test_sdk_get_document_chunks_text_path(self, tmp_db_path: str) -> None:
+        """text:// paths from remember() should be retrievable without normalization."""
+        from vstash import Memory
+
+        with Memory(db=tmp_db_path) as mem:
+            mem.remember("Hello world, this is a test note.", title="my note")
+            chunks = mem.get_document_chunks("text://my note")
+            assert len(chunks) > 0
+            assert "Hello world" in chunks[0]

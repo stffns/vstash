@@ -46,6 +46,7 @@ The vstash tools should appear in Claude's tool list.
 | `vstash_ask(query, top_k)` | Semantic search + LLM-generated answer with sources |
 | `vstash_search(query, top_k)` | Hybrid search with context expansion and relevance signal |
 | `vstash_get_chunk(chunk_id)` | Retrieve a single chunk by database row ID |
+| `vstash_get_document_chunks(path, collection?)` | Get all chunk texts for a document by path |
 | `vstash_list()` | List all ingested documents |
 | `vstash_stats()` | Database statistics (doc count, chunks, size) |
 | `vstash_forget(source)` | Remove a document from memory |
