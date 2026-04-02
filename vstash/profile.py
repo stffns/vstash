@@ -327,8 +327,10 @@ def federated_search(
         group_list = list(group_iter)
         # Results are already ranked by score within each profile
         for rank, (pname, result) in enumerate(group_list):
-            # Key excludes profile — identical chunks get fused across profiles
-            key = (result.path, result.chunk)
+            # Key excludes profile — identical chunks get fused across profiles.
+            # Include text prefix to distinguish different content at same path+seq
+            # (e.g., same path ingested into different collections with different content).
+            key = (result.path, result.chunk, result.text[:64])
             rrf_scores[key] = rrf_scores.get(key, 0) + 1.0 / (k + rank)
             if key not in result_map:
                 result_map[key] = (pname, result)
