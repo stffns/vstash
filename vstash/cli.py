@@ -296,6 +296,8 @@ def ask(
                 console.print("[dim]? Uncertain relevance — results may be tangential.[/dim]")
 
         # Expand context: include adjacent chunks for richer LLM context
+        # Note: skipped for --all-profiles because expand_context requires
+        # per-store DB access; federated chunks come from multiple closed DBs.
         if not all_profiles:
             chunks = store.expand_context(chunks, window=1)
 

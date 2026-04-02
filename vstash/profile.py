@@ -89,13 +89,17 @@ def resolve_db_path(profile: str | None = None) -> Path:
     # 2. Explicit profile name
     if profile:
         validate_name(profile)
-        return PROFILES_DIR / profile / "memory.db"
+        db_path = PROFILES_DIR / profile / "memory.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        return db_path
 
     # 3. VSTASH_PROFILE env var
     env_profile = os.getenv("VSTASH_PROFILE")
     if env_profile:
         validate_name(env_profile)
-        return PROFILES_DIR / env_profile / "memory.db"
+        db_path = PROFILES_DIR / env_profile / "memory.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        return db_path
 
     # 4. Project-local .vstash/memory.db
     local_db = _find_local_db()
@@ -133,9 +137,10 @@ def create_profile(name: str) -> Path:
     """
     validate_name(name)
     profile_dir = PROFILES_DIR / name
-    if profile_dir.exists():
-        raise ValueError(f"Profile {name!r} already exists.")
-    profile_dir.mkdir(parents=True)
+    try:
+        profile_dir.mkdir(parents=True, exist_ok=False)
+    except FileExistsError:
+        raise ValueError(f"Profile {name!r} already exists.") from None
     db_path = profile_dir / "memory.db"
     # Touch the db file so profile list detects it immediately
     db_path.touch()
@@ -152,7 +157,10 @@ def delete_profile(name: str) -> None:
         ValueError: If name is invalid or profile does not exist.
     """
     validate_name(name)
-    profile_dir = PROFILES_DIR / name
+    profile_dir = (PROFILES_DIR / name).resolve()
+    # Safety: ensure resolved path is actually under PROFILES_DIR
+    if not str(profile_dir).startswith(str(PROFILES_DIR.resolve())):
+        raise ValueError(f"Profile path {profile_dir} escapes profiles directory.")
     if not profile_dir.exists():
         raise ValueError(f"Profile {name!r} does not exist.")
     shutil.rmtree(profile_dir)
@@ -305,12 +313,11 @@ def federated_search(
             if key not in result_map:
                 result_map[key] = (pname, result)
 
-    # Sort by RRF score descending, write fused score back to results
+    # Sort by RRF score descending, create copies with fused score
     sorted_keys = sorted(rrf_scores, key=rrf_scores.get, reverse=True)  # type: ignore[arg-type]
     merged: list[tuple[str, SearchResult]] = []
     for key in sorted_keys[:top_k]:
         profile_name, result = result_map[key]
-        result.score = rrf_scores[key]
-        merged.append((profile_name, result))
+        merged.append((profile_name, result.model_copy(update={"score": rrf_scores[key]})))
 
     return merged

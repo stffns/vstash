@@ -499,3 +499,49 @@ class TestProfileCLI:
         runner = CliRunner()
         result = runner.invoke(app, ["--profile", "../evil", "stats"])
         assert result.exit_code != 0
+
+
+# ------------------------------------------------------------------ #
+# SDK Memory(profile=...) integration                                 #
+# ------------------------------------------------------------------ #
+
+
+class TestMemoryProfile:
+    def test_memory_profile_uses_profile_db(self, tmp_path, monkeypatch) -> None:
+        """Memory(profile='x') resolves to profiles/x/memory.db."""
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        monkeypatch.setattr("vstash.profile.VSTASH_HOME", fake_home)
+        monkeypatch.setattr("vstash.profile.PROFILES_DIR", fake_home / "profiles")
+        monkeypatch.setattr("vstash.profile.DEFAULT_DB", fake_home / "memory.db")
+        monkeypatch.delenv("VSTASH_DB_PATH", raising=False)
+        monkeypatch.delenv("VSTASH_PROFILE", raising=False)
+
+        expected = fake_home / "profiles" / "work" / "memory.db"
+
+        from vstash.profile import resolve_db_path
+
+        result = resolve_db_path("work")
+        assert result == expected
+        # Verify parent dir was created
+        assert expected.parent.is_dir()
+
+    def test_memory_db_overrides_profile(self, tmp_path, monkeypatch) -> None:
+        """Memory(db=...) takes precedence over profile."""
+        from unittest.mock import patch
+
+        db_file = tmp_path / "custom.db"
+        db_file.touch()
+
+        # Mock the store and config to avoid real embedding initialization
+        with (
+            patch("vstash.memory.get_embedding_dim", return_value=384),
+            patch("vstash.memory.VstashStore") as mock_store,
+            patch("vstash.memory.load_config"),
+        ):
+            from vstash.memory import Memory
+
+            mem = Memory(db=str(db_file), profile="ignored")
+            # The store should have been called with the db path, not the profile path
+            assert mock_store.call_args[0][0] == str(db_file)
+            mem.close()
