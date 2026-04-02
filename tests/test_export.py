@@ -134,7 +134,9 @@ class TestExportCLI:
         from vstash.config import load_config
 
         monkeypatch.setattr(
-            cli_mod, "_get_store", lambda cfg=None, warm=False: (cfg or load_config(), export_store)
+            cli_mod,
+            "_get_store",
+            lambda cfg=None, warm=False, profile=None: (cfg or load_config(), export_store),
         )
 
     def test_cli_export_jsonl(self, tmp_path) -> None:
