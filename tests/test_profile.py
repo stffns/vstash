@@ -257,6 +257,7 @@ class TestFederatedSearch:
         default_db = tmp_path / "memory.db"
         monkeypatch.setattr("vstash.profile.PROFILES_DIR", profiles_dir)
         monkeypatch.setattr("vstash.profile.DEFAULT_DB", default_db)
+        monkeypatch.setattr("vstash.profile._find_local_db", lambda: None)
 
         dim = 384
 
@@ -303,6 +304,7 @@ class TestFederatedSearch:
         """No profiles => empty results."""
         monkeypatch.setattr("vstash.profile.PROFILES_DIR", tmp_path / "nope")
         monkeypatch.setattr("vstash.profile.DEFAULT_DB", tmp_path / "nope.db")
+        monkeypatch.setattr("vstash.profile._find_local_db", lambda: None)
 
         results = federated_search(
             query_embedding=[0.1] * 384,
@@ -318,6 +320,7 @@ class TestFederatedSearch:
         default_db = tmp_path / "memory.db"
         monkeypatch.setattr("vstash.profile.PROFILES_DIR", tmp_path / "empty_profiles")
         monkeypatch.setattr("vstash.profile.DEFAULT_DB", default_db)
+        monkeypatch.setattr("vstash.profile._find_local_db", lambda: None)
 
         dim = 384
         store = VstashStore(str(default_db), embedding_dim=dim)
@@ -349,6 +352,7 @@ class TestFederatedSearch:
         default_db = tmp_path / "memory.db"
         monkeypatch.setattr("vstash.profile.PROFILES_DIR", profiles_dir)
         monkeypatch.setattr("vstash.profile.DEFAULT_DB", default_db)
+        monkeypatch.setattr("vstash.profile._find_local_db", lambda: None)
 
         dim = 384
         embedding = [0.3] * dim
@@ -388,6 +392,7 @@ class TestFederatedSearch:
         default_db = tmp_path / "memory.db"
         monkeypatch.setattr("vstash.profile.PROFILES_DIR", tmp_path / "empty")
         monkeypatch.setattr("vstash.profile.DEFAULT_DB", default_db)
+        monkeypatch.setattr("vstash.profile._find_local_db", lambda: None)
 
         dim = 384
         store = VstashStore(str(default_db), embedding_dim=dim)

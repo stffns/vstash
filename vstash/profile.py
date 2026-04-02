@@ -53,11 +53,17 @@ def validate_name(name: str) -> str:
 
 def _find_local_db() -> Path | None:
     """Walk from cwd upward looking for .vstash/memory.db."""
-    current = Path.cwd().resolve()
+    try:
+        current = Path.cwd().resolve()
+    except OSError:
+        return None
     while True:
-        candidate = current / ".vstash" / "memory.db"
-        if candidate.is_file():
-            return candidate
+        try:
+            candidate = current / ".vstash" / "memory.db"
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            pass
         parent = current.parent
         if parent == current:
             break
@@ -96,10 +102,14 @@ def resolve_db_path(profile: str | None = None) -> Path:
     # 3. VSTASH_PROFILE env var
     env_profile = os.getenv("VSTASH_PROFILE")
     if env_profile:
-        validate_name(env_profile)
-        db_path = PROFILES_DIR / env_profile / "memory.db"
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        return db_path
+        try:
+            validate_name(env_profile)
+        except ValueError:
+            logger.warning("Invalid VSTASH_PROFILE=%r, falling back to default", env_profile)
+        else:
+            db_path = PROFILES_DIR / env_profile / "memory.db"
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            return db_path
 
     # 4. Project-local .vstash/memory.db
     local_db = _find_local_db()
@@ -159,7 +169,7 @@ def delete_profile(name: str) -> None:
     validate_name(name)
     profile_dir = (PROFILES_DIR / name).resolve()
     # Safety: ensure resolved path is actually under PROFILES_DIR
-    if not str(profile_dir).startswith(str(PROFILES_DIR.resolve())):
+    if not profile_dir.is_relative_to(PROFILES_DIR.resolve()):
         raise ValueError(f"Profile path {profile_dir} escapes profiles directory.")
     if not profile_dir.exists():
         raise ValueError(f"Profile {name!r} does not exist.")
@@ -237,17 +247,27 @@ def federated_search(
     """
     from .store import VstashStore
 
-    # Collect all profile db paths
+    # Collect all profile db paths (deduplicated by resolved path)
     profiles: list[tuple[str, Path]] = []
+    seen_paths: set[Path] = set()
+
+    def _add_profile(name: str, path: Path) -> None:
+        resolved = path.resolve()
+        if resolved not in seen_paths and resolved.exists():
+            seen_paths.add(resolved)
+            profiles.append((name, path))
 
     # Default DB
-    if DEFAULT_DB.exists():
-        profiles.append(("default", DEFAULT_DB))
+    _add_profile("default", DEFAULT_DB)
+
+    # Project-local .vstash/memory.db
+    local_db = _find_local_db()
+    if local_db is not None:
+        _add_profile("local", local_db)
 
     # Named profiles
     for name in list_profiles():
-        db_path = PROFILES_DIR / name / "memory.db"
-        profiles.append((name, db_path))
+        _add_profile(name, PROFILES_DIR / name / "memory.db")
 
     if not profiles:
         return []
