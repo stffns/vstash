@@ -565,9 +565,7 @@ def vstash_search(
 
 
 @mcp_server.tool()
-def vstash_get_document_chunks(
-    path: str, collection: str | None = None
-) -> str:
+def vstash_get_document_chunks(path: str, collection: str | None = None) -> str:
     """Get all chunk texts for a document by its path.
 
     Use this to retrieve the full content of a previously ingested document,
@@ -583,11 +581,15 @@ def vstash_get_document_chunks(
         JSON object with the list of chunk texts, or error if not found.
     """
     try:
+        path_str = path
+        if not path_str.startswith(("http://", "https://", "text://")):
+            path_str = str(Path(path_str).expanduser().resolve())
+
         store = _get_store()
-        chunks = store.get_document_chunks(path, collection=collection)
+        chunks = store.get_document_chunks(path_str, collection=collection)
         if not chunks:
-            return _error(f"No chunks found for document: {path}")
-        return _ok({"path": path, "chunk_count": len(chunks), "chunks": chunks})
+            return _error(f"No chunks found for document: {path_str}")
+        return _ok({"path": path_str, "chunk_count": len(chunks), "chunks": chunks})
     except FileNotFoundError:
         return _error("vstash database not found. Ingest documents first with vstash_add.")
     except Exception as exc:

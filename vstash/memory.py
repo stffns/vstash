@@ -279,21 +279,26 @@ class Memory:
         """
         return self._store.get_chunks(chunk_ids)
 
-    def get_document_chunks(
-        self, path: str, *, collection: str | None = None
-    ) -> list[str]:
+    def get_document_chunks(self, path: str | Path, *, collection: object = _UNSET) -> list[str]:
         """Get all chunk texts for a document by path.
 
+        Normalizes file paths the same way as ``add()`` (via ``Path.resolve()``)
+        so that relative and absolute paths match the stored document path.
+
         Args:
-            path: Document path as stored in the database.
-            collection: Optional collection filter. If the same path exists in
-                multiple collections and no collection is given, returns chunks
-                from the most recently added document.
+            path: Document path (file path, URL, or text:// title).
+            collection: Override the default collection filter. Omit to use the
+                Memory instance default. Pass None for no filter.
 
         Returns:
             List of chunk texts ordered by sequence number.
         """
-        return self._store.get_document_chunks(path, collection=collection)
+        path_str = str(path)
+        if not path_str.startswith(("http://", "https://", "text://")):
+            path_str = str(Path(path_str).expanduser().resolve())
+        return self._store.get_document_chunks(
+            path_str, collection=self._resolve_collection(collection)
+        )
 
     def ask(
         self,

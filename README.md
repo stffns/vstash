@@ -142,7 +142,7 @@ for c in chunks:
 chunk = mem.get_chunk(chunks[0].chunk_id)
 
 # Full document reconstruction from chunks
-all_chunks = mem.get_document_chunks("notes/spec.md")
+all_chunks = mem.get_document_chunks("docs/spec.pdf")
 
 # Search + LLM answer
 answer = mem.ask("What are the system requirements?")

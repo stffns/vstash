@@ -16,6 +16,7 @@ from vstash.mcp import (
     vstash_ask,
     vstash_forget,
     vstash_get_chunk,
+    vstash_get_document_chunks,
     vstash_journal_log,
     vstash_journal_prune,
     vstash_journal_recall,
@@ -421,6 +422,62 @@ class TestVstashAdd:
         assert result["status"] == "ok"
         # Verify force=True was passed to ingest
         assert mock_ingest.call_args.kwargs["force"] is True
+
+
+# ------------------------------------------------------------------ #
+# vstash_get_document_chunks                                           #
+# ------------------------------------------------------------------ #
+
+
+class TestVstashGetDocumentChunks:
+    """Test vstash_get_document_chunks MCP tool."""
+
+    @patch("vstash.mcp._get_store")
+    def test_get_document_chunks_success(self, mock_store: MagicMock) -> None:
+        mock_store.return_value.get_document_chunks.return_value = ["chunk 1", "chunk 2"]
+
+        result = json.loads(vstash_get_document_chunks("/test/doc.md"))
+        assert result["chunk_count"] == 2
+        assert result["chunks"] == ["chunk 1", "chunk 2"]
+        assert result["path"] == "/test/doc.md"
+
+    @patch("vstash.mcp._get_store")
+    def test_get_document_chunks_not_found(self, mock_store: MagicMock) -> None:
+        mock_store.return_value.get_document_chunks.return_value = []
+
+        result = json.loads(vstash_get_document_chunks("/nonexistent.md"))
+        assert "error" in result
+
+    @patch("vstash.mcp._get_store", side_effect=FileNotFoundError("no db"))
+    def test_get_document_chunks_db_not_found(self, mock_store: MagicMock) -> None:
+        result = json.loads(vstash_get_document_chunks("/test/doc.md"))
+        assert "error" in result
+        assert "not found" in result["error"]
+
+    @patch("vstash.mcp._get_store", side_effect=Exception("unexpected"))
+    def test_get_document_chunks_unexpected_error(self, mock_store: MagicMock) -> None:
+        result = json.loads(vstash_get_document_chunks("/test/doc.md"))
+        assert "error" in result
+
+    @patch("vstash.mcp._get_store")
+    def test_get_document_chunks_with_collection(self, mock_store: MagicMock) -> None:
+        mock_store.return_value.get_document_chunks.return_value = ["text"]
+
+        result = json.loads(vstash_get_document_chunks("/test/doc.md", collection="notes"))
+        assert result["chunk_count"] == 1
+        mock_store.return_value.get_document_chunks.assert_called_once_with(
+            "/test/doc.md", collection="notes"
+        )
+
+    @patch("vstash.mcp._get_store")
+    def test_get_document_chunks_url_no_normalization(self, mock_store: MagicMock) -> None:
+        """URLs should not be path-normalized."""
+        mock_store.return_value.get_document_chunks.return_value = ["content"]
+
+        vstash_get_document_chunks("https://example.com/doc")
+        mock_store.return_value.get_document_chunks.assert_called_once_with(
+            "https://example.com/doc", collection=None
+        )
 
 
 # ------------------------------------------------------------------ #
