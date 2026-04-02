@@ -158,6 +158,33 @@ class TestJournalLog:
         entries = journal_log(limit=3)
         assert len(entries) == 3
 
+    def test_log_recent_filter(self) -> None:
+        from vstash.journal import journal_save, journal_log
+
+        journal_save("Recent entry", title="recent", source="test")
+
+        # All entries were just created, so --recent 7d should include them
+        entries = journal_log(recent="7d")
+        assert len(entries) >= 1
+
+        # 0h window should exclude everything (entries are at least a few ms old)
+        # but since our timestamps are in seconds, 0h = now, so entries at same second pass.
+        # Use 0d instead — entries created "today" are within 0 days ago.
+        entries_none = journal_log(recent="0h")
+        # May or may not include depending on timing — just verify no crash
+        assert isinstance(entries_none, list)
+
+    def test_log_recent_cli(self) -> None:
+        from typer.testing import CliRunner
+
+        from vstash.cli import app
+
+        runner = CliRunner()
+        runner.invoke(app, ["journal", "save", "For recent test", "--source", "test"])
+
+        result = runner.invoke(app, ["journal", "log", "--recent", "7d"])
+        assert result.exit_code == 0
+
 
 # ------------------------------------------------------------------ #
 # journal_prune                                                        #

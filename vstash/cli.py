@@ -1197,12 +1197,15 @@ def journal_recall_cmd(
 @journal_app.command(name="log")
 def journal_log_cmd(
     limit: int = typer.Option(20, "--limit", "-n", help="Number of entries"),
+    recent: str | None = typer.Option(
+        None, "--recent", "-r", help="Time window filter: 7d, 24h, 2w"
+    ),
     project: str | None = typer.Option(None, "--project", "-p", help="Filter by project"),
 ) -> None:
     """Chronological view of journal entries (newest first)."""
     from .journal import journal_log
 
-    entries = journal_log(limit=limit, project=project)
+    entries = journal_log(limit=limit, recent=recent, project=project)
 
     if not entries:
         console.print("[dim]No journal entries yet.[/dim]")

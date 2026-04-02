@@ -270,6 +270,7 @@ def journal_recall(
 def journal_log(
     *,
     limit: int = 20,
+    recent: str | None = None,
     project: str | None = None,
     cfg: VstashConfig | None = None,
 ) -> list[dict]:
@@ -277,12 +278,18 @@ def journal_log(
 
     Args:
         limit: Max number of entries to return.
+        recent: Only show entries within this time window (e.g. '7d', '24h', '2w').
         project: Filter by project.
         cfg: Optional pre-loaded config.
 
     Returns:
         List of dicts with title, project, tags, chunk_count, added_at.
     """
+    cutoff = None
+    if recent:
+        delta = _parse_age(recent)
+        cutoff = _now_utc() - delta
+
     cfg, store = _get_journal_store(cfg)
     try:
         docs = store.list_documents(
@@ -290,17 +297,38 @@ def journal_log(
             project=project,
             layer=JOURNAL_LAYER,
         )
-        return [
-            {
-                "title": doc.title,
-                "project": doc.project,
-                "tags": doc.tags,
-                "chunks": doc.chunk_count,
-                "chars": doc.char_count,
-                "added_at": getattr(doc, "added_at", None),
-            }
-            for doc in docs[:limit]
-        ]
+
+        entries = []
+        for doc in docs:
+            if cutoff is not None:
+                added_at = getattr(doc, "added_at", None)
+                if added_at:
+                    try:
+                        if isinstance(added_at, str):
+                            doc_time = datetime.fromisoformat(added_at.replace("Z", "+00:00"))
+                        else:
+                            doc_time = added_at
+                        if doc_time.tzinfo is None:
+                            doc_time = doc_time.replace(tzinfo=timezone.utc)
+                        if doc_time < cutoff:
+                            continue
+                    except (ValueError, TypeError):
+                        continue
+
+            entries.append(
+                {
+                    "title": doc.title,
+                    "project": doc.project,
+                    "tags": doc.tags,
+                    "chunks": doc.chunk_count,
+                    "chars": doc.char_count,
+                    "added_at": getattr(doc, "added_at", None),
+                }
+            )
+            if len(entries) >= limit:
+                break
+
+        return entries
     finally:
         store.close()
 

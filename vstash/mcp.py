@@ -787,6 +787,7 @@ def vstash_journal_recall(
 @mcp_server.tool()
 def vstash_journal_log(
     limit: int = 20,
+    recent: str | None = None,
     project: str | None = None,
 ) -> str:
     """List journal entries chronologically (newest first).
@@ -796,6 +797,8 @@ def vstash_journal_log(
 
     Args:
         limit: Max entries to return (default: 20).
+        recent: Time window filter (e.g. '7d', '24h', '2w'). Only entries
+            within this window are returned.
         project: Filter by project tag.
 
     Returns:
@@ -804,7 +807,7 @@ def vstash_journal_log(
     try:
         from .journal import journal_log
 
-        entries = journal_log(limit=limit, project=project)
+        entries = journal_log(limit=limit, recent=recent, project=project)
         return _ok(entries)
     except Exception as exc:
         logger.exception("vstash_journal_log failed")
