@@ -63,6 +63,7 @@ def search_vector_only(store: VstashStore, query_embedding: list[float], top_k: 
         score = max(0.0, 1.0 - r["distance"])
         results.append(
             SearchResult(
+                chunk_id=r["id"],
                 text=r["text"],
                 title=r["title"],
                 path=r["path"],
@@ -105,6 +106,7 @@ def search_fts_only(store: VstashStore, query_text: str, top_k: int) -> list:
         score = 1.0 / (1 + i)  # reciprocal rank as score
         results.append(
             SearchResult(
+                chunk_id=r["id"],
                 text=r["text"],
                 title=r["title"],
                 path=r["path"],

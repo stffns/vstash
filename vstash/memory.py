@@ -355,6 +355,128 @@ class Memory:
         self._store.close()
 
     # ------------------------------------------------------------------ #
+    # Journal — cross-session memory                                       #
+    # ------------------------------------------------------------------ #
+
+    def journal_save(
+        self,
+        text: str,
+        *,
+        title: str | None = None,
+        tags: str | None = None,
+        source: str | None = None,
+    ) -> dict:
+        """Save a journal entry for cross-session recall.
+
+        Journal entries are stored in a dedicated 'journal' profile,
+        separate from the main document memory.
+
+        Args:
+            text: Content to journal.
+            title: Optional title (auto-generated with timestamp if None).
+            tags: Comma-separated tags (auto-adds 'journal').
+            source: Source identifier (e.g. 'agent', 'session', 'hook').
+
+        Returns:
+            Dict with entry metadata.
+
+        Example::
+
+            mem = Memory(project="my_agent")
+            mem.journal_save("Decided to use OAuth2 PKCE", source="agent")
+        """
+        from .journal import journal_save
+
+        return journal_save(
+            text,
+            title=title,
+            project=self._project,
+            tags=tags,
+            source=source,
+            cfg=self._cfg,
+        )
+
+    def journal_recall(
+        self,
+        query: str | None = None,
+        *,
+        top_k: int = 5,
+    ) -> list[dict]:
+        """Recall relevant journal entries from past sessions.
+
+        When query is None, returns the most recent entries.
+        When query is provided, performs semantic search.
+
+        Args:
+            query: Search query, or None for recent entries.
+            top_k: Number of entries to return.
+
+        Returns:
+            List of dicts with text, title, score/added_at.
+
+        Example::
+
+            mem = Memory(project="my_agent")
+            context = mem.journal_recall("authentication decisions")
+        """
+        from .journal import journal_recall
+
+        return journal_recall(
+            query=query,
+            top_k=top_k,
+            project=self._project,
+            cfg=self._cfg,
+        )
+
+    def journal_log(
+        self,
+        *,
+        limit: int = 20,
+        recent: str | None = None,
+    ) -> list[dict]:
+        """Chronological view of journal entries (newest first).
+
+        Args:
+            limit: Max number of entries to return.
+            recent: Time window filter (e.g. '7d', '24h', '2w').
+
+        Returns:
+            List of dicts with title, project, tags, chunks, chars, added_at.
+        """
+        from .journal import journal_log
+
+        return journal_log(
+            limit=limit,
+            recent=recent,
+            project=self._project,
+            cfg=self._cfg,
+        )
+
+    def journal_prune(
+        self,
+        age: str,
+        *,
+        dry_run: bool = False,
+    ) -> dict:
+        """Remove journal entries older than the specified age.
+
+        Args:
+            age: Age threshold like '30d', '2w', '24h'.
+            dry_run: If True, report what would be deleted without deleting.
+
+        Returns:
+            Dict with count of deleted entries and their titles.
+        """
+        from .journal import journal_prune
+
+        return journal_prune(
+            age,
+            project=self._project,
+            dry_run=dry_run,
+            cfg=self._cfg,
+        )
+
+    # ------------------------------------------------------------------ #
     # Internal helpers                                                     #
     # ------------------------------------------------------------------ #
 
