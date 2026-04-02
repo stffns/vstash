@@ -1222,25 +1222,27 @@ class VstashStore:
         """
         if not chunk_ids:
             return []
-        placeholders = ",".join("?" * len(chunk_ids))
-        rows = self._conn.execute(
-            f"SELECT c.id, c.doc_id, c.seq, c.text, d.title, d.path, d.collection "
-            f"FROM chunks c JOIN documents d ON c.doc_id = d.id "
-            f"WHERE c.id IN ({placeholders})",
-            chunk_ids,
-        ).fetchall()
-        lookup = {
-            int(row["id"]): ChunkInfo(
-                chunk_id=int(row["id"]),
-                doc_id=row["doc_id"],
-                seq=int(row["seq"]),
-                text=row["text"],
-                title=row["title"],
-                path=row["path"],
-                collection=row["collection"],
-            )
-            for row in rows
-        }
+        _BATCH = 900  # stay under SQLite's SQLITE_LIMIT_VARIABLE_NUMBER (default 999)
+        lookup: dict[int, ChunkInfo] = {}
+        for i in range(0, len(chunk_ids), _BATCH):
+            batch = chunk_ids[i : i + _BATCH]
+            placeholders = ",".join("?" * len(batch))
+            rows = self._conn.execute(
+                f"SELECT c.id, c.doc_id, c.seq, c.text, d.title, d.path, d.collection "
+                f"FROM chunks c JOIN documents d ON c.doc_id = d.id "
+                f"WHERE c.id IN ({placeholders})",
+                batch,
+            ).fetchall()
+            for row in rows:
+                lookup[int(row["id"])] = ChunkInfo(
+                    chunk_id=int(row["id"]),
+                    doc_id=row["doc_id"],
+                    seq=int(row["seq"]),
+                    text=row["text"],
+                    title=row["title"],
+                    path=row["path"],
+                    collection=row["collection"],
+                )
         return [lookup[cid] for cid in chunk_ids if cid in lookup]
 
     # ------------------------------------------------------------------ #

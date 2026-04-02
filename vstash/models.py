@@ -29,7 +29,9 @@ class IngestResult(BaseModel):
 class SearchResult(BaseModel):
     """A single search result from hybrid RRF search."""
 
-    chunk_id: int = Field(description="Database row ID of the chunk (stable FK reference)")
+    chunk_id: int = Field(
+        description="Database row ID of the chunk (valid for current index state; may change on re-ingest)"
+    )
     text: str = Field(description="Chunk text content")
     title: str = Field(description="Source document title")
     path: str = Field(description="Source document path")
