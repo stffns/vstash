@@ -835,6 +835,7 @@ class VstashStore:
 
         results = [
             SearchResult(
+                chunk_id=int(r["id"]),
                 text=str(r["text"]),
                 title=str(r["title"]),
                 path=str(r["path"]),
@@ -1120,6 +1121,68 @@ class VstashStore:
         ).fetchone()
         return row["path"] if row else None
 
+    def get_document_chunks(self, path: str) -> list[str]:
+        """Get all chunk texts for a document by path.
+
+        Args:
+            path: Document path as stored in the database.
+
+        Returns:
+            List of chunk texts ordered by sequence number.
+        """
+        rows = self._conn.execute(
+            "SELECT text FROM chunks WHERE doc_id = ("
+            "  SELECT id FROM documents WHERE path = ? LIMIT 1"
+            ") ORDER BY seq",
+            [path],
+        ).fetchall()
+        return [row["text"] for row in rows]
+
+    def get_document_added_at(self, paths: list[str]) -> dict[str, str | None]:
+        """Look up added_at timestamps for documents by path.
+
+        Args:
+            paths: List of document paths.
+
+        Returns:
+            Dict mapping path → added_at ISO string (or None if not found).
+        """
+        if not paths:
+            return {}
+        placeholders = ",".join("?" * len(paths))
+        rows = self._conn.execute(
+            f"SELECT path, added_at FROM documents WHERE path IN ({placeholders})",
+            paths,
+        ).fetchall()
+        result: dict[str, str | None] = {p: None for p in paths}
+        for row in rows:
+            result[row["path"]] = row["added_at"]
+        return result
+
+    def get_chunks_for_documents(self, paths: list[str]) -> dict[str, list[str]]:
+        """Batch-fetch chunk texts for multiple documents (avoids N+1 queries).
+
+        Args:
+            paths: List of document paths.
+
+        Returns:
+            Dict mapping path → list of chunk texts ordered by seq.
+        """
+        if not paths:
+            return {}
+        placeholders = ",".join("?" * len(paths))
+        rows = self._conn.execute(
+            f"SELECT d.path, c.text FROM chunks c "
+            f"JOIN documents d ON c.doc_id = d.id "
+            f"WHERE d.path IN ({placeholders}) "
+            f"ORDER BY d.path, c.seq",
+            paths,
+        ).fetchall()
+        result: dict[str, list[str]] = {p: [] for p in paths}
+        for row in rows:
+            result[row["path"]].append(row["text"])
+        return result
+
     # ------------------------------------------------------------------ #
     # Inspect                                                              #
     # ------------------------------------------------------------------ #
@@ -1129,6 +1192,7 @@ class VstashStore:
         collection: str | None = None,
         project: str | None = None,
         layer: str | None = None,
+        added_after: str | None = None,
     ) -> list[DocumentInfo]:
         """List all ingested documents.
 
@@ -1136,6 +1200,7 @@ class VstashStore:
             collection: If set, filter to this collection only.
             project: If set, filter to this project only.
             layer: If set, filter to this layer only.
+            added_after: If set, only return documents added after this ISO timestamp.
 
         Returns:
             List of DocumentInfo ordered by ingestion date (newest first).
@@ -1145,6 +1210,9 @@ class VstashStore:
             project=project,
             layer=layer,
         )
+        if added_after:
+            conditions.append("added_at >= ?")
+            filter_params.append(added_after)
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
         rows = self._conn.execute(
             f"""SELECT path, title, source_type, collection,
@@ -1560,6 +1628,7 @@ class VstashStore:
                 combined_text = "\n".join(chunk["text"] for chunk in row)
                 expanded.append(
                     SearchResult(
+                        chunk_id=r.chunk_id,
                         text=combined_text,
                         title=r.title,
                         path=r.path,
