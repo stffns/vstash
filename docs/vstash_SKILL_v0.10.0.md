@@ -127,9 +127,12 @@ To find the correct path, use `vstash_list()` or `vstash_search()` first.
   `cfg` and `store` are required positional params.
 - **Test suite fix:** Added missing `tests/__init__.py` — 326/326 tests passing.
 
-### v0.8.0–0.8.1 — Direct Text Ingestion & Code Chunking
+### v0.8.0–0.8.1 — Direct Text Ingestion, Code Chunking & MMR
 - **`vstash remember` command:** Ingest text directly without writing files.
   Agent-friendly alternative to `vstash add`.
+- **MMR deduplication:** Replaced hard per-document dedup with intra-document
+  Maximal Marginal Relevance. Multiple chunks from the same document can appear
+  if semantically diverse. Configurable via `mmr_lambda`.
 - **Code-aware chunking:** Regex-based splitting at column-0 definitions
   for Python, JS/TS, Go, Rust, Java. 3-tier fallback: regex → paragraph → fixed-window.
 - **Multilingual embeddings:** Search in any language via `vstash reindex`.

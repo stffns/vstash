@@ -9,7 +9,7 @@
 
 We present **vstash**, a local-first document memory system that combines vector similarity search with full-text keyword matching via Reciprocal Rank Fusion (RRF), augmented by a novel frequency-weighted temporal decay re-ranker. All data resides in a single SQLite file using `sqlite-vec` for approximate nearest neighbor search and FTS5 for keyword matching — no cloud services, no external databases.
 
-We make six empirical contributions. **(1)** A post-RRF re-ranking formula that fuses normalized semantic scores with access-frequency signals decayed over time, improving NDCG@10 by up to 16.1% on access-heavy scenarios while adding only 0.017 ms of overhead. **(2)** An *adaptive scoring maturity gate* (γ) that suppresses the frequency+decay component until access patterns exhibit sufficient differential (max/mean ≥ 8×), eliminating cold start degradation: on 120 real Wikipedia articles (919 chunks), fixed β=0.5 degrades ranking in 6 of 30 rounds while adaptive γ maintains 0.0% degradation across all 30. **(3)** A *distance-based relevance signal* using the cosine distance of the best vector match, achieving F1 = 0.952 with zero overlap between relevant and irrelevant queries — working from the first search with no scoring or usage history required. This supersedes our earlier score-spread approach (F1 = 0.667, 10/10 class overlap). **(4)** Intra-document MMR deduplication that improves result diversity from ~3.2 to 5.0 unique documents per top-5 while simultaneously improving NDCG@5 from 0.814 to 0.829, and — unlike hard per-document dedup — allows semantically diverse sections from the same long document to surface. **(5)** Context expansion that retrieves adjacent chunks (±1 window) for 2.64× richer LLM context at +0.12 ms cost. **(6)** Code-aware chunking with language-specific boundary detection that preserves function-level semantic coherence for 6 programming languages.
+We make six empirical contributions. **(1)** A post-RRF re-ranking formula that fuses normalized semantic scores with access-frequency signals decayed over time, improving NDCG@10 by up to 16.1% on access-heavy scenarios while adding only 0.017 ms of overhead. **(2)** An *adaptive scoring maturity gate* (γ) that suppresses the frequency+decay component until access patterns exhibit sufficient differential (max/mean ≥ 8×), eliminating cold start degradation: on 120 real Wikipedia articles (919 chunks), fixed β=0.5 degrades ranking in 6 of 30 rounds while adaptive γ maintains 0.0% degradation across all 30. **(3)** A *distance-based relevance signal* using the cosine distance of the best vector match, achieving F1 = 0.952 with zero overlap between relevant and irrelevant queries — working from the first search with no scoring or usage history required. This supersedes our earlier score-spread approach (F1 = 0.667, 10/10 class overlap). **(4)** Intra-document MMR deduplication that improves result diversity from ~3.2 to 5.0 unique documents per top-5 while simultaneously improving NDCG@5 from 0.814 to 0.829, and — unlike hard per-document dedup — allows semantically diverse sections from the same long document to surface. **(5)** Context expansion that retrieves adjacent chunks (±1 window) for 2.64× richer LLM context at +0.12 ms cost. **(6)** Hybrid code-aware chunking with a 3-tier splitting pipeline — tree-sitter AST (25+ languages), parso AST (Python), and regex fallback (6 languages) — that preserves function-level semantic coherence with graceful degradation.
 
 We evaluate on three corpora — 24 arXiv papers (786 chunks, domain-specific), 17 Wikipedia articles (2,602 chunks, mixed-domain), and 120 real Wikipedia articles across 12 CS topic clusters (919 chunks) for cold start evaluation — with pooled relevance judgments across 10 queries, 5 access scenarios, and 16 parameter configurations. RRF achieves the highest NDCG@5 on both organic corpora (0.829 after dedup and 0.758 respectively). All experiments are reproducible; source code, data, and experiment scripts are open-source.
 
@@ -36,8 +36,8 @@ We introduce **vstash**, a single-file system built on SQLite that addresses all
 - A **distance-based relevance signal** using the best vector match distance, achieving F1 = 0.952 with zero human tuning — superseding the score-spread approach which required scoring history and achieved only F1 = 0.667 (§5).
 - **Intra-document MMR deduplication** that prevents a single document from flooding top-*k* while allowing semantically diverse sections from the same document to surface, improving diversity (5.0 unique docs per top-5) and NDCG@5 (+1.8%) (§3.4).
 - **Context expansion** via adjacent chunk retrieval for 2.64× richer LLM context at negligible latency cost (§3.5).
-- **Code-aware chunking** for 6 languages using regex-based boundary detection at column 0 with decorator attachment (§6).
-- An **open-source system** with CLI, Python SDK, MCP server for LLM agent integration, and reproducible experiment scripts (§3).
+- **Hybrid code-aware chunking** with a 3-tier splitting pipeline — tree-sitter AST (25+ languages), parso AST (Python), and regex fallback (6 languages) — with graceful degradation and decorator attachment (§6).
+- An **open-source system** with CLI, Python SDK, 15-tool MCP server for LLM agent integration, multi-profile support, cross-session journal memory, and reproducible experiment scripts (§3).
 
 ---
 
@@ -49,7 +49,7 @@ We introduce **vstash**, a single-file system built on SQLite that addresses all
 
 **Temporal decay in memory.** The Ebbinghaus forgetting curve [1885] inspires exponential decay models. Zep [2025] uses temporal knowledge graphs; MaRS [2025] models cognitive forgetting. PAM [2026] exploits temporal co-occurrence. We apply decay directly in the scoring formula rather than in graph structure.
 
-**Code-aware chunking.** Tree-sitter-based approaches parse full ASTs but require language grammars. Our regex approach at column 0 provides comparable boundary detection for top-level definitions without external dependencies.
+**Code-aware chunking.** Tree-sitter-based approaches parse full ASTs but require language grammars. Our hybrid 3-tier approach uses tree-sitter when available (25+ languages via optional dependency), parso for Python (base dependency), and regex at column 0 as a fallback — providing graceful degradation from full AST precision to pattern-based detection without hard dependencies.
 
 ---
 
@@ -59,7 +59,7 @@ We introduce **vstash**, a single-file system built on SQLite that addresses all
 ┌─────────────────────────────────────────────────────────────────┐
 │                        INGESTION                                │
 │  PDF/DOCX/URL/Code ──► MarkItDown ──► Chunking ──► FastEmbed   │
-│                          parse      (code-aware     (ONNX,      │
+│                          parse      (3-tier code    (ONNX,      │
 │                                      or semantic)   384-dim)    │
 └──────────────────────────────┬──────────────────────────────────┘
                                │
@@ -71,6 +71,11 @@ We introduce **vstash**, a single-file system built on SQLite that addresses all
 │  │ metadata,  │  │ text, seq, │  │sqlite-vec│  │  FTS5 +    │  │
 │  │ tags, path │  │ access_cnt │  │  ANN idx │  │  Porter    │  │
 │  └────────────┘  └────────────┘  └──────────┘  └────────────┘  │
+│  ┌──────────────────┐  ┌──────────────────────────────────────┐ │
+│  │ journal_entries  │  │ profiles (multi-DB isolation)        │ │
+│  │ cross-session    │  │ named DBs with federated search     │ │
+│  │ agent memory     │  │ across profiles                     │ │
+│  └──────────────────┘  └──────────────────────────────────────┘ │
 └──────────────────────────────┬──────────────────────────────────┘
                                │
                                ▼
@@ -84,7 +89,7 @@ We introduce **vstash**, a single-file system built on SQLite that addresses all
 │                                    (over-fetch 50, §4)          │
 │                                               │                 │
 │                                               ▼                 │
-│                                    Document Dedup (§3.4)          │
+│                                    MMR Dedup (§3.4)              │
 │                                               │                 │
 │                                               ▼                 │
 │                                    Distance Relevance Signal     │
@@ -92,18 +97,21 @@ We introduce **vstash**, a single-file system built on SQLite that addresses all
 │                                               │                 │
 │                                               ▼                 │
 │                                    Context Expansion (±1, §3.5)  │
+│                                                                  │
+│  Direct Access: get_chunk(id) — O(1) PK lookup (§3.6)           │
 └──────────────────────────────┬──────────────────────────────────┘
                                │
                                ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                      INTERFACES                                 │
-│   CLI    │   Python SDK   │   MCP Server   │  Claude Code Hook  │
-│ (search, │  (Memory()     │  (vstash_search│  (auto-inject      │
-│  ask,    │   .search()    │   vstash_add)  │   on knowledge     │
-│  chat)   │   .ask())      │               │   questions)       │
+│   CLI    │  Python SDK  │  MCP Server (15 tools)│ Claude Hook  │
+│ (search, │ (Memory()    │ (search, add, ask,    │ (auto-inject │
+│  ask,    │  .search()   │  remember, get_chunk, │  on knowledge│
+│  chat,   │  .get_chunk()│  journal, forget,     │  questions)  │
+│  journal)│  .journal()) │  list, stats, export) │              │
 └─────────────────────────────────────────────────────────────────┘
 ```
-*Figure 1: vstash architecture. All data resides in a single SQLite file. The retrieval pipeline applies RRF fusion, frequency+decay re-ranking, document deduplication, a distance-based relevance signal, and context expansion.*
+*Figure 1: vstash architecture (v0.13). All data resides in a single SQLite file per profile. The retrieval pipeline applies RRF fusion, frequency+decay re-ranking, intra-document MMR deduplication, a distance-based relevance signal, and context expansion. Multi-profile support enables isolated databases with federated search across profiles.*
 
 vstash stores all data in a single SQLite database using WAL mode for concurrent read safety:
 
@@ -112,6 +120,7 @@ vstash stores all data in a single SQLite database using WAL mode for concurrent
 - **vec_chunks** — `sqlite-vec` virtual table for approximate nearest neighbor search (384-dim float vectors from BAAI/bge-small-en-v1.5).
 - **fts_chunks** — FTS5 virtual table with Porter stemming for keyword matching.
 - **search_events** — telemetry table recording query, distance, relevance tier, and dismiss flag for real-world signal validation (pruned to 1,000 entries).
+- **journal_entries** — append-only cross-session memory for LLM agents (text, tags, timestamps).
 
 ### 3.1 Ingestion Pipeline
 
@@ -133,11 +142,11 @@ where *r_v(c)* and *r_f(c)* are the ranks of chunk *c* in vector and FTS5 result
 
 vstash integrates with LLM agents through three interfaces:
 
-**MCP Server.** Exposes search, add, ask, and management tools via the Model Context Protocol. The server includes LLM-facing instructions that guide clients on when to use (knowledge questions) and when to skip (action commands) memory tools. Search results include the relevance signal, enabling clients to filter noise.
+**MCP Server.** Exposes 15 tools via the Model Context Protocol: search, add, ask, remember (direct text ingestion), get_chunk (O(1) chunk retrieval by ID), list, stats, forget, collections, export, job status, and four journal tools (save, recall, log, prune). The server includes LLM-facing instructions that guide clients on when to use (knowledge questions) and when to skip (action commands) memory tools. Search results include the relevance signal, enabling clients to filter noise.
 
 **Claude Code Hook.** A `UserPromptSubmit` hook that auto-injects vstash context on knowledge questions. A pattern-based filter distinguishes knowledge questions from action commands (commit, merge, push), achieving 17/17 accuracy on our test set.
 
-**Python SDK.** A `Memory` class with context manager protocol for programmatic integration into agent frameworks.
+**Python SDK.** A `Memory` class with context manager protocol for programmatic integration into agent frameworks. Methods include `search()`, `ask()`, `add()`, `remember()`, `get_chunk()`, `get_chunks()`, `journal_save()`, `journal_recall()`, and full document management.
 
 ### 3.4 Intra-Document MMR Deduplication
 
@@ -178,6 +187,24 @@ expanded_text(c) = concat(text(c - w), ..., text(c), ..., text(c + w))
 ```
 
 Default *w = 1* yields 2.64× more text per result at +0.12 ms overhead. This is applied in all LLM-facing interfaces (ask, chat, MCP) but not in raw search, where chunk-level granularity is preserved.
+
+### 3.6 Direct Chunk Access
+
+Search results include a `chunk_id` (the database row ID) that enables O(1) retrieval of individual chunks without re-running a search. The `get_chunk(id)` and `get_chunks(ids)` APIs perform primary key lookups with a JOIN to the documents table, returning chunk text, metadata, and source document information. Batch requests are automatically batched at 900 IDs per SQL statement to respect SQLite's `SQLITE_LIMIT_VARIABLE_NUMBER` (default 999).
+
+This API enables downstream applications to pin specific chunks for later use — e.g., a spaced repetition system can store chunk IDs as stable references to knowledge atoms. Chunk IDs are stable for the lifetime of the current index; re-ingesting a document invalidates prior IDs.
+
+### 3.7 Multi-Profile Support
+
+vstash supports multiple named profiles, each backed by an isolated SQLite database. Profiles are resolved via a chain: explicit `--profile` flag → `VSTASH_PROFILE` environment variable → `default` profile. Each profile has its own document collection, search index, and access history.
+
+**Federated search** queries across all profiles in parallel and merges results via RRF fusion with cross-profile deduplication. The fusion key `(path, chunk_seq, text[:64])` prevents identical content in different profiles from duplicating in results while distinguishing genuinely different content at the same path and sequence number.
+
+### 3.8 Cross-Session Journal
+
+The journal subsystem provides lightweight, append-only memory for LLM agents. Unlike document ingestion (which chunks, embeds, and indexes), journal entries are stored as single text records with timestamps and optional tags. The API supports four operations: `save` (append), `recall` (semantic search over entries), `log` (chronological listing), and `prune` (remove entries older than a threshold).
+
+Journal entries are designed for ephemeral cross-session context: action items, decisions, meeting notes, and observations that an agent needs to recall in future sessions but that don't warrant full document ingestion. Transcript parsing automatically extracts structured entries from conversation logs.
 
 ---
 
@@ -312,23 +339,45 @@ To validate the signal in production, every search records an event with query, 
 
 ## 6. Code-Aware Chunking
 
-Standard fixed-window chunking splits code mid-function, destroying semantic coherence. We detect top-level definitions via regex patterns anchored at column 0 (no indentation), supporting Python, JavaScript, TypeScript, Go, Rust, and Java.
+Standard fixed-window chunking splits code mid-function, destroying semantic coherence. vstash uses a **3-tier hybrid splitting pipeline** that selects the best available backend per language with graceful degradation:
 
-### Algorithm: Code-Aware Chunking
+| Tier | Backend | Languages | Resolution | Install |
+|------|---------|-----------|------------|---------|
+| 1 | **tree-sitter** | 25+ (C, C++, Ruby, PHP, Swift, Kotlin, Scala, etc.) | AST-level — exact definition boundaries | `pip install vstash[treesitter]` |
+| 2 | **parso** | Python only | AST-level — funcdef, classdef, decorated | Included by default |
+| 3 | **regex** | Python, JS/TS, Go, Rust, Java | Pattern-based — column-0 definitions | Included by default |
+
+The backend is selected automatically: tree-sitter is tried first (if installed and the language has a grammar), then parso for Python, then regex. If none match, the system falls back to semantic chunking (paragraph → fixed-window).
+
+### Algorithm: Hybrid Code-Aware Chunking
 
 ```
 Input: source text T, language L, chunk_size C
-1. P ← language-specific regex patterns for L
-2. B ← find all column-0 matches of P in T
-3. Attach decorators/annotations to their next definition
-4. chunks ← split T at boundaries B
-5. For each chunk c:
+1. If tree-sitter available for L:
+     AST ← parse(T, L)
+     B ← extract top-level definition nodes from AST
+2. Else if L = Python and parso available:
+     AST ← parso.parse(T)
+     B ← extract funcdef, classdef, decorated nodes
+3. Else if L ∈ {Python, JS, TS, Go, Rust, Java}:
+     P ← language-specific regex patterns for L
+     B ← find all column-0 matches of P in T
+4. Else: fall back to semantic chunking
+5. Attach decorators/annotations to their next definition
+6. chunks ← split T at boundaries B
+7. For each chunk c:
      If tokens(c) > C: split by paragraphs, then fixed-window fallback
-6. Merge adjacent chunks with < 80 tokens
-7. Return chunks
+8. Merge adjacent chunks with < 80 tokens
+9. Return chunks
 ```
 
-**Column-0 anchoring.** By requiring zero indentation, we avoid false positives on nested method definitions (e.g., methods inside a Python class). This is a deliberate trade-off: nested methods are kept with their parent class, which is desirable for embedding coherence. The convention is strongest in Python, Go, and Rust, where top-level definitions are idiomatically unindented; JavaScript and TypeScript module patterns occasionally nest exports, which the regex misses. In all cases, the 3-tier fallback chain (regex → paragraph → fixed-window) ensures that unmatched code still produces token-bounded chunks — the failure mode is slightly less semantic boundaries, never data loss or silent omission. A Tree-sitter-based parser would improve boundary precision for nested JS/TS patterns at the cost of ~15 MB of compiled grammars and per-language binary dependencies, a trade-off we consider worthwhile only for codebases dominated by deeply nested module patterns.
+**Tree-sitter (Tier 1)** provides exact AST boundary detection for 25+ languages, handling nested definitions, complex module patterns, and language-specific constructs that regex cannot reliably parse. It is an optional dependency (`tree-sitter-language-pack`) to avoid the ~15 MB binary overhead for users who don't need multi-language support. UTF-8 byte-offset handling ensures correct boundary detection for non-ASCII source files.
+
+**Parso (Tier 2)** provides AST-level splitting for Python specifically, included as a base dependency. It correctly handles Python-specific constructs like decorated functions, nested classes, and async definitions.
+
+**Regex (Tier 3)** detects top-level definitions via patterns anchored at column 0 (no indentation). By requiring zero indentation, we avoid false positives on nested method definitions (e.g., methods inside a Python class). This is a deliberate trade-off: nested methods are kept with their parent class, which is desirable for embedding coherence. The convention is strongest in Python, Go, and Rust, where top-level definitions are idiomatically unindented.
+
+In all tiers, the fallback chain (code splitting → paragraph → fixed-window) ensures that unmatched or oversized code still produces token-bounded chunks — the failure mode is slightly less semantic boundaries, never data loss or silent omission.
 
 ---
 
@@ -400,10 +449,12 @@ Two corpus-dependent effects are visible:
 
 Key findings:
 
-1. **Equal weighting (α=β=0.5) is optimal** when averaged across all scenarios, contrary to the common assumption that semantic relevance should dominate.
+1. **Equal weighting (α=β=0.5) is optimal** when averaged across all scenarios in the grid search, contrary to the common assumption that semantic relevance should dominate.
 2. **The scoring benefit scales with access differential.** In the benchmark-focused scenario (heavy access to specific papers), NDCG improves by 16.1%. In the uniform scenario (no differential access), improvement is minimal (+0.7%).
 3. **Lambda sensitivity is low** in the 0.03–0.10 range. Extreme values (λ = 0.20) degrade performance as recent accesses decay too quickly.
 4. **Over-fetch of 50 is sufficient.** Increasing to 100 shows no improvement; decreasing to 20 slightly hurts.
+
+**Shipped defaults vs. grid search optimum.** The system ships with conservative defaults (α=0.8, β=0.2, λ=0.05) rather than the grid search optimum (α=0.5, β=0.5, λ=0.10). This is deliberate: the optimal configuration was measured on an access-heavy benchmark where frequency signals carry strong signal. In production, most users start with a cold corpus where the adaptive maturity gate (γ) suppresses scoring entirely. The conservative α=0.8 ensures semantic relevance dominates during the long maturation period, while the grid search optimum is available via `vstash.toml` for users with established access patterns. All parameters are configurable in the `[scoring]` section.
 
 ### 8.3 Relevance Signal
 
@@ -491,6 +542,8 @@ We evaluate the adaptive maturity gate (§4.5) on a corpus of 120 real Wikipedia
 
 **Multi-modal.** Current chunking and embedding support text only. Image embeddings via CLIP and table-aware chunking are planned for future versions.
 
+**Test coverage.** The system includes 556 tests across 14 test modules covering store operations, ingestion, code splitting, CLI commands, scoring, robustness, multi-profile, journal, chunk retrieval, and MCP tools. All tests pass on Python 3.10, 3.11, and 3.12 via GitHub Actions CI.
+
 ---
 
 ## 10. Conclusion
@@ -508,6 +561,8 @@ We presented vstash, a local-first document memory system that demonstrates six 
 5. **Local-first is viable.** With sub-millisecond search latency, a single SQLite file, and zero cloud dependencies, there is no fundamental barrier to running hybrid retrieval with temporal scoring, deduplication, and relevance signaling on a single machine.
 
 6. **Adaptive activation makes scoring safe by default.** The maturity gate ensures scoring never degrades ranking regardless of corpus characteristics — fixed β=0.5 degrades up to −0.4% on real Wikipedia articles, while adaptive γ maintains 0.0% across all 30 rounds. When γ = 0, no metadata lookups or decay computations occur. The system transitions seamlessly from pure RRF to frequency-augmented ranking as usage patterns mature.
+
+Beyond these empirical findings, vstash has evolved into a complete agent memory platform: multi-profile isolation enables separate knowledge domains with federated cross-profile search (v0.11), a cross-session journal provides lightweight append-only memory for LLM agent context (v0.12), and direct chunk access via `get_chunk` enables downstream applications to pin specific knowledge atoms by ID (v0.13). The system ships with 15 MCP tools, a Python SDK, CLI, and Claude Code hook integration, validated by 556 tests across Python 3.10–3.12.
 
 ---
 
