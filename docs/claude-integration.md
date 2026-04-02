@@ -164,10 +164,13 @@ After restart, Claude will have these tools available:
 | `vstash_search` | Semantic search across all documents |
 | `vstash_ask` | Search + LLM answer in one step |
 | `vstash_add` | Ingest files, directories, or URLs |
+| `vstash_remember` | Ingest text directly without a file |
+| `vstash_get_chunk` | Retrieve a chunk by database row ID |
 | `vstash_list` | List all documents in memory |
 | `vstash_stats` | Memory statistics |
-| `vstash_find` | Find a document by partial name |
-| `vstash_forget` | Remove a document |
+| `vstash_forget` | Remove a document (supports fuzzy matching) |
+| `vstash_journal_save` | Save a cross-session memory entry |
+| `vstash_journal_recall` | Search journal entries |
 
 **4. Add documents**
 
