@@ -565,6 +565,32 @@ def vstash_search(
 
 
 @mcp_server.tool()
+def vstash_get_chunk(chunk_id: int) -> str:
+    """Retrieve a single chunk by its database row ID.
+
+    Use this when you already have a chunk_id (e.g., from a previous search result)
+    and need to fetch the full text without running a new search.
+
+    Args:
+        chunk_id: The integer primary key of the chunk.
+
+    Returns:
+        JSON object with chunk text and document metadata, or error if not found.
+    """
+    try:
+        store = _get_store()
+        chunk = store.get_chunk(int(chunk_id))
+        if chunk is None:
+            return _error(f"Chunk {chunk_id} not found.")
+        return _ok(chunk.model_dump())
+    except FileNotFoundError:
+        return _error("vstash database not found. Ingest documents first with vstash_add.")
+    except Exception as exc:
+        logger.exception("vstash_get_chunk failed")
+        return _error(f"Get chunk failed: {exc}")
+
+
+@mcp_server.tool()
 def vstash_list(
     collection: str | None = None,
     project: str | None = None,

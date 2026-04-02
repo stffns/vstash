@@ -52,6 +52,18 @@ class DocumentInfo(BaseModel):
     added_at: str = Field(description="ISO timestamp of ingestion")
 
 
+class ChunkInfo(BaseModel):
+    """A single chunk retrieved by ID."""
+
+    chunk_id: int = Field(description="Database row ID of the chunk")
+    doc_id: str = Field(description="Parent document hash ID")
+    seq: int = Field(description="Chunk sequence number within document")
+    text: str = Field(description="Chunk text content")
+    title: str = Field(description="Source document title")
+    path: str = Field(description="Source document path")
+    collection: str = Field(default="default", description="Document collection")
+
+
 class StoreStats(BaseModel):
     """Aggregate statistics about the vstash memory store."""
 
