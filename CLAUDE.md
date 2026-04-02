@@ -25,7 +25,7 @@ vstash stats
 
 ```
 vstash/
-  __init__.py       # version (__version__ = "0.12.0")
+  __init__.py       # version (__version__ = "0.13.0")
   cli.py            # typer CLI — add, search, ask, chat, list, stats, forget, reindex, watch, config, export, remember, profile, journal
   profile.py        # Multi-profile management: resolution chain, CRUD, federated search
   journal.py        # Cross-session memory: save, recall, log, prune, transcript parsing
@@ -55,6 +55,8 @@ tests/
   test_url_titles_e2e.py # URL title extraction e2e tests
   test_profile.py   # Multi-profile resolution, management, federated search, CLI, SDK
   test_journal.py   # Journal save/recall/log/prune, CLI, SDK, MCP, transcript parsing
+  test_get_chunk.py # Direct chunk retrieval by ID (store, SDK, MCP, edge cases)
+  test_store_helpers.py # Store helper methods (get_document_chunks, added_at, batching)
   conftest.py       # Fixtures (tmp_db_path, sample_store)
 
 experiments/        # Research experiment scripts + results
@@ -78,7 +80,7 @@ docs/               # User-facing documentation
 - **Pydantic v2** for all config and data models (frozen=True)
 - **Type hints** on all public functions
 - **ruff** for linting and formatting (enforced in CI)
-- **pytest** for testing (521 tests as of v0.12.0)
+- **pytest** for testing (556 tests as of v0.13.0)
 - **Conventional commits** with emoji prefixes (feat, fix, docs, chore, perf)
 
 ## Database schema
