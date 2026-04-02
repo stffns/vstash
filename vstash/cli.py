@@ -12,6 +12,7 @@ Commands:
   vstash forget <file>    → remove document
   vstash reindex           → re-embed chunks with new model
   vstash config           → show current config
+  vstash profile          → manage named profiles
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from . import chat as chat_module
 from .config import VstashConfig, load_config
 from .embed import embed_query, get_embedding_dim, warmup
 from .ingest import ingest, ingest_directory
+from .profile import resolve_db_path
 from .store import VstashStore, relevance_tier
 
 from . import __version__
@@ -68,6 +70,7 @@ console = Console()
 
 @app.callback()
 def _app_callback(
+    ctx: typer.Context,
     version: bool = typer.Option(
         False,
         "--version",
@@ -76,14 +79,35 @@ def _app_callback(
         is_eager=True,
         help="Show version and exit.",
     ),
+    profile: str | None = typer.Option(
+        None,
+        "--profile",
+        "-P",
+        help="Use a named profile (e.g., 'work', 'research').",
+    ),
 ) -> None:
     """Local document memory with instant semantic search."""
+    ctx.ensure_object(dict)
+    if profile is not None:
+        from .profile import validate_name
+
+        try:
+            validate_name(profile)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc), param_hint="--profile") from exc
+    ctx.obj["profile"] = profile
+
+
+def _profile_from_ctx(ctx: typer.Context) -> str | None:
+    """Extract the profile name from the Typer context."""
+    return (ctx.obj or {}).get("profile")
 
 
 def _get_store(
     cfg: VstashConfig | None = None,
     *,
     warm: bool = False,
+    profile: str | None = None,
 ) -> tuple[VstashConfig, VstashStore]:
     """Initialize config and create a VstashStore instance.
 
@@ -91,6 +115,7 @@ def _get_store(
         cfg: Optional pre-loaded config. If None, loads from vstash.toml.
         warm: If True, eagerly load the ONNX embedding model to
             eliminate cold-start latency on the first query.
+        profile: Named profile to use. If None, uses resolution chain.
 
     Returns:
         Tuple of (config, store).
@@ -100,8 +125,9 @@ def _get_store(
     if warm:
         warmup(cfg.embeddings.model)
     dim = get_embedding_dim(cfg.embeddings.model)
+    db_path = str(resolve_db_path(profile))
     store = VstashStore(
-        cfg.storage.db_path,
+        db_path,
         embedding_dim=dim,
         vector_backend=cfg.storage.vector_backend,
         snapvec_bits=cfg.storage.snapvec_bits,
@@ -116,6 +142,7 @@ def _get_store(
 
 @app.command()
 def add(
+    ctx: typer.Context,
     sources: list[str] = typer.Argument(..., help="Files, directories, or URLs to ingest"),
     force: bool = typer.Option(False, "--force", "-f", help="Re-ingest even if already in memory"),
     collection: str = typer.Option("default", "--collection", "-c", help="Collection to add to"),
@@ -130,7 +157,7 @@ def add(
     ),
 ) -> None:
     """Add documents or URLs to memory."""
-    cfg, store = _get_store()
+    cfg, store = _get_store(profile=_profile_from_ctx(ctx))
     meta = {"project": project, "layer": layer, "tags": tags}
 
     with store:
@@ -192,6 +219,7 @@ def add(
 
 @app.command()
 def ask(
+    ctx: typer.Context,
     query: str = typer.Argument(..., help="Your question"),
     top_k: int = typer.Option(
         0, "--top-k", "-k", help="Number of chunks to retrieve (0 = from config)"
@@ -203,9 +231,12 @@ def ask(
     layer: str | None = typer.Option(None, "--layer", "-l", help="Restrict to layer"),
     sources: bool = typer.Option(True, "--sources/--no-sources", help="Show source citations"),
     stream: bool = typer.Option(True, "--stream/--no-stream", help="Stream the response"),
+    all_profiles: bool = typer.Option(
+        False, "--all-profiles", "-A", help="Search across all profiles"
+    ),
 ) -> None:
     """Ask a question about your documents."""
-    cfg, store = _get_store(warm=True)
+    cfg, store = _get_store(warm=True, profile=_profile_from_ctx(ctx))
 
     with store:
         k = top_k or cfg.chunking.top_k
@@ -213,15 +244,33 @@ def ask(
         # Embed query
         with console.status("[dim]Searching memory...[/dim]", spinner="dots"):
             q_embedding = embed_query(query, cfg.embeddings.model)
-            chunks = store.search(
-                q_embedding,
-                query,
-                top_k=k,
-                collection=collection,
-                project=project,
-                layer=layer,
-                scoring=cfg.scoring,
-            )
+
+            if all_profiles:
+                from .profile import federated_search
+
+                tagged = federated_search(
+                    query_embedding=q_embedding,
+                    query_text=query,
+                    embedding_dim=get_embedding_dim(cfg.embeddings.model),
+                    vector_backend=cfg.storage.vector_backend,
+                    snapvec_bits=cfg.storage.snapvec_bits,
+                    top_k=k,
+                    collection=collection,
+                    project=project,
+                    layer=layer,
+                    scoring=cfg.scoring,
+                )
+                chunks = [r for _, r in tagged]
+            else:
+                chunks = store.search(
+                    q_embedding,
+                    query,
+                    top_k=k,
+                    collection=collection,
+                    project=project,
+                    layer=layer,
+                    scoring=cfg.scoring,
+                )
 
         if not chunks:
             console.print(
@@ -230,21 +279,27 @@ def ask(
             )
             raise typer.Exit()
 
-        # Tiered relevance signal
-        tier = relevance_tier(store.last_best_distance)
-        store.record_search_event(
-            query=query,
-            best_distance=store.last_best_distance,
-            relevance_tier=tier,
-            result_count=len(chunks),
-        )
-        if tier == "low":
-            console.print("[dim]⚠ Low relevance — context may not match your question well.[/dim]")
-        elif tier == "medium":
-            console.print("[dim]? Uncertain relevance — results may be tangential.[/dim]")
+        # Tiered relevance signal (skip for federated — no single best_distance)
+        if not all_profiles:
+            tier = relevance_tier(store.last_best_distance)
+            store.record_search_event(
+                query=query,
+                best_distance=store.last_best_distance,
+                relevance_tier=tier,
+                result_count=len(chunks),
+            )
+            if tier == "low":
+                console.print(
+                    "[dim]⚠ Low relevance — context may not match your question well.[/dim]"
+                )
+            elif tier == "medium":
+                console.print("[dim]? Uncertain relevance — results may be tangential.[/dim]")
 
         # Expand context: include adjacent chunks for richer LLM context
-        chunks = store.expand_context(chunks, window=1)
+        # Note: skipped for --all-profiles because expand_context requires
+        # per-store DB access; federated chunks come from multiple closed DBs.
+        if not all_profiles:
+            chunks = store.expand_context(chunks, window=1)
 
         # Show sources
         if sources:
@@ -290,6 +345,7 @@ def ask(
 
 @app.command()
 def search(
+    ctx: typer.Context,
     query: str = typer.Argument(..., help="Your search query"),
     top_k: int = typer.Option(
         0, "--top-k", "-k", help="Number of chunks to retrieve (0 = from config)"
@@ -300,24 +356,47 @@ def search(
     project: str | None = typer.Option(None, "--project", "-p", help="Restrict to project"),
     layer: str | None = typer.Option(None, "--layer", "-l", help="Restrict to layer"),
     json_output: bool = typer.Option(False, "--json", "-j", help="Output results as JSON"),
+    all_profiles: bool = typer.Option(
+        False, "--all-profiles", "-A", help="Search across all profiles"
+    ),
 ) -> None:
     """Semantic search without LLM (free, local)."""
-    cfg, store = _get_store(warm=True)
+    cfg, store = _get_store(warm=True, profile=_profile_from_ctx(ctx))
+    _search_tagged: list[tuple[str, object]] | None = None
 
     with store:
         k = top_k or cfg.chunking.top_k
 
         with console.status("[dim]Searching memory...[/dim]", spinner="dots"):
             q_embedding = embed_query(query, cfg.embeddings.model)
-            chunks = store.search(
-                q_embedding,
-                query,
-                top_k=k,
-                collection=collection,
-                project=project,
-                layer=layer,
-                scoring=cfg.scoring,
-            )
+
+            if all_profiles:
+                from .profile import federated_search
+
+                tagged = federated_search(
+                    query_embedding=q_embedding,
+                    query_text=query,
+                    embedding_dim=get_embedding_dim(cfg.embeddings.model),
+                    vector_backend=cfg.storage.vector_backend,
+                    snapvec_bits=cfg.storage.snapvec_bits,
+                    top_k=k,
+                    collection=collection,
+                    project=project,
+                    layer=layer,
+                    scoring=cfg.scoring,
+                )
+                chunks = [r for _, r in tagged]
+                _search_tagged = tagged
+            else:
+                chunks = store.search(
+                    q_embedding,
+                    query,
+                    top_k=k,
+                    collection=collection,
+                    project=project,
+                    layer=layer,
+                    scoring=cfg.scoring,
+                )
 
         if not chunks:
             if json_output:
@@ -329,29 +408,30 @@ def search(
             )
             raise typer.Exit()
 
-        # Relevance signal: tiered ghost warning based on vector distance.
-        # high (<=0.95): confident, no warning. medium (0.95-0.98): subtle ?.
-        # low (>0.98): full warning. Works from day zero, no scoring needed.
-        best_distance = store.last_best_distance
-        tier = relevance_tier(best_distance)
+        # Relevance signal (skip for federated — no single best_distance)
+        tier = "high"
         scoring_enabled = cfg.scoring is not None and cfg.scoring.enabled
+        if not all_profiles:
+            best_distance = store.last_best_distance
+            tier = relevance_tier(best_distance)
 
-        # Telemetry: record search event for discard rate analysis
-        _event_id = store.record_search_event(
-            query=query,
-            best_distance=best_distance,
-            relevance_tier=tier,
-            result_count=len(chunks),
-        )
+            # Telemetry: record search event for discard rate analysis
+            _event_id = store.record_search_event(
+                query=query,
+                best_distance=best_distance,
+                relevance_tier=tier,
+                result_count=len(chunks),
+            )
 
         if json_output:
             import json
 
-            out = {
-                "chunks": [c.model_dump() for c in chunks],
-                "relevance": tier,
-                "best_distance": round(best_distance, 4),
-            }
+            out: dict = {"chunks": [c.model_dump() for c in chunks]}
+            if not all_profiles:
+                out["relevance"] = tier
+                out["best_distance"] = round(best_distance, 4)
+            if _search_tagged:
+                out["profiles"] = [name for name, _ in _search_tagged]
             print(json.dumps(out, indent=2))
             raise typer.Exit()
 
@@ -366,37 +446,47 @@ def search(
 
         table = Table(show_header=True, header_style="bold cyan", padding=(0, 1))
         table.add_column("#", style="dim", width=3)
+        if all_profiles and _search_tagged:
+            table.add_column("Profile", style="magenta", max_width=15)
         table.add_column("Score", width=6)
         table.add_column("Source", style="green", max_width=30)
         table.add_column("Text", max_width=80)
 
         for i, c in enumerate(chunks, 1):
             display_score = (c.score - min_score) / score_range if score_range > 0 else 1.0
-            # Ghost warning: medium tier gets a subtle ? next to the rank
             rank_label = f"{i}?" if tier == "medium" else str(i)
             text_preview = c.text.replace("\n", " ").strip()
             if len(text_preview) > 120:
                 text_preview = text_preview[:120] + "..."
-            table.add_row(
-                rank_label,
-                f"{display_score:.2f}",
-                c.title,
-                text_preview,
-            )
+            if all_profiles and _search_tagged:
+                profile_name = _search_tagged[i - 1][0] if i <= len(_search_tagged) else ""
+                table.add_row(
+                    rank_label,
+                    profile_name,
+                    f"{display_score:.2f}",
+                    c.title,
+                    text_preview,
+                )
+            else:
+                table.add_row(
+                    rank_label,
+                    f"{display_score:.2f}",
+                    c.title,
+                    text_preview,
+                )
 
         console.print(table)
 
         # Show scoring warm-up progress when scoring is disabled
-        if not scoring_enabled:
+        if not all_profiles and not scoring_enabled:
             total_accesses = store.total_access_count()
             target = 500  # ~100 searches × 5 results
             if total_accesses >= target:
                 console.print(
-                    "\n[dim]💡 Scoring ready! You have enough usage history. "
+                    "\n[dim]Scoring ready! You have enough usage history. "
                     "Enable in vstash.toml: [bold]scoring.enabled = true[/bold][/dim]"
                 )
             elif total_accesses >= 50:
-                # Show progress once user has done at least ~10 searches
                 pct = min(100, int(total_accesses / target * 100))
                 bar_filled = pct // 5  # 20-char bar
                 bar = "█" * bar_filled + "░" * (20 - bar_filled)
@@ -412,10 +502,11 @@ def search(
 
 @app.command()
 def chat(
+    ctx: typer.Context,
     top_k: int = typer.Option(0, "--top-k", "-k"),
 ) -> None:
     """Interactive chat mode. Type 'exit' or Ctrl+C to quit."""
-    cfg, store = _get_store(warm=True)
+    cfg, store = _get_store(warm=True, profile=_profile_from_ctx(ctx))
 
     with store:
         k = top_k or cfg.chunking.top_k
@@ -536,12 +627,13 @@ def chat(
 
 @app.command(name="list")
 def list_docs(
+    ctx: typer.Context,
     collection: str | None = typer.Option(None, "--collection", "-c", help="Filter by collection"),
     project: str | None = typer.Option(None, "--project", "-p", help="Filter by project"),
     layer: str | None = typer.Option(None, "--layer", "-l", help="Filter by layer"),
 ) -> None:
     """List all documents in memory."""
-    cfg, store = _get_store()
+    cfg, store = _get_store(profile=_profile_from_ctx(ctx))
 
     with store:
         docs = store.list_documents(
@@ -586,6 +678,7 @@ def list_docs(
 
 @app.command()
 def export(
+    ctx: typer.Context,
     output: str = typer.Option(..., "--output", "-o", help="Output file path"),
     fmt: str = typer.Option("jsonl", "--format", "-f", help="Output format: jsonl or csv"),
     collection: str | None = typer.Option(None, "--collection", "-c", help="Filter by collection"),
@@ -600,7 +693,7 @@ def export(
     import csv
     import json
 
-    cfg, store = _get_store()
+    cfg, store = _get_store(profile=_profile_from_ctx(ctx))
 
     with store:
         chunks = store.export_chunks(
@@ -653,9 +746,9 @@ def export(
 
 
 @app.command()
-def stats() -> None:
+def stats(ctx: typer.Context) -> None:
     """Show memory statistics."""
-    cfg, store = _get_store()
+    cfg, store = _get_store(profile=_profile_from_ctx(ctx))
 
     with store:
         s = store.stats()
@@ -682,10 +775,11 @@ def stats() -> None:
 
 @app.command()
 def forget(
+    ctx: typer.Context,
     path: str = typer.Argument(..., help="File path or URL to remove from memory"),
 ) -> None:
     """Remove a document from memory."""
-    cfg, store = _get_store()
+    cfg, store = _get_store(profile=_profile_from_ctx(ctx))
 
     with store:
         source = str(Path(path).resolve()) if Path(path).exists() else path
@@ -703,7 +797,7 @@ def forget(
 
 
 @app.command(name="config")
-def show_config() -> None:
+def show_config(ctx: typer.Context) -> None:
     """Show current configuration."""
     cfg = load_config()
     from .embed import resolve_backend
@@ -735,6 +829,7 @@ def show_config() -> None:
 
 @app.command()
 def reindex(
+    ctx: typer.Context,
     model: str | None = typer.Option(
         None,
         "--model",
@@ -761,8 +856,9 @@ def reindex(
 
     # Open store with current dim (to read existing data)
     current_dim = get_embedding_dim(cfg.embeddings.model) if model else new_dim
+    db_path = str(resolve_db_path(_profile_from_ctx(ctx)))
     store = VstashStore(
-        cfg.storage.db_path,
+        db_path,
         embedding_dim=current_dim,
         vector_backend=cfg.storage.vector_backend,
         snapvec_bits=cfg.storage.snapvec_bits,
@@ -816,6 +912,7 @@ def reindex(
 
 @app.command()
 def watch(
+    ctx: typer.Context,
     paths: list[str] = typer.Argument(..., help="Directories to watch"),
     collection: str = typer.Option(
         "default", "--collection", "-c", help="Collection for ingested files"
@@ -828,7 +925,7 @@ def watch(
     """Watch directories for changes and auto-ingest files."""
     from .watch import start_watch
 
-    cfg, store = _get_store()
+    cfg, store = _get_store(profile=_profile_from_ctx(ctx))
 
     extensions: frozenset[str] | None = None
     if ext:
@@ -851,6 +948,7 @@ def watch(
 
 @app.command()
 def remember(
+    ctx: typer.Context,
     text: str | None = typer.Argument(None, help="Text to ingest (or pipe via stdin)"),
     title: str | None = typer.Option(
         None, "--title", "-t", help="Title for the document (auto-generated if omitted)"
@@ -883,7 +981,7 @@ def remember(
 
     from .ingest import ingest_text
 
-    cfg, store = _get_store()
+    cfg, store = _get_store(profile=_profile_from_ctx(ctx))
     meta = {"project": project, "layer": layer, "tags": tags}
 
     with store:
@@ -906,6 +1004,99 @@ def remember(
             console.print(parts)
         else:
             console.print(f"[yellow]⚠ {result.status}: {result.source}[/yellow]")
+
+
+# ------------------------------------------------------------------ #
+# vstash profile                                                      #
+# ------------------------------------------------------------------ #
+
+profile_app = typer.Typer(
+    name="profile",
+    help="Manage named profiles (isolated databases).",
+    add_completion=False,
+    rich_markup_mode="rich",
+)
+app.add_typer(profile_app, name="profile")
+
+
+@profile_app.command(name="list")
+def profile_list() -> None:
+    """List all named profiles."""
+    from .profile import list_profiles as _list_profiles
+
+    profiles = _list_profiles()
+    if not profiles:
+        console.print("[dim]No profiles yet. Create one with: vstash profile create <name>[/dim]")
+        return
+
+    table = Table(show_header=True, header_style="bold cyan", border_style="dim")
+    table.add_column("Profile", style="bold")
+    table.add_column("Size", justify="right")
+    table.add_column("Path", style="dim")
+
+    from .profile import PROFILES_DIR
+
+    for name in profiles:
+        db_path = PROFILES_DIR / name / "memory.db"
+        size_mb = db_path.stat().st_size / (1024 * 1024) if db_path.exists() else 0
+        table.add_row(name, f"{size_mb:.1f} MB", str(db_path))
+
+    console.print(table)
+
+
+@profile_app.command(name="create")
+def profile_create(
+    name: str = typer.Argument(..., help="Profile name"),
+) -> None:
+    """Create a new named profile."""
+    from .profile import create_profile as _create
+
+    try:
+        db_path = _create(name)
+        console.print(
+            f"[green]✓[/green] Created profile [bold]{name}[/bold]\n"
+            f"[dim]  Database: {db_path}[/dim]\n"
+            f"[dim]  Use: vstash --profile {name} add ...[/dim]"
+        )
+    except ValueError as exc:
+        console.print(f"[red]✗[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+
+@profile_app.command(name="delete")
+def profile_delete(
+    name: str = typer.Argument(..., help="Profile name to delete"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
+) -> None:
+    """Delete a named profile and all its data."""
+    from .profile import delete_profile as _delete
+
+    if not yes:
+        typer.confirm(
+            f"Delete profile '{name}' and all its data? This cannot be undone",
+            abort=True,
+        )
+
+    try:
+        _delete(name)
+        console.print(f"[green]✓[/green] Deleted profile [bold]{name}[/bold]")
+    except ValueError as exc:
+        console.print(f"[red]✗[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+
+@profile_app.command(name="active")
+def profile_active(ctx: typer.Context) -> None:
+    """Show which profile is currently active."""
+    from .profile import active_profile_info
+
+    explicit = _profile_from_ctx(ctx)
+    name, reason = active_profile_info(explicit)
+
+    if name:
+        console.print(f"[bold cyan]{name}[/bold cyan] [dim]({reason})[/dim]")
+    else:
+        console.print(f"[dim]{reason}[/dim]")
 
 
 # ------------------------------------------------------------------ #
