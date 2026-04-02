@@ -390,3 +390,48 @@ class TestMemoryJournal:
                 assert mock_recall.call_args.kwargs["project"] == "test-agent"
 
             mem.close()
+
+    def test_memory_journal_log(self, monkeypatch) -> None:
+        from unittest.mock import patch
+
+        with (
+            patch("vstash.memory.get_embedding_dim", return_value=384),
+            patch("vstash.memory.VstashStore"),
+            patch("vstash.memory.load_config"),
+        ):
+            from vstash.memory import Memory
+
+            mem = Memory(project="test-agent")
+
+            with patch("vstash.journal.journal_log") as mock_log:
+                mock_log.return_value = [{"title": "entry", "added_at": "2026-01-01"}]
+                result = mem.journal_log(limit=10, recent="7d")
+                assert len(result) == 1
+                mock_log.assert_called_once()
+                assert mock_log.call_args.kwargs["project"] == "test-agent"
+                assert mock_log.call_args.kwargs["limit"] == 10
+                assert mock_log.call_args.kwargs["recent"] == "7d"
+
+            mem.close()
+
+    def test_memory_journal_prune(self, monkeypatch) -> None:
+        from unittest.mock import patch
+
+        with (
+            patch("vstash.memory.get_embedding_dim", return_value=384),
+            patch("vstash.memory.VstashStore"),
+            patch("vstash.memory.load_config"),
+        ):
+            from vstash.memory import Memory
+
+            mem = Memory(project="test-agent")
+
+            with patch("vstash.journal.journal_prune") as mock_prune:
+                mock_prune.return_value = {"status": "ok", "deleted": 2}
+                result = mem.journal_prune("30d", dry_run=True)
+                assert result["status"] == "ok"
+                mock_prune.assert_called_once()
+                assert mock_prune.call_args.kwargs["project"] == "test-agent"
+                assert mock_prune.call_args.kwargs["dry_run"] is True
+
+            mem.close()

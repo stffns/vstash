@@ -740,7 +740,7 @@ def vstash_journal_save(
         source: Source identifier (e.g. 'agent', 'session', 'mcp').
 
     Returns:
-        JSON with entry metadata (title, chunks, tags, timestamp).
+        JSON with entry metadata (title, chunks, tags, added_at).
     """
     try:
         from .journal import journal_save
@@ -812,6 +812,36 @@ def vstash_journal_log(
     except Exception as exc:
         logger.exception("vstash_journal_log failed")
         return _error(f"Journal log failed: {exc}")
+
+
+@mcp_server.tool()
+def vstash_journal_prune(
+    age: str,
+    project: str | None = None,
+    dry_run: bool = False,
+) -> str:
+    """Remove old journal entries to keep the journal lean.
+
+    Deletes entries older than the specified age threshold.
+
+    Args:
+        age: Age threshold like '30d' (days), '2w' (weeks), '24h' (hours).
+        project: Only prune entries for this project.
+        dry_run: If true, report what would be deleted without deleting.
+
+    Returns:
+        JSON with count of deleted entries and their titles.
+    """
+    try:
+        from .journal import journal_prune
+
+        result = journal_prune(age, project=project, dry_run=dry_run)
+        return _ok(result)
+    except ValueError as exc:
+        return _error(str(exc))
+    except Exception as exc:
+        logger.exception("vstash_journal_prune failed")
+        return _error(f"Journal prune failed: {exc}")
 
 
 # ------------------------------------------------------------------ #

@@ -21,6 +21,7 @@ import logging
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from uuid import uuid4
 
 from .config import VstashConfig, load_config
 from .embed import embed_query, get_embedding_dim
@@ -44,9 +45,11 @@ def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _auto_title(text: str) -> str:
+def _auto_title(text: str, ts: datetime | None = None) -> str:
     """Generate a journal entry title from timestamp + first words."""
-    ts = _now_utc().strftime("%Y-%m-%d %H:%M")
+    if ts is None:
+        ts = _now_utc()
+    ts_str = ts.strftime("%Y-%m-%d %H:%M:%S")
     # First meaningful line, truncated
     first_line = ""
     for line in text.strip().splitlines():
@@ -55,8 +58,8 @@ def _auto_title(text: str) -> str:
             first_line = stripped[:60]
             break
     if first_line:
-        return f"journal {ts} — {first_line}"
-    return f"journal {ts}"
+        return f"journal {ts_str} — {first_line}"
+    return f"journal {ts_str}"
 
 
 def _get_journal_store(cfg: VstashConfig | None = None) -> tuple[VstashConfig, VstashStore]:
@@ -124,13 +127,23 @@ def journal_save(
         cfg: Optional pre-loaded config.
 
     Returns:
-        Dict with entry metadata (title, chunks, timestamp).
+        Dict with entry metadata (title, chunks, added_at).
     """
     if not text or not text.strip():
-        return {"status": "empty", "message": "No content to save."}
+        return {
+            "status": "empty",
+            "title": None,
+            "chunks": 0,
+            "project": None,
+            "tags": None,
+            "added_at": None,
+        }
+
+    # Capture timestamp once — used for title, return value, and path uniqueness
+    now = _now_utc()
 
     if title is None:
-        title = _auto_title(text)
+        title = _auto_title(text, ts=now)
 
     # Auto-detect project from cwd
     if project is None:
@@ -146,7 +159,8 @@ def journal_save(
 
     cfg, store = _get_journal_store(cfg)
     try:
-        source_path = f"text://{title}"
+        # UUID ensures no collision even with identical titles
+        source_path = f"text://journal/{uuid4().hex[:12]}/{title}"
 
         # Try ingest pipeline first (handles chunking for long text)
         from .ingest import ingest_text
@@ -185,7 +199,7 @@ def journal_save(
                 "chunks": 1,
                 "project": project,
                 "tags": final_tags,
-                "timestamp": _now_utc().isoformat(),
+                "added_at": now.isoformat(),
             }
 
         return {
@@ -194,7 +208,7 @@ def journal_save(
             "chunks": result.chunks,
             "project": project,
             "tags": final_tags,
-            "timestamp": _now_utc().isoformat(),
+            "added_at": now.isoformat(),
         }
     finally:
         store.close()
@@ -215,12 +229,13 @@ def journal_recall(
     Args:
         query: Optional search query. None = recent entries.
         top_k: Number of entries to return.
-        project: Filter by project (auto-detected if None).
+        project: Filter by project. None = all projects.
         cfg: Optional pre-loaded config.
 
     Returns:
-        List of dicts with text, title, score, timestamp.
+        List of dicts with text, title, score, added_at.
     """
+    top_k = max(1, top_k)
     cfg, store = _get_journal_store(cfg)
     try:
         if query:
@@ -234,11 +249,15 @@ def journal_recall(
                 project=project,
                 layer=JOURNAL_LAYER,
             )
+            # Look up added_at for each result's source document
+            unique_paths = list({r.path for r in results})
+            doc_times = store.get_document_added_at(unique_paths)
             return [
                 {
                     "text": r.text,
                     "title": r.title,
                     "score": r.score,
+                    "added_at": doc_times.get(r.path),
                 }
                 for r in results
             ]
@@ -250,10 +269,14 @@ def journal_recall(
                 layer=JOURNAL_LAYER,
             )
             entries = []
+            # Batch-fetch chunks for all docs in one query (avoid N+1)
+            doc_paths = [doc.path for doc in docs[:top_k]]
+            chunks_by_path = store.get_chunks_for_documents(doc_paths)
             for doc in docs[:top_k]:
-                # Fetch chunk text for each doc
-                chunks = store.get_document_chunks(doc.path)
-                full_text = "\n".join(chunks) if chunks else ""
+                chunks = chunks_by_path.get(doc.path, [])
+                # Use first chunk only for single-chunk entries (most journal);
+                # for multi-chunk, join with blank line to reduce overlap noise.
+                full_text = "\n\n".join(chunks) if chunks else ""
                 entries.append(
                     {
                         "text": full_text,
@@ -285,10 +308,11 @@ def journal_log(
     Returns:
         List of dicts with title, project, tags, chunk_count, added_at.
     """
-    cutoff = None
+    limit = max(1, limit)
+    cutoff_iso = None
     if recent:
         delta = _parse_age(recent)
-        cutoff = _now_utc() - delta
+        cutoff_iso = (_now_utc() - delta).isoformat()
 
     cfg, store = _get_journal_store(cfg)
     try:
@@ -296,25 +320,11 @@ def journal_log(
             collection=JOURNAL_COLLECTION,
             project=project,
             layer=JOURNAL_LAYER,
+            added_after=cutoff_iso,
         )
 
         entries = []
-        for doc in docs:
-            if cutoff is not None:
-                added_at = getattr(doc, "added_at", None)
-                if added_at:
-                    try:
-                        if isinstance(added_at, str):
-                            doc_time = datetime.fromisoformat(added_at.replace("Z", "+00:00"))
-                        else:
-                            doc_time = added_at
-                        if doc_time.tzinfo is None:
-                            doc_time = doc_time.replace(tzinfo=timezone.utc)
-                        if doc_time < cutoff:
-                            continue
-                    except (ValueError, TypeError):
-                        continue
-
+        for doc in docs[:limit]:
             entries.append(
                 {
                     "title": doc.title,
@@ -325,8 +335,6 @@ def journal_log(
                     "added_at": getattr(doc, "added_at", None),
                 }
             )
-            if len(entries) >= limit:
-                break
 
         return entries
     finally:
@@ -423,15 +431,22 @@ def parse_transcript(transcript_path: str) -> str:
     if not path.exists():
         return ""
 
-    lines = path.read_text().strip().splitlines()
-    if not lines:
-        return ""
+    # Cap at 50MB / 20K lines to avoid OOM on huge transcripts
+    _MAX_BYTES = 50 * 1024 * 1024
+    _MAX_LINES = 20_000
+
+    if path.stat().st_size > _MAX_BYTES:
+        logger.warning("Transcript %s exceeds 50MB, truncating to first %d lines", path, _MAX_LINES)
 
     user_messages = []
     files_modified = set()
     errors = []
+    line_count = 0
 
-    for line in lines:
+    for line in open(path, encoding="utf-8", errors="replace"):  # noqa: SIM115
+        line_count += 1
+        if line_count > _MAX_LINES:
+            break
         try:
             entry = json.loads(line)
         except json.JSONDecodeError:

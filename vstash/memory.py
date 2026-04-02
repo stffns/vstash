@@ -412,7 +412,7 @@ class Memory:
             top_k: Number of entries to return.
 
         Returns:
-            List of dicts with text, title, score/timestamp.
+            List of dicts with text, title, score/added_at.
 
         Example::
 
@@ -425,6 +425,54 @@ class Memory:
             query=query,
             top_k=top_k,
             project=self._project,
+            cfg=self._cfg,
+        )
+
+    def journal_log(
+        self,
+        *,
+        limit: int = 20,
+        recent: str | None = None,
+    ) -> list[dict]:
+        """Chronological view of journal entries (newest first).
+
+        Args:
+            limit: Max number of entries to return.
+            recent: Time window filter (e.g. '7d', '24h', '2w').
+
+        Returns:
+            List of dicts with title, project, tags, chunks, chars, added_at.
+        """
+        from .journal import journal_log
+
+        return journal_log(
+            limit=limit,
+            recent=recent,
+            project=self._project,
+            cfg=self._cfg,
+        )
+
+    def journal_prune(
+        self,
+        age: str,
+        *,
+        dry_run: bool = False,
+    ) -> dict:
+        """Remove journal entries older than the specified age.
+
+        Args:
+            age: Age threshold like '30d', '2w', '24h'.
+            dry_run: If True, report what would be deleted without deleting.
+
+        Returns:
+            Dict with count of deleted entries and their titles.
+        """
+        from .journal import journal_prune
+
+        return journal_prune(
+            age,
+            project=self._project,
+            dry_run=dry_run,
             cfg=self._cfg,
         )
 
