@@ -108,11 +108,19 @@ The **adaptive maturity gate (γ)** scales the frequency component based on how 
 
 Chunks you search for often and recently get a boost. See [Memory Scoring](scoring.md) for the full explanation, parameters, and tuning guide.
 
-### Document Deduplication
+### Intra-Document MMR Deduplication
 
-*Added in v0.6.0*
+*Hard dedup added in v0.6.0 · Replaced by MMR in v0.8.0*
 
-After scoring, multiple chunks from the same document often cluster in the top-*k*. vstash deduplicates by keeping only the highest-scoring chunk per document path before truncating to `top_k`. This improves result diversity from ~3.2 to 5.0 unique documents per top-5 while also improving NDCG@5 by +1.8%.
+After scoring, multiple chunks from the same document often cluster in the top-*k*. vstash applies **Maximal Marginal Relevance (MMR)** within documents to balance relevance and diversity:
+
+```
+MMR(c) = λ · score(c) − (1 − λ) · max_sim(c, selected_same_doc)
+```
+
+Chunks from *different* documents compete purely on score. When multiple chunks from the *same* document are candidates, the second is penalized by its cosine similarity to the first. If two sections are semantically diverse, both appear; if they're near-duplicates, the second is suppressed.
+
+Configure with `mmr_lambda` (default 0.5): 0.0 = maximum diversity, 1.0 = one chunk per document (old hard dedup behavior). See [Memory Scoring](scoring.md#intra-document-mmr-deduplication) for the full explanation.
 
 ### Distance-Based Relevance Signal
 
