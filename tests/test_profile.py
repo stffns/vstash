@@ -338,3 +338,164 @@ class TestFederatedSearch:
         assert len(results) == 1
         assert results[0][0] == "default"
         assert results[0][1].title == "Only Doc"
+
+    def test_rrf_fuses_identical_chunks(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Same doc in two profiles should be fused with boosted RRF score."""
+        from vstash.store import VstashStore
+
+        profiles_dir = tmp_path / "profiles"
+        default_db = tmp_path / "memory.db"
+        monkeypatch.setattr("vstash.profile.PROFILES_DIR", profiles_dir)
+        monkeypatch.setattr("vstash.profile.DEFAULT_DB", default_db)
+
+        dim = 384
+        embedding = [0.3] * dim
+
+        # Same doc in both default and named profile
+        for db_path_val in [default_db, profiles_dir / "mirror" / "memory.db"]:
+            db_path_val.parent.mkdir(parents=True, exist_ok=True)
+            store = VstashStore(str(db_path_val), embedding_dim=dim)
+            store.add_document(
+                path="/shared.md",
+                title="Shared",
+                chunks=["shared content"],
+                embeddings=[embedding],
+                source_type="markdown",
+            )
+            store.close()
+
+        results = federated_search(
+            query_embedding=embedding,
+            query_text="shared",
+            embedding_dim=dim,
+            top_k=5,
+        )
+
+        # Should be fused into 1 result with boosted score
+        paths = [(r[1].path, r[1].chunk) for r in results]
+        assert paths.count(("/shared.md", 0)) == 1
+        # Fused score should be higher than single-profile (2 contributions)
+        k = 60
+        single_score = 1.0 / k  # rank 0 in one profile
+        assert results[0][1].score > single_score
+
+    def test_rrf_score_written_back(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """Returned SearchResult.score should reflect the fused RRF score."""
+        from vstash.store import VstashStore
+
+        default_db = tmp_path / "memory.db"
+        monkeypatch.setattr("vstash.profile.PROFILES_DIR", tmp_path / "empty")
+        monkeypatch.setattr("vstash.profile.DEFAULT_DB", default_db)
+
+        dim = 384
+        store = VstashStore(str(default_db), embedding_dim=dim)
+        store.add_document(
+            path="/doc.md",
+            title="Doc",
+            chunks=["content"],
+            embeddings=[[0.5] * dim],
+            source_type="markdown",
+        )
+        store.close()
+
+        results = federated_search(
+            query_embedding=[0.5] * dim,
+            query_text="content",
+            embedding_dim=dim,
+        )
+        assert len(results) == 1
+        # Score should be the RRF score, not the original store score
+        k = 60
+        expected = 1.0 / k  # rank 0, single profile
+        assert abs(results[0][1].score - expected) < 1e-6
+
+
+# ------------------------------------------------------------------ #
+# Active profile info — validation                                    #
+# ------------------------------------------------------------------ #
+
+
+class TestActiveProfileInfoValidation:
+    def test_invalid_explicit_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("VSTASH_DB_PATH", raising=False)
+        name, reason = active_profile_info("../bad")
+        assert name is None
+        assert "invalid" in reason.lower()
+
+    def test_invalid_env_profile(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch.delenv("VSTASH_DB_PATH", raising=False)
+        monkeypatch.setenv("VSTASH_PROFILE", "no spaces")
+        monkeypatch.chdir(tmp_path)
+        name, reason = active_profile_info()
+        assert name is None
+        assert "invalid" in reason.lower()
+
+
+# ------------------------------------------------------------------ #
+# CLI profile subcommands                                             #
+# ------------------------------------------------------------------ #
+
+
+class TestProfileCLI:
+    def test_profile_create_and_list(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        from typer.testing import CliRunner
+
+        from vstash.cli import app
+
+        profiles_dir = tmp_path / "profiles"
+        monkeypatch.setattr("vstash.profile.PROFILES_DIR", profiles_dir)
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["profile", "create", "test-work"])
+        assert result.exit_code == 0
+        assert "test-work" in result.stdout
+
+        result = runner.invoke(app, ["profile", "list"])
+        assert result.exit_code == 0
+        assert "test-work" in result.stdout
+
+    def test_profile_delete(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        from typer.testing import CliRunner
+
+        from vstash.cli import app
+
+        profiles_dir = tmp_path / "profiles"
+        monkeypatch.setattr("vstash.profile.PROFILES_DIR", profiles_dir)
+
+        runner = CliRunner()
+        runner.invoke(app, ["profile", "create", "temp"])
+        result = runner.invoke(app, ["profile", "delete", "temp", "--yes"])
+        assert result.exit_code == 0
+        assert "Deleted" in result.stdout
+
+    def test_profile_delete_nonexistent(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from typer.testing import CliRunner
+
+        from vstash.cli import app
+
+        monkeypatch.setattr("vstash.profile.PROFILES_DIR", tmp_path / "empty")
+        runner = CliRunner()
+        result = runner.invoke(app, ["profile", "delete", "ghost", "--yes"])
+        assert result.exit_code == 1
+
+    def test_profile_create_invalid_name(self) -> None:
+        from typer.testing import CliRunner
+
+        from vstash.cli import app
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["profile", "create", "../bad"])
+        assert result.exit_code == 1
+
+    def test_invalid_profile_flag(self) -> None:
+        from typer.testing import CliRunner
+
+        from vstash.cli import app
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["--profile", "../evil", "stats"])
+        assert result.exit_code != 0

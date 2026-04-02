@@ -88,6 +88,13 @@ def _app_callback(
 ) -> None:
     """Local document memory with instant semantic search."""
     ctx.ensure_object(dict)
+    if profile is not None:
+        from .profile import validate_name
+
+        try:
+            validate_name(profile)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc), param_hint="--profile") from exc
     ctx.obj["profile"] = profile
 
 

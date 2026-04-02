@@ -68,15 +68,14 @@ class Memory:
         self._project = project
         self._collection = collection
 
-        # Resolution: db > profile > config default
+        # Resolution: db > profile > full resolution chain
+        # (VSTASH_DB_PATH > profile > VSTASH_PROFILE > .vstash/ > default)
         if db:
             db_path = str(db)
-        elif profile:
+        else:
             from .profile import resolve_db_path
 
             db_path = str(resolve_db_path(profile))
-        else:
-            db_path = self._cfg.db_path
         dim = get_embedding_dim(self._cfg.embeddings.model)
         self._store = VstashStore(
             db_path,

@@ -12,6 +12,7 @@ Resolution order (highest priority first):
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shutil
@@ -19,6 +20,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .models import SearchResult
+
+logger = logging.getLogger(__name__)
 
 VSTASH_HOME = Path.home() / ".vstash"
 PROFILES_DIR = VSTASH_HOME / "profiles"
@@ -169,10 +172,18 @@ def active_profile_info(explicit: str | None = None) -> tuple[str | None, str]:
         return None, f"VSTASH_DB_PATH={env_db}"
 
     if explicit:
+        try:
+            validate_name(explicit)
+        except ValueError as exc:
+            return None, f"invalid --profile {explicit!r}: {exc}"
         return explicit, "--profile flag"
 
     env_profile = os.getenv("VSTASH_PROFILE")
     if env_profile:
+        try:
+            validate_name(env_profile)
+        except ValueError as exc:
+            return None, f"invalid VSTASH_PROFILE={env_profile!r}: {exc}"
         return env_profile, "VSTASH_PROFILE env var"
 
     local_db = _find_local_db()
@@ -256,6 +267,9 @@ def federated_search(
             finally:
                 store.close()
         except Exception:
+            logger.warning(
+                "Federated search failed for profile %r at %s", name, db_path, exc_info=True
+            )
             return []
 
     # Run searches in parallel
@@ -271,27 +285,32 @@ def federated_search(
     if not all_tagged:
         return []
 
-    # RRF merge: group by (path, chunk) to handle same doc in multiple profiles
-    k = 60
-    rrf_scores: dict[tuple[str, str, int], float] = {}
-    result_map: dict[tuple[str, str, int], tuple[str, SearchResult]] = {}
+    # RRF merge: group by (path, chunk) — fuse identical chunks across profiles
+    k = 60  # matches RRF_K in store.py
+    rrf_scores: dict[tuple[str, int], float] = {}
+    result_map: dict[tuple[str, int], tuple[str, SearchResult]] = {}
 
     # Build per-profile ranked lists and compute RRF
     from itertools import groupby
 
     # Sort by profile name to group
     sorted_tagged = sorted(all_tagged, key=lambda x: x[0])
-    for profile_name, group_iter in groupby(sorted_tagged, key=lambda x: x[0]):
+    for _, group_iter in groupby(sorted_tagged, key=lambda x: x[0]):
         group_list = list(group_iter)
         # Results are already ranked by score within each profile
         for rank, (pname, result) in enumerate(group_list):
-            key = (pname, result.path, result.chunk)
-            rrf_scores[key] = rrf_scores.get(key, 0) + 1.0 / (k + rank + 1)
+            # Key excludes profile — identical chunks get fused across profiles
+            key = (result.path, result.chunk)
+            rrf_scores[key] = rrf_scores.get(key, 0) + 1.0 / (k + rank)
             if key not in result_map:
                 result_map[key] = (pname, result)
 
-    # Sort by RRF score descending
+    # Sort by RRF score descending, write fused score back to results
     sorted_keys = sorted(rrf_scores, key=rrf_scores.get, reverse=True)  # type: ignore[arg-type]
-    merged = [result_map[key] for key in sorted_keys[:top_k]]
+    merged: list[tuple[str, SearchResult]] = []
+    for key in sorted_keys[:top_k]:
+        profile_name, result = result_map[key]
+        result.score = rrf_scores[key]
+        merged.append((profile_name, result))
 
     return merged
