@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import os
+
 import typer
 from rich.console import Console
 from rich.markdown import Markdown
@@ -125,9 +127,11 @@ def _get_store(
     if warm:
         warmup(cfg.embeddings.model)
     dim = get_embedding_dim(cfg.embeddings.model)
-    # Resolution: config db_path (if explicitly set) > profile resolution chain
+    # Resolution: VSTASH_DB_PATH env > storage.db_path in toml > profile chain
     _DEFAULT_DB = "~/.vstash/memory.db"
-    if cfg.storage.db_path != _DEFAULT_DB:
+    if os.getenv("VSTASH_DB_PATH"):
+        db_path = str(resolve_db_path(profile))  # resolve_db_path handles env
+    elif cfg.storage.db_path != _DEFAULT_DB:
         db_path = str(Path(cfg.storage.db_path).expanduser().resolve())
     else:
         db_path = str(resolve_db_path(profile))
