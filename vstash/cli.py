@@ -19,8 +19,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import os
-
 import typer
 from rich.console import Console
 from rich.markdown import Markdown
@@ -127,14 +125,7 @@ def _get_store(
     if warm:
         warmup(cfg.embeddings.model)
     dim = get_embedding_dim(cfg.embeddings.model)
-    # Resolution: VSTASH_DB_PATH env > storage.db_path in toml > profile chain
-    _DEFAULT_DB = "~/.vstash/memory.db"
-    if os.getenv("VSTASH_DB_PATH"):
-        db_path = str(resolve_db_path(profile))  # resolve_db_path handles env
-    elif cfg.storage.db_path != _DEFAULT_DB:
-        db_path = str(Path(cfg.storage.db_path).expanduser().resolve())
-    else:
-        db_path = str(resolve_db_path(profile))
+    db_path = str(resolve_db_path(profile, config_db_path=cfg.storage.db_path))
     store = VstashStore(
         db_path,
         embedding_dim=dim,
@@ -268,6 +259,7 @@ def ask(
                     project=project,
                     layer=layer,
                     scoring=cfg.scoring,
+                    expand_window=1,
                 )
                 chunks = [r for _, r in tagged]
             else:
@@ -305,8 +297,8 @@ def ask(
                 console.print("[dim]? Uncertain relevance — results may be tangential.[/dim]")
 
         # Expand context: include adjacent chunks for richer LLM context
-        # Note: skipped for --all-profiles because expand_context requires
-        # per-store DB access; federated chunks come from multiple closed DBs.
+        # For federated mode, expansion happens inside federated_search
+        # (per-store, before stores are closed).
         if not all_profiles:
             chunks = store.expand_context(chunks, window=1)
 
@@ -393,6 +385,7 @@ def search(
                     project=project,
                     layer=layer,
                     scoring=cfg.scoring,
+                    expand_window=1,
                 )
                 chunks = [r for _, r in tagged]
                 _search_tagged = tagged
@@ -865,7 +858,7 @@ def reindex(
 
     # Open store with current dim (to read existing data)
     current_dim = get_embedding_dim(cfg.embeddings.model) if model else new_dim
-    db_path = str(resolve_db_path(_profile_from_ctx(ctx)))
+    db_path = str(resolve_db_path(_profile_from_ctx(ctx), config_db_path=cfg.storage.db_path))
     store = VstashStore(
         db_path,
         embedding_dim=current_dim,

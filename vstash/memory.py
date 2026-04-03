@@ -14,7 +14,6 @@ list, stats.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from types import TracebackType
 
@@ -69,21 +68,13 @@ class Memory:
         self._project = project
         self._collection = collection
 
-        # Resolution: db > VSTASH_DB_PATH env > storage.db_path in toml > profile chain
-        _DEFAULT_DB = "~/.vstash/memory.db"
+        # Resolution: explicit db param > unified resolve_db_path chain
         if db:
             db_path = str(db)
-        elif os.getenv("VSTASH_DB_PATH"):
-            from .profile import resolve_db_path
-
-            db_path = str(resolve_db_path(profile))  # resolve_db_path handles env
-        elif self._cfg.storage.db_path != _DEFAULT_DB:
-            # User explicitly set storage.db_path in vstash.toml
-            db_path = str(Path(self._cfg.storage.db_path).expanduser().resolve())
         else:
             from .profile import resolve_db_path
 
-            db_path = str(resolve_db_path(profile))
+            db_path = str(resolve_db_path(profile, config_db_path=self._cfg.storage.db_path))
         dim = get_embedding_dim(self._cfg.embeddings.model)
         self._store = VstashStore(
             db_path,

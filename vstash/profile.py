@@ -5,9 +5,10 @@ Profiles are isolated SQLite databases under ~/.vstash/profiles/<name>/memory.db
 Resolution order (highest priority first):
   1. VSTASH_DB_PATH env (explicit override)
   2. Explicit profile name (--profile flag)
-  3. VSTASH_PROFILE env var
-  4. .vstash/memory.db in cwd or parent directories (project-local)
-  5. ~/.vstash/memory.db (global default)
+  3. Custom storage.db_path from vstash.toml (non-default)
+  4. VSTASH_PROFILE env var
+  5. .vstash/memory.db in cwd or parent directories (project-local)
+  6. ~/.vstash/memory.db (global default)
 """
 
 from __future__ import annotations
@@ -71,18 +72,25 @@ def _find_local_db() -> Path | None:
     return None
 
 
-def resolve_db_path(profile: str | None = None) -> Path:
+def resolve_db_path(
+    profile: str | None = None,
+    config_db_path: str | None = None,
+) -> Path:
     """Resolve the database path using the layered resolution chain.
 
     Priority:
       1. VSTASH_DB_PATH env var (explicit override, always wins)
       2. Explicit profile name
-      3. VSTASH_PROFILE env var
-      4. .vstash/memory.db walking cwd upward
-      5. ~/.vstash/memory.db (default)
+      3. Custom storage.db_path from vstash.toml (non-default)
+      4. VSTASH_PROFILE env var
+      5. .vstash/memory.db walking cwd upward
+      6. ~/.vstash/memory.db (default)
 
     Args:
         profile: Explicit profile name (e.g. from --profile flag).
+        config_db_path: Value of storage.db_path from vstash.toml. If it
+            differs from the default (~/.vstash/memory.db), it takes priority
+            over env profile and project-local resolution.
 
     Returns:
         Absolute Path to the resolved memory.db file.
@@ -99,7 +107,13 @@ def resolve_db_path(profile: str | None = None) -> Path:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         return db_path
 
-    # 3. VSTASH_PROFILE env var
+    # 3. Custom storage.db_path from config (non-default)
+    if config_db_path:
+        resolved_config = Path(config_db_path).expanduser().resolve()
+        if resolved_config != DEFAULT_DB.resolve():
+            return resolved_config
+
+    # 4. VSTASH_PROFILE env var
     env_profile = os.getenv("VSTASH_PROFILE")
     if env_profile:
         try:
@@ -111,12 +125,12 @@ def resolve_db_path(profile: str | None = None) -> Path:
             db_path.parent.mkdir(parents=True, exist_ok=True)
             return db_path
 
-    # 4. Project-local .vstash/memory.db
+    # 5. Project-local .vstash/memory.db
     local_db = _find_local_db()
     if local_db is not None:
         return local_db
 
-    # 5. Global default
+    # 6. Global default
     return DEFAULT_DB
 
 
@@ -223,11 +237,15 @@ def federated_search(
     project: str | None = None,
     layer: str | None = None,
     scoring: object | None = None,
+    expand_window: int = 0,
 ) -> list[tuple[str, SearchResult]]:
     """Search across all profiles and merge results with RRF.
 
     Opens each profile's VstashStore, runs the query, and merges
-    results using Reciprocal Rank Fusion (k=60).
+    results using Reciprocal Rank Fusion (k=60).  When *expand_window*
+    is > 0 each store expands its results with adjacent chunks before
+    closing — this is the only opportunity to expand because the stores
+    are closed after the parallel search phase.
 
     Args:
         query_embedding: Pre-computed query embedding.
@@ -240,6 +258,7 @@ def federated_search(
         project: Optional project filter.
         layer: Optional layer filter.
         scoring: Optional ScoringConfig.
+        expand_window: Adjacent-chunk window for context expansion (0 = off).
 
     Returns:
         List of (profile_name, SearchResult) tuples sorted by merged score.
@@ -291,6 +310,13 @@ def federated_search(
                     layer=layer,
                     scoring=scoring,
                 )
+                # Expand context per-store before closing (the only
+                # opportunity — stores are closed after this).  Note: this
+                # changes result.text, which affects the RRF dedup key
+                # (text[:64]).  Two identical chunks with different adjacent
+                # context will not be fused — this is intentional.
+                if expand_window > 0:
+                    results = store.expand_context(results, window=expand_window)
                 return [(name, r) for r in results]
             finally:
                 store.close()
