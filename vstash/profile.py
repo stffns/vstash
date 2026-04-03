@@ -5,9 +5,10 @@ Profiles are isolated SQLite databases under ~/.vstash/profiles/<name>/memory.db
 Resolution order (highest priority first):
   1. VSTASH_DB_PATH env (explicit override)
   2. Explicit profile name (--profile flag)
-  3. VSTASH_PROFILE env var
-  4. .vstash/memory.db in cwd or parent directories (project-local)
-  5. ~/.vstash/memory.db (global default)
+  3. Custom storage.db_path from vstash.toml (non-default)
+  4. VSTASH_PROFILE env var
+  5. .vstash/memory.db in cwd or parent directories (project-local)
+  6. ~/.vstash/memory.db (global default)
 """
 
 from __future__ import annotations
@@ -309,6 +310,11 @@ def federated_search(
                     layer=layer,
                     scoring=scoring,
                 )
+                # Expand context per-store before closing (the only
+                # opportunity — stores are closed after this).  Note: this
+                # changes result.text, which affects the RRF dedup key
+                # (text[:64]).  Two identical chunks with different adjacent
+                # context will not be fused — this is intentional.
                 if expand_window > 0:
                     results = store.expand_context(results, window=expand_window)
                 return [(name, r) for r in results]
