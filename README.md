@@ -29,6 +29,12 @@ Most RAG tools are slow, cloud-dependent, or require a running server. vstash is
 
 **Zero cloud required for search. Inference is optional.**
 
+### What's new in v0.16
+
+- **Local-first LLM auto-detect** — New default backend `"local"` probes for Ollama, LM Studio, or any OpenAI-compatible server. Zero config needed — just start a local server and `vstash ask` works.
+- **Search --explain** — Diagnostic flag showing why each chunk ranked where it did: vector distance, FTS rank, RRF breakdown, frequency/decay scoring, and MMR penalty.
+- **598 tests** across 27 test modules, all passing on Python 3.10–3.12.
+
 ### What's new in v0.15
 
 - **Unified DB resolution** — CLI, MCP server, SDK, and reindex all share the same 6-level database resolution chain. Fixes bugs where different entry points could silently operate on different databases.
