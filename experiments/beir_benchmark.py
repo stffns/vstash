@@ -1,0 +1,385 @@
+"""BEIR Benchmark — vstash vs published baselines and Chroma.
+
+Downloads BEIR datasets on first run and caches them locally.
+Evaluates vstash hybrid RRF against published baselines (BM25, dense-only,
+ColBERTv2) and optionally against Chroma head-to-head.
+
+Usage:
+    python -m experiments.beir_benchmark
+    python -m experiments.beir_benchmark --datasets scifact nfcorpus
+    python -m experiments.beir_benchmark --no-chroma
+    python -m experiments.beir_benchmark --model BAAI/bge-base-en-v1.5
+"""
+
+from __future__ import annotations
+
+import argparse
+import io
+import json
+import math
+import os
+import shutil
+import statistics
+import tempfile
+import time
+import urllib.request
+import zipfile
+
+from vstash.embed import embed_query, embed_texts, get_embedding_dim
+from vstash.store import VstashStore
+
+# ------------------------------------------------------------------ #
+# Configuration                                                        #
+# ------------------------------------------------------------------ #
+
+DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"
+TOP_K = 10
+CACHE_DIR = "experiments/data"
+
+DATASETS = {
+    "scifact": {"docs": 5183, "max_corpus": 60000},
+    "nfcorpus": {"docs": 3633, "max_corpus": 60000},
+    "fiqa": {"docs": 57638, "max_corpus": 60000},
+    "scidocs": {"docs": 25657, "max_corpus": 60000},
+    "arguana": {"docs": 8674, "max_corpus": 60000},
+}
+
+# Published NDCG@10 baselines (MTEB leaderboard / BEIR paper / ColBERTv2 paper)
+BASELINES = {
+    "scifact": {"BM25": 0.665, "BGE-small dense": 0.653, "ColBERTv2": 0.693},
+    "nfcorpus": {"BM25": 0.325, "BGE-small dense": 0.338, "ColBERTv2": 0.344},
+    "fiqa": {"BM25": 0.236, "BGE-small dense": 0.402, "ColBERTv2": 0.356},
+    "scidocs": {"BM25": 0.158, "BGE-small dense": 0.163, "ColBERTv2": 0.154},
+    "arguana": {"BM25": 0.315, "BGE-small dense": 0.584, "ColBERTv2": 0.463},
+}
+
+
+# ------------------------------------------------------------------ #
+# BEIR data loading                                                    #
+# ------------------------------------------------------------------ #
+
+
+def download_beir(name: str) -> str:
+    """Download and cache a BEIR dataset. Returns path to cache dir."""
+    cache = f"{CACHE_DIR}/beir_{name}"
+    if not os.path.exists(cache):
+        print(f"  Downloading {name}...")
+        url = f"https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/{name}.zip"
+        data = urllib.request.urlopen(url).read()
+        z = zipfile.ZipFile(io.BytesIO(data))
+        raw_dir = f"{CACHE_DIR}/beir_{name}_raw"
+        z.extractall(raw_dir)
+        os.rename(f"{raw_dir}/{name}", cache)
+        # Clean up raw dir
+        if os.path.exists(raw_dir):
+            shutil.rmtree(raw_dir)
+    return cache
+
+
+def load_beir(cache: str) -> tuple[dict, dict, dict]:
+    """Load corpus, queries, and qrels from a BEIR cache directory."""
+    corpus: dict[str, dict] = {}
+    with open(f"{cache}/corpus.jsonl") as f:
+        for line in f:
+            doc = json.loads(line)
+            corpus[doc["_id"]] = doc
+
+    queries: dict[str, str] = {}
+    with open(f"{cache}/queries.jsonl") as f:
+        for line in f:
+            q = json.loads(line)
+            queries[q["_id"]] = q["text"]
+
+    qrels: dict[str, dict[str, int]] = {}
+    with open(f"{cache}/qrels/test.tsv") as f:
+        next(f)  # skip header
+        for line in f:
+            parts = line.strip().split("\t")
+            qid, did, score = parts[0], parts[1], int(parts[2])
+            qrels.setdefault(qid, {})[did] = score
+
+    return corpus, queries, qrels
+
+
+# ------------------------------------------------------------------ #
+# Metrics                                                              #
+# ------------------------------------------------------------------ #
+
+
+def _dcg(scores: list[float], k: int) -> float:
+    return sum(s / math.log2(i + 2) for i, s in enumerate(scores[:k]))
+
+
+def ndcg_at_k(ranked_ids: list[str], qrel: dict[str, int], k: int) -> float:
+    gains = [qrel.get(did, 0) for did in ranked_ids[:k]]
+    ideal = sorted(qrel.values(), reverse=True)[:k]
+    idcg = _dcg(ideal, k)
+    return _dcg(gains, k) / idcg if idcg > 0 else 0.0
+
+
+def mrr(ranked_ids: list[str], qrel: dict[str, int]) -> float:
+    for i, did in enumerate(ranked_ids):
+        if qrel.get(did, 0) > 0:
+            return 1.0 / (i + 1)
+    return 0.0
+
+
+def recall_at_k(ranked_ids: list[str], qrel: dict[str, int], k: int) -> float:
+    relevant = {did for did, s in qrel.items() if s > 0}
+    if not relevant:
+        return 0.0
+    return sum(1 for did in ranked_ids[:k] if did in relevant) / len(relevant)
+
+
+# ------------------------------------------------------------------ #
+# Evaluation                                                           #
+# ------------------------------------------------------------------ #
+
+
+def evaluate_vstash(
+    store: VstashStore,
+    doc_id_map: dict[str, str],
+    queries: dict[str, str],
+    qrels: dict[str, dict[str, int]],
+    model_id: str,
+) -> dict:
+    """Evaluate vstash on a BEIR dataset."""
+    test_qids = list(qrels.keys())
+    ndcgs, mrrs, recalls, latencies = [], [], [], []
+
+    for qid in test_qids:
+        qe = embed_query(queries[qid], model_id)
+        t0 = time.perf_counter()
+        results = store.search(qe, queries[qid], top_k=TOP_K)
+        elapsed = (time.perf_counter() - t0) * 1000
+        latencies.append(elapsed)
+        ranked = [doc_id_map.get(r.path, "") for r in results]
+        ndcgs.append(ndcg_at_k(ranked, qrels[qid], TOP_K))
+        mrrs.append(mrr(ranked, qrels[qid]))
+        recalls.append(recall_at_k(ranked, qrels[qid], TOP_K))
+
+    return {
+        "ndcg_10": round(statistics.mean(ndcgs), 4),
+        "mrr": round(statistics.mean(mrrs), 4),
+        "recall_10": round(statistics.mean(recalls), 4),
+        "latency_ms": round(statistics.mean(latencies), 1),
+    }
+
+
+def evaluate_chroma(
+    embeddings: list[list[float]],
+    doc_ids: list[str],
+    doc_texts: list[str],
+    queries: dict[str, str],
+    qrels: dict[str, dict[str, int]],
+    model_id: str,
+) -> dict:
+    """Evaluate Chroma on a BEIR dataset."""
+    import chromadb
+
+    chroma_dir = tempfile.mkdtemp()
+    client = chromadb.PersistentClient(path=chroma_dir)
+    col = client.create_collection(name="bench", metadata={"hnsw:space": "cosine"})
+
+    t0 = time.perf_counter()
+    for bs in range(0, len(doc_ids), 4000):
+        end = min(bs + 4000, len(doc_ids))
+        col.add(
+            ids=doc_ids[bs:end],
+            embeddings=embeddings[bs:end],
+            documents=doc_texts[bs:end],
+        )
+    ingest_time = time.perf_counter() - t0
+    print(f"  [Chroma] Ingested in {ingest_time:.1f}s")
+
+    test_qids = list(qrels.keys())
+    ndcgs, mrrs, recalls, latencies = [], [], [], []
+
+    for qid in test_qids:
+        qe = embed_query(queries[qid], model_id)
+        t0 = time.perf_counter()
+        results = col.query(query_embeddings=[qe], n_results=TOP_K)
+        elapsed = (time.perf_counter() - t0) * 1000
+        latencies.append(elapsed)
+        ranked = results["ids"][0]
+        ndcgs.append(ndcg_at_k(ranked, qrels[qid], TOP_K))
+        mrrs.append(mrr(ranked, qrels[qid]))
+        recalls.append(recall_at_k(ranked, qrels[qid], TOP_K))
+
+    shutil.rmtree(chroma_dir)
+
+    return {
+        "ndcg_10": round(statistics.mean(ndcgs), 4),
+        "mrr": round(statistics.mean(mrrs), 4),
+        "recall_10": round(statistics.mean(recalls), 4),
+        "latency_ms": round(statistics.mean(latencies), 1),
+    }
+
+
+# ------------------------------------------------------------------ #
+# Main                                                                 #
+# ------------------------------------------------------------------ #
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="BEIR benchmark for vstash")
+    parser.add_argument(
+        "--datasets",
+        nargs="*",
+        default=list(DATASETS.keys()),
+        choices=list(DATASETS.keys()),
+        help="Datasets to evaluate",
+    )
+    parser.add_argument("--model", default=DEFAULT_MODEL, help="Embedding model")
+    parser.add_argument("--no-chroma", action="store_true", help="Skip Chroma comparison")
+    args = parser.parse_args()
+
+    model_id = args.model
+    dim = get_embedding_dim(model_id)
+    run_chroma = not args.no_chroma
+
+    if run_chroma:
+        try:
+            import chromadb  # noqa: F401
+        except ImportError:
+            print("  chromadb not installed — skipping Chroma comparison")
+            print("  Install with: pip install chromadb")
+            run_chroma = False
+
+    os.makedirs("experiments/results", exist_ok=True)
+    all_results = []
+
+    for ds_name in args.datasets:
+        print(f"\n{'=' * 70}")
+        print(f"  BEIR: {ds_name}")
+        print(f"{'=' * 70}")
+
+        cache = download_beir(ds_name)
+        corpus, queries, qrels = load_beir(cache)
+        test_qids = list(qrels.keys())
+        print(f"  Corpus: {len(corpus)} docs, Queries: {len(test_qids)} with qrels")
+
+        if len(corpus) > DATASETS[ds_name]["max_corpus"]:
+            print(
+                f"  SKIPPING — corpus too large ({len(corpus)} > {DATASETS[ds_name]['max_corpus']})"
+            )
+            continue
+
+        # Pre-compute embeddings (shared between vstash and Chroma)
+        print("  Embedding corpus...")
+        doc_ids = list(corpus.keys())
+        doc_texts = [
+            (corpus[d].get("title", "") + "\n" + corpus[d].get("text", "")).strip() for d in doc_ids
+        ]
+        all_embeddings: list[list[float]] = []
+        for bs in range(0, len(doc_texts), 64):
+            all_embeddings.extend(embed_texts(doc_texts[bs : bs + 64], model_id))
+            if (bs + 64) % 2000 < 64:
+                print(f"    {min(bs + 64, len(doc_texts))}/{len(doc_texts)}...")
+        print(f"  Embeddings done ({len(all_embeddings)} vectors)")
+
+        # vstash
+        db_path = tempfile.mktemp(suffix=".db")
+        store = VstashStore(db_path, embedding_dim=dim)
+        t0 = time.perf_counter()
+        vstash_id_map: dict[str, str] = {}
+        for doc_id, text, emb in zip(doc_ids, doc_texts, all_embeddings):
+            path = f"/beir/{doc_id}"
+            store.add_document(
+                path=path,
+                title=corpus[doc_id].get("title", ""),
+                chunks=[text],
+                embeddings=[emb],
+                source_type="text",
+            )
+            vstash_id_map[path] = doc_id
+        v_ingest = time.perf_counter() - t0
+        print(f"  [vstash] Ingested in {v_ingest:.1f}s")
+
+        embed_query("warmup", model_id)
+        v_metrics = evaluate_vstash(store, vstash_id_map, queries, qrels, model_id)
+        store.close()
+        os.unlink(db_path)
+
+        result: dict = {
+            "dataset": ds_name,
+            "docs": len(corpus),
+            "queries": len(test_qids),
+            "model": model_id,
+            "vstash": v_metrics,
+        }
+
+        # Chroma
+        if run_chroma:
+            c_metrics = evaluate_chroma(
+                all_embeddings, doc_ids, doc_texts, queries, qrels, model_id
+            )
+            result["chroma"] = c_metrics
+            delta = ((v_metrics["ndcg_10"] - c_metrics["ndcg_10"]) / c_metrics["ndcg_10"]) * 100
+            result["vstash_vs_chroma_pct"] = round(delta, 1)
+
+        # Print results
+        baselines = BASELINES.get(ds_name, {})
+        print("\n  vstash hybrid RRF:")
+        print(
+            f"    NDCG@10={v_metrics['ndcg_10']:.4f}  "
+            f"MRR={v_metrics['mrr']:.4f}  "
+            f"R@10={v_metrics['recall_10']:.4f}  "
+            f"Latency={v_metrics['latency_ms']:.1f}ms"
+        )
+        if run_chroma:
+            print(
+                f"  Chroma dense-only:\n"
+                f"    NDCG@10={c_metrics['ndcg_10']:.4f}  "
+                f"Latency={c_metrics['latency_ms']:.1f}ms  "
+                f"(vstash {delta:+.1f}%)"
+            )
+        print("  Published baselines:")
+        for name, score in baselines.items():
+            d = ((v_metrics["ndcg_10"] - score) / score) * 100
+            print(f"    {name:<20} NDCG@10={score:.3f}  (vstash {d:+.1f}%)")
+
+        all_results.append(result)
+
+    # Summary
+    print(f"\n{'=' * 70}")
+    print(f"  SUMMARY — vstash hybrid RRF ({model_id})")
+    print(f"{'=' * 70}")
+    header = f"  {'Dataset':<12} {'Docs':>6} {'NDCG@10':>8} {'vs BM25':>10} {'vs ColBERT':>11}"
+    if run_chroma:
+        header += f" {'vs Chroma':>11}"
+    header += f" {'Latency':>8}"
+    print(header)
+    print(f"  {'-' * (len(header) - 2)}")
+
+    for r in all_results:
+        ds = r["dataset"]
+        b = BASELINES.get(ds, {})
+        v = r["vstash"]["ndcg_10"]
+        bm25_d = f"{((v - b['BM25']) / b['BM25']) * 100:+.1f}%" if "BM25" in b else "—"
+        col_d = (
+            f"{((v - b['ColBERTv2']) / b['ColBERTv2']) * 100:+.1f}%" if "ColBERTv2" in b else "—"
+        )
+        line = f"  {ds:<12} {r['docs']:>6} {v:>8.4f} {bm25_d:>10} {col_d:>11}"
+        if run_chroma:
+            line += f" {r.get('vstash_vs_chroma_pct', 0):>+10.1f}%"
+        line += f" {r['vstash']['latency_ms']:>7.1f}ms"
+        print(line)
+
+    # Save
+    output_path = "experiments/results/beir_benchmark.json"
+    with open(output_path, "w") as f:
+        json.dump(
+            {
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                "model": model_id,
+                "results": all_results,
+            },
+            f,
+            indent=2,
+        )
+    print(f"\n  Results saved to {output_path}")
+
+
+if __name__ == "__main__":
+    main()
