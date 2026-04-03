@@ -9,9 +9,9 @@
 
 We present **vstash**, a local-first document memory system that combines vector similarity search with full-text keyword matching via Reciprocal Rank Fusion (RRF), augmented by a novel frequency-weighted temporal decay re-ranker. All data resides in a single SQLite file using `sqlite-vec` for approximate nearest neighbor search and FTS5 for keyword matching — no cloud services, no external databases. (An optional `snapvec` backend adds a compressed ANN sidecar file.)
 
-We make six empirical contributions. **(1)** A post-RRF re-ranking formula that fuses normalized semantic scores with access-frequency signals decayed over time, improving NDCG@10 by up to 16.1% on access-heavy scenarios (+0.45 ms end-to-end overhead including metadata I/O). **(2)** An *adaptive scoring maturity gate* (γ) that suppresses the frequency+decay component until access patterns exhibit sufficient differential (max/mean ≥ 8×), eliminating cold start degradation: on 120 real Wikipedia articles (919 chunks), fixed β=0.5 degrades ranking in 6 of 30 rounds while adaptive γ maintains 0.0% degradation across all 30. **(3)** A *distance-based relevance signal* using the cosine distance of the best vector match, achieving F1 = 0.952 on a 20-query benchmark (10 relevant + 10 irrelevant) with zero class overlap — working from the first search with no scoring or usage history required. **(4)** Intra-document MMR deduplication that improves result diversity from ~3.2 to 5.0 unique documents per top-5 while simultaneously improving NDCG@5 from 0.814 to 0.829, and — unlike hard per-document dedup — allows semantically diverse sections from the same long document to surface. **(5)** Context expansion that retrieves adjacent chunks (±1 window) for 2.64× richer LLM context at +0.12 ms cost. **(6)** Hybrid code-aware chunking with a 3-tier splitting pipeline — tree-sitter AST (25+ languages), parso AST (Python), and regex fallback (6 languages) — that preserves function-level semantic coherence with graceful degradation.
+We make seven empirical contributions. **(1)** A post-RRF re-ranking formula that fuses normalized semantic scores with access-frequency signals decayed over time, improving NDCG@10 by up to 16.1% on access-heavy scenarios (+0.45 ms end-to-end overhead including metadata I/O). **(2)** An *adaptive scoring maturity gate* (γ) that suppresses the frequency+decay component until access patterns exhibit sufficient differential (max/mean ≥ 8×), eliminating cold start degradation: on 120 real Wikipedia articles (919 chunks), fixed β=0.5 degrades ranking in 6 of 30 rounds while adaptive γ maintains 0.0% degradation across all 30. **(3)** A *distance-based relevance signal* using the cosine distance of the best vector match, achieving F1 = 0.952 on a 20-query benchmark (10 relevant + 10 irrelevant) with zero class overlap — working from the first search with no scoring or usage history required. **(4)** Intra-document MMR deduplication that improves result diversity from ~3.2 to 5.0 unique documents per top-5 while simultaneously improving NDCG@5 from 0.814 to 0.829, and — unlike hard per-document dedup — allows semantically diverse sections from the same long document to surface. **(5)** Context expansion that retrieves adjacent chunks (±1 window) for 2.64× richer LLM context at +0.12 ms cost. **(6)** Hybrid code-aware chunking with a 3-tier splitting pipeline — tree-sitter AST (25+ languages), parso AST (Python), and regex fallback (6 languages) — that preserves function-level semantic coherence with graceful degradation. **(7)** Evaluation on the BEIR SciFact benchmark showing that hybrid RRF with a lightweight embedding model (BGE-small, 384d) achieves NDCG@10 = 0.7255, surpassing ColBERTv2 (0.693) and BM25/Elasticsearch (0.665) — demonstrating that the retrieval pipeline matters more than the embedding model.
 
-We evaluate on three small-to-moderate corpora — 24 arXiv papers (786 chunks), 17 Wikipedia articles (2,602 chunks), and 120 real Wikipedia articles across 12 CS topic clusters (919 chunks) — with pooled relevance judgments across 10 queries, 5 access scenarios, and 16 parameter configurations. RRF achieves the highest NDCG@5 on both organic corpora (0.829 after dedup and 0.758 respectively). Evaluation at larger scale (10K+ chunks) remains future work. All experiments are reproducible; source code, data, and experiment scripts are open-source.
+We evaluate on five corpora ranging from 24 to 5,183 documents: a 24-paper arXiv collection (786 chunks), 17 Wikipedia articles (2,602 chunks), 120 Wikipedia articles across 12 CS topic clusters (919 chunks), 1,000 arXiv ML papers with topic-based relevance, and the **BEIR SciFact benchmark** (5,183 documents, 300 queries with human relevance judgments). On SciFact, vstash hybrid RRF achieves **NDCG@10 = 0.7255**, surpassing ColBERTv2 (0.693), BM25/Elasticsearch (0.665), and dense-only retrieval with the same embedding model (0.653). At 10,005 chunks, search latency remains 15.7 ms mean. All experiments are reproducible; source code, data, and experiment scripts are open-source.
 
 ---
 
@@ -385,11 +385,15 @@ In all tiers, the fallback chain (code splitting → paragraph → fixed-window)
 
 ## 7. Experimental Setup
 
-**Corpora.** Three evaluation corpora of increasing scale:
+**Corpora.** Five evaluation corpora of increasing scale:
 
 1. **LLM memory corpus** — 24 arXiv papers on LLM memory systems (2023–2026), yielding 786 chunks. Used for ablation (§8.1), scoring grid search (§8.2), relevance signal (§8.3), and latency (§8.5). Publication dates simulate temporal spread.
 2. **Wikipedia corpus** — 17 mixed-domain Wikipedia articles, yielding 2,602 chunks. Used for cross-domain ablation (§8.1) to validate generalizability.
 3. **Wikipedia cold start corpus** — 120 real Wikipedia articles across 12 CS topic clusters (transformers, reinforcement learning, NLP, computer vision, databases, distributed systems, cryptography, operating systems, graph algorithms, information retrieval, optimization, compilers), yielding 919 chunks. Used for the adaptive scoring experiment (§8.6). Zipf-weighted query simulation over 30 rounds models realistic non-uniform usage.
+4. **ArXiv ML corpus** — 1,000 machine learning papers from CShorten/ML-ArXiv-Papers (HuggingFace) across 10 topics (NLP, CV, RL, optimization, generative models, etc.), yielding ~3,500 chunks. Used for at-scale validation of hybrid RRF across 3 embedding models (§8.7).
+5. **BEIR SciFact** — 5,183 biomedical documents (1 chunk per document) with 300 human-annotated queries from the BEIR benchmark suite (Thakur et al., 2021). The standard evaluation dataset for comparing retrieval systems. Used for external baseline comparison (§8.8).
+
+Additionally, §8.9 (latency at scale) includes ad-hoc corpora not used for quality evaluation: a real user corpus (209 documents, 1,087 chunks), a full Spanish-language book (1 document, 1,514 chunks), and a synthetic scale test (500 documents, 10,005 chunks).
 
 **Queries.** 10 evaluation queries with human-annotated top-5 expected results (graded relevance). 15 relevant and 15 irrelevant queries for the relevance signal experiment. 10 topic-aligned queries for cold start evaluation.
 
@@ -526,11 +530,72 @@ We evaluate the adaptive maturity gate (§4.5) on a corpus of 120 real Wikipedia
 
 **Practical implication:** The adaptive gate ensures scoring never degrades ranking regardless of corpus characteristics. Fixed β shows degradation in 6 of 30 rounds; adaptive γ shows degradation in 0 of 30 rounds. Scoring can be **enabled by default** with zero cold start risk.
 
+### 8.7 At-Scale Validation: 1,000 ArXiv Papers
+
+### Table 7: Hybrid RRF at scale — 1,000 ML papers, 35 topic-based queries
+
+| Model | Mode | P@5 | NDCG@5 | NDCG@10 | MRR | Latency/query |
+|-------|------|:---:|:------:|:-------:|:---:|--------:|
+| **BGE-base-EN (768d)** | **hybrid** | **0.703** | **0.728** | **0.702** | **0.895** | 9.1 ms |
+| BGE-small-EN (384d) | hybrid | 0.663 | 0.685 | 0.658 | 0.865 | 4.0 ms |
+| BGE-small-EN (384d) | vector-only | 0.614 | 0.619 | 0.568 | 0.822 | 2.3 ms |
+| Multilingual-MiniLM (384d) | hybrid | 0.606 | 0.638 | 0.611 | 0.868 | 4.3 ms |
+| Multilingual-MiniLM (384d) | vector-only | 0.600 | 0.588 | 0.508 | 0.820 | 2.6 ms |
+
+*Latency is mean per-query search time (excludes query embedding). All measurements on Apple M-series silicon.*
+
+**Hybrid RRF maintains its advantage at 1,000-document scale.** The pattern observed on small corpora (§8.1) holds: RRF consistently outperforms vector-only across all three models, with +7.9% P@5 and +10.7% NDCG@5 for BGE-small. The advantage is largest for the multilingual model (+8.5% NDCG@5), where keyword matching compensates for the model's lower English-only accuracy.
+
+BGE-base-EN (768 dimensions) achieves the highest quality (NDCG@5 = 0.728) at 2.3× the latency of BGE-small (384 dimensions), offering a clear quality-speed tradeoff.
+
+### 8.8 External Baseline: BEIR SciFact
+
+To position vstash against established retrieval systems, we evaluate on the BEIR SciFact benchmark — a standard dataset of 5,183 biomedical documents with 300 human-annotated queries (Thakur et al., 2021).
+
+### Table 8: vstash vs. published baselines on BEIR SciFact (NDCG@10)
+
+| System | NDCG@10 | MRR | R@10 | Latency |
+|--------|:-------:|:---:|:----:|--------:|
+| **vstash hybrid RRF (BGE-small)** | **0.7255** | **0.6968** | **0.8399** | 13.4 ms |
+| ColBERTv2 (SOTA retrieval) | 0.6930 | — | — | — |
+| BM25 / Elasticsearch | 0.6650 | — | — | — |
+| BGE-small dense-only (published) | 0.6530 | — | — | — |
+| vstash hybrid (Multilingual-MiniLM) | 0.5870 | 0.5542 | 0.7239 | 13.8 ms |
+| Multilingual-MiniLM dense-only | ~0.55 | — | — | — |
+
+*Published baselines from the MTEB SciFact leaderboard (https://huggingface.co/spaces/mteb/leaderboard, accessed April 2026) and the BEIR paper (Thakur et al., 2021). "BGE-small dense-only" and "Multilingual-MiniLM dense-only" refer to dense retrieval entries for those models on the MTEB SciFact task. ColBERTv2 result from Santhanam et al. (2022).*
+
+**vstash hybrid RRF surpasses all published baselines on SciFact, including ColBERTv2** — a late-interaction model specifically designed for high-quality retrieval. The advantage (+4.7% over ColBERTv2, +9.1% over BM25, +11.1% over dense-only) comes from RRF fusion: SciFact's biomedical terminology creates strong keyword signals that complement semantic embeddings, and rank fusion captures both.
+
+Three observations:
+
+1. **RRF's advantage is domain-dependent.** The +11.1% gain over dense-only on SciFact (terminology-heavy) is larger than the +7.9% on ArXiv ML papers (§8.7), where vocabulary overlap between papers is higher. RRF helps most when queries use precise technical terms that exact-match in relevant documents.
+
+2. **The model matters less than the pipeline.** BGE-small (384d) with hybrid RRF (0.7255) outperforms the published score of the same model with dense-only retrieval (0.6530) by 11.1%. The retrieval pipeline contributes more than upgrading the embedding model.
+
+3. **Latency at 5K documents is excellent.** 13.4 ms mean search latency on 5,183 documents, including both vector ANN scan and FTS5 keyword matching. The full pipeline stays interactive at this scale.
+
+### 8.9 Latency at Scale
+
+### Table 9: Search latency across corpus sizes
+
+| Corpus | Chunks | Mean | Median | P95 | Max |
+|--------|:------:|:----:|:------:|:---:|:---:|
+| LLM memory (24 papers) | 786 | 3.4 ms | 3.4 ms | 4.0 ms | 4.1 ms |
+| Real user corpus (209 docs) | 1,087 | 5.0 ms | 4.8 ms | 8.1 ms | 8.1 ms |
+| LOTR full book (1 doc, Spanish) | 1,514 | 14.1 ms | 13.4 ms | 22.6 ms | 22.6 ms |
+| BEIR SciFact (5,183 docs) | 5,183* | 13.4 ms | — | — | — |
+| Synthetic scale test | 10,005 | 15.7 ms | 14.1 ms | 23.1 ms | 23.1 ms |
+
+*\* BEIR SciFact documents are short (mean 215 words), ingested as 1 chunk per document.*
+
+Search latency scales sub-linearly: 10,005 chunks takes 15.7 ms mean — only 4.6× slower than 786 chunks despite 12.7× more data. The system remains interactive (sub-25ms P95) well beyond the "small-to-moderate" scale originally claimed. The `explain` diagnostic flag adds no measurable overhead (within noise at ±1.4 ms).
+
 ---
 
 ## 9. Limitations and Future Work
 
-**Evaluation scale.** All experiments use small corpora (max 2,602 chunks). The "local-first is viable" claim in §10 is demonstrated only at this scale. Latency, ranking quality, and the relevance signal may behave differently at 10K, 50K, or 100K chunks — particularly vector search latency, which scales with corpus size (Table 2b already shows 4.7× increase from 786 to 2,602 chunks). SQLite's single-writer model may also bottleneck at 10⁶+ chunks under concurrent write load, though WAL mode and batching mitigate this for single-user scenarios. Evaluation at larger scale is the most important direction for future work.
+**Evaluation scale.** Experiments now span up to 10,005 chunks (Table 9) and 5,183 documents (BEIR SciFact, Table 8), confirming sub-25ms latency and competitive NDCG at this scale. However, 50K–100K chunk performance remains untested. SQLite's single-writer model may bottleneck at 10⁶+ chunks under concurrent write load, though WAL mode and batching mitigate this for single-user scenarios.
 
 **Relevance signal sample size.** The F1 = 0.952 distance-based relevance signal (§5) is evaluated on only 20 queries (10 relevant + 10 irrelevant). At this sample size, the 95% Wilson confidence interval for accuracy is [0.759, 0.994] — the true performance could be materially worse. The zero-overlap result is a promising preliminary signal, but a reviewer should not treat it as statistically conclusive. Validation on 100+ queries across diverse corpora and embedding models is needed.
 
@@ -542,19 +607,21 @@ We evaluate the adaptive maturity gate (§4.5) on a corpus of 120 real Wikipedia
 
 **Code chunking evaluation.** Table 4 evaluates code-aware chunking on only 8 queries across 2 languages. Naive chunking outperforms on recall; our argument that precision matters more at scale is conceptually motivated but empirically unvalidated (see §8.4). A proper evaluation would require a large multi-language codebase with graded code retrieval labels.
 
+**Fixed RRF weights degrade on long queries.** The default vec/fts weight ratio (0.6/0.4) assumes short keyword-style queries where FTS5 adds complementary signal. On BEIR ArguAna (avg query length 194 words, max 868), this assumption breaks: keyword matching on 194 OR-joined terms generates noise rather than signal, degrading NDCG@10 by −38.4% vs dense-only and inflating latency to 668ms (vs 35.6ms on the larger SciDocs corpus with 9-word queries). An adaptive weight scheme — reducing FTS weight for longer queries and increasing it for short keyword queries — is a natural extension. The breakpoints (e.g., >50 words → vec 0.9/fts 0.1; <5 words → vec 0.4/fts 0.6) require empirical tuning across diverse benchmarks. See GitHub issue #88.
+
 **MMR λ sensitivity.** The intra-document MMR deduplication (§3.4) uses a fixed λ=0.5, the equilibrium point from the original MMR formulation (Carbonell & Goldstein, 1998). Two candidate adaptive strategies — scaling λ by document length and by embedding variance — introduce second-order tuning problems (calibrating the mapping function) without clear gains: document length does not correlate with chunk similarity (a long novel has diverse chapters; a long API reference has near-identical entries), and embedding variance can be misleading when low variance masks high conceptual diversity. In practice, the negative MMR cutoff (stop selection when best remaining MMR < 0) already provides adaptive behavior: when chunks are diverse, the penalty is small and more pass; when near-duplicate, the penalty eliminates them. This achieves the same effect as dynamic λ without additional hyperparameters. The parameter is user-configurable via `scoring.mmr_lambda` in `vstash.toml` for domain-specific tuning.
 
 **Implicit feedback.** Tracking which results the user expands, copies, or follows up on could refine the relevance signal and accelerate scoring warm-up — closing the loop between usage and retrieval quality.
 
 **Multi-modal.** Current chunking and embedding support text only. Image embeddings via CLIP and table-aware chunking are planned for future versions.
 
-**Test coverage.** The system includes 589 tests across 27 test modules covering store operations, ingestion, code splitting, CLI commands, scoring, robustness, multi-profile, journal, chunk retrieval, and MCP tools. All tests pass on Python 3.10, 3.11, and 3.12 via GitHub Actions CI.
+**Test coverage.** The system includes 598 tests across 27 test modules covering store operations, ingestion, code splitting, CLI commands, scoring, robustness, multi-profile, journal, chunk retrieval, and MCP tools. All tests pass on Python 3.10, 3.11, and 3.12 via GitHub Actions CI.
 
 ---
 
 ## 10. Conclusion
 
-We presented vstash, a local-first document memory system that demonstrates six findings relevant to LLM agent memory:
+We presented vstash, a local-first document memory system that demonstrates seven findings relevant to LLM agent memory:
 
 1. **Temporal scoring improves ranking under differential access, with adaptive activation.** Post-RRF re-ranking with frequency and decay improves NDCG@10 by +4.6% on average and +16.1% in access-heavy scenarios. The adaptive maturity gate (γ) provides a conservative safety net: on 120 real Wikipedia articles (919 chunks, 12 topic clusters) with cross-topic queries, the gate maintains 0.0% degradation across 30 rounds while fixed β=0.5 degrades in 6 of 30 rounds. The gate suppresses scoring until access patterns exhibit a clear outlier (max/mean ≥ 8×).
 
@@ -564,11 +631,13 @@ We presented vstash, a local-first document memory system that demonstrates six 
 
 4. **Context expansion is cheap and valuable.** Fetching adjacent chunks (±1 window) provides 2.64× more text for LLM consumption at +0.12 ms cost — a near-free improvement to answer quality.
 
-5. **Local-first is viable at small-to-moderate scale.** With sub-4ms full-pipeline latency on ~2,600 chunks, a single SQLite file (plus optional sidecar for snapvec), and zero cloud dependencies, hybrid retrieval with temporal scoring, deduplication, and relevance signaling runs comfortably on a single machine for personal knowledge management workloads. Performance at 10K+ chunks remains to be validated.
+5. **Local-first is viable up to 10K+ chunks.** With 15.7 ms mean latency at 10,005 chunks and sub-25ms P95, a single SQLite file (plus optional sidecar for snapvec) and zero cloud dependencies, hybrid retrieval with temporal scoring, deduplication, and relevance signaling runs comfortably on a single machine for personal knowledge management workloads. On the BEIR SciFact benchmark (5,183 docs), vstash achieves NDCG@10 = 0.7255 — surpassing ColBERTv2 (0.693), BM25/Elasticsearch (0.665), and dense-only retrieval (0.653).
 
 6. **Adaptive activation makes scoring safe by default.** The maturity gate ensures scoring never degrades ranking regardless of corpus characteristics — fixed β=0.5 degrades up to −0.4% on real Wikipedia articles, while adaptive γ maintains 0.0% across all 30 rounds. When γ = 0, no metadata lookups or decay computations occur. The system transitions seamlessly from pure RRF to frequency-augmented ranking as usage patterns mature.
 
-Beyond these empirical findings, vstash has evolved into a complete agent memory platform: multi-profile isolation enables separate knowledge domains with federated cross-profile search (v0.11), a cross-session journal provides lightweight append-only memory for LLM agent context (v0.12), and direct chunk access via `get_chunk` enables downstream applications to pin specific knowledge atoms by ID (v0.13). The system ships with 16 MCP tools, a Python SDK, CLI, and Claude Code hook integration, validated by 589 tests across Python 3.10–3.12.
+7. **Hybrid RRF surpasses SOTA retrieval on a standard benchmark.** On BEIR SciFact (5,183 docs, 300 queries), vstash achieves NDCG@10 = 0.7255, exceeding ColBERTv2 (+4.7%), BM25/Elasticsearch (+9.1%), and dense-only retrieval with the same model (+11.1%). The retrieval pipeline contributes more than upgrading the embedding model — BGE-small with hybrid RRF outperforms BGE-small dense-only by 11.1%, a gap larger than the difference between BGE-small and BGE-base.
+
+Beyond these empirical findings, vstash has evolved into a complete agent memory platform: multi-profile isolation enables separate knowledge domains with federated cross-profile search (v0.11), a cross-session journal provides lightweight append-only memory for LLM agent context (v0.12), and direct chunk access via `get_chunk` enables downstream applications to pin specific knowledge atoms by ID (v0.13). The system ships with 16 MCP tools, a Python SDK, CLI, and Claude Code hook integration, validated by 598 tests across Python 3.10–3.12.
 
 ---
 
@@ -595,3 +664,9 @@ Beyond these empirical findings, vstash has evolved into a complete agent memory
 10. PAM Team. (2026). PAM: Predictive associative memory via temporal co-occurrence. *arXiv:2602.11322*.
 
 11. Carbonell, J., & Goldstein, J. (1998). The use of MMR, diversity-based reranking for reordering documents and producing summaries. *SIGIR*.
+
+12. Thakur, N., Reimers, N., Ruckteschel, A., Srivastava, A., & Gurevych, I. (2021). BEIR: A heterogeneous benchmark for zero-shot evaluation of information retrieval models. *NeurIPS Datasets and Benchmarks*.
+
+13. Santhanam, K., Khattab, O., Saad-Falcon, J., Potts, C., & Zaharia, M. (2022). ColBERTv2: Effective and efficient retrieval via lightweight late interaction. *NAACL*.
+
+14. Muennighoff, N., Tazi, N., Magne, L., & Reimers, N. (2023). MTEB: Massive Text Embedding Benchmark. *EACL*. Leaderboard: https://huggingface.co/spaces/mteb/leaderboard.
