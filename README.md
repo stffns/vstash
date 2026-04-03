@@ -109,17 +109,18 @@ vstash search "what is the proposed method?"
 
 ### Ask (requires an LLM backend)
 
-To get natural language answers, configure an inference backend:
+To get natural language answers, start any local LLM server — vstash auto-detects it:
 
 ```bash
-# Option A: Fully local with Ollama (free, private)
-ollama pull llama3.2
+# Option A: Ollama (auto-detected on port 11434)
+ollama pull qwen3.5:9b
 
-# Option B: Fast with Cerebras (free tier available)
-export CEREBRAS_API_KEY=your_key_here
+# Option B: LM Studio (auto-detected on port 1234 or 8080)
+# Just load a model in the GUI
 
-# Option C: OpenAI or any compatible API
-export OPENAI_API_KEY=your_key_here
+# Option C: Cloud backends (set in vstash.toml)
+# inference.backend = "cerebras"  + CEREBRAS_API_KEY env
+# inference.backend = "openai"   + OPENAI_API_KEY env
 ```
 
 Then:

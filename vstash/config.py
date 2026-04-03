@@ -28,13 +28,13 @@ class InferenceConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    backend: Literal["cerebras", "ollama", "openai"] = Field(
-        default="cerebras",
-        description="Inference backend: 'cerebras', 'ollama', or 'openai'",
+    backend: Literal["local", "cerebras", "ollama", "openai"] = Field(
+        default="local",
+        description="Inference backend: 'local' (auto-detect, default), 'ollama', 'cerebras', or 'openai'",
     )
     model: str = Field(
-        default="llama3.1-8b",
-        description="Model name for the selected backend",
+        default="auto",
+        description="Model name for the selected backend ('auto' = use first available local model)",
     )
 
 
@@ -59,7 +59,7 @@ class OllamaConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     host: str = Field(default="http://localhost:11434", description="Ollama server URL")
-    model: str = Field(default="llama3.2", description="Ollama model name")
+    model: str = Field(default="qwen3.5:9b", description="Ollama model name")
 
 
 class OpenAIConfig(BaseModel):

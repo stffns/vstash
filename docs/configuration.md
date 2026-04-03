@@ -17,13 +17,13 @@ Controls which LLM backend is used for `vstash ask` and `vstash chat`.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `backend` | string | `"cerebras"` | `"cerebras"`, `"ollama"`, or `"openai"` |
-| `model` | string | `"llama3.1-8b"` | Model name for the selected backend |
+| `backend` | string | `"local"` | `"local"` (auto-detect, default), `"ollama"`, `"cerebras"`, or `"openai"` |
+| `model` | string | `"auto"` | Model name (`"auto"` = use first available local model) |
 
 ```toml
 [inference]
-backend = "cerebras"
-model = "llama3.1-8b"
+backend = "local"  # auto-detects Ollama, LM Studio, or any local OpenAI-compatible server
+model = "auto"
 ```
 
 > **Note:** Inference is only needed for `ask` and `chat`. Search works 100% locally with no LLM.
@@ -50,12 +50,12 @@ api_key = ""  # prefer CEREBRAS_API_KEY env var
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `host` | string | `"http://localhost:11434"` | Ollama server URL |
-| `model` | string | `"llama3.2"` | Ollama model name |
+| `model` | string | `"qwen3.5:9b"` | Ollama model name |
 
 ```toml
 [ollama]
 host = "http://localhost:11434"
-model = "llama3.2"
+model = "qwen3.5:9b"
 ```
 
 ---
