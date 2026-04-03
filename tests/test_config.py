@@ -19,11 +19,11 @@ class TestConfigDefaults:
 
     def test_default_inference_backend(self) -> None:
         cfg = VstashConfig()
-        assert cfg.inference.backend == "cerebras"
+        assert cfg.inference.backend == "local"
 
     def test_default_inference_model(self) -> None:
         cfg = VstashConfig()
-        assert cfg.inference.model == "llama3.1-8b"
+        assert cfg.inference.model == "auto"
 
     def test_default_embedding_model(self) -> None:
         cfg = VstashConfig()
@@ -52,7 +52,7 @@ class TestConfigValidation:
             InferenceConfig(backend="invalid_backend")
 
     def test_valid_backends_accepted(self) -> None:
-        for backend in ("cerebras", "ollama", "openai"):
+        for backend in ("local", "cerebras", "ollama", "openai"):
             cfg = InferenceConfig(backend=backend)
             assert cfg.backend == backend
 
@@ -113,7 +113,7 @@ class TestConfigModelValidate:
 
     def test_empty_dict_gives_defaults(self) -> None:
         cfg = VstashConfig.model_validate({})
-        assert cfg.inference.backend == "cerebras"
+        assert cfg.inference.backend == "local"
         assert cfg.chunking.size == 1024
 
     def test_openai_extra_body(self) -> None:
@@ -148,4 +148,4 @@ class TestLoadConfig:
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.delenv("VSTASH_CONFIG", raising=False)
         cfg = load_config()
-        assert cfg.inference.backend == "cerebras"
+        assert cfg.inference.backend == "local"

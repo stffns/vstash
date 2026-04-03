@@ -460,6 +460,116 @@ _BACKENDS = {
     "openai": (_ask_openai, _stream_openai),
 }
 
+# --- Local auto-detect ---------------------------------------------------
+
+# Endpoints probed in order.  Each entry is (name, url, probe_path, backend).
+# "backend" is which _BACKENDS key to delegate to once detected.
+_LOCAL_ENDPOINTS: list[tuple[str, str, str, str]] = [
+    ("Ollama", "http://localhost:11434", "/api/tags", "ollama"),
+    ("LM Studio", "http://localhost:1234", "/v1/models", "openai"),
+    ("LM Studio (alt)", "http://localhost:8080", "/v1/models", "openai"),
+    ("LocalAI", "http://localhost:8081", "/v1/models", "openai"),
+]
+
+# Cache so we only probe once per process.
+_local_cache: dict[str, object] | None = None
+
+
+def _detect_local() -> dict[str, object]:
+    """Probe local endpoints and return detection info.
+
+    Returns:
+        Dict with keys: backend, name, base_url, model (or None if nothing found).
+    """
+    global _local_cache  # noqa: PLW0603
+    if _local_cache is not None:
+        return _local_cache
+
+    import urllib.request
+
+    for name, base_url, probe_path, backend in _LOCAL_ENDPOINTS:
+        try:
+            req = urllib.request.Request(base_url + probe_path, method="GET")
+            with urllib.request.urlopen(req, timeout=1.5) as resp:
+                if resp.status == 200:
+                    import json
+
+                    data = json.loads(resp.read())
+                    # Extract first available model name
+                    model = None
+                    if backend == "ollama":
+                        # Ollama: {"models": [{"name": "qwen3.5:4b", ...}]}
+                        models = data.get("models", [])
+                        if models:
+                            model = models[0].get("name")
+                    else:
+                        # OpenAI-compatible: {"data": [{"id": "model-name"}]}
+                        items = data.get("data", [])
+                        if items:
+                            model = items[0].get("id")
+
+                    if model:
+                        _local_cache = {
+                            "backend": backend,
+                            "name": name,
+                            "base_url": base_url,
+                            "model": model,
+                        }
+                        logger.info(
+                            "Local LLM detected: %s at %s (model: %s)",
+                            name,
+                            base_url,
+                            model,
+                        )
+                        return _local_cache
+        except Exception:
+            continue
+
+    _local_cache = {"backend": None, "name": None, "base_url": None, "model": None}
+    return _local_cache
+
+
+def _resolve_local_config(cfg: VstashConfig) -> VstashConfig:
+    """Detect a local LLM server and return a config patched to use it."""
+    detected = _detect_local()
+    backend = detected["backend"]
+
+    if backend is None:
+        raise ConnectionError(
+            "No local LLM server found. Start Ollama, LM Studio, or any "
+            "OpenAI-compatible server, or set inference.backend explicitly in vstash.toml."
+        )
+
+    logger.info("Using local backend: %s (%s)", detected["name"], detected["model"])
+
+    if backend == "ollama":
+        return cfg.model_copy(
+            update={
+                "inference": cfg.inference.model_copy(
+                    update={"backend": "ollama", "model": str(detected["model"])}
+                ),
+                "ollama": cfg.ollama.model_copy(
+                    update={"model": str(detected["model"]), "host": str(detected["base_url"])}
+                ),
+            }
+        )
+    else:
+        # OpenAI-compatible (LM Studio, LocalAI, etc.)
+        return cfg.model_copy(
+            update={
+                "inference": cfg.inference.model_copy(
+                    update={"backend": "openai", "model": str(detected["model"])}
+                ),
+                "openai": cfg.openai.model_copy(
+                    update={
+                        "model": str(detected["model"]),
+                        "base_url": str(detected["base_url"]) + "/v1",
+                        "api_key": "not-needed",
+                    }
+                ),
+            }
+        )
+
 
 def ask(
     query: str,
@@ -482,12 +592,16 @@ def ask(
         ValueError: If the configured backend is unknown.
     """
     backend = cfg.inference.backend.lower()
+    if backend == "local":
+        cfg = _resolve_local_config(cfg)
+        backend = cfg.inference.backend.lower()
+
     backend_funcs = _BACKENDS.get(backend)
 
     if not backend_funcs:
         raise ValueError(
             f"Unknown inference backend: '{backend}'. "
-            "Use 'cerebras', 'ollama', or 'openai' in vstash.toml."
+            "Use 'local', 'cerebras', 'ollama', or 'openai' in vstash.toml."
         )
 
     ask_fn, _ = backend_funcs
@@ -515,12 +629,16 @@ def stream(
         ValueError: If the configured backend is unknown.
     """
     backend = cfg.inference.backend.lower()
+    if backend == "local":
+        cfg = _resolve_local_config(cfg)
+        backend = cfg.inference.backend.lower()
+
     backend_funcs = _BACKENDS.get(backend)
 
     if not backend_funcs:
         raise ValueError(
             f"Unknown inference backend: '{backend}'. "
-            "Use 'cerebras', 'ollama', or 'openai' in vstash.toml."
+            "Use 'local', 'cerebras', 'ollama', or 'openai' in vstash.toml."
         )
 
     _, stream_fn = backend_funcs
