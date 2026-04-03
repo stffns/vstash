@@ -29,6 +29,12 @@ Most RAG tools are slow, cloud-dependent, or require a running server. vstash is
 
 **Zero cloud required for search. Inference is optional.**
 
+### What's new in v0.16
+
+- **Local-first LLM auto-detect** — New default backend `"local"` probes for Ollama, LM Studio, or any OpenAI-compatible server. Zero config needed — just start a local server and `vstash ask` works.
+- **Search --explain** — Diagnostic flag showing why each chunk ranked where it did: vector distance, FTS rank, RRF breakdown, frequency/decay scoring, and MMR penalty.
+- **598 tests** across 27 test modules, all passing on Python 3.10–3.12.
+
 ### What's new in v0.15
 
 - **Unified DB resolution** — CLI, MCP server, SDK, and reindex all share the same 6-level database resolution chain. Fixes bugs where different entry points could silently operate on different databases.
@@ -109,17 +115,18 @@ vstash search "what is the proposed method?"
 
 ### Ask (requires an LLM backend)
 
-To get natural language answers, configure an inference backend:
+To get natural language answers, start any local LLM server — vstash auto-detects it:
 
 ```bash
-# Option A: Fully local with Ollama (free, private)
-ollama pull llama3.2
+# Option A: Ollama (auto-detected on port 11434)
+ollama pull qwen3.5:9b
 
-# Option B: Fast with Cerebras (free tier available)
-export CEREBRAS_API_KEY=your_key_here
+# Option B: LM Studio (auto-detected on port 1234 or 8080)
+# Just load a model in the GUI
 
-# Option C: OpenAI or any compatible API
-export OPENAI_API_KEY=your_key_here
+# Option C: Cloud backends (set in vstash.toml)
+# inference.backend = "cerebras" + inference.model = "llama3.1-8b" + CEREBRAS_API_KEY env
+# inference.backend = "openai"   + OPENAI_API_KEY env
 ```
 
 Then:

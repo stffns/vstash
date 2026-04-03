@@ -764,3 +764,56 @@ class TestScoringMaturity:
         )
         sample_store._conn.commit()
         assert sample_store.scoring_maturity() == 0.0
+
+
+# ------------------------------------------------------------------ #
+# search(explain=True)                                                 #
+# ------------------------------------------------------------------ #
+
+
+class TestSearchExplain:
+    """Test search with explain=True returns diagnostic breakdowns."""
+
+    def test_explain_false_returns_no_explain(self, populated_store: VstashStore) -> None:
+        dim = populated_store.embedding_dim
+        results = populated_store.search([0.1] * dim, "Python")
+        for r in results:
+            assert r.explain is None
+
+    def test_explain_true_returns_explain_info(self, populated_store: VstashStore) -> None:
+        dim = populated_store.embedding_dim
+        results = populated_store.search([0.1] * dim, "Python programming", explain=True)
+        assert len(results) > 0
+        for r in results:
+            assert r.explain is not None
+            assert r.explain.rrf_total > 0
+
+    def test_explain_has_vec_or_fts_rank(self, populated_store: VstashStore) -> None:
+        dim = populated_store.embedding_dim
+        results = populated_store.search([0.1] * dim, "Python", explain=True)
+        for r in results:
+            ex = r.explain
+            assert ex is not None
+            # Every result must come from at least one source
+            assert ex.vec_rank is not None or ex.fts_rank is not None
+
+    def test_explain_rrf_components_sum(self, populated_store: VstashStore) -> None:
+        dim = populated_store.embedding_dim
+        results = populated_store.search([0.1] * dim, "Python", explain=True)
+        for r in results:
+            ex = r.explain
+            assert ex is not None
+            # vec + fts should approximately equal total (within float precision)
+            assert abs(ex.rrf_vec + ex.rrf_fts - ex.rrf_total) < 1e-5
+
+    def test_explain_fts_terms_populated(self, populated_store: VstashStore) -> None:
+        dim = populated_store.embedding_dim
+        results = populated_store.search([0.1] * dim, "Python programming", explain=True)
+        assert len(results) > 0
+        # At least one result should have fts_terms
+        assert any(r.explain and r.explain.fts_terms for r in results)
+
+    def test_explain_empty_store(self, sample_store: VstashStore) -> None:
+        dim = sample_store.embedding_dim
+        results = sample_store.search([0.1] * dim, "anything", explain=True)
+        assert results == []

@@ -25,7 +25,7 @@ vstash stats
 
 ```
 vstash/
-  __init__.py       # version (__version__ = "0.15.0")
+  __init__.py       # version (__version__ = "0.16.0")
   cli.py            # typer CLI — add, search, ask, chat, list, stats, forget, reindex, watch, config, export, remember, profile, journal
   profile.py        # Multi-profile management: resolution chain, CRUD, federated search
   journal.py        # Cross-session memory: save, recall, log, prune, transcript parsing
