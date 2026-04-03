@@ -1,5 +1,13 @@
 # vstash
 
+[![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![PyPI](https://img.shields.io/pypi/v/vstash)](https://pypi.org/project/vstash/)
+[![python](https://img.shields.io/badge/python-3.10+-blue)]()
+[![tests](https://img.shields.io/badge/tests-598_passing-brightgreen)]()
+[![BEIR SciFact](https://img.shields.io/badge/BEIR_SciFact-NDCG@10_0.726-brightgreen)]()
+[![MCP](https://img.shields.io/badge/MCP-16_tools-blue)]()
+[![latency](https://img.shields.io/badge/latency-<25ms_@10K_chunks-brightgreen)]()
+
 **Local document memory with instant semantic search.**
 
 ![vstash demo](demo.gif)
