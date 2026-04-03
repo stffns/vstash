@@ -17,16 +17,20 @@ Controls which LLM backend is used for `vstash ask` and `vstash chat`.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `backend` | string | `"cerebras"` | `"cerebras"`, `"ollama"`, or `"openai"` |
-| `model` | string | `"llama3.1-8b"` | Model name for the selected backend |
+| `backend` | string | `"local"` | `"local"` (auto-detect, default), `"ollama"`, `"cerebras"`, or `"openai"` |
+| `model` | string | `"auto"` | Model name. Only used by `"cerebras"` backend; ignored when `"local"`, `"ollama"`, or `"openai"` (which use their own `model` setting) |
 
 ```toml
 [inference]
-backend = "cerebras"
-model = "llama3.1-8b"
+backend = "local"  # auto-detects Ollama, LM Studio, or any local OpenAI-compatible server
+model = "auto"
+
+# To use a specific backend instead:
+# backend = "cerebras"
+# model = "llama3.1-8b"
 ```
 
-> **Note:** Inference is only needed for `ask` and `chat`. Search works 100% locally with no LLM.
+> **Note:** Inference is only needed for `ask` and `chat`. Search works 100% locally with no LLM. When `backend = "local"`, vstash probes Ollama (port 11434), LM Studio (ports 1234, 8080), and LocalAI (port 8081) in order, using the first that responds.
 
 ---
 
@@ -50,12 +54,12 @@ api_key = ""  # prefer CEREBRAS_API_KEY env var
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `host` | string | `"http://localhost:11434"` | Ollama server URL |
-| `model` | string | `"llama3.2"` | Ollama model name |
+| `model` | string | `"qwen3.5:9b"` | Ollama model name |
 
 ```toml
 [ollama]
 host = "http://localhost:11434"
-model = "llama3.2"
+model = "qwen3.5:9b"
 ```
 
 ---
