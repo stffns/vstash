@@ -391,7 +391,9 @@ In all tiers, the fallback chain (code splitting → paragraph → fixed-window)
 2. **Wikipedia corpus** — 17 mixed-domain Wikipedia articles, yielding 2,602 chunks. Used for cross-domain ablation (§8.1) to validate generalizability.
 3. **Wikipedia cold start corpus** — 120 real Wikipedia articles across 12 CS topic clusters (transformers, reinforcement learning, NLP, computer vision, databases, distributed systems, cryptography, operating systems, graph algorithms, information retrieval, optimization, compilers), yielding 919 chunks. Used for the adaptive scoring experiment (§8.6). Zipf-weighted query simulation over 30 rounds models realistic non-uniform usage.
 4. **ArXiv ML corpus** — 1,000 machine learning papers from CShorten/ML-ArXiv-Papers (HuggingFace) across 10 topics (NLP, CV, RL, optimization, generative models, etc.), yielding ~3,500 chunks. Used for at-scale validation of hybrid RRF across 3 embedding models (§8.7).
-5. **BEIR SciFact** — 5,183 biomedical documents with 300 human-annotated queries from the BEIR benchmark suite (Thakur et al., 2021). The standard evaluation dataset for comparing retrieval systems. Used for external baseline comparison (§8.8).
+5. **BEIR SciFact** — 5,183 biomedical documents (1 chunk per document) with 300 human-annotated queries from the BEIR benchmark suite (Thakur et al., 2021). The standard evaluation dataset for comparing retrieval systems. Used for external baseline comparison (§8.8).
+
+Additionally, §8.9 (latency at scale) includes ad-hoc corpora not used for quality evaluation: a real user corpus (209 documents, 1,087 chunks), a full Spanish-language book (1 document, 1,514 chunks), and a synthetic scale test (500 documents, 10,005 chunks).
 
 **Queries.** 10 evaluation queries with human-annotated top-5 expected results (graded relevance). 15 relevant and 15 irrelevant queries for the relevance signal experiment. 10 topic-aligned queries for cold start evaluation.
 
@@ -532,13 +534,15 @@ We evaluate the adaptive maturity gate (§4.5) on a corpus of 120 real Wikipedia
 
 ### Table 7: Hybrid RRF at scale — 1,000 ML papers, 35 topic-based queries
 
-| Model | Mode | P@5 | NDCG@5 | NDCG@10 | MRR | Latency |
+| Model | Mode | P@5 | NDCG@5 | NDCG@10 | MRR | Latency/query |
 |-------|------|:---:|:------:|:-------:|:---:|--------:|
-| **BGE-base-EN (768d)** | **hybrid** | **0.703** | **0.728** | **0.702** | **0.895** | 320 ms |
-| BGE-small-EN (384d) | hybrid | 0.663 | 0.685 | 0.658 | 0.865 | 140 ms |
-| BGE-small-EN (384d) | vector-only | 0.614 | 0.619 | 0.568 | 0.822 | 80 ms |
-| Multilingual-MiniLM (384d) | hybrid | 0.606 | 0.638 | 0.611 | 0.868 | 150 ms |
-| Multilingual-MiniLM (384d) | vector-only | 0.600 | 0.588 | 0.508 | 0.820 | 90 ms |
+| **BGE-base-EN (768d)** | **hybrid** | **0.703** | **0.728** | **0.702** | **0.895** | 9.1 ms |
+| BGE-small-EN (384d) | hybrid | 0.663 | 0.685 | 0.658 | 0.865 | 4.0 ms |
+| BGE-small-EN (384d) | vector-only | 0.614 | 0.619 | 0.568 | 0.822 | 2.3 ms |
+| Multilingual-MiniLM (384d) | hybrid | 0.606 | 0.638 | 0.611 | 0.868 | 4.3 ms |
+| Multilingual-MiniLM (384d) | vector-only | 0.600 | 0.588 | 0.508 | 0.820 | 2.6 ms |
+
+*Latency is mean per-query search time (excludes query embedding). All measurements on Apple M-series silicon.*
 
 **Hybrid RRF maintains its advantage at 1,000-document scale.** The pattern observed on small corpora (§8.1) holds: RRF consistently outperforms vector-only across all three models, with +7.9% P@5 and +10.7% NDCG@5 for BGE-small. The advantage is largest for the multilingual model (+8.5% NDCG@5), where keyword matching compensates for the model's lower English-only accuracy.
 
@@ -559,7 +563,7 @@ To position vstash against established retrieval systems, we evaluate on the BEI
 | vstash hybrid (Multilingual-MiniLM) | 0.5870 | 0.5542 | 0.7239 | 13.8 ms |
 | Multilingual-MiniLM dense-only | ~0.55 | — | — | — |
 
-*Published baselines from MTEB leaderboard and BEIR paper (Thakur et al., 2021). ColBERTv2 result from Santhanam et al. (2022).*
+*Published baselines from the MTEB SciFact leaderboard (https://huggingface.co/spaces/mteb/leaderboard, accessed April 2026) and the BEIR paper (Thakur et al., 2021). "BGE-small dense-only" and "Multilingual-MiniLM dense-only" refer to dense retrieval entries for those models on the MTEB SciFact task. ColBERTv2 result from Santhanam et al. (2022).*
 
 **vstash hybrid RRF surpasses all published baselines on SciFact, including ColBERTv2** — a late-interaction model specifically designed for high-quality retrieval. The advantage (+4.7% over ColBERTv2, +9.1% over BM25, +11.1% over dense-only) comes from RRF fusion: SciFact's biomedical terminology creates strong keyword signals that complement semantic embeddings, and rank fusion captures both.
 
@@ -579,9 +583,11 @@ Three observations:
 |--------|:------:|:----:|:------:|:---:|:---:|
 | LLM memory (24 papers) | 786 | 3.4 ms | 3.4 ms | 4.0 ms | 4.1 ms |
 | Real user corpus (209 docs) | 1,087 | 5.0 ms | 4.8 ms | 8.1 ms | 8.1 ms |
-| LOTR full book (1 doc, ES) | 1,514 | 14.1 ms | 13.4 ms | 22.6 ms | 22.6 ms |
-| BEIR SciFact (5,183 docs) | 5,183 | 13.4 ms | — | — | — |
+| LOTR full book (1 doc, Spanish) | 1,514 | 14.1 ms | 13.4 ms | 22.6 ms | 22.6 ms |
+| BEIR SciFact (5,183 docs) | 5,183* | 13.4 ms | — | — | — |
 | Synthetic scale test | 10,005 | 15.7 ms | 14.1 ms | 23.1 ms | 23.1 ms |
+
+*\* BEIR SciFact documents are short (mean 215 words), ingested as 1 chunk per document.*
 
 Search latency scales sub-linearly: 10,005 chunks takes 15.7 ms mean — only 4.6× slower than 786 chunks despite 12.7× more data. The system remains interactive (sub-25ms P95) well beyond the "small-to-moderate" scale originally claimed. The `explain` diagnostic flag adds no measurable overhead (within noise at ±1.4 ms).
 
@@ -662,3 +668,5 @@ Beyond these empirical findings, vstash has evolved into a complete agent memory
 12. Thakur, N., Reimers, N., Ruckteschel, A., Srivastava, A., & Gurevych, I. (2021). BEIR: A heterogeneous benchmark for zero-shot evaluation of information retrieval models. *NeurIPS Datasets and Benchmarks*.
 
 13. Santhanam, K., Khattab, O., Saad-Falcon, J., Potts, C., & Zaharia, M. (2022). ColBERTv2: Effective and efficient retrieval via lightweight late interaction. *NAACL*.
+
+14. Muennighoff, N., Tazi, N., Magne, L., & Reimers, N. (2023). MTEB: Massive Text Embedding Benchmark. *EACL*. Leaderboard: https://huggingface.co/spaces/mteb/leaderboard.
