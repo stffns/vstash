@@ -559,7 +559,7 @@ def vstash_search(
 
         return _ok(
             {
-                "chunks": [c.model_dump() for c in chunks],
+                "chunks": [c.model_dump(exclude_none=True) for c in chunks],
                 "relevance": relevance,
                 "hint": hint,
                 "best_distance": round(best_distance, 4),

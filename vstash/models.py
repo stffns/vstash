@@ -42,7 +42,7 @@ class ExplainInfo(BaseModel):
     mmr_penalty: float = Field(
         default=0.0, description="MMR similarity penalty from same-doc chunks"
     )
-    fts_terms: list[str] = Field(default_factory=list, description="FTS query terms that matched")
+    fts_terms: list[str] = Field(default_factory=list, description="FTS query terms searched")
 
 
 class SearchResult(BaseModel):

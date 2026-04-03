@@ -814,6 +814,9 @@ class VstashStore:
             fts_contribution = fts_weight * (1.0 / (RRF_K + rank))
             if chunk_id in scores:
                 scores[chunk_id]["rrf"] = float(scores[chunk_id]["rrf"]) + fts_contribution
+                if explain:
+                    _explain_rrf_fts[chunk_id] = fts_contribution
+                    _explain_fts_rank[chunk_id] = rank
             elif chunk_id in relevant_chunk_ids or is_fts_top:
                 scores[chunk_id] = {
                     "id": chunk_id,
@@ -823,9 +826,9 @@ class VstashStore:
                     "chunk": row["seq"],
                     "rrf": fts_contribution,
                 }
-            if explain:
-                _explain_rrf_fts[chunk_id] = fts_contribution
-                _explain_fts_rank[chunk_id] = rank
+                if explain:
+                    _explain_rrf_fts[chunk_id] = fts_contribution
+                    _explain_fts_rank[chunk_id] = rank
 
         # Sort by RRF score descending
         ranked = sorted(scores.values(), key=lambda x: float(x["rrf"]), reverse=True)
@@ -866,13 +869,15 @@ class VstashStore:
             for r in ranked:
                 cid = int(r["id"])
                 vec_info = _explain_vec.get(cid)
+                rrf_vec_val = round(_explain_rrf_vec.get(cid, 0.0), 6)
+                rrf_fts_val = round(_explain_rrf_fts.get(cid, 0.0), 6)
                 _explain_map[cid] = ExplainInfo(
                     vec_rank=vec_info[0] if vec_info else None,
                     vec_distance=round(vec_info[1], 4) if vec_info else None,
                     fts_rank=_explain_fts_rank.get(cid),
-                    rrf_vec=round(_explain_rrf_vec.get(cid, 0.0), 6),
-                    rrf_fts=round(_explain_rrf_fts.get(cid, 0.0), 6),
-                    rrf_total=round(float(r.get("_rrf_before_scoring", r["rrf"])), 6),
+                    rrf_vec=rrf_vec_val,
+                    rrf_fts=rrf_fts_val,
+                    rrf_total=round(rrf_vec_val + rrf_fts_val, 6),
                     freq_score=r.get("_freq_normalized"),
                     decay_days=r.get("_decay_days"),
                     gamma=_explain_gamma,
@@ -998,6 +1003,7 @@ class VstashStore:
         for _ in range(min(top_k, len(ranked))):
             best_idx = -1
             best_mmr = -float("inf")
+            best_max_sim = 0.0
 
             for idx in remaining:
                 r = ranked[idx]
@@ -1019,6 +1025,8 @@ class VstashStore:
                 if mmr_score > best_mmr:
                     best_mmr = mmr_score
                     best_idx = idx
+                    if _explain:
+                        best_max_sim = max_sim
 
             if best_idx < 0 or best_mmr < 0:
                 # Stop when the best remaining candidate has negative MMR,
@@ -1027,17 +1035,7 @@ class VstashStore:
 
             chosen = ranked[best_idx]
             if _explain:
-                # Recalculate max_sim for the chosen chunk to store as penalty
-                doc_key_chosen = str(chosen["path"])
-                chosen_max_sim = 0.0
-                if doc_key_chosen in selected_embs_by_doc:
-                    chosen_emb = embeddings.get(int(chosen["id"]))
-                    if chosen_emb is not None:
-                        for sel_emb in selected_embs_by_doc[doc_key_chosen]:
-                            sim = _cosine_sim(chosen_emb, sel_emb)
-                            if sim > chosen_max_sim:
-                                chosen_max_sim = sim
-                chosen["_mmr_penalty"] = chosen_max_sim
+                chosen["_mmr_penalty"] = best_max_sim
             selected.append(chosen)
             remaining.remove(best_idx)
 

@@ -490,7 +490,11 @@ def search(
                 ex = c.explain
                 if ex is None:
                     continue
-                console.print(f"[bold cyan]#{i}[/bold cyan] [bold]{c.title}[/bold] — {c.path}")
+                from rich.markup import escape
+
+                console.print(
+                    f"[bold cyan]#{i}[/bold cyan] [bold]{escape(c.title)}[/bold] — {escape(c.path)}"
+                )
 
                 lines = []
                 # Vector
