@@ -236,11 +236,15 @@ def federated_search(
     project: str | None = None,
     layer: str | None = None,
     scoring: object | None = None,
+    expand_window: int = 0,
 ) -> list[tuple[str, SearchResult]]:
     """Search across all profiles and merge results with RRF.
 
     Opens each profile's VstashStore, runs the query, and merges
-    results using Reciprocal Rank Fusion (k=60).
+    results using Reciprocal Rank Fusion (k=60).  When *expand_window*
+    is > 0 each store expands its results with adjacent chunks before
+    closing — this is the only opportunity to expand because the stores
+    are closed after the parallel search phase.
 
     Args:
         query_embedding: Pre-computed query embedding.
@@ -253,6 +257,7 @@ def federated_search(
         project: Optional project filter.
         layer: Optional layer filter.
         scoring: Optional ScoringConfig.
+        expand_window: Adjacent-chunk window for context expansion (0 = off).
 
     Returns:
         List of (profile_name, SearchResult) tuples sorted by merged score.
@@ -304,6 +309,8 @@ def federated_search(
                     layer=layer,
                     scoring=scoring,
                 )
+                if expand_window > 0:
+                    results = store.expand_context(results, window=expand_window)
                 return [(name, r) for r in results]
             finally:
                 store.close()

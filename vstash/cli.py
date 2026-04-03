@@ -259,6 +259,7 @@ def ask(
                     project=project,
                     layer=layer,
                     scoring=cfg.scoring,
+                    expand_window=1,
                 )
                 chunks = [r for _, r in tagged]
             else:
@@ -296,13 +297,10 @@ def ask(
                 console.print("[dim]? Uncertain relevance — results may be tangential.[/dim]")
 
         # Expand context: include adjacent chunks for richer LLM context
+        # For federated mode, expansion happens inside federated_search
+        # (per-store, before stores are closed).
         if not all_profiles:
             chunks = store.expand_context(chunks, window=1)
-        else:
-            console.print(
-                "[dim]Note: context expansion is skipped in federated mode "
-                "(--all-profiles). Answers may have less surrounding context.[/dim]"
-            )
 
         # Show sources
         if sources:
@@ -387,6 +385,7 @@ def search(
                     project=project,
                     layer=layer,
                     scoring=cfg.scoring,
+                    expand_window=1,
                 )
                 chunks = [r for _, r in tagged]
                 _search_tagged = tagged

@@ -589,3 +589,177 @@ class TestMemoryProfile:
             # The store should have been called with the db path, not the profile path
             assert mock_store.call_args[0][0] == str(db_file)
             mem.close()
+
+
+# ------------------------------------------------------------------ #
+# Federated search — context expansion                                #
+# ------------------------------------------------------------------ #
+
+
+class TestFederatedContextExpansion:
+    """Test that federated search can expand context per-store."""
+
+    def test_expand_window_enriches_chunks(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """expand_window=1 returns expanded text from adjacent chunks."""
+        from vstash.store import VstashStore
+
+        default_db = tmp_path / "memory.db"
+        monkeypatch.setattr("vstash.profile.PROFILES_DIR", tmp_path / "empty")
+        monkeypatch.setattr("vstash.profile.DEFAULT_DB", default_db)
+        monkeypatch.setattr("vstash.profile._find_local_db", lambda: None)
+
+        dim = 384
+        store = VstashStore(str(default_db), embedding_dim=dim)
+        store.add_document(
+            path="/multi.md",
+            title="Multi",
+            chunks=["chapter one intro", "chapter two body", "chapter three end"],
+            embeddings=[[0.1] * dim, [0.5] * dim, [0.1] * dim],
+            source_type="markdown",
+        )
+        store.close()
+
+        # Without expansion
+        results_no_expand = federated_search(
+            query_embedding=[0.5] * dim,
+            query_text="chapter two",
+            embedding_dim=dim,
+            top_k=1,
+            expand_window=0,
+        )
+        assert len(results_no_expand) == 1
+        text_no = results_no_expand[0][1].text
+
+        # With expansion
+        results_expanded = federated_search(
+            query_embedding=[0.5] * dim,
+            query_text="chapter two",
+            embedding_dim=dim,
+            top_k=1,
+            expand_window=1,
+        )
+        assert len(results_expanded) == 1
+        text_exp = results_expanded[0][1].text
+
+        # Expanded text should be longer (includes adjacent chunks)
+        assert len(text_exp) > len(text_no)
+        assert "chapter one" in text_exp
+        assert "chapter two" in text_exp
+        assert "chapter three" in text_exp
+
+    def test_expand_window_zero_no_expansion(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """expand_window=0 returns original text (no expansion)."""
+        from vstash.store import VstashStore
+
+        default_db = tmp_path / "memory.db"
+        monkeypatch.setattr("vstash.profile.PROFILES_DIR", tmp_path / "empty")
+        monkeypatch.setattr("vstash.profile.DEFAULT_DB", default_db)
+        monkeypatch.setattr("vstash.profile._find_local_db", lambda: None)
+
+        dim = 384
+        store = VstashStore(str(default_db), embedding_dim=dim)
+        store.add_document(
+            path="/doc.md",
+            title="Doc",
+            chunks=["before", "target", "after"],
+            embeddings=[[0.1] * dim, [0.9] * dim, [0.1] * dim],
+            source_type="markdown",
+        )
+        store.close()
+
+        results = federated_search(
+            query_embedding=[0.9] * dim,
+            query_text="target",
+            embedding_dim=dim,
+            top_k=1,
+            expand_window=0,
+        )
+        assert len(results) == 1
+        # Should NOT contain adjacent chunks
+        assert "before" not in results[0][1].text
+        assert "after" not in results[0][1].text
+
+
+# ------------------------------------------------------------------ #
+# Integration: CLI + MCP resolve same DB path                         #
+# ------------------------------------------------------------------ #
+
+
+class TestDbResolutionConsistency:
+    """Verify CLI, reindex, and MCP all resolve to the same DB path."""
+
+    def test_custom_config_db_path_consistency(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """All entry points resolve to the same DB when storage.db_path is set."""
+        custom_db = str(tmp_path / "custom" / "memory.db")
+        monkeypatch.delenv("VSTASH_DB_PATH", raising=False)
+        monkeypatch.delenv("VSTASH_PROFILE", raising=False)
+        monkeypatch.chdir(tmp_path)
+
+        expected = Path(custom_db).resolve()
+
+        # CLI path
+        cli_path = resolve_db_path(config_db_path=custom_db)
+        assert cli_path == expected
+
+        # MCP would call resolve_db_path the same way
+        mcp_path = resolve_db_path(config_db_path=custom_db)
+        assert mcp_path == expected
+
+        # Reindex would call resolve_db_path with profile + config_db_path
+        reindex_path = resolve_db_path(profile=None, config_db_path=custom_db)
+        assert reindex_path == expected
+
+        assert cli_path == mcp_path == reindex_path
+
+    def test_profile_override_consistency(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Explicit profile yields same path regardless of config_db_path."""
+        monkeypatch.delenv("VSTASH_DB_PATH", raising=False)
+        monkeypatch.delenv("VSTASH_PROFILE", raising=False)
+        monkeypatch.chdir(tmp_path)
+
+        expected = PROFILES_DIR / "work" / "memory.db"
+
+        # CLI with profile
+        cli_path = resolve_db_path("work", config_db_path="/some/other.db")
+        assert cli_path == expected
+
+        # Reindex with profile
+        reindex_path = resolve_db_path("work", config_db_path="/some/other.db")
+        assert reindex_path == expected
+
+    def test_env_override_consistency(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """VSTASH_DB_PATH env wins for all entry points."""
+        env_db = tmp_path / "env.db"
+        monkeypatch.setenv("VSTASH_DB_PATH", str(env_db))
+
+        expected = env_db.resolve()
+
+        cli_path = resolve_db_path(config_db_path="/ignored.db")
+        mcp_path = resolve_db_path(config_db_path="/also_ignored.db")
+        reindex_path = resolve_db_path("work", config_db_path="/still_ignored.db")
+
+        assert cli_path == mcp_path == reindex_path == expected
+
+    def test_default_config_falls_through_to_profile_env(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Default config db_path doesn't block VSTASH_PROFILE resolution."""
+        monkeypatch.delenv("VSTASH_DB_PATH", raising=False)
+        monkeypatch.setenv("VSTASH_PROFILE", "research")
+        monkeypatch.chdir(tmp_path)
+
+        expected = PROFILES_DIR / "research" / "memory.db"
+
+        # Default config_db_path should be ignored
+        result = resolve_db_path(config_db_path="~/.vstash/memory.db")
+        assert result == expected
