@@ -26,7 +26,7 @@ import numpy as np
 import sqlite_vec
 
 from .config import ScoringConfig
-from .models import ChunkInfo, DocumentInfo, SearchResult, StoreStats
+from .models import ChunkInfo, DocumentInfo, ExplainInfo, SearchResult, StoreStats
 
 # SQLite's SQLITE_LIMIT_VARIABLE_NUMBER default is 999; batch IN clauses below this.
 _SQLITE_PARAM_BATCH = 900
@@ -642,6 +642,7 @@ class VstashStore:
         layer: str | None = None,
         scoring: ScoringConfig | None = None,
         _gamma_override: float | None = None,
+        explain: bool = False,
     ) -> list[SearchResult]:
         """Hybrid search: vector (semantic) + FTS5 (keyword) combined with RRF.
 
@@ -750,6 +751,12 @@ class VstashStore:
         # Track which chunk IDs passed the vector distance filter
         relevant_chunk_ids: set[int] = {row["id"] for row in vec_rows}
 
+        # --- Explain: capture per-chunk vector rank and distance ---
+        _explain_vec: dict[int, tuple[int, float]] = {}  # chunk_id -> (rank, distance)
+        if explain:
+            for rank, row in enumerate(vec_rows):
+                _explain_vec[int(row["id"])] = (rank, float(row["distance"]))
+
         # --- FTS5 search ---
         # Quote each word individually and join with OR for keyword matching.
         # This preserves injection safety (each token is double-quoted to
@@ -781,17 +788,23 @@ class VstashStore:
 
         # --- Reciprocal Rank Fusion ---
         scores: dict[int, dict[str, str | int | float]] = {}
+        _explain_rrf_vec: dict[int, float] = {}  # chunk_id -> vec RRF contribution
+        _explain_rrf_fts: dict[int, float] = {}  # chunk_id -> fts RRF contribution
+        _explain_fts_rank: dict[int, int] = {}  # chunk_id -> fts rank
 
         for rank, row in enumerate(vec_rows):
             chunk_id: int = row["id"]
+            vec_contrib = vec_weight * (1.0 / (RRF_K + rank))
             scores[chunk_id] = {
                 "id": chunk_id,
                 "text": row["text"],
                 "title": row["title"],
                 "path": row["path"],
                 "chunk": row["seq"],
-                "rrf": vec_weight * (1.0 / (RRF_K + rank)),
+                "rrf": vec_contrib,
             }
+            if explain:
+                _explain_rrf_vec[chunk_id] = vec_contrib
 
         for rank, row in enumerate(fts_rows):
             chunk_id = row["id"]
@@ -810,6 +823,9 @@ class VstashStore:
                     "chunk": row["seq"],
                     "rrf": fts_contribution,
                 }
+            if explain:
+                _explain_rrf_fts[chunk_id] = fts_contribution
+                _explain_fts_rank[chunk_id] = rank
 
         # Sort by RRF score descending
         ranked = sorted(scores.values(), key=lambda x: float(x["rrf"]), reverse=True)
@@ -817,16 +833,23 @@ class VstashStore:
         # Apply frequency+decay re-ranking if scoring is enabled.
         # The effective beta is scaled by γ (scoring maturity) so that
         # scoring has zero influence until access patterns are meaningful.
+        _explain_gamma: float | None = None
+        _explain_eff_beta: float | None = None
         if scoring is not None and scoring.enabled:
             gamma = _gamma_override if _gamma_override is not None else self.scoring_maturity()
+            if explain:
+                _explain_gamma = gamma
             if gamma > 0:
                 effective_beta = scoring.beta * gamma
+                if explain:
+                    _explain_eff_beta = effective_beta
                 ranked = ranked[:effective_k]
                 ranked = self.rerank_with_decay(
                     ranked,
                     alpha=scoring.alpha,
                     beta=effective_beta,
                     decay_lambda=scoring.decay_lambda,
+                    _explain=explain,
                 )
 
         # Intra-document MMR deduplication: allow multiple chunks from the
@@ -834,7 +857,29 @@ class VstashStore:
         # chapters of a book).  Chunks from different documents compete purely
         # on score — no cross-document penalty.
         mmr_lambda = scoring.mmr_lambda if scoring is not None else 0.5
-        ranked = self._mmr_dedup(ranked, top_k, mmr_lambda)
+        ranked = self._mmr_dedup(ranked, top_k, mmr_lambda, _explain=explain)
+
+        # --- Build ExplainInfo per chunk when requested ---
+        _explain_map: dict[int, ExplainInfo] = {}
+        if explain:
+            fts_terms = [w.strip('"') for w in quoted_words] if quoted_words else []
+            for r in ranked:
+                cid = int(r["id"])
+                vec_info = _explain_vec.get(cid)
+                _explain_map[cid] = ExplainInfo(
+                    vec_rank=vec_info[0] if vec_info else None,
+                    vec_distance=round(vec_info[1], 4) if vec_info else None,
+                    fts_rank=_explain_fts_rank.get(cid),
+                    rrf_vec=round(_explain_rrf_vec.get(cid, 0.0), 6),
+                    rrf_fts=round(_explain_rrf_fts.get(cid, 0.0), 6),
+                    rrf_total=round(float(r.get("_rrf_before_scoring", r["rrf"])), 6),
+                    freq_score=r.get("_freq_normalized"),
+                    decay_days=r.get("_decay_days"),
+                    gamma=_explain_gamma,
+                    effective_beta=_explain_eff_beta,
+                    mmr_penalty=round(float(r.get("_mmr_penalty", 0.0)), 4),
+                    fts_terms=fts_terms,
+                )
 
         results = [
             SearchResult(
@@ -844,6 +889,7 @@ class VstashStore:
                 path=str(r["path"]),
                 chunk=int(r["chunk"]),
                 score=round(float(r.get("final_score", r["rrf"])), 6),
+                explain=_explain_map.get(int(r["id"])) if explain else None,
             )
             for r in ranked
         ]
@@ -870,6 +916,7 @@ class VstashStore:
         ranked: list[dict[str, str | int | float]],
         top_k: int,
         mmr_lambda: float,
+        _explain: bool = False,
     ) -> list[dict[str, str | int | float]]:
         """Select top-k results using intra-document MMR diversity.
 
@@ -979,6 +1026,18 @@ class VstashStore:
                 break
 
             chosen = ranked[best_idx]
+            if _explain:
+                # Recalculate max_sim for the chosen chunk to store as penalty
+                doc_key_chosen = str(chosen["path"])
+                chosen_max_sim = 0.0
+                if doc_key_chosen in selected_embs_by_doc:
+                    chosen_emb = embeddings.get(int(chosen["id"]))
+                    if chosen_emb is not None:
+                        for sel_emb in selected_embs_by_doc[doc_key_chosen]:
+                            sim = _cosine_sim(chosen_emb, sel_emb)
+                            if sim > chosen_max_sim:
+                                chosen_max_sim = sim
+                chosen["_mmr_penalty"] = chosen_max_sim
             selected.append(chosen)
             remaining.remove(best_idx)
 
@@ -1480,6 +1539,7 @@ class VstashStore:
         alpha: float = 0.8,
         beta: float = 0.2,
         decay_lambda: float = 0.05,
+        _explain: bool = False,
     ) -> list[dict[str, object]]:
         """Re-rank candidates post-RRF with frequency + temporal decay.
 
@@ -1541,6 +1601,7 @@ class VstashStore:
 
             # Never-accessed chunks get zero frequency boost — no access
             # history means no signal to boost with.
+            days_ago: float | None = None
             if access_count == 0:
                 freq_normalized = 0.0
             else:
@@ -1557,6 +1618,11 @@ class VstashStore:
                 freq_score = access_count * math.exp(-decay_lambda * days_ago)
                 freq_normalized = min(1.0, math.log1p(freq_score) / math.log1p(FREQ_SATURATION))
             c["final_score"] = alpha * normalized_rrf + beta * freq_normalized
+            if _explain:
+                c["_rrf_before_scoring"] = c["rrf"]
+                c["_freq_normalized"] = round(freq_normalized, 4)
+                # days_ago is only set when access_count > 0
+                c["_decay_days"] = round(days_ago, 2) if days_ago is not None else None
 
         candidates.sort(key=lambda c: float(c["final_score"]), reverse=True)
         return candidates

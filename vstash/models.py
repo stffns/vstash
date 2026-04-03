@@ -26,6 +26,25 @@ class IngestResult(BaseModel):
     error: str | None = Field(default=None, description="Error message if status is 'error'")
 
 
+class ExplainInfo(BaseModel):
+    """Diagnostic breakdown of why a chunk ranked where it did."""
+
+    vec_rank: int | None = Field(default=None, description="Rank in vector search (0-based)")
+    vec_distance: float | None = Field(default=None, description="Cosine distance from query")
+    fts_rank: int | None = Field(default=None, description="Rank in FTS5 keyword search (0-based)")
+    rrf_vec: float = Field(default=0.0, description="RRF contribution from vector search")
+    rrf_fts: float = Field(default=0.0, description="RRF contribution from FTS5 search")
+    rrf_total: float = Field(default=0.0, description="Combined RRF score before scoring")
+    freq_score: float | None = Field(default=None, description="Normalized frequency score [0,1]")
+    decay_days: float | None = Field(default=None, description="Days since last access")
+    gamma: float | None = Field(default=None, description="Scoring maturity gate (0=off, 1=full)")
+    effective_beta: float | None = Field(default=None, description="Beta * gamma applied")
+    mmr_penalty: float = Field(
+        default=0.0, description="MMR similarity penalty from same-doc chunks"
+    )
+    fts_terms: list[str] = Field(default_factory=list, description="FTS query terms that matched")
+
+
 class SearchResult(BaseModel):
     """A single search result from hybrid RRF search."""
 
@@ -37,6 +56,9 @@ class SearchResult(BaseModel):
     path: str = Field(description="Source document path")
     chunk: int = Field(description="Chunk sequence number within document")
     score: float = Field(description="RRF score (higher = more relevant)")
+    explain: ExplainInfo | None = Field(
+        default=None, description="Diagnostic breakdown (when explain=True)"
+    )
 
 
 class DocumentInfo(BaseModel):

@@ -360,6 +360,9 @@ def search(
     all_profiles: bool = typer.Option(
         False, "--all-profiles", "-A", help="Search across all profiles"
     ),
+    explain: bool = typer.Option(
+        False, "--explain", "-E", help="Show why each chunk ranked where it did"
+    ),
 ) -> None:
     """Semantic search without LLM (free, local)."""
     cfg, store = _get_store(warm=True, profile=_profile_from_ctx(ctx))
@@ -398,6 +401,7 @@ def search(
                     project=project,
                     layer=layer,
                     scoring=cfg.scoring,
+                    explain=explain,
                 )
 
         if not chunks:
@@ -478,6 +482,64 @@ def search(
                 )
 
         console.print(table)
+
+        # --- Explain: diagnostic breakdown per chunk ---
+        if explain:
+            console.print()
+            for i, c in enumerate(chunks, 1):
+                ex = c.explain
+                if ex is None:
+                    continue
+                console.print(f"[bold cyan]#{i}[/bold cyan] [bold]{c.title}[/bold] — {c.path}")
+
+                lines = []
+                # Vector
+                if ex.vec_rank is not None:
+                    tier_label = relevance_tier(ex.vec_distance) if ex.vec_distance else "?"
+                    lines.append(
+                        f"  Vector:  rank {ex.vec_rank + 1}, "
+                        f"distance {ex.vec_distance} ({tier_label} relevance)"
+                    )
+                else:
+                    lines.append("  Vector:  not in vector results (FTS-only match)")
+
+                # FTS
+                if ex.fts_rank is not None:
+                    terms = ", ".join(ex.fts_terms) if ex.fts_terms else "n/a"
+                    lines.append(f"  FTS:     rank {ex.fts_rank + 1}, terms \\[{terms}]")
+                else:
+                    lines.append("  FTS:     not in keyword results (vector-only match)")
+
+                # RRF
+                lines.append(
+                    f"  RRF:     {ex.rrf_total:.4f} (vec: {ex.rrf_vec:.4f} + fts: {ex.rrf_fts:.4f})"
+                )
+
+                # Scoring (only if active)
+                if ex.gamma is not None:
+                    if ex.effective_beta and ex.effective_beta > 0:
+                        freq_str = f"{ex.freq_score:.2f}" if ex.freq_score else "0.00"
+                        decay_str = (
+                            f"{ex.decay_days:.1f}d ago" if ex.decay_days else "never accessed"
+                        )
+                        lines.append(
+                            f"  Scoring: freq={freq_str}, decay={decay_str}, "
+                            f"\u03b3={ex.gamma:.2f} \u2192 \u03b2_eff={ex.effective_beta:.3f}"
+                        )
+                    else:
+                        lines.append(
+                            f"  Scoring: \u03b3={ex.gamma:.2f} (below threshold, inactive)"
+                        )
+
+                # MMR
+                if ex.mmr_penalty > 0:
+                    lines.append(f"  MMR:     -{ex.mmr_penalty:.2f} penalty (same-doc similarity)")
+                else:
+                    lines.append("  MMR:     no penalty (unique document)")
+
+                for line in lines:
+                    console.print(f"[dim]{line}[/dim]")
+                console.print()
 
         # Show scoring warm-up progress when scoring is disabled
         if not all_profiles and not scoring_enabled:
