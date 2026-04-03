@@ -1,6 +1,6 @@
 {
   "experiment": "chunking_eval",
-  "top_k": 5,
+  "top_k": 3,
   "files": [
     "auth.py",
     "cache.go"
@@ -67,49 +67,51 @@
     {
       "query": "rate limiting with sliding window",
       "strategy": "naive",
-      "n_chunks": 1,
-      "avg_chunk_tokens": 188.0,
+      "n_chunks": 2,
+      "avg_chunk_tokens": 444.0,
       "function_recall": 0.3333333333333333,
-      "function_precision": 1.0,
+      "function_precision": 0.5,
       "top_chunks_preview": [
-        ":             self._requests[client_id] = []          # Remove expired entries  "
+        ":             self._requests[client_id] = []          # Remove expired entries  ",
+        "package cache  import ( \t\"container/list\" \t\"sync\" \t\"time\" )  // Entry represents"
       ],
       "boundary_violations": 0
     },
     {
       "query": "revoke a JWT token",
       "strategy": "naive",
-      "n_chunks": 2,
-      "avg_chunk_tokens": 606.0,
+      "n_chunks": 1,
+      "avg_chunk_tokens": 1024.0,
       "function_recall": 1.0,
-      "function_precision": 0.5,
+      "function_precision": 1.0,
       "top_chunks_preview": [
-        "\"\"\"User authentication module.\"\"\"  import hashlib import secrets from datetime i",
-        ":             self._requests[client_id] = []          # Remove expired entries  "
+        "\"\"\"User authentication module.\"\"\"  import hashlib import secrets from datetime i"
       ],
       "boundary_violations": 0
     },
     {
       "query": "LRU cache get and set operations",
       "strategy": "naive",
-      "n_chunks": 1,
-      "avg_chunk_tokens": 700.0,
+      "n_chunks": 2,
+      "avg_chunk_tokens": 862.0,
       "function_recall": 1.0,
-      "function_precision": 1.0,
+      "function_precision": 0.5,
       "top_chunks_preview": [
-        "package cache  import ( \t\"container/list\" \t\"sync\" \t\"time\" )  // Entry represents"
+        "package cache  import ( \t\"container/list\" \t\"sync\" \t\"time\" )  // Entry represents",
+        "\"\"\"User authentication module.\"\"\"  import hashlib import secrets from datetime i"
       ],
       "boundary_violations": 0
     },
     {
       "query": "cache eviction and memory management",
       "strategy": "naive",
-      "n_chunks": 1,
-      "avg_chunk_tokens": 700.0,
+      "n_chunks": 2,
+      "avg_chunk_tokens": 862.0,
       "function_recall": 1.0,
-      "function_precision": 1.0,
+      "function_precision": 0.5,
       "top_chunks_preview": [
-        "package cache  import ( \t\"container/list\" \t\"sync\" \t\"time\" )  // Entry represents"
+        "package cache  import ( \t\"container/list\" \t\"sync\" \t\"time\" )  // Entry represents",
+        "\"\"\"User authentication module.\"\"\"  import hashlib import secrets from datetime i"
       ],
       "boundary_violations": 0
     },
@@ -128,13 +130,12 @@
     {
       "query": "create new session with token manager",
       "strategy": "naive",
-      "n_chunks": 3,
-      "avg_chunk_tokens": 637.3333333333334,
+      "n_chunks": 2,
+      "avg_chunk_tokens": 862.0,
       "function_recall": 1.0,
-      "function_precision": 0.3333333333333333,
+      "function_precision": 0.5,
       "top_chunks_preview": [
         "\"\"\"User authentication module.\"\"\"  import hashlib import secrets from datetime i",
-        ":             self._requests[client_id] = []          # Remove expired entries  ",
         "package cache  import ( \t\"container/list\" \t\"sync\" \t\"time\" )  // Entry represents"
       ],
       "boundary_violations": 0
@@ -156,24 +157,26 @@
     {
       "query": "create and validate authentication tokens",
       "strategy": "code_aware",
-      "n_chunks": 1,
-      "avg_chunk_tokens": 504.0,
+      "n_chunks": 2,
+      "avg_chunk_tokens": 293.5,
       "function_recall": 1.0,
-      "function_precision": 1.0,
+      "function_precision": 0.5,
       "top_chunks_preview": [
-        "class TokenManager:     \"\"\"Manages JWT-like authentication tokens.\"\"\"      def _"
+        "class TokenManager:     \"\"\"Manages JWT-like authentication tokens.\"\"\"      def _",
+        "def create_session(user_id: str, token_manager: TokenManager) -> dict:     \"\"\"Cr"
       ],
       "boundary_violations": 0
     },
     {
       "query": "rate limiting with sliding window",
       "strategy": "code_aware",
-      "n_chunks": 1,
-      "avg_chunk_tokens": 311.0,
+      "n_chunks": 2,
+      "avg_chunk_tokens": 261.0,
       "function_recall": 1.0,
-      "function_precision": 1.0,
+      "function_precision": 0.5,
       "top_chunks_preview": [
-        "class RateLimiter:     \"\"\"Simple in-memory rate limiter using sliding window.\"\"\""
+        "class RateLimiter:     \"\"\"Simple in-memory rate limiter using sliding window.\"\"\"",
+        "package cache  import ( \t\"container/list\" \t\"sync\" \t\"time\" )  // Entry represents"
       ],
       "boundary_violations": 0
     },
@@ -192,12 +195,13 @@
     {
       "query": "LRU cache get and set operations",
       "strategy": "code_aware",
-      "n_chunks": 1,
-      "avg_chunk_tokens": 211.0,
+      "n_chunks": 2,
+      "avg_chunk_tokens": 357.5,
       "function_recall": 0.0,
       "function_precision": 0.0,
       "top_chunks_preview": [
-        "package cache  import ( \t\"container/list\" \t\"sync\" \t\"time\" )  // Entry represents"
+        "package cache  import ( \t\"container/list\" \t\"sync\" \t\"time\" )  // Entry represents",
+        "class TokenManager:     \"\"\"Manages JWT-like authentication tokens.\"\"\"      def _"
       ],
       "boundary_violations": 0
     },
@@ -217,24 +221,26 @@
     {
       "query": "cache hit miss statistics tracking",
       "strategy": "code_aware",
-      "n_chunks": 1,
-      "avg_chunk_tokens": 211.0,
+      "n_chunks": 2,
+      "avg_chunk_tokens": 261.0,
       "function_recall": 0.5,
-      "function_precision": 1.0,
+      "function_precision": 0.5,
       "top_chunks_preview": [
-        "package cache  import ( \t\"container/list\" \t\"sync\" \t\"time\" )  // Entry represents"
+        "package cache  import ( \t\"container/list\" \t\"sync\" \t\"time\" )  // Entry represents",
+        "class RateLimiter:     \"\"\"Simple in-memory rate limiter using sliding window.\"\"\""
       ],
       "boundary_violations": 0
     },
     {
       "query": "create new session with token manager",
       "strategy": "code_aware",
-      "n_chunks": 1,
-      "avg_chunk_tokens": 83.0,
+      "n_chunks": 2,
+      "avg_chunk_tokens": 147.0,
       "function_recall": 0.5,
-      "function_precision": 1.0,
+      "function_precision": 0.5,
       "top_chunks_preview": [
-        "def create_session(user_id: str, token_manager: TokenManager) -> dict:     \"\"\"Cr"
+        "def create_session(user_id: str, token_manager: TokenManager) -> dict:     \"\"\"Cr",
+        "package cache  import ( \t\"container/list\" \t\"sync\" \t\"time\" )  // Entry represents"
       ],
       "boundary_violations": 0
     }
@@ -242,7 +248,7 @@
   "summary": {
     "naive_avg_recall": 0.9166666666666666,
     "code_avg_recall": 0.625,
-    "naive_avg_precision": 0.8541666666666666,
-    "code_avg_precision": 0.75
+    "naive_avg_precision": 0.75,
+    "code_avg_precision": 0.5
   }
 }

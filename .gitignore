@@ -32,3 +32,14 @@ vstash.toml
 
 # ONNX model cache
 .fastembed_cache/
+
+# Experiment datasets (large, auto-downloaded by scripts)
+# Regenerate with: python -m experiments.beir_benchmark
+experiments/data/beir_*/
+experiments/data/beir_*_raw/
+experiments/data/arxiv_cache/
+experiments/data/hf_cache/
+experiments/data/wikipedia_corpus.json
+
+# Large test files
+experiments/*.pdf
