@@ -89,6 +89,9 @@ def _get_config() -> VstashConfig:
 def _get_store() -> VstashStore:
     """Open the vector store lazily, reusing across tool calls.
 
+    Uses the same DB resolution chain as the CLI (resolve_db_path) so that
+    MCP and CLI always operate on the same database given the same config.
+
     Thread-safe via double-checked locking pattern.
 
     Returns:
@@ -101,10 +104,13 @@ def _get_store() -> VstashStore:
     if _store is None:
         with _lock:
             if _store is None:
+                from .profile import resolve_db_path
+
                 cfg = _get_config()
                 dim = get_embedding_dim(cfg.embeddings.model)
+                db_path = str(resolve_db_path(config_db_path=cfg.storage.db_path))
                 _store = VstashStore(
-                    cfg.db_path,
+                    db_path,
                     embedding_dim=dim,
                     vector_backend=cfg.storage.vector_backend,
                     snapvec_bits=cfg.storage.snapvec_bits,
@@ -182,9 +188,12 @@ def _run_directory_job(
         from .embed import get_embedding_dim
         from .ingest import ingest_directory
 
+        from .profile import resolve_db_path
+
         dim = get_embedding_dim(cfg.embeddings.model)
+        db_path = str(resolve_db_path(config_db_path=cfg.storage.db_path))
         store = VstashStore(
-            cfg.db_path,
+            db_path,
             embedding_dim=dim,
             vector_backend=cfg.storage.vector_backend,
             snapvec_bits=cfg.storage.snapvec_bits,
