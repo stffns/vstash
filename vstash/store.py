@@ -1510,11 +1510,32 @@ class VstashStore:
     # Adaptive RRF weights                                                 #
     # ------------------------------------------------------------------ #
 
+    def _stem_terms(self, words: list[str]) -> list[str]:
+        """Stem words using the same FTS5 porter tokenizer as the index.
+
+        Uses an in-memory FTS5 table to ensure stemming is identical to
+        what fts5vocab reports.  ~0.02ms per call.
+        """
+        if not hasattr(self, "_stem_conn"):
+            import sqlite3
+
+            self._stem_conn = sqlite3.connect(":memory:")
+            self._stem_conn.execute(
+                'CREATE VIRTUAL TABLE _stem USING fts5(x, tokenize="porter ascii")'
+            )
+            self._stem_conn.execute("CREATE VIRTUAL TABLE _stem_v USING fts5vocab(_stem, row)")
+        self._stem_conn.execute("DELETE FROM _stem")
+        self._stem_conn.execute("INSERT INTO _stem VALUES (?)", [" ".join(words)])
+        rows = self._stem_conn.execute("SELECT term FROM _stem_v").fetchall()
+        return [r[0] for r in rows]
+
     def _build_idf_cache(self) -> tuple[dict[str, float], int]:
         """Build a term → IDF dictionary from the FTS5 index.
 
         Computed once per store lifetime and cached.  Uses a single SQL
-        query (no per-term lookups).
+        query (no per-term lookups).  Terms are porter-stemmed (matching
+        the FTS5 tokenizer) so lookups from ``_compute_adaptive_rrf_weights``
+        hit correctly.
 
         Returns:
             Tuple of (term_idf_dict, total_doc_count).
@@ -1528,7 +1549,7 @@ class VstashStore:
             return self._idf_cache
 
         # Single query: get df for every distinct term in the corpus
-        # fts5vocab gives us term frequencies directly from the FTS index
+        # fts5vocab gives us porter-stemmed terms + doc frequency
         try:
             rows = self._conn.execute("SELECT term, doc FROM fts_chunks_vocab").fetchall()
             idf_dict = {row["term"]: math.log(total_docs / (row["doc"] + 1)) for row in rows}
@@ -1570,17 +1591,21 @@ class VstashStore:
         if total_docs == 0:
             return 0.6, 0.4  # default
 
+        # Stem query terms using the same porter tokenizer as FTS5
+        # so lookups match the fts5vocab keys exactly
+        filtered_words = [w for w in words if len(w) > 1]
+        if not filtered_words:
+            return 0.6, 0.4
+        stemmed = self._stem_terms(filtered_words)
+
         # O(k) dict lookups — no SQL per term
         idfs: list[float] = []
         max_idf = math.log(total_docs)  # IDF for terms not in corpus
-        for word in words:
-            if len(word) <= 1:
-                continue
-            w_lower = word.lower()
-            if w_lower in idf_dict:
-                idfs.append(idf_dict[w_lower])
+        for term in stemmed:
+            if term in idf_dict:
+                idfs.append(idf_dict[term])
             else:
-                # Term not in corpus → max rarity → high IDF
+                # Stemmed term not in corpus → max rarity → high IDF
                 idfs.append(max_idf)
 
         if not idfs:
