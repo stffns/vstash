@@ -155,6 +155,17 @@ class TestResolveDbPath:
         result = resolve_db_path(config_db_path="~/.vstash/memory.db")
         assert result == Path.home() / ".vstash" / "memory.db"
 
+    def test_config_db_path_expanded_default_ignored(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Expanded absolute default path is also treated as not set."""
+        monkeypatch.delenv("VSTASH_DB_PATH", raising=False)
+        monkeypatch.delenv("VSTASH_PROFILE", raising=False)
+        monkeypatch.chdir(tmp_path)
+        default_path = Path.home() / ".vstash" / "memory.db"
+        result = resolve_db_path(config_db_path=str(default_path))
+        assert result == default_path
+
     def test_explicit_profile_overrides_config_db_path(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

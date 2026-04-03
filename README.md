@@ -32,7 +32,7 @@ Most RAG tools are slow, cloud-dependent, or require a running server. vstash is
 ### What's new in v0.13
 
 - **Direct chunk retrieval** — `get_chunk(id)` and `get_chunks(ids)` for O(1) access to specific chunks by database ID. Enables downstream apps (spaced repetition, pinned references) to retrieve knowledge atoms without re-running search.
-- **579 tests** across 14 test modules, all passing on Python 3.10–3.12.
+- **589 tests** across 27 test modules, all passing on Python 3.10–3.12.
 
 ### What's new in v0.12
 

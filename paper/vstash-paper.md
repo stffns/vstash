@@ -548,7 +548,7 @@ We evaluate the adaptive maturity gate (§4.5) on a corpus of 120 real Wikipedia
 
 **Multi-modal.** Current chunking and embedding support text only. Image embeddings via CLIP and table-aware chunking are planned for future versions.
 
-**Test coverage.** The system includes 579 tests across 14 test modules covering store operations, ingestion, code splitting, CLI commands, scoring, robustness, multi-profile, journal, chunk retrieval, and MCP tools. All tests pass on Python 3.10, 3.11, and 3.12 via GitHub Actions CI.
+**Test coverage.** The system includes 589 tests across 27 test modules covering store operations, ingestion, code splitting, CLI commands, scoring, robustness, multi-profile, journal, chunk retrieval, and MCP tools. All tests pass on Python 3.10, 3.11, and 3.12 via GitHub Actions CI.
 
 ---
 
@@ -568,7 +568,7 @@ We presented vstash, a local-first document memory system that demonstrates six 
 
 6. **Adaptive activation makes scoring safe by default.** The maturity gate ensures scoring never degrades ranking regardless of corpus characteristics — fixed β=0.5 degrades up to −0.4% on real Wikipedia articles, while adaptive γ maintains 0.0% across all 30 rounds. When γ = 0, no metadata lookups or decay computations occur. The system transitions seamlessly from pure RRF to frequency-augmented ranking as usage patterns mature.
 
-Beyond these empirical findings, vstash has evolved into a complete agent memory platform: multi-profile isolation enables separate knowledge domains with federated cross-profile search (v0.11), a cross-session journal provides lightweight append-only memory for LLM agent context (v0.12), and direct chunk access via `get_chunk` enables downstream applications to pin specific knowledge atoms by ID (v0.13). The system ships with 16 MCP tools, a Python SDK, CLI, and Claude Code hook integration, validated by 579 tests across Python 3.10–3.12.
+Beyond these empirical findings, vstash has evolved into a complete agent memory platform: multi-profile isolation enables separate knowledge domains with federated cross-profile search (v0.11), a cross-session journal provides lightweight append-only memory for LLM agent context (v0.12), and direct chunk access via `get_chunk` enables downstream applications to pin specific knowledge atoms by ID (v0.13). The system ships with 16 MCP tools, a Python SDK, CLI, and Claude Code hook integration, validated by 589 tests across Python 3.10–3.12.
 
 ---
 

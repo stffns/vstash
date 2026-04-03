@@ -94,8 +94,6 @@ def resolve_db_path(
     Returns:
         Absolute Path to the resolved memory.db file.
     """
-    _DEFAULT_DB = "~/.vstash/memory.db"
-
     # 1. VSTASH_DB_PATH always wins
     env_db = os.getenv("VSTASH_DB_PATH")
     if env_db:
@@ -109,8 +107,10 @@ def resolve_db_path(
         return db_path
 
     # 3. Custom storage.db_path from config (non-default)
-    if config_db_path and config_db_path != _DEFAULT_DB:
-        return Path(config_db_path).expanduser().resolve()
+    if config_db_path:
+        resolved_config = Path(config_db_path).expanduser().resolve()
+        if resolved_config != DEFAULT_DB.resolve():
+            return resolved_config
 
     # 4. VSTASH_PROFILE env var
     env_profile = os.getenv("VSTASH_PROFILE")
