@@ -18,15 +18,19 @@ Controls which LLM backend is used for `vstash ask` and `vstash chat`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `backend` | string | `"local"` | `"local"` (auto-detect, default), `"ollama"`, `"cerebras"`, or `"openai"` |
-| `model` | string | `"auto"` | Model name (`"auto"` = use first available local model) |
+| `model` | string | `"auto"` | Model name. Only used by `"cerebras"` backend; ignored when `"local"`, `"ollama"`, or `"openai"` (which use their own `model` setting) |
 
 ```toml
 [inference]
 backend = "local"  # auto-detects Ollama, LM Studio, or any local OpenAI-compatible server
 model = "auto"
+
+# To use a specific backend instead:
+# backend = "cerebras"
+# model = "llama3.1-8b"
 ```
 
-> **Note:** Inference is only needed for `ask` and `chat`. Search works 100% locally with no LLM.
+> **Note:** Inference is only needed for `ask` and `chat`. Search works 100% locally with no LLM. When `backend = "local"`, vstash probes Ollama (port 11434), LM Studio (ports 1234, 8080), and LocalAI (port 8081) in order, using the first that responds.
 
 ---
 

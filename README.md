@@ -119,7 +119,7 @@ ollama pull qwen3.5:9b
 # Just load a model in the GUI
 
 # Option C: Cloud backends (set in vstash.toml)
-# inference.backend = "cerebras"  + CEREBRAS_API_KEY env
+# inference.backend = "cerebras" + inference.model = "llama3.1-8b" + CEREBRAS_API_KEY env
 # inference.backend = "openai"   + OPENAI_API_KEY env
 ```
 
