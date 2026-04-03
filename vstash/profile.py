@@ -71,22 +71,31 @@ def _find_local_db() -> Path | None:
     return None
 
 
-def resolve_db_path(profile: str | None = None) -> Path:
+def resolve_db_path(
+    profile: str | None = None,
+    config_db_path: str | None = None,
+) -> Path:
     """Resolve the database path using the layered resolution chain.
 
     Priority:
       1. VSTASH_DB_PATH env var (explicit override, always wins)
       2. Explicit profile name
-      3. VSTASH_PROFILE env var
-      4. .vstash/memory.db walking cwd upward
-      5. ~/.vstash/memory.db (default)
+      3. Custom storage.db_path from vstash.toml (non-default)
+      4. VSTASH_PROFILE env var
+      5. .vstash/memory.db walking cwd upward
+      6. ~/.vstash/memory.db (default)
 
     Args:
         profile: Explicit profile name (e.g. from --profile flag).
+        config_db_path: Value of storage.db_path from vstash.toml. If it
+            differs from the default (~/.vstash/memory.db), it takes priority
+            over env profile and project-local resolution.
 
     Returns:
         Absolute Path to the resolved memory.db file.
     """
+    _DEFAULT_DB = "~/.vstash/memory.db"
+
     # 1. VSTASH_DB_PATH always wins
     env_db = os.getenv("VSTASH_DB_PATH")
     if env_db:
@@ -99,7 +108,11 @@ def resolve_db_path(profile: str | None = None) -> Path:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         return db_path
 
-    # 3. VSTASH_PROFILE env var
+    # 3. Custom storage.db_path from config (non-default)
+    if config_db_path and config_db_path != _DEFAULT_DB:
+        return Path(config_db_path).expanduser().resolve()
+
+    # 4. VSTASH_PROFILE env var
     env_profile = os.getenv("VSTASH_PROFILE")
     if env_profile:
         try:
@@ -111,12 +124,12 @@ def resolve_db_path(profile: str | None = None) -> Path:
             db_path.parent.mkdir(parents=True, exist_ok=True)
             return db_path
 
-    # 4. Project-local .vstash/memory.db
+    # 5. Project-local .vstash/memory.db
     local_db = _find_local_db()
     if local_db is not None:
         return local_db
 
-    # 5. Global default
+    # 6. Global default
     return DEFAULT_DB
 
 

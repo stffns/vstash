@@ -32,7 +32,7 @@ Most RAG tools are slow, cloud-dependent, or require a running server. vstash is
 ### What's new in v0.13
 
 - **Direct chunk retrieval** — `get_chunk(id)` and `get_chunks(ids)` for O(1) access to specific chunks by database ID. Enables downstream apps (spaced repetition, pinned references) to retrieve knowledge atoms without re-running search.
-- **568 tests** across 14 test modules, all passing on Python 3.10–3.12.
+- **579 tests** across 14 test modules, all passing on Python 3.10–3.12.
 
 ### What's new in v0.12
 
@@ -41,7 +41,7 @@ Most RAG tools are slow, cloud-dependent, or require a running server. vstash is
 
 ### What's new in v0.11
 
-- **Multi-profile support** — isolated databases per profile with `vstash profile create/list/switch/delete`.
+- **Multi-profile support** — isolated databases per profile with `vstash profile create/list/delete/active`.
 - **Federated search** — query across all profiles simultaneously with cross-profile deduplication.
 - **Profile resolution chain** — `--profile` flag → `VSTASH_PROFILE` env → `default`.
 
@@ -174,7 +174,7 @@ vstash reindex              Re-embed all chunks with a new model
 vstash watch <dir>          Auto-ingest on file changes
 vstash export               Export chunks as JSONL for training data curation
 vstash config               Show current configuration
-vstash profile <cmd>        Manage named profiles (create, list, switch, delete)
+vstash profile <cmd>        Manage named profiles (create, list, delete, active)
 vstash journal <cmd>        Cross-session memory (save, recall, log, prune)
 vstash-mcp                  Start MCP server (for Claude Desktop integration)
 ```
@@ -216,7 +216,7 @@ See the [Configuration Reference](docs/configuration.md) for all options.
 | Component | Data leaves machine? |
 |---|---|
 | Embeddings (FastEmbed) | Never — fully local ONNX |
-| Vector store (sqlite-vec) | Never — local `.db` file |
+| Vector store (sqlite-vec) | Never — local `.db` file (+ `.snpv` sidecar if snapvec enabled) |
 | Semantic search | Never — local embeddings + SQLite |
 | Inference (Cerebras/OpenAI) | Yes — query + retrieved chunks sent to API |
 | Inference (Ollama) | Never — fully local |

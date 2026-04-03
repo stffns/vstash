@@ -134,6 +134,45 @@ class TestResolveDbPath:
         result = resolve_db_path()
         assert result == PROFILES_DIR / "from-env" / "memory.db"
 
+    def test_config_db_path_overrides_profile_env(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Custom storage.db_path in toml overrides VSTASH_PROFILE and local dir."""
+        monkeypatch.delenv("VSTASH_DB_PATH", raising=False)
+        monkeypatch.setenv("VSTASH_PROFILE", "should-not-use")
+        monkeypatch.chdir(tmp_path)
+        custom = str(tmp_path / "custom.db")
+        result = resolve_db_path(config_db_path=custom)
+        assert result == Path(custom).resolve()
+
+    def test_config_db_path_default_ignored(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Default storage.db_path is treated as if not set."""
+        monkeypatch.delenv("VSTASH_DB_PATH", raising=False)
+        monkeypatch.delenv("VSTASH_PROFILE", raising=False)
+        monkeypatch.chdir(tmp_path)
+        result = resolve_db_path(config_db_path="~/.vstash/memory.db")
+        assert result == Path.home() / ".vstash" / "memory.db"
+
+    def test_explicit_profile_overrides_config_db_path(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Explicit profile name takes priority over config db_path."""
+        monkeypatch.delenv("VSTASH_DB_PATH", raising=False)
+        monkeypatch.chdir(tmp_path)
+        result = resolve_db_path("work", config_db_path="/custom/db.sqlite")
+        assert result == PROFILES_DIR / "work" / "memory.db"
+
+    def test_vstash_db_path_env_overrides_config_db_path(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """VSTASH_DB_PATH env always wins over config db_path."""
+        env_path = tmp_path / "env.db"
+        monkeypatch.setenv("VSTASH_DB_PATH", str(env_path))
+        result = resolve_db_path(config_db_path="/custom/db.sqlite")
+        assert result == env_path.resolve()
+
 
 # ------------------------------------------------------------------ #
 # Profile management                                                  #

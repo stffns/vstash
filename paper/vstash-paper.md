@@ -7,7 +7,7 @@
 
 ## Abstract
 
-We present **vstash**, a local-first document memory system that combines vector similarity search with full-text keyword matching via Reciprocal Rank Fusion (RRF), augmented by a novel frequency-weighted temporal decay re-ranker. All data resides in a single SQLite file using `sqlite-vec` for approximate nearest neighbor search and FTS5 for keyword matching — no cloud services, no external databases.
+We present **vstash**, a local-first document memory system that combines vector similarity search with full-text keyword matching via Reciprocal Rank Fusion (RRF), augmented by a novel frequency-weighted temporal decay re-ranker. All data resides in a single SQLite file using `sqlite-vec` for approximate nearest neighbor search and FTS5 for keyword matching — no cloud services, no external databases. (An optional `snapvec` backend adds a compressed ANN sidecar file.)
 
 We make six empirical contributions. **(1)** A post-RRF re-ranking formula that fuses normalized semantic scores with access-frequency signals decayed over time, improving NDCG@10 by up to 16.1% on access-heavy scenarios (+0.45 ms end-to-end overhead including metadata I/O). **(2)** An *adaptive scoring maturity gate* (γ) that suppresses the frequency+decay component until access patterns exhibit sufficient differential (max/mean ≥ 8×), eliminating cold start degradation: on 120 real Wikipedia articles (919 chunks), fixed β=0.5 degrades ranking in 6 of 30 rounds while adaptive γ maintains 0.0% degradation across all 30. **(3)** A *distance-based relevance signal* using the cosine distance of the best vector match, achieving F1 = 0.952 on a 20-query benchmark (10 relevant + 10 irrelevant) with zero class overlap — working from the first search with no scoring or usage history required. **(4)** Intra-document MMR deduplication that improves result diversity from ~3.2 to 5.0 unique documents per top-5 while simultaneously improving NDCG@5 from 0.814 to 0.829, and — unlike hard per-document dedup — allows semantically diverse sections from the same long document to surface. **(5)** Context expansion that retrieves adjacent chunks (±1 window) for 2.64× richer LLM context at +0.12 ms cost. **(6)** Hybrid code-aware chunking with a 3-tier splitting pipeline — tree-sitter AST (25+ languages), parso AST (Python), and regex fallback (6 languages) — that preserves function-level semantic coherence with graceful degradation.
 
@@ -104,14 +104,14 @@ We introduce **vstash**, a single-file system built on SQLite that addresses all
                                ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                      INTERFACES                                 │
-│   CLI    │  Python SDK  │  MCP Server (15 tools)│ Claude Hook  │
+│   CLI    │  Python SDK  │  MCP Server (16 tools)│ Claude Hook  │
 │ (search, │ (Memory()    │ (search, add, ask,    │ (auto-inject │
 │  ask,    │  .search()   │  remember, get_chunk, │  on knowledge│
 │  chat,   │  .get_chunk()│  journal, forget,     │  questions)  │
 │  journal)│  .journal()) │  list, stats, export) │              │
 └─────────────────────────────────────────────────────────────────┘
 ```
-*Figure 1: vstash architecture (v0.13). All data resides in a single SQLite file per profile. The retrieval pipeline applies RRF fusion, frequency+decay re-ranking, intra-document MMR deduplication, a distance-based relevance signal, and context expansion. Multi-profile support enables isolated databases with federated search across profiles.*
+*Figure 1: vstash architecture (v0.14). All data resides in a single SQLite file per profile (with an optional `.snpv` sidecar when using the snapvec backend). The retrieval pipeline applies RRF fusion, frequency+decay re-ranking, intra-document MMR deduplication, a distance-based relevance signal, and context expansion. Multi-profile support enables isolated databases with federated search across profiles.*
 
 vstash stores all data in a single SQLite database using WAL mode for concurrent read safety:
 
@@ -142,7 +142,7 @@ where *r_v(c)* and *r_f(c)* are the ranks of chunk *c* in vector and FTS5 result
 
 vstash integrates with LLM agents through three interfaces:
 
-**MCP Server.** Exposes 15 tools via the Model Context Protocol: search, add, ask, remember (direct text ingestion), get_chunk (O(1) chunk retrieval by ID), list, stats, forget, collections, export, job status, and four journal tools (save, recall, log, prune). The server includes LLM-facing instructions that guide clients on when to use (knowledge questions) and when to skip (action commands) memory tools. Search results include the relevance signal, enabling clients to filter noise.
+**MCP Server.** Exposes 16 tools via the Model Context Protocol: search, add, ask, remember (direct text ingestion), get_chunk (O(1) chunk retrieval by ID), get_document_chunks (full document reconstruction), list, stats, forget, collections, export, job status, and four journal tools (save, recall, log, prune). The server includes LLM-facing instructions that guide clients on when to use (knowledge questions) and when to skip (action commands) memory tools. Search results include the relevance signal, enabling clients to filter noise.
 
 **Claude Code Hook.** A `UserPromptSubmit` hook that auto-injects vstash context on knowledge questions. A pattern-based filter distinguishes knowledge questions from action commands (commit, merge, push), achieving 17/17 accuracy on our test set.
 
@@ -548,7 +548,7 @@ We evaluate the adaptive maturity gate (§4.5) on a corpus of 120 real Wikipedia
 
 **Multi-modal.** Current chunking and embedding support text only. Image embeddings via CLIP and table-aware chunking are planned for future versions.
 
-**Test coverage.** The system includes 556 tests across 14 test modules covering store operations, ingestion, code splitting, CLI commands, scoring, robustness, multi-profile, journal, chunk retrieval, and MCP tools. All tests pass on Python 3.10, 3.11, and 3.12 via GitHub Actions CI.
+**Test coverage.** The system includes 579 tests across 14 test modules covering store operations, ingestion, code splitting, CLI commands, scoring, robustness, multi-profile, journal, chunk retrieval, and MCP tools. All tests pass on Python 3.10, 3.11, and 3.12 via GitHub Actions CI.
 
 ---
 
@@ -564,11 +564,11 @@ We presented vstash, a local-first document memory system that demonstrates six 
 
 4. **Context expansion is cheap and valuable.** Fetching adjacent chunks (±1 window) provides 2.64× more text for LLM consumption at +0.12 ms cost — a near-free improvement to answer quality.
 
-5. **Local-first is viable at small-to-moderate scale.** With sub-4ms full-pipeline latency on ~2,600 chunks, a single SQLite file, and zero cloud dependencies, hybrid retrieval with temporal scoring, deduplication, and relevance signaling runs comfortably on a single machine for personal knowledge management workloads. Performance at 10K+ chunks remains to be validated.
+5. **Local-first is viable at small-to-moderate scale.** With sub-4ms full-pipeline latency on ~2,600 chunks, a single SQLite file (plus optional sidecar for snapvec), and zero cloud dependencies, hybrid retrieval with temporal scoring, deduplication, and relevance signaling runs comfortably on a single machine for personal knowledge management workloads. Performance at 10K+ chunks remains to be validated.
 
 6. **Adaptive activation makes scoring safe by default.** The maturity gate ensures scoring never degrades ranking regardless of corpus characteristics — fixed β=0.5 degrades up to −0.4% on real Wikipedia articles, while adaptive γ maintains 0.0% across all 30 rounds. When γ = 0, no metadata lookups or decay computations occur. The system transitions seamlessly from pure RRF to frequency-augmented ranking as usage patterns mature.
 
-Beyond these empirical findings, vstash has evolved into a complete agent memory platform: multi-profile isolation enables separate knowledge domains with federated cross-profile search (v0.11), a cross-session journal provides lightweight append-only memory for LLM agent context (v0.12), and direct chunk access via `get_chunk` enables downstream applications to pin specific knowledge atoms by ID (v0.13). The system ships with 15 MCP tools, a Python SDK, CLI, and Claude Code hook integration, validated by 556 tests across Python 3.10–3.12.
+Beyond these empirical findings, vstash has evolved into a complete agent memory platform: multi-profile isolation enables separate knowledge domains with federated cross-profile search (v0.11), a cross-session journal provides lightweight append-only memory for LLM agent context (v0.12), and direct chunk access via `get_chunk` enables downstream applications to pin specific knowledge atoms by ID (v0.13). The system ships with 16 MCP tools, a Python SDK, CLI, and Claude Code hook integration, validated by 579 tests across Python 3.10–3.12.
 
 ---
 
