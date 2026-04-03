@@ -40,7 +40,7 @@ class ExplainInfo(BaseModel):
     gamma: float | None = Field(default=None, description="Scoring maturity gate (0=off, 1=full)")
     effective_beta: float | None = Field(default=None, description="Beta * gamma applied")
     mmr_penalty: float = Field(
-        default=0.0, description="MMR similarity penalty from same-doc chunks"
+        default=0.0, description="MMR applied penalty: (1-lambda)*max_similarity"
     )
     fts_terms: list[str] = Field(default_factory=list, description="FTS query terms searched")
 

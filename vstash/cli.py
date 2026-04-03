@@ -432,7 +432,7 @@ def search(
         if json_output:
             import json
 
-            out: dict = {"chunks": [c.model_dump() for c in chunks]}
+            out: dict = {"chunks": [c.model_dump(exclude_none=True) for c in chunks]}
             if not all_profiles:
                 out["relevance"] = tier
                 out["best_distance"] = round(best_distance, 4)
@@ -485,12 +485,13 @@ def search(
 
         # --- Explain: diagnostic breakdown per chunk ---
         if explain:
+            from rich.markup import escape
+
             console.print()
             for i, c in enumerate(chunks, 1):
                 ex = c.explain
                 if ex is None:
                     continue
-                from rich.markup import escape
 
                 console.print(
                     f"[bold cyan]#{i}[/bold cyan] [bold]{escape(c.title)}[/bold] — {escape(c.path)}"
@@ -499,7 +500,9 @@ def search(
                 lines = []
                 # Vector
                 if ex.vec_rank is not None:
-                    tier_label = relevance_tier(ex.vec_distance) if ex.vec_distance else "?"
+                    tier_label = (
+                        relevance_tier(ex.vec_distance) if ex.vec_distance is not None else "?"
+                    )
                     lines.append(
                         f"  Vector:  rank {ex.vec_rank + 1}, "
                         f"distance {ex.vec_distance} ({tier_label} relevance)"
@@ -509,7 +512,7 @@ def search(
 
                 # FTS
                 if ex.fts_rank is not None:
-                    terms = ", ".join(ex.fts_terms) if ex.fts_terms else "n/a"
+                    terms = ", ".join(escape(t) for t in ex.fts_terms) if ex.fts_terms else "n/a"
                     lines.append(f"  FTS:     rank {ex.fts_rank + 1}, terms \\[{terms}]")
                 else:
                     lines.append("  FTS:     not in keyword results (vector-only match)")
@@ -521,10 +524,12 @@ def search(
 
                 # Scoring (only if active)
                 if ex.gamma is not None:
-                    if ex.effective_beta and ex.effective_beta > 0:
-                        freq_str = f"{ex.freq_score:.2f}" if ex.freq_score else "0.00"
+                    if ex.effective_beta is not None and ex.effective_beta > 0:
+                        freq_str = f"{ex.freq_score:.2f}" if ex.freq_score is not None else "0.00"
                         decay_str = (
-                            f"{ex.decay_days:.1f}d ago" if ex.decay_days else "never accessed"
+                            f"{ex.decay_days:.1f}d ago"
+                            if ex.decay_days is not None
+                            else "never accessed"
                         )
                         lines.append(
                             f"  Scoring: freq={freq_str}, decay={decay_str}, "

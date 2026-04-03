@@ -1035,7 +1035,7 @@ class VstashStore:
 
             chosen = ranked[best_idx]
             if _explain:
-                chosen["_mmr_penalty"] = best_max_sim
+                chosen["_mmr_penalty"] = (1 - mmr_lambda) * best_max_sim
             selected.append(chosen)
             remaining.remove(best_idx)
 
