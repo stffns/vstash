@@ -89,6 +89,11 @@ def relevance_tier(distance: float) -> str:
 # Standard RRF constant — balances precision vs recall
 RRF_K = 60
 
+# Adaptive RRF: query length threshold above which FTS weight is reduced.
+# ArguAna (194 avg words) showed -38.4% vs dense; queries >50 words are
+# typically semantic paraphrases where keywords add noise.
+_ADAPTIVE_RRF_LONG_QUERY = 50
+
 # Frequency score saturation point — access counts above this
 # produce diminishing returns in the log1p normalization.
 FREQ_SATURATION = 100
@@ -305,6 +310,10 @@ class VstashStore:
             CREATE VIRTUAL TABLE IF NOT EXISTS fts_chunks
             USING fts5(text, content=chunks, content_rowid=id, tokenize='porter ascii');
 
+            -- FTS5 vocabulary table for IDF computation (adaptive RRF weights)
+            CREATE VIRTUAL TABLE IF NOT EXISTS fts_chunks_vocab
+            USING fts5vocab(fts_chunks, row);
+
             CREATE INDEX IF NOT EXISTS idx_chunks_doc ON chunks(doc_id);
             CREATE INDEX IF NOT EXISTS idx_documents_path ON documents(path);
 
@@ -516,6 +525,7 @@ class VstashStore:
                     self._snap_dirty = True
 
                 self._conn.commit()
+                self._invalidate_idf_cache()
                 # Persist snapvec AFTER successful SQLite commit
                 if self._snap_dirty:
                     self._save_snapvec()
@@ -587,6 +597,7 @@ class VstashStore:
                 for doc_id in doc_ids:
                     self._delete_by_doc_id(doc_id)
                 self._conn.commit()
+                self._invalidate_idf_cache()
                 # Persist snapvec AFTER successful SQLite commit
                 if self._snap_dirty:
                     self._save_snapvec()
@@ -636,6 +647,7 @@ class VstashStore:
         top_k: int = 5,
         vec_weight: float = 0.6,
         fts_weight: float = 0.4,
+        adaptive_rrf: bool = True,
         distance_cutoff: float = 1.15,
         collection: str | None = None,
         project: str | None = None,
@@ -672,6 +684,10 @@ class VstashStore:
         Returns:
             Ranked list of SearchResult ordered by descending score.
         """
+        # Adaptive RRF: compute weights from query characteristics (IDF + length)
+        if adaptive_rrf:
+            vec_weight, fts_weight = self._compute_adaptive_rrf_weights(query_text)
+
         # Determine effective pool size — over-fetch when scoring is enabled
         effective_k = top_k
         if scoring is not None and scoring.enabled:
@@ -884,6 +900,8 @@ class VstashStore:
                     effective_beta=_explain_eff_beta,
                     mmr_penalty=round(float(r.get("_mmr_penalty", 0.0)), 4),
                     fts_terms=fts_terms,
+                    rrf_vec_weight=vec_weight,
+                    rrf_fts_weight=fts_weight,
                 )
 
         results = [
@@ -1487,6 +1505,103 @@ class VstashStore:
             results.append(entry)
 
         return results
+
+    # ------------------------------------------------------------------ #
+    # Adaptive RRF weights                                                 #
+    # ------------------------------------------------------------------ #
+
+    def _build_idf_cache(self) -> tuple[dict[str, float], int]:
+        """Build a term → IDF dictionary from the FTS5 index.
+
+        Computed once per store lifetime and cached.  Uses a single SQL
+        query (no per-term lookups).
+
+        Returns:
+            Tuple of (term_idf_dict, total_doc_count).
+        """
+        if hasattr(self, "_idf_cache"):
+            return self._idf_cache
+
+        total_docs = self._conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+        if total_docs == 0:
+            self._idf_cache = ({}, 0)
+            return self._idf_cache
+
+        # Single query: get df for every distinct term in the corpus
+        # fts5vocab gives us term frequencies directly from the FTS index
+        try:
+            rows = self._conn.execute("SELECT term, doc FROM fts_chunks_vocab").fetchall()
+            idf_dict = {row["term"]: math.log(total_docs / (row["doc"] + 1)) for row in rows}
+        except Exception:
+            # fts5vocab table may not exist — fall back to empty
+            idf_dict = {}
+
+        self._idf_cache = (idf_dict, total_docs)
+        return self._idf_cache
+
+    def _invalidate_idf_cache(self) -> None:
+        """Clear the IDF cache after document changes."""
+        if hasattr(self, "_idf_cache"):
+            del self._idf_cache
+
+    def _compute_adaptive_rrf_weights(self, query_text: str) -> tuple[float, float]:
+        """Compute adaptive vec/fts weights based on query characteristics.
+
+        Uses mean IDF of query terms to determine whether keywords are
+        informative (rare terms → boost FTS) or noisy (common terms →
+        trust vectors).  Long queries (>50 words) always reduce FTS weight
+        because OR-joining many terms generates noise.
+
+        IDF values are cached per store lifetime via ``_build_idf_cache()``.
+        Per-query overhead is O(k) dict lookups for k query terms — microseconds.
+
+        Returns:
+            Tuple of (vec_weight, fts_weight) summing to 1.0.
+        """
+        words = query_text.split()
+        n_words = len(words)
+
+        # Long queries: heavily favor vector (ArguAna pattern)
+        if n_words > _ADAPTIVE_RRF_LONG_QUERY:
+            return 0.9, 0.1
+
+        idf_dict, total_docs = self._build_idf_cache()
+
+        if total_docs == 0:
+            return 0.6, 0.4  # default
+
+        # O(k) dict lookups — no SQL per term
+        idfs: list[float] = []
+        max_idf = math.log(total_docs)  # IDF for terms not in corpus
+        for word in words:
+            if len(word) <= 1:
+                continue
+            w_lower = word.lower()
+            if w_lower in idf_dict:
+                idfs.append(idf_dict[w_lower])
+            else:
+                # Term not in corpus → max rarity → high IDF
+                idfs.append(max_idf)
+
+        if not idfs:
+            return 0.6, 0.4  # default
+
+        mean_idf = sum(idfs) / len(idfs)
+
+        # Sigmoid: high IDF (rare terms) → boost FTS; low IDF → boost vector
+        # Threshold = median IDF ≈ ln(N) / 2 (half the max IDF range)
+        # Alpha = 2.0 gives smooth transition over ~1 IDF unit
+        threshold = math.log(total_docs) / 2
+        alpha = 2.0
+        fts_signal = 1.0 / (1.0 + math.exp(-alpha * (mean_idf - threshold)))
+
+        # Map sigmoid [0,1] to fts_weight [0.1, 0.6]
+        # Low signal (common words): fts=0.1, vec=0.9
+        # High signal (rare terms): fts=0.6, vec=0.4
+        fts_weight = 0.1 + fts_signal * 0.5
+        vec_weight = 1.0 - fts_weight
+
+        return round(vec_weight, 3), round(fts_weight, 3)
 
     # ------------------------------------------------------------------ #
     # Adaptive Scoring — maturity gate                                     #
