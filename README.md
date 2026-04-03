@@ -8,7 +8,7 @@
 [![MCP](https://img.shields.io/badge/MCP-16_tools-blue)]()
 [![latency](https://img.shields.io/badge/latency-<25ms_@10K_chunks-brightgreen)]()
 
-**Local hybrid retrieval engine that outperforms ColBERTv2 on BEIR SciFact.**
+**Local hybrid retrieval engine that beats ColBERTv2 on BEIR SciFact with BGE-small.**
 
 Single SQLite file. Zero cloud dependencies. Sub-25ms at 10K chunks.
 
