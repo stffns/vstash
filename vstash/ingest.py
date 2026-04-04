@@ -398,6 +398,8 @@ def ingest(
     project: str | None = None,
     layer: str | None = None,
     tags: str | None = None,
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
 ) -> IngestResult:
     """Ingest a single file or URL into the store.
 
@@ -501,12 +503,20 @@ def ingest(
 
     # --- Step 3: Chunk ---
     with console.status("[bold cyan]Chunking...[/bold cyan]", spinner="dots"):
+        cs = chunk_size if chunk_size is not None else cfg.chunking.size
+        co = chunk_overlap if chunk_overlap is not None else cfg.chunking.overlap
+        if cs <= 0:
+            raise ValueError(f"chunk_size must be positive, got {cs}")
+        if co < 0:
+            raise ValueError(f"chunk_overlap must be non-negative, got {co}")
+        if co >= cs:
+            raise ValueError(f"chunk_overlap ({co}) must be less than chunk_size ({cs})")
         if is_code:
             ext = Path(source).suffix.lower()
             language = _EXT_TO_LANG.get(ext, "")
-            chunks = chunk_code(text, cfg.chunking.size, cfg.chunking.overlap, language)
+            chunks = chunk_code(text, cs, co, language)
         else:
-            chunks = chunk_text(text, cfg.chunking.size, cfg.chunking.overlap)
+            chunks = chunk_text(text, cs, co)
 
     if not chunks:
         console.print(f"[yellow]⚠ No chunks generated from {source}[/yellow]")
@@ -569,6 +579,8 @@ def ingest_text(
     project: str | None = None,
     layer: str | None = None,
     tags: str | None = None,
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
 ) -> IngestResult:
     """Ingest raw text directly — no file or URL needed.
 
@@ -626,7 +638,15 @@ def ingest_text(
     text = _strip_frontmatter(text)
 
     # Chunk
-    chunks = chunk_text(text, cfg.chunking.size, cfg.chunking.overlap)
+    cs = chunk_size if chunk_size is not None else cfg.chunking.size
+    co = chunk_overlap if chunk_overlap is not None else cfg.chunking.overlap
+    if cs <= 0:
+        raise ValueError(f"chunk_size must be positive, got {cs}")
+    if co < 0:
+        raise ValueError(f"chunk_overlap must be non-negative, got {co}")
+    if co >= cs:
+        raise ValueError(f"chunk_overlap ({co}) must be less than chunk_size ({cs})")
+    chunks = chunk_text(text, cs, co)
     if not chunks:
         return IngestResult(status="empty", source=source_path)
 
@@ -741,6 +761,8 @@ def ingest_directory(
     project: str | None = None,
     layer: str | None = None,
     tags: str | None = None,
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
 ) -> list[IngestResult]:
     """Recursively ingest all supported files in a directory.
 
@@ -814,6 +836,8 @@ def ingest_directory(
                 project=project,
                 layer=layer,
                 tags=tags,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
             )
             results.append(result)
             progress.advance(task)

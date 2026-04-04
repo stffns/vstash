@@ -372,3 +372,55 @@ class TestSdkDbResolution:
             mem = Memory(db=explicit)
             assert mock_store.call_args[0][0] == explicit
             mem.close()
+
+
+# ------------------------------------------------------------------ #
+# Dynamic chunk_size                                                   #
+# ------------------------------------------------------------------ #
+
+
+class TestDynamicChunkSize:
+    """Test chunk_size/chunk_overlap parameters in Memory."""
+
+    def test_constructor_chunk_size(self, tmp_db_path: str) -> None:
+        """Constructor chunk_size is stored and used."""
+        mem = Memory(db=tmp_db_path, chunk_size=2048, chunk_overlap=256)
+        assert mem._chunk_size == 2048
+        assert mem._chunk_overlap == 256
+        mem.close()
+
+    def test_default_chunk_size_is_none(self, tmp_db_path: str) -> None:
+        mem = Memory(db=tmp_db_path)
+        assert mem._chunk_size is None
+        assert mem._chunk_overlap is None
+        mem.close()
+
+    def test_per_call_chunk_size_override(self, tmp_db_path: str) -> None:
+        """Per-call chunk_size produces different chunk counts."""
+        with Memory(db=tmp_db_path) as mem:
+            # Small chunk_size → more chunks
+            mem.remember("word " * 2000, title="small-chunks", chunk_size=256)
+            stats1 = mem.stats()
+            count_small = stats1.chunks
+
+            mem.remember("word " * 2000, title="large-chunks", chunk_size=4096)
+            stats2 = mem.stats()
+            count_large = stats2.chunks - count_small
+
+            assert count_small > count_large
+
+    def test_constructor_chunk_size_used_by_add(self, tmp_db_path: str) -> None:
+        """Constructor chunk_size flows through to add()."""
+        with Memory(db=tmp_db_path, chunk_size=512) as mem:
+            mem.add("tests/conftest.py")
+            stats = mem.stats()
+            chunk_count_512 = stats.chunks
+
+        with Memory(db=tmp_db_path + "_large") as mem2:
+            mem2.add("tests/conftest.py", chunk_size=4096)
+            stats2 = mem2.stats()
+            chunk_count_4096 = stats2.chunks
+            mem2.close()
+
+        # Smaller chunk_size should produce more chunks
+        assert chunk_count_512 >= chunk_count_4096
