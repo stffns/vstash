@@ -651,7 +651,6 @@ class VstashStore:
         top_k: int = 5,
         vec_weight: float | None = None,
         fts_weight: float | None = None,
-        adaptive_rrf: bool = True,
         distance_cutoff: float = 1.15,
         collection: str | None = None,
         project: str | None = None,
@@ -659,6 +658,7 @@ class VstashStore:
         scoring: ScoringConfig | None = None,
         _gamma_override: float | None = None,
         explain: bool = False,
+        adaptive_rrf: bool = True,
     ) -> list[SearchResult]:
         """Hybrid search: vector (semantic) + FTS5 (keyword) combined with RRF.
 
@@ -694,10 +694,12 @@ class VstashStore:
             vec_weight, fts_weight, distance_cutoff = self._compute_adaptive_rrf_params(
                 query_text, default_cutoff=distance_cutoff
             )
-        if vec_weight is None:
-            vec_weight = 0.6
-        if fts_weight is None:
-            fts_weight = 0.4
+        if vec_weight is None and fts_weight is None:
+            vec_weight, fts_weight = 0.6, 0.4
+        elif vec_weight is None:
+            vec_weight = 1.0 - fts_weight
+        elif fts_weight is None:
+            fts_weight = 1.0 - vec_weight
 
         # Determine effective pool size — over-fetch when scoring is enabled
         effective_k = top_k
@@ -1530,8 +1532,6 @@ class VstashStore:
         """
         conn = getattr(self._thread_local, "_stem_conn", None)
         if conn is None:
-            import sqlite3
-
             conn = sqlite3.connect(":memory:")
             conn.execute('CREATE VIRTUAL TABLE _stem USING fts5(x, tokenize="porter ascii")')
             conn.execute("CREATE VIRTUAL TABLE _stem_v USING fts5vocab(_stem, row)")
@@ -1550,26 +1550,29 @@ class VstashStore:
         hit correctly.
 
         Returns:
-            Tuple of (term_idf_dict, total_doc_count).
+            Tuple of (term_idf_dict, total_chunk_count).
         """
         if self._idf_cache is not None:
             return self._idf_cache
 
-        total_docs = self._conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
-        if total_docs == 0:
+        total_chunks = self._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+        if total_chunks == 0:
             self._idf_cache = ({}, 0)
             return self._idf_cache
 
         # Single query: get df for every distinct term in the corpus
-        # fts5vocab gives us porter-stemmed terms + doc frequency
+        # fts5vocab(row) reports chunk-level df, matching total_chunks
         try:
-            rows = self._conn.execute("SELECT term, doc FROM fts_chunks_vocab").fetchall()
-            idf_dict = {row["term"]: math.log(total_docs / (row["doc"] + 1)) for row in rows}
+            idf_dict = {
+                row["term"]: math.log(total_chunks / (row["doc"] + 1))
+                for row in self._conn.execute("SELECT term, doc FROM fts_chunks_vocab")
+            }
         except Exception:
-            # fts5vocab table may not exist — fall back to empty
-            idf_dict = {}
+            # fts5vocab table may not exist — disable adaptive IDF
+            self._idf_cache = ({}, 0)
+            return self._idf_cache
 
-        self._idf_cache = (idf_dict, total_docs)
+        self._idf_cache = (idf_dict, total_chunks)
         return self._idf_cache
 
     def _invalidate_idf_cache(self) -> None:
@@ -1600,9 +1603,9 @@ class VstashStore:
         if n_words > _ADAPTIVE_RRF_LONG_QUERY:
             return 0.9, 0.1, 5.0
 
-        idf_dict, total_docs = self._build_idf_cache()
+        idf_dict, total_chunks = self._build_idf_cache()
 
-        if total_docs < 2:
+        if total_chunks < 2:
             return 0.6, 0.4, default_cutoff  # default (IDF meaningless with <2 docs)
 
         # Stem query terms using the same porter tokenizer as FTS5
@@ -1614,7 +1617,7 @@ class VstashStore:
 
         # O(k) dict lookups — no SQL per term
         idfs: list[float] = []
-        max_idf = math.log(total_docs)  # IDF for terms not in corpus
+        max_idf = math.log(total_chunks)  # IDF for terms not in corpus
         for term in stemmed:
             if term in idf_dict:
                 idfs.append(idf_dict[term])
@@ -1630,7 +1633,7 @@ class VstashStore:
         # Sigmoid: high IDF (rare terms) → boost FTS; low IDF → boost vector
         # Threshold = median IDF ≈ ln(N) / 2 (half the max IDF range)
         # Alpha = 2.0 gives smooth transition over ~1 IDF unit
-        threshold = math.log(total_docs) / 2
+        threshold = math.log(total_chunks) / 2
         alpha = 2.0
         fts_signal = 1.0 / (1.0 + math.exp(-alpha * (mean_idf - threshold)))
 
