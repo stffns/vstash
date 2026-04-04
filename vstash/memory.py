@@ -143,13 +143,8 @@ class Memory:
         # URLs: skip Path.resolve() which can fail or be meaningless
         is_url = source_str.startswith(("http://", "https://"))
 
-        if not is_url:
-            resolved = Path(source).expanduser().resolve()
-            if resolved.is_dir():
-                from .ingest import ingest_directory
-
-        cs = chunk_size or self._chunk_size
-        co = chunk_overlap or self._chunk_overlap
+        cs = chunk_size if chunk_size is not None else self._chunk_size
+        co = chunk_overlap if chunk_overlap is not None else self._chunk_overlap
 
         if not is_url:
             resolved = Path(source).expanduser().resolve()
@@ -231,8 +226,8 @@ class Memory:
             project=proj,
             layer=layer,
             tags=tags,
-            chunk_size=chunk_size or self._chunk_size,
-            chunk_overlap=chunk_overlap or self._chunk_overlap,
+            chunk_size=chunk_size if chunk_size is not None else self._chunk_size,
+            chunk_overlap=chunk_overlap if chunk_overlap is not None else self._chunk_overlap,
         )
 
     def search(

@@ -155,6 +155,12 @@ def add(
     tags: str | None = typer.Option(
         None, "--tags", "-t", help="Comma-separated tags (overrides frontmatter)"
     ),
+    chunk_size: int | None = typer.Option(
+        None, "--chunk-size", help="Override chunk size in tokens (default: from config)"
+    ),
+    chunk_overlap: int | None = typer.Option(
+        None, "--chunk-overlap", help="Override chunk overlap in tokens (default: from config)"
+    ),
 ) -> None:
     """Add documents or URLs to memory."""
     cfg, store = _get_store(profile=_profile_from_ctx(ctx))
@@ -173,6 +179,8 @@ def add(
                     store,
                     force=force,
                     collection=collection,
+                    chunk_size=chunk_size,
+                    chunk_overlap=chunk_overlap,
                     **meta,
                 )
                 ok = [r for r in results if r.status == "ok"]
@@ -193,6 +201,8 @@ def add(
                 store,
                 force=force,
                 collection=collection,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
                 **meta,
             )
 
@@ -518,8 +528,12 @@ def search(
                     lines.append("  FTS:     not in keyword results (vector-only match)")
 
                 # RRF
+                weight_info = ""
+                if ex.rrf_vec_weight is not None:
+                    weight_info = f" w={ex.rrf_vec_weight:.1f}/{ex.rrf_fts_weight:.1f}"
                 lines.append(
-                    f"  RRF:     {ex.rrf_total:.4f} (vec: {ex.rrf_vec:.4f} + fts: {ex.rrf_fts:.4f})"
+                    f"  RRF:     {ex.rrf_total:.4f} "
+                    f"(vec: {ex.rrf_vec:.4f} + fts: {ex.rrf_fts:.4f}){weight_info}"
                 )
 
                 # Scoring (only if active)
@@ -1030,6 +1044,12 @@ def remember(
     project: str | None = typer.Option(None, "--project", "-p", help="Project tag"),
     layer: str | None = typer.Option(None, "--layer", "-l", help="Layer tag"),
     tags: str | None = typer.Option(None, "--tags", help="Comma-separated tags"),
+    chunk_size: int | None = typer.Option(
+        None, "--chunk-size", help="Override chunk size in tokens"
+    ),
+    chunk_overlap: int | None = typer.Option(
+        None, "--chunk-overlap", help="Override chunk overlap in tokens"
+    ),
 ) -> None:
     """Ingest text directly — no file needed.
 
@@ -1064,6 +1084,8 @@ def remember(
             store,
             title=title,
             collection=collection,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
             **meta,
         )
 

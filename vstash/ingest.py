@@ -503,8 +503,8 @@ def ingest(
 
     # --- Step 3: Chunk ---
     with console.status("[bold cyan]Chunking...[/bold cyan]", spinner="dots"):
-        cs = chunk_size or cfg.chunking.size
-        co = chunk_overlap or cfg.chunking.overlap
+        cs = chunk_size if chunk_size is not None else cfg.chunking.size
+        co = chunk_overlap if chunk_overlap is not None else cfg.chunking.overlap
         if is_code:
             ext = Path(source).suffix.lower()
             language = _EXT_TO_LANG.get(ext, "")
@@ -633,7 +633,9 @@ def ingest_text(
 
     # Chunk
     chunks = chunk_text(
-        text, chunk_size or cfg.chunking.size, chunk_overlap or cfg.chunking.overlap
+        text,
+        chunk_size if chunk_size is not None else cfg.chunking.size,
+        chunk_overlap if chunk_overlap is not None else cfg.chunking.overlap,
     )
     if not chunks:
         return IngestResult(status="empty", source=source_path)
