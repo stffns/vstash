@@ -686,7 +686,9 @@ class VstashStore:
         """
         # Adaptive RRF: compute weights from query characteristics (IDF + length)
         if adaptive_rrf:
-            vec_weight, fts_weight = self._compute_adaptive_rrf_weights(query_text)
+            vec_weight, fts_weight, distance_cutoff = self._compute_adaptive_rrf_params(
+                query_text, default_cutoff=distance_cutoff
+            )
 
         # Determine effective pool size — over-fetch when scoring is enabled
         effective_k = top_k
@@ -1534,7 +1536,7 @@ class VstashStore:
 
         Computed once per store lifetime and cached.  Uses a single SQL
         query (no per-term lookups).  Terms are porter-stemmed (matching
-        the FTS5 tokenizer) so lookups from ``_compute_adaptive_rrf_weights``
+        the FTS5 tokenizer) so lookups from ``_compute_adaptive_rrf_params``
         hit correctly.
 
         Returns:
@@ -1565,37 +1567,40 @@ class VstashStore:
         if hasattr(self, "_idf_cache"):
             del self._idf_cache
 
-    def _compute_adaptive_rrf_weights(self, query_text: str) -> tuple[float, float]:
-        """Compute adaptive vec/fts weights based on query characteristics.
+    def _compute_adaptive_rrf_params(
+        self, query_text: str, default_cutoff: float = 1.15
+    ) -> tuple[float, float, float]:
+        """Compute adaptive vec/fts weights and distance cutoff.
 
         Uses mean IDF of query terms to determine whether keywords are
         informative (rare terms → boost FTS) or noisy (common terms →
-        trust vectors).  Long queries (>50 words) always reduce FTS weight
-        because OR-joining many terms generates noise.
+        trust vectors).  Long queries (>50 words) reduce FTS weight and
+        relax the distance cutoff (diffuse embeddings compress distances).
 
         IDF values are cached per store lifetime via ``_build_idf_cache()``.
         Per-query overhead is O(k) dict lookups for k query terms — microseconds.
 
         Returns:
-            Tuple of (vec_weight, fts_weight) summing to 1.0.
+            Tuple of (vec_weight, fts_weight, distance_cutoff).
         """
         words = query_text.split()
         n_words = len(words)
 
-        # Long queries: heavily favor vector (ArguAna pattern)
+        # Long queries: favor vector + relax distance cutoff
+        # (diffuse embeddings from long text compress distance range)
         if n_words > _ADAPTIVE_RRF_LONG_QUERY:
-            return 0.9, 0.1
+            return 0.9, 0.1, 5.0
 
         idf_dict, total_docs = self._build_idf_cache()
 
         if total_docs == 0:
-            return 0.6, 0.4  # default
+            return 0.6, 0.4, default_cutoff  # default
 
         # Stem query terms using the same porter tokenizer as FTS5
         # so lookups match the fts5vocab keys exactly
         filtered_words = [w for w in words if len(w) > 1]
         if not filtered_words:
-            return 0.6, 0.4
+            return 0.6, 0.4, default_cutoff
         stemmed = self._stem_terms(filtered_words)
 
         # O(k) dict lookups — no SQL per term
@@ -1609,7 +1614,7 @@ class VstashStore:
                 idfs.append(max_idf)
 
         if not idfs:
-            return 0.6, 0.4  # default
+            return 0.6, 0.4, default_cutoff  # default
 
         mean_idf = sum(idfs) / len(idfs)
 
@@ -1626,7 +1631,7 @@ class VstashStore:
         fts_weight = 0.1 + fts_signal * 0.5
         vec_weight = 1.0 - fts_weight
 
-        return round(vec_weight, 3), round(fts_weight, 3)
+        return round(vec_weight, 3), round(fts_weight, 3), default_cutoff
 
     # ------------------------------------------------------------------ #
     # Adaptive Scoring — maturity gate                                     #
