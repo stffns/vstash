@@ -63,10 +63,14 @@ class Memory:
         collection: str = "default",
         db: str | Path | None = None,
         profile: str | None = None,
+        chunk_size: int | None = None,
+        chunk_overlap: int | None = None,
     ) -> None:
         self._cfg = _load_config_from(config)
         self._project = project
         self._collection = collection
+        self._chunk_size = chunk_size
+        self._chunk_overlap = chunk_overlap
 
         # Resolution: explicit db param > unified resolve_db_path chain
         if db:
@@ -111,6 +115,8 @@ class Memory:
         project: object = _UNSET,
         layer: str | None = None,
         tags: str | None = None,
+        chunk_size: int | None = None,
+        chunk_overlap: int | None = None,
     ) -> list[IngestResult]:
         """Ingest a file, URL, or directory into memory.
 
@@ -142,6 +148,14 @@ class Memory:
             if resolved.is_dir():
                 from .ingest import ingest_directory
 
+        cs = chunk_size or self._chunk_size
+        co = chunk_overlap or self._chunk_overlap
+
+        if not is_url:
+            resolved = Path(source).expanduser().resolve()
+            if resolved.is_dir():
+                from .ingest import ingest_directory
+
                 return ingest_directory(
                     str(resolved),
                     self._cfg,
@@ -151,6 +165,8 @@ class Memory:
                     project=proj,
                     layer=layer,
                     tags=tags,
+                    chunk_size=cs,
+                    chunk_overlap=co,
                 )
 
         result = ingest(
@@ -162,6 +178,8 @@ class Memory:
             project=proj,
             layer=layer,
             tags=tags,
+            chunk_size=cs,
+            chunk_overlap=co,
         )
         return [result]
 
@@ -174,6 +192,8 @@ class Memory:
         project: object = _UNSET,
         layer: str | None = None,
         tags: str | None = None,
+        chunk_size: int | None = None,
+        chunk_overlap: int | None = None,
     ) -> IngestResult:
         """Ingest raw text directly — no file needed.
 
@@ -211,6 +231,8 @@ class Memory:
             project=proj,
             layer=layer,
             tags=tags,
+            chunk_size=chunk_size or self._chunk_size,
+            chunk_overlap=chunk_overlap or self._chunk_overlap,
         )
 
     def search(
