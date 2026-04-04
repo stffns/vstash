@@ -505,6 +505,12 @@ def ingest(
     with console.status("[bold cyan]Chunking...[/bold cyan]", spinner="dots"):
         cs = chunk_size if chunk_size is not None else cfg.chunking.size
         co = chunk_overlap if chunk_overlap is not None else cfg.chunking.overlap
+        if cs <= 0:
+            raise ValueError(f"chunk_size must be positive, got {cs}")
+        if co < 0:
+            raise ValueError(f"chunk_overlap must be non-negative, got {co}")
+        if co >= cs:
+            raise ValueError(f"chunk_overlap ({co}) must be less than chunk_size ({cs})")
         if is_code:
             ext = Path(source).suffix.lower()
             language = _EXT_TO_LANG.get(ext, "")
@@ -632,11 +638,15 @@ def ingest_text(
     text = _strip_frontmatter(text)
 
     # Chunk
-    chunks = chunk_text(
-        text,
-        chunk_size if chunk_size is not None else cfg.chunking.size,
-        chunk_overlap if chunk_overlap is not None else cfg.chunking.overlap,
-    )
+    cs = chunk_size if chunk_size is not None else cfg.chunking.size
+    co = chunk_overlap if chunk_overlap is not None else cfg.chunking.overlap
+    if cs <= 0:
+        raise ValueError(f"chunk_size must be positive, got {cs}")
+    if co < 0:
+        raise ValueError(f"chunk_overlap must be non-negative, got {co}")
+    if co >= cs:
+        raise ValueError(f"chunk_overlap ({co}) must be less than chunk_size ({cs})")
+    chunks = chunk_text(text, cs, co)
     if not chunks:
         return IngestResult(status="empty", source=source_path)
 
