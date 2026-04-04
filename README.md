@@ -282,6 +282,7 @@ PDF, DOCX, PPTX, XLSX, Markdown, TXT, HTML, CSV — and any URL.
 | [ArXiv Retrieval](experiments/arxiv_retrieval_bench.py) | 1,000 ML papers, 3 models | P@5=0.703, MRR=0.895 | `python -m experiments.arxiv_retrieval_bench` |
 | [Dataset Discovery](experiments/dataset_discovery.py) | 954 HuggingFace datasets | 91.4% discovery rate | `python -m experiments.dataset_discovery` |
 | [vstash vs Chroma](experiments/beir_benchmark.py) | SciFact, NFCorpus, SciDocs | Wins 2/3 on NDCG, same embeddings | `python -m experiments.beir_benchmark` |
+| [Answer Relevance](experiments/answer_relevance.py) | SciFact, NFCorpus | +8.3% answer quality vs Chroma (LLM judge) | `python -m experiments.answer_relevance` |
 
 The dataset discovery engine also has an interactive mode — describe what you need, get the right dataset:
 
