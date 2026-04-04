@@ -89,6 +89,11 @@ def relevance_tier(distance: float) -> str:
 # Standard RRF constant — balances precision vs recall
 RRF_K = 60
 
+# Adaptive RRF: query length threshold above which FTS weight is reduced.
+# ArguAna (194 avg words) showed -38.4% vs dense; queries >50 words are
+# typically semantic paraphrases where keywords add noise.
+_ADAPTIVE_RRF_LONG_QUERY = 50
+
 # Frequency score saturation point — access counts above this
 # produce diminishing returns in the log1p normalization.
 FREQ_SATURATION = 100
@@ -133,6 +138,9 @@ class VstashStore:
         self._thread_local = threading.local()
         self._thread_local.last_best_distance = 0.0
         self._conn = self._connect()
+
+        # --- Adaptive RRF cache ---
+        self._idf_cache: tuple[dict[str, float], int] | None = None
 
         # --- SnapVec backend (optional) ---
         self._snap: SnapIndex | None = None  # type: ignore[name-defined]
@@ -304,6 +312,10 @@ class VstashStore:
             -- content= makes it a content table — no duplicate text stored
             CREATE VIRTUAL TABLE IF NOT EXISTS fts_chunks
             USING fts5(text, content=chunks, content_rowid=id, tokenize='porter ascii');
+
+            -- FTS5 vocabulary table for IDF computation (adaptive RRF weights)
+            CREATE VIRTUAL TABLE IF NOT EXISTS fts_chunks_vocab
+            USING fts5vocab(fts_chunks, row);
 
             CREATE INDEX IF NOT EXISTS idx_chunks_doc ON chunks(doc_id);
             CREATE INDEX IF NOT EXISTS idx_documents_path ON documents(path);
@@ -516,6 +528,7 @@ class VstashStore:
                     self._snap_dirty = True
 
                 self._conn.commit()
+                self._invalidate_idf_cache()
                 # Persist snapvec AFTER successful SQLite commit
                 if self._snap_dirty:
                     self._save_snapvec()
@@ -554,6 +567,7 @@ class VstashStore:
                 for row in rows:
                     self._delete_by_doc_id(row[0])
                 self._conn.commit()
+                self._invalidate_idf_cache()
                 if self._snap_dirty:
                     self._save_snapvec()
             except Exception:
@@ -587,6 +601,7 @@ class VstashStore:
                 for doc_id in doc_ids:
                     self._delete_by_doc_id(doc_id)
                 self._conn.commit()
+                self._invalidate_idf_cache()
                 # Persist snapvec AFTER successful SQLite commit
                 if self._snap_dirty:
                     self._save_snapvec()
@@ -634,8 +649,8 @@ class VstashStore:
         query_embedding: list[float],
         query_text: str,
         top_k: int = 5,
-        vec_weight: float = 0.6,
-        fts_weight: float = 0.4,
+        vec_weight: float | None = None,
+        fts_weight: float | None = None,
         distance_cutoff: float = 1.15,
         collection: str | None = None,
         project: str | None = None,
@@ -643,6 +658,7 @@ class VstashStore:
         scoring: ScoringConfig | None = None,
         _gamma_override: float | None = None,
         explain: bool = False,
+        adaptive_rrf: bool = True,
     ) -> list[SearchResult]:
         """Hybrid search: vector (semantic) + FTS5 (keyword) combined with RRF.
 
@@ -672,6 +688,19 @@ class VstashStore:
         Returns:
             Ranked list of SearchResult ordered by descending score.
         """
+        # Adaptive RRF: compute weights from query characteristics (IDF + length)
+        # Skip if caller provided explicit weights
+        if adaptive_rrf and vec_weight is None and fts_weight is None:
+            vec_weight, fts_weight, distance_cutoff = self._compute_adaptive_rrf_params(
+                query_text, default_cutoff=distance_cutoff
+            )
+        if vec_weight is None and fts_weight is None:
+            vec_weight, fts_weight = 0.6, 0.4
+        elif vec_weight is None:
+            vec_weight = 1.0 - fts_weight
+        elif fts_weight is None:
+            fts_weight = 1.0 - vec_weight
+
         # Determine effective pool size — over-fetch when scoring is enabled
         effective_k = top_k
         if scoring is not None and scoring.enabled:
@@ -884,6 +913,8 @@ class VstashStore:
                     effective_beta=_explain_eff_beta,
                     mmr_penalty=round(float(r.get("_mmr_penalty", 0.0)), 4),
                     fts_terms=fts_terms,
+                    rrf_vec_weight=vec_weight,
+                    rrf_fts_weight=fts_weight,
                 )
 
         results = [
@@ -1489,6 +1520,132 @@ class VstashStore:
         return results
 
     # ------------------------------------------------------------------ #
+    # Adaptive RRF weights                                                 #
+    # ------------------------------------------------------------------ #
+
+    def _stem_terms(self, words: list[str]) -> list[str]:
+        """Stem words using the same FTS5 porter tokenizer as the index.
+
+        Uses a thread-local in-memory FTS5 table to ensure stemming is
+        identical to what fts5vocab reports.  ~0.02ms per call.  Thread-safe
+        because each thread gets its own connection.
+        """
+        conn = getattr(self._thread_local, "_stem_conn", None)
+        if conn is None:
+            conn = sqlite3.connect(":memory:")
+            conn.execute('CREATE VIRTUAL TABLE _stem USING fts5(x, tokenize="porter ascii")')
+            conn.execute("CREATE VIRTUAL TABLE _stem_v USING fts5vocab(_stem, row)")
+            self._thread_local._stem_conn = conn
+        conn.execute("DELETE FROM _stem")
+        conn.execute("INSERT INTO _stem VALUES (?)", [" ".join(words)])
+        rows = conn.execute("SELECT term FROM _stem_v").fetchall()
+        return [r[0] for r in rows]
+
+    def _build_idf_cache(self) -> tuple[dict[str, float], int]:
+        """Build a term → IDF dictionary from the FTS5 index.
+
+        Computed once per store lifetime and cached.  Uses a single SQL
+        query (no per-term lookups).  Terms are porter-stemmed (matching
+        the FTS5 tokenizer) so lookups from ``_compute_adaptive_rrf_params``
+        hit correctly.
+
+        Returns:
+            Tuple of (term_idf_dict, total_chunk_count).
+        """
+        if self._idf_cache is not None:
+            return self._idf_cache
+
+        total_chunks = self._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+        if total_chunks == 0:
+            self._idf_cache = ({}, 0)
+            return self._idf_cache
+
+        # Single query: get df for every distinct term in the corpus
+        # fts5vocab(row) reports chunk-level df, matching total_chunks
+        try:
+            idf_dict = {
+                row["term"]: math.log(total_chunks / (row["doc"] + 1))
+                for row in self._conn.execute("SELECT term, doc FROM fts_chunks_vocab")
+            }
+        except Exception:
+            # fts5vocab table may not exist — disable adaptive IDF
+            self._idf_cache = ({}, 0)
+            return self._idf_cache
+
+        self._idf_cache = (idf_dict, total_chunks)
+        return self._idf_cache
+
+    def _invalidate_idf_cache(self) -> None:
+        """Clear the IDF cache after document changes."""
+        self._idf_cache = None
+
+    def _compute_adaptive_rrf_params(
+        self, query_text: str, default_cutoff: float = 1.15
+    ) -> tuple[float, float, float]:
+        """Compute adaptive vec/fts weights and distance cutoff.
+
+        Uses mean IDF of query terms to determine whether keywords are
+        informative (rare terms → boost FTS) or noisy (common terms →
+        trust vectors).  Long queries (>50 words) reduce FTS weight and
+        relax the distance cutoff (diffuse embeddings compress distances).
+
+        IDF values are cached per store lifetime via ``_build_idf_cache()``.
+        Per-query overhead is O(k) dict lookups for k query terms — microseconds.
+
+        Returns:
+            Tuple of (vec_weight, fts_weight, distance_cutoff).
+        """
+        words = query_text.split()
+        n_words = len(words)
+
+        # Long queries: favor vector + relax distance cutoff
+        # (diffuse embeddings from long text compress distance range)
+        if n_words > _ADAPTIVE_RRF_LONG_QUERY:
+            return 0.9, 0.1, 5.0
+
+        idf_dict, total_chunks = self._build_idf_cache()
+
+        if total_chunks < 2:
+            return 0.6, 0.4, default_cutoff  # default (IDF meaningless with <2 chunks)
+
+        # Stem query terms using the same porter tokenizer as FTS5
+        # so lookups match the fts5vocab keys exactly
+        filtered_words = [w for w in words if len(w) > 1]
+        if not filtered_words:
+            return 0.6, 0.4, default_cutoff
+        stemmed = self._stem_terms(filtered_words)
+
+        # O(k) dict lookups — no SQL per term
+        idfs: list[float] = []
+        max_idf = math.log(total_chunks)  # IDF for terms not in corpus
+        for term in stemmed:
+            if term in idf_dict:
+                idfs.append(idf_dict[term])
+            else:
+                # Stemmed term not in corpus → max rarity → high IDF
+                idfs.append(max_idf)
+
+        if not idfs:
+            return 0.6, 0.4, default_cutoff  # default
+
+        mean_idf = sum(idfs) / len(idfs)
+
+        # Sigmoid: high IDF (rare terms) → boost FTS; low IDF → boost vector
+        # Threshold = median IDF ≈ ln(N) / 2 (half the max IDF range)
+        # Alpha = 2.0 gives smooth transition over ~1 IDF unit
+        threshold = math.log(total_chunks) / 2
+        alpha = 2.0
+        fts_signal = 1.0 / (1.0 + math.exp(-alpha * (mean_idf - threshold)))
+
+        # Map sigmoid [0,1] to fts_weight [0.1, 0.6]
+        # Low signal (common words): fts=0.1, vec=0.9
+        # High signal (rare terms): fts=0.6, vec=0.4
+        fts_weight = 0.1 + fts_signal * 0.5
+        vec_weight = 1.0 - fts_weight
+
+        return round(vec_weight, 3), round(fts_weight, 3), default_cutoff
+
+    # ------------------------------------------------------------------ #
     # Adaptive Scoring — maturity gate                                     #
     # ------------------------------------------------------------------ #
 
@@ -1882,6 +2039,7 @@ class VstashStore:
                         progress_cb(processed, total)
 
                 self._conn.commit()
+                self._invalidate_idf_cache()
             except Exception:
                 self._conn.rollback()
                 self._reload_snapvec()

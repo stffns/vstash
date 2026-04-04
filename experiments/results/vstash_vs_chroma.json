@@ -1,0 +1,29 @@
+[
+  {
+    "dataset": "scifact",
+    "docs": 5183,
+    "vstash_ndcg": 0.7255,
+    "chroma_ndcg": 0.7201,
+    "delta_pct": 0.7,
+    "vstash_lat": 9.9,
+    "chroma_lat": 1.0
+  },
+  {
+    "dataset": "nfcorpus",
+    "docs": 3633,
+    "vstash_ndcg": 0.3525,
+    "chroma_ndcg": 0.3379,
+    "delta_pct": 4.3,
+    "vstash_lat": 3.1,
+    "chroma_lat": 1.0
+  },
+  {
+    "dataset": "scidocs",
+    "docs": 25657,
+    "vstash_ndcg": 0.1911,
+    "chroma_ndcg": 0.1968,
+    "delta_pct": -2.9,
+    "vstash_lat": 32.9,
+    "chroma_lat": 1.5
+  }
+]
