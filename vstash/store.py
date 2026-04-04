@@ -1606,7 +1606,7 @@ class VstashStore:
         idf_dict, total_chunks = self._build_idf_cache()
 
         if total_chunks < 2:
-            return 0.6, 0.4, default_cutoff  # default (IDF meaningless with <2 docs)
+            return 0.6, 0.4, default_cutoff  # default (IDF meaningless with <2 chunks)
 
         # Stem query terms using the same porter tokenizer as FTS5
         # so lookups match the fts5vocab keys exactly

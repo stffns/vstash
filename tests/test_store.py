@@ -884,8 +884,8 @@ class TestAdaptiveRRF:
         assert populated_store._idf_cache is not None
 
         # Cache should contain terms
-        idf_dict, total_docs = populated_store._idf_cache
-        assert total_docs > 0
+        idf_dict, total_chunks = populated_store._idf_cache
+        assert total_chunks > 0
         assert len(idf_dict) > 0
 
         # Second call reuses (same object)
