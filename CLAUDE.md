@@ -67,6 +67,7 @@ docs/               # User-facing documentation
 ## Key architecture decisions
 
 - **Hybrid search**: Vector (sqlite-vec cosine) + FTS5 keyword, combined via Reciprocal Rank Fusion (k=60).
+- **Adaptive RRF**: IDF-based weight adjustment per query. Rare terms boost FTS; common terms boost vector. Long queries (>50 words) relax distance cutoff. Cached via fts5vocab.
 - **Scoring**: Post-RRF re-ranking with frequency + temporal decay. Adaptive maturity gate (γ) suppresses scoring until access patterns show outlier signal.
 - **MMR dedup**: Intra-document Maximal Marginal Relevance replaces hard per-document dedup. `mmr_lambda=0.5` default, configurable.
 - **Embeddings**: FastEmbed (ONNX) or MLX (Apple Silicon). Default `BAAI/bge-small-en-v1.5` (384 dims). Multilingual models available via `vstash reindex`.
@@ -74,7 +75,7 @@ docs/               # User-facing documentation
 - **Single SQLite file**: WAL mode, foreign keys, all data in one `.db`.
 - **Optional snapvec backend**: Compressed ANN via PolarQuant. Opt-in with `storage.vector_backend = "snapvec"`. sqlite-vec stays default.
 - **Local-first LLM**: Default backend `"local"` auto-detects Ollama, LM Studio, or any OpenAI-compatible local server.
-- **BEIR benchmark results**: NDCG@10=0.7255 on SciFact (surpasses ColBERTv2 0.693). Wins 4/5 BEIR datasets vs BM25, 3/5 vs ColBERTv2.
+- **BEIR benchmark results**: NDCG@10=0.7263 on SciFact with adaptive RRF (surpasses ColBERTv2 0.693). Wins 5/5 BEIR datasets vs BM25, 4/5 vs ColBERTv2.
 
 ## Conventions
 
@@ -82,7 +83,7 @@ docs/               # User-facing documentation
 - **Pydantic v2** for all config and data models (frozen=True)
 - **Type hints** on all public functions
 - **ruff** for linting and formatting (enforced in CI)
-- **pytest** for testing (598 tests as of v0.16.0)
+- **pytest** for testing (608 tests as of v0.17.0)
 - **Conventional commits** with emoji prefixes (feat, fix, docs, chore, perf)
 
 ## Database schema

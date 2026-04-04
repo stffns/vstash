@@ -8,11 +8,9 @@
 [![MCP](https://img.shields.io/badge/MCP-16_tools-blue)]()
 [![latency](https://img.shields.io/badge/latency-<25ms_@10K_chunks-brightgreen)]()
 
-**Local document memory with instant semantic search.**
+**Local hybrid retrieval engine that beats ColBERTv2 on BEIR SciFact with BGE-small.**
 
-![vstash demo](demo.gif)
-
-Drop any file. Ask anything. Get an answer fast.
+Single SQLite file. Zero cloud dependencies. Sub-25ms at 10K chunks.
 
 ```
 pip install vstash
@@ -22,18 +20,31 @@ vstash search "what's the main argument about X?"
 
 ---
 
-## Why vstash?
+## Retrieval Quality
 
-Most RAG tools are slow, cloud-dependent, or require a running server. vstash is none of those things.
+Evaluated on the [BEIR benchmark](https://github.com/beir-cellar/beir) — the standard for comparing retrieval systems:
+
+| Dataset | vstash (NDCG@10) | ColBERTv2 | BM25 | Dense-only | 
+|---------|:---:|:---:|:---:|:---:|
+| **SciFact** (5K docs) | **0.726** | 0.693 (+4.7%) | 0.665 (+9.1%) | 0.653 (+11.1%) |
+| **SciDocs** (25K docs) | **0.191** | 0.154 (+24.1%) | 0.158 (+21.0%) | 0.163 (+17.2%) |
+| **NFCorpus** (3.6K docs) | **0.353** | 0.344 (+2.5%) | 0.325 (+8.5%) | 0.338 (+4.3%) |
+
+*Same embedding model (BGE-small 384d) across all comparisons. vstash advantage comes from RRF fusion of vector + keyword search, not from a better model.*
+
+---
+
+## Why vstash?
 
 | Layer | Technology | Why |
 |---|---|---|
 | Embeddings | FastEmbed (ONNX Runtime) | ~700 chunks/s, fully local, no server |
 | Vector store | sqlite-vec | Single `.db` file, cosine similarity, zero deps |
-| Keyword search | FTS5 (SQLite) | Exact matches, porter stemming, built into SQLite |
-| Hybrid ranking | Reciprocal Rank Fusion | Best of both: semantic + keyword, no training needed |
-| Inference | Cerebras / Ollama / OpenAI | ~2,000 tok/s via Cerebras, or 100% local via Ollama |
-| Parsing | markitdown | PDF, DOCX, PPTX, XLSX, HTML, Markdown, URLs |
+| Keyword search | FTS5 (SQLite) | Exact matches, built into SQLite |
+| Hybrid ranking | Reciprocal Rank Fusion | Semantic + keyword fusion — beats both alone |
+| Scoring | Frequency + temporal decay | Results improve with usage, adaptive maturity gate |
+| Dedup | Intra-document MMR | Diverse sections from long docs, not redundant chunks |
+| Inference | Local auto-detect / Cloud | Ollama, LM Studio, Cerebras, OpenAI — all optional |
 
 **Zero cloud required for search. Inference is optional.**
 
@@ -245,7 +256,7 @@ See the [Configuration Reference](docs/configuration.md) for all options.
 | Inference (Cerebras/OpenAI) | Yes — query + retrieved chunks sent to API |
 | Inference (Ollama) | Never — fully local |
 
-For full privacy, use `backend = "ollama"` or skip inference entirely and use `vstash search` instead of `vstash ask`.
+Search is always private. For fully private answers, use a local LLM (default) or skip inference entirely with `vstash search`.
 
 ---
 
@@ -259,12 +270,12 @@ PDF, DOCX, PPTX, XLSX, Markdown, TXT, HTML, CSV — and any URL.
 
 ## Experiments
 
-vstash retrieval quality has been validated at Kaggle scale:
-
-| Experiment | Corpus | Best P@5 | Best MRR | Command |
-|---|---|---|---|---|
-| [ArXiv Retrieval Bench](experiments/arxiv_retrieval_bench.py) | 1,000 ML papers, 10 topics | 0.703 | 0.895 | `python -m experiments.arxiv_retrieval_bench` |
-| [Dataset Discovery](experiments/dataset_discovery.py) | 954 HuggingFace datasets, 10 task categories | 0.629 | 0.777 | `python -m experiments.dataset_discovery` |
+| Experiment | Corpus | Key Result | Command |
+|---|---|---|---|
+| [BEIR Benchmark](experiments/beir_benchmark.py) | 5 BEIR datasets, up to 57K docs | NDCG@10=0.726 on SciFact (beats ColBERTv2) | `python -m experiments.beir_benchmark` |
+| [ArXiv Retrieval](experiments/arxiv_retrieval_bench.py) | 1,000 ML papers, 3 models | P@5=0.703, MRR=0.895 | `python -m experiments.arxiv_retrieval_bench` |
+| [Dataset Discovery](experiments/dataset_discovery.py) | 954 HuggingFace datasets | 91.4% discovery rate | `python -m experiments.dataset_discovery` |
+| [vstash vs Chroma](experiments/beir_benchmark.py) | SciFact, NFCorpus, SciDocs | Wins 2/3 on NDCG, same embeddings | `python -m experiments.beir_benchmark` |
 
 The dataset discovery engine also has an interactive mode — describe what you need, get the right dataset:
 
@@ -285,8 +296,8 @@ Run all experiments: `python -m experiments.run_all`
 | [Configuration](docs/configuration.md) | Full TOML reference — all sections and options |
 | [How It Works](docs/how-it-works.md) | Ingestion pipeline, search pipeline, chunking strategies, RRF |
 | [Memory Scoring](docs/scoring.md) | Frequency + decay re-ranking — formula, tuning, disabling |
-| [MCP Server](docs/mcp-server.md) | Claude Desktop integration (15 tools) |
-| [Claude Integration](docs/claude-integration.md) | Claude Code hook + Claude Desktop setup |
+| [MCP Server](docs/mcp-server.md) | MCP integration — 16 tools for any MCP-compatible client |
+| [Agent Integration](docs/claude-integration.md) | Claude Code, Claude Desktop, and other LLM agents |
 | [LangChain](docs/langchain.md) | VstashRetriever for chains and agents |
 | [Embedding Models](docs/embedding-models.md) | Model comparison and backend selection |
 | [Experiments](docs/experiments.md) | Retrieval benchmarks — hypotheses, results, conclusions |
