@@ -90,10 +90,14 @@ RRF merges the vector and keyword result lists without needing comparable scores
 rrf_score = vec_weight / (k + vec_rank) + fts_weight / (k + fts_rank)
 ```
 
-With `k=60`, `vec_weight=0.6`, `fts_weight=0.4`. This ensures:
+With `k=60` and adaptive weights based on query characteristics:
 
+- **Adaptive RRF** (default): Weights adjust per-query using mean IDF of query terms. Rare/technical terms boost FTS weight; common words boost vector weight. Long queries (>50 words) also relax the distance cutoff to handle diffuse embeddings.
+- **Fixed weights**: `vec_weight=0.6`, `fts_weight=0.4` when `adaptive_rrf=False` or explicit weights are provided.
+
+This ensures:
 - Semantic queries find conceptually related chunks (even without exact keywords)
-- Exact keyword queries are never missed
+- Technical queries with rare terms benefit from exact keyword matching
 - A chunk ranked high in both lists gets a strong combined score
 
 ### Memory Scoring
