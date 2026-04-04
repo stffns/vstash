@@ -1,0 +1,47 @@
+{
+  "total_elapsed_s": 270.3,
+  "experiments": [
+    {
+      "name": "arxiv_bench",
+      "status": "PASS",
+      "elapsed_s": 185.7,
+      "output": "experiments/results/arxiv_bench.json"
+    },
+    {
+      "name": "dataset_discovery",
+      "status": "PASS",
+      "elapsed_s": 20.1,
+      "output": "experiments/results/dataset_discovery.json"
+    },
+    {
+      "name": "chunking_eval",
+      "status": "PASS",
+      "elapsed_s": 1.0,
+      "output": "experiments/results/chunking.json"
+    },
+    {
+      "name": "ablation_rrf",
+      "status": "PASS",
+      "elapsed_s": 16.7,
+      "output": "experiments/results/ablation.json"
+    },
+    {
+      "name": "scoring_grid",
+      "status": "PASS",
+      "elapsed_s": 16.7,
+      "output": null
+    },
+    {
+      "name": "relevance_signal",
+      "status": "PASS",
+      "elapsed_s": 15.1,
+      "output": "experiments/results/relevance.json"
+    },
+    {
+      "name": "cold_start",
+      "status": "PASS",
+      "elapsed_s": 15.0,
+      "output": "experiments/results/cold_start.json"
+    }
+  ]
+}
