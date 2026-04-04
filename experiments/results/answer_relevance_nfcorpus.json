@@ -1,0 +1,254 @@
+{
+  "experiment": "answer_relevance",
+  "dataset": "nfcorpus",
+  "queries": 30,
+  "top_k": 5,
+  "timestamp": "2026-04-04T14:01:07+0200",
+  "vstash_mean_score": 2.5,
+  "results": [
+    {
+      "qid": "PLAIN-2",
+      "query": "Do Cholesterol Statin Drugs Cause Breast Cancer?",
+      "vstash_score": 3,
+      "vstash_answer": "Based on the provided context, there is **no evidence** that cholesterol statin drugs cause breast cancer; in fact, most studies suggest they may be associated with a reduced risk of death from breast",
+      "chroma_score": 3,
+      "chroma_answer": "Based on the provided context, there is **insufficient context** to definitively conclude whether statin drugs *cause* breast cancer, as the studies present conflicting findings regarding risk and sur"
+    },
+    {
+      "qid": "PLAIN-12",
+      "query": "Exploiting Autophagy to Live Longer",
+      "vstash_score": 2,
+      "vstash_answer": "Based on the provided contexts, there is **insufficient context** to directly explain how \"exploiting autophagy\" leads to a longer life.\n\nHowever, the texts provide the following related connections:\n",
+      "chroma_score": 0,
+      "chroma_answer": "insufficient context"
+    },
+    {
+      "qid": "PLAIN-23",
+      "query": "How to Reduce Exposure to Alkylphenols Through Your Diet",
+      "vstash_score": 0,
+      "vstash_answer": "Based on the provided contexts, there is **insufficient context** to give specific dietary instructions on how to reduce exposure to alkylphenols (NP and OP).\n\nWhile Context 1 identifies specific food",
+      "chroma_score": 2,
+      "chroma_answer": "Based on the provided contexts, here is how to reduce dietary exposure to alkylphenols (NP and OP):\n\n*   **Limit Cooking Oil Consumption:** Women should avoid consuming over the median amount of cooki"
+    },
+    {
+      "qid": "PLAIN-33",
+      "query": "What\u2019s Driving America\u2019s Obesity Problem?",
+      "vstash_score": 3,
+      "vstash_answer": "Based on the provided contexts, several factors are identified as driving America's obesity problem:\n\n*   **Continuing Trends:** If current trends continue, prevalence is projected to rise steadily, w",
+      "chroma_score": 3,
+      "chroma_answer": "Based on the provided context, the primary driver of America's obesity problem is **increased energy intake** (food consumption).\n\nKey points supporting this include:\n*   **Sufficiency of Energy Intak"
+    },
+    {
+      "qid": "PLAIN-44",
+      "query": "Who Should be Careful About Curcumin?",
+      "vstash_score": 3,
+      "vstash_answer": "Based on the provided context, there is **insufficient context** to determine who specifically should be careful about curcumin.\n\nThe text indicates that curcumin has an \"excellent safety profile\" and",
+      "chroma_score": 3,
+      "chroma_answer": "Based on the provided context, there is no information identifying specific groups of people who should be careful about curcumin. The text consistently describes curcumin as having an \"excellent safe"
+    },
+    {
+      "qid": "PLAIN-56",
+      "query": "Foods for Glaucoma",
+      "vstash_score": 3,
+      "vstash_answer": "Based on the provided contexts, the following foods and dietary patterns are associated with glaucoma risk:\n\n**Foods Associated with Decreased Risk (Protective)**\n*   **Fruits:**\n    *   **Fresh Orang",
+      "chroma_score": 3,
+      "chroma_answer": "Based on the provided contexts, the following foods are associated with glaucoma risk or protection:\n\n**Foods Associated with Decreased Risk (Protective):**\n*   **Fruits:** High intake of fruits and f"
+    },
+    {
+      "qid": "PLAIN-68",
+      "query": "What is Actually in Chicken Nuggets?",
+      "vstash_score": 2,
+      "vstash_answer": "Based on Context 1, chicken nuggets are **mostly fat**, with the name being a misnomer because striated muscle (chicken meat) is not the predominant component. They also contain equal or greater quant",
+      "chroma_score": 2,
+      "chroma_answer": "Based on Context 1, chicken nuggets are **mostly fat**, with their name being a misnomer because striated muscle (chicken meat) is not the predominant component. They also contain equal or greater qua"
+    },
+    {
+      "qid": "PLAIN-78",
+      "query": "What Do Meat Purge and Cola Have in Common?",
+      "vstash_score": 1,
+      "vstash_answer": "insufficient context",
+      "chroma_score": 2,
+      "chroma_answer": "Based on the provided contexts, there is **insufficient context** to determine what meat purge and cola have in common.\n\nWhile Context 5 discusses \"blood removal\" (purging) from broiler breast meat an"
+    },
+    {
+      "qid": "PLAIN-91",
+      "query": "Chronic Headaches and Pork Parasites",
+      "vstash_score": 3,
+      "vstash_answer": "Based on the provided context, there is an established relationship between **calcified neurocysticercosis** (a helminthic disease caused by the pork tapeworm *Taenia solium*) and **primary headache d",
+      "chroma_score": 3,
+      "chroma_answer": "Based on the provided context, there is a relationship between **calcified neurocysticercosis** (a parasitic infection caused by the pork tapeworm *Taenia solium*) and **primary headache disorders**.\n"
+    },
+    {
+      "qid": "PLAIN-102",
+      "query": "Stopping Heart Disease in Childhood",
+      "vstash_score": 3,
+      "vstash_answer": "Based on the provided contexts, there is no single study titled \"Stopping Heart Disease in Childhood.\" However, the contexts offer the following specific findings regarding childhood interventions and",
+      "chroma_score": 2,
+      "chroma_answer": "Based on the provided contexts, there is **insufficient context** to fully address \"Stopping Heart Disease in Childhood\" as a comprehensive topic. The documents offer specific, limited insights rather"
+    },
+    {
+      "qid": "PLAIN-112",
+      "query": "Food Dyes and ADHD",
+      "vstash_score": 3,
+      "vstash_answer": "Based on the provided contexts, the relationship between food dyes and ADHD is characterized by the following points:\n\n*   **Historical Findings:** In the early 1970s, Dr. Benjamin Feingold found that",
+      "chroma_score": 3,
+      "chroma_answer": "Based on the provided contexts, here is a summary of the relationship between food dyes and ADHD:\n\n*   **Not the Primary Cause:** Artificial food colors (AFCs) are not established as the main cause of"
+    },
+    {
+      "qid": "PLAIN-123",
+      "query": "How Citrus Might Help Keep Your Hands Warm",
+      "vstash_score": 3,
+      "vstash_answer": "Based on the provided context, there is **insufficient context** to answer how citrus might help keep hands warm.\n\nWhile Context 2 discusses increasing energy expenditure and activating brown adipose ",
+      "chroma_score": 0,
+      "chroma_answer": "insufficient context"
+    },
+    {
+      "qid": "PLAIN-133",
+      "query": "Starving Tumors of Their Blood Supply",
+      "vstash_score": 3,
+      "vstash_answer": "Based on the provided contexts, there is **insufficient context** to answer the question regarding \"Starving Tumors of Their Blood Supply.\"\n\nWhile Context 1 mentions that anti-Neu5Gc antibodies enhanc",
+      "chroma_score": 3,
+      "chroma_answer": "Based on the provided contexts, starving tumors of their blood supply (angiogenesis) can be achieved through a nutritional \"multifocal angiostatic therapy\" (MAT). This approach involves combining seve"
+    },
+    {
+      "qid": "PLAIN-143",
+      "query": "Are Dental X-Rays Safe?",
+      "vstash_score": 2,
+      "vstash_answer": "Based on the provided context, dental x-rays are not considered entirely safe due to the risk of increased intra-cranial meningioma associated with exposure to certain types of dental x-rays (specific",
+      "chroma_score": 3,
+      "chroma_answer": "Based on the provided context, dental X-rays are not considered entirely safe due to the risks associated with ionizing radiation. The text highlights the following points regarding safety and risk:\n\n"
+    },
+    {
+      "qid": "PLAIN-153",
+      "query": "How Should I Take Probiotics?",
+      "vstash_score": 3,
+      "vstash_answer": "Based on the provided context, here is how you should take probiotics:\n\n*   **Timing:** Non-enteric coated bacterial probiotic products should ideally be taken **with a meal** or **30 minutes before a",
+      "chroma_score": 3,
+      "chroma_answer": "Based on the provided context, here are the guidelines for taking probiotics:\n\n*   **Timing:** Non-enteric coated bacterial probiotic products should ideally be taken **with a meal** or **30 minutes b"
+    },
+    {
+      "qid": "PLAIN-165",
+      "query": "Breast Cancer & Alcohol: How Much is Safe?",
+      "vstash_score": 3,
+      "vstash_answer": "Based on the provided contexts, there is **no completely safe amount** of alcohol consumption regarding breast cancer risk; even low levels increase risk slightly. However, specific thresholds are ass",
+      "chroma_score": 2,
+      "chroma_answer": "Based on the provided contexts, there is **no completely safe amount** of alcohol consumption regarding breast cancer risk; even light drinking increases risk.\n\n*   **Risk Increase:** A significant in"
+    },
+    {
+      "qid": "PLAIN-175",
+      "query": "Diet and Cellulite",
+      "vstash_score": 3,
+      "vstash_answer": "Based on Context 1, adiponectin expression in subcutaneous adipose tissue (SAT) is significantly reduced in areas affected by cellulite compared to unaffected areas. This reduction may contribute to a",
+      "chroma_score": 0,
+      "chroma_answer": "Based on Context 1, adiponectin expression in subcutaneous adipose tissue (SAT) is significantly reduced in areas affected by cellulite compared to unaffected areas. This reduction may contribute to a"
+    },
+    {
+      "qid": "PLAIN-186",
+      "query": "Best Treatment for Constipation",
+      "vstash_score": 3,
+      "vstash_answer": "Based on the provided contexts, there is no single \"best\" treatment for all cases of constipation; the most effective option depends on the patient population and severity:\n\n*   **Mild to Moderate Con",
+      "chroma_score": 3,
+      "chroma_answer": "Based on the provided contexts, there is no single \"best\" treatment for all cases of constipation; the most effective option depends on the patient's specific condition (e.g., mild to moderate vs. chr"
+    },
+    {
+      "qid": "PLAIN-196",
+      "query": "Should We Avoid Titanium Dioxide?",
+      "vstash_score": 3,
+      "vstash_answer": "Based on the provided context, there is no definitive recommendation to completely avoid titanium dioxide (TiO2), but rather a nuanced view regarding its safety and exposure:\n\n*   **Potential Health R",
+      "chroma_score": 3,
+      "chroma_answer": "Based on the provided context, there is no definitive recommendation to completely avoid titanium dioxide (TiO2), but rather a nuanced assessment of its risks and benefits depending on the specific fo"
+    },
+    {
+      "qid": "PLAIN-207",
+      "query": "Avoiding Cooked Meat Carcinogens",
+      "vstash_score": 3,
+      "vstash_answer": "Based on the provided contexts, avoiding cooked meat carcinogens involves the following specific actions and considerations:\n\n*   **Modify Cooking Methods:** Avoid cooking meats at high temperatures u",
+      "chroma_score": 3,
+      "chroma_answer": "Based on the provided contexts, avoiding cooked meat carcinogens involves the following specific actions:\n\n*   **Avoid High-Temperature Cooking Methods:** Limit consumption of meats cooked by grilling"
+    },
+    {
+      "qid": "PLAIN-217",
+      "query": "Plant-Based Diets for Psoriasis",
+      "vstash_score": 0,
+      "vstash_answer": "insufficient context",
+      "chroma_score": 0,
+      "chroma_answer": "insufficient context"
+    },
+    {
+      "qid": "PLAIN-227",
+      "query": "Increasing Muscle Strength with Fenugreek",
+      "vstash_score": 0,
+      "vstash_answer": "insufficient context",
+      "chroma_score": 1,
+      "chroma_answer": "insufficient context"
+    },
+    {
+      "qid": "PLAIN-238",
+      "query": "How Chemically Contaminated Are We?",
+      "vstash_score": 3,
+      "vstash_answer": "Based on the provided contexts, we are chemically contaminated through widespread exposure to persistent organic pollutants (POPs) and other toxicants found in everyday foodstuffs, including milk, fis",
+      "chroma_score": 3,
+      "chroma_answer": "Based on the provided contexts, we are chemically contaminated by a wide range of persistent, bioaccumulative, and toxic (PBT) pollutants found in food sources such as milk, seafood, and fish, as well"
+    },
+    {
+      "qid": "PLAIN-248",
+      "query": "Treating an Enlarged Prostate With Diet",
+      "vstash_score": 3,
+      "vstash_answer": "Based on the provided context, treating an enlarged prostate (Benign Prostatic Hyperplasia or BPH) with diet involves adopting a **low-fat, high-fiber diet** combined with **daily exercise**.\n\nKey fin",
+      "chroma_score": 3,
+      "chroma_answer": "Based on the provided contexts, diet can play a beneficial role in the development and management of an enlarged prostate (Benign Prostatic Hyperplasia or BPH). Key findings include:\n\n*   **Lifestyle "
+    },
+    {
+      "qid": "PLAIN-259",
+      "query": "Optimal Phytosterol Dose and Source",
+      "vstash_score": 3,
+      "vstash_answer": "Based on the provided context, there is **insufficient context** to determine an optimal phytosterol dose or source for general health recommendations.\n\nThe text provides the following specific data p",
+      "chroma_score": 3,
+      "chroma_answer": "Based on the provided context, there is **insufficient context** to determine an \"optimal\" phytosterol dose or source for a specific health outcome, as the studies focus on different effects and range"
+    },
+    {
+      "qid": "PLAIN-270",
+      "query": "Is Caffeinated Tea Really Dehydrating?",
+      "vstash_score": 3,
+      "vstash_answer": "Based on the provided context, **no**, caffeinated tea is not dehydrating.\n\nContext 2 explicitly states that black tea (which contains caffeine) offers similar hydrating properties to water. A randomi",
+      "chroma_score": 3,
+      "chroma_answer": "Based on the provided context, **no**, caffeinated tea is not significantly dehydrating.\n\nAccording to Context 1, a randomised controlled trial involving healthy resting males found that black tea (co"
+    },
+    {
+      "qid": "PLAIN-280",
+      "query": "Mercury Testing Recommended Before Pregnancy",
+      "vstash_score": 3,
+      "vstash_answer": "Based on Context 2, analysis of hair mercury is warranted before pregnancy for selected groups of women who consume more than 12 ounces of fish per week. This testing allows for dietary modification t",
+      "chroma_score": 3,
+      "chroma_answer": "Based on Context 2, analysis of hair mercury is warranted before pregnancy for selected groups of women who consume more than 12 ounces of fish per week. This testing is recommended because general re"
+    },
+    {
+      "qid": "PLAIN-291",
+      "query": "Stool Size and Breast Cancer Risk",
+      "vstash_score": 3,
+      "vstash_answer": "Based on the provided contexts, there is **insufficient context** to determine the relationship between stool size (fecal weight) and breast cancer risk.\n\nThe provided texts establish a clear link bet",
+      "chroma_score": 3,
+      "chroma_answer": "Based on the provided contexts, there is **insufficient context** to determine the relationship between stool size (fecal weight) and breast cancer risk.\n\nThe provided texts discuss:\n*   **Contexts 1 "
+    },
+    {
+      "qid": "PLAIN-307",
+      "query": "Vitamin D: Shedding some light on the new recommendations",
+      "vstash_score": 2,
+      "vstash_answer": "Based on the provided contexts, there is **insufficient context** to answer the specific question regarding \"new recommendations\" because none of the texts explicitly describe a set of *new* recommend",
+      "chroma_score": 3,
+      "chroma_answer": "Based on the provided contexts, there is **insufficient context** to answer a question titled \"Vitamin D: Shedding some light on the new recommendations\" because no specific text or article with that "
+    },
+    {
+      "qid": "PLAIN-320",
+      "query": "Breast Cancer and Diet",
+      "vstash_score": 3,
+      "vstash_answer": "Based on the provided contexts, here is a summary of the relationship between breast cancer and diet:\n\n*   **Risk Factors:** Total energy intake and alcohol consumption are positively associated with ",
+      "chroma_score": 3,
+      "chroma_answer": "Based on the provided contexts, here is a summary of the relationship between breast cancer and diet:\n\n**Risk Factors and Protective Associations**\n*   **Postmenopausal Disease:** Obesity and adult we"
+    }
+  ],
+  "chroma_mean_score": 2.367,
+  "vstash_wins": 5,
+  "chroma_wins": 5,
+  "ties": 20
+}

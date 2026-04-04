@@ -1,0 +1,254 @@
+{
+  "experiment": "answer_relevance",
+  "dataset": "scifact",
+  "queries": 30,
+  "top_k": 5,
+  "timestamp": "2026-04-04T13:36:14+0200",
+  "vstash_mean_score": 2.6,
+  "results": [
+    {
+      "qid": "1",
+      "query": "0-dimensional biomaterials show inductive properties.",
+      "vstash_score": 3,
+      "vstash_answer": "Based on the provided context, there is **insufficient context** to confirm that \"0-dimensional biomaterials\" specifically show inductive properties.\n\nWhile Context 1 discusses graphene (G) and graphe",
+      "chroma_score": 2,
+      "chroma_answer": "Based on the provided context, there is **insufficient context** to confirm that \"0-dimensional biomaterials\" specifically show inductive properties.\n\nWhile Context 4 discusses graphene (G) and graphe"
+    },
+    {
+      "qid": "3",
+      "query": "1,000 genomes project enables mapping of genetic sequence variation consisting o",
+      "vstash_score": 2,
+      "vstash_answer": "insufficient context",
+      "chroma_score": 1,
+      "chroma_answer": "insufficient context"
+    },
+    {
+      "qid": "5",
+      "query": "1/2000 in UK have abnormal PrP positivity.",
+      "vstash_score": 3,
+      "vstash_answer": "Based on Context 1, the study found an overall prevalence of abnormal prion protein (PrP) of **493 per million population** (which is equivalent to approximately **1 in 2,028**) in archived appendix s",
+      "chroma_score": 3,
+      "chroma_answer": "Based on Context 2, the study found an overall prevalence of abnormal prion protein (PrP) of **493 per million population** (which is equivalent to approximately **493 in 1,000,000** or roughly **1 in"
+    },
+    {
+      "qid": "13",
+      "query": "5% of perinatal mortality is due to low birth weight.",
+      "vstash_score": 2,
+      "vstash_answer": "insufficient context",
+      "chroma_score": 2,
+      "chroma_answer": "insufficient context"
+    },
+    {
+      "qid": "36",
+      "query": "A deficiency of vitamin B12 increases blood levels of homocysteine.",
+      "vstash_score": 3,
+      "vstash_answer": "Based on Context 4, which mentions adjusting for \"B12 deficiency\" when calculating hazard ratios for vascular events, and Context 2, which notes that the study participants had high homocysteine level",
+      "chroma_score": 3,
+      "chroma_answer": "Based on Context 4, which mentions adjusting for \"B12 deficiency\" when calculating hazard ratios for vascular events, and Context 2, which notes that the study participants had high homocysteine level"
+    },
+    {
+      "qid": "42",
+      "query": "A high microerythrocyte count raises vulnerability to severe anemia in homozygou",
+      "vstash_score": 3,
+      "vstash_answer": "Based on Context 1, the statement is **false**. The context states that an increased erythrocyte count (microerythrocyte count) in homozygous \u03b1+-thalassaemia contributes to **protection** against seve",
+      "chroma_score": 3,
+      "chroma_answer": "Based on Context 1, the statement is **incorrect**. The text states that an increased erythrocyte count (microerythrocyte count) in individuals homozygous for alpha(+)-thalassaemia contributes to **pr"
+    },
+    {
+      "qid": "48",
+      "query": "A total of 1,000 people in the UK are asymptomatic carriers of vCJD infection.",
+      "vstash_score": 2,
+      "vstash_answer": "Based on the provided context, there is **insufficient context** to confirm that exactly 1,000 people in the UK are asymptomatic carriers of vCJD infection.\n\nContext 2 provides a prevalence estimate b",
+      "chroma_score": 3,
+      "chroma_answer": "Based on the provided context, there is **insufficient context** to determine if exactly 1,000 people in the UK are asymptomatic carriers of vCJD infection.\n\nContext 5 provides prevalence data from a "
+    },
+    {
+      "qid": "49",
+      "query": "ADAR1 binds to Dicer to cleave pre-miRNA.",
+      "vstash_score": 3,
+      "vstash_answer": "Based on Context 1, ADAR1 forms a complex with Dicer through direct protein-protein interaction, and this complex increases the maximum rate (Vmax) of pre-microRNA (miRNA) cleavage by Dicer. Therefore",
+      "chroma_score": 3,
+      "chroma_answer": "Based on Context 1, ADAR1 forms a complex with Dicer through direct protein-protein interaction, which increases the maximum rate (Vmax) of pre-microRNA cleavage by Dicer and facilitates loading of mi"
+    },
+    {
+      "qid": "50",
+      "query": "AIRE is expressed in some skin tumors.",
+      "vstash_score": 3,
+      "vstash_answer": "Based on Context 1, **Aire** is inducibly expressed in human and mouse tumor keratinocytes (specifically those expressing keratin 17) and is required for the timely onset of Gli2-induced skin tumorige",
+      "chroma_score": 3,
+      "chroma_answer": "Based on Context 1, **Aire** (autoimmune regulator) is inducibly expressed in human and mouse tumor keratinocytes, specifically in a manner dependent on the intermediate filament protein **keratin 17 "
+    },
+    {
+      "qid": "51",
+      "query": "ALDH1 expression is associated with better breast cancer outcomes.",
+      "vstash_score": 3,
+      "vstash_answer": "Based on Context 1, the statement is **false**. The text explicitly states that \"expression of ALDH1 detected by immunostaining correlated with poor prognosis\" and that ALDH1 is a \"predictor of poor c",
+      "chroma_score": 3,
+      "chroma_answer": "Based on Context 1, the statement is **false**. The text explicitly states that \"expression of ALDH1 detected by immunostaining correlated with poor prognosis\" and that ALDH1 is a \"predictor of poor c"
+    },
+    {
+      "qid": "53",
+      "query": "ALDH1 expression is associated with poorer prognosis in breast cancer.",
+      "vstash_score": 3,
+      "vstash_answer": "Based on Context 1, **yes**, the expression of ALDH1 detected by immunostaining correlated with poor prognosis in a series of 577 breast carcinomas. Additionally, ALDH1 is identified as a marker of ma",
+      "chroma_score": 3,
+      "chroma_answer": "Based on Context 1, **yes**, the expression of ALDH1 detected by immunostaining correlated with poor prognosis in a series of 577 breast carcinomas. Additionally, ALDH1 is identified as a marker of no"
+    },
+    {
+      "qid": "54",
+      "query": "AMP-activated protein kinase (AMPK) activation increases inflammation-related fi",
+      "vstash_score": 3,
+      "vstash_answer": "Based on the provided context, this statement is **false**.\n\nContext 1 states that AMPK activity is lower in fibrotic regions and that pharmacological activation of AMPK (via metformin) \"reverses esta",
+      "chroma_score": 3,
+      "chroma_answer": "Based on the provided context, this statement is **false**.\n\nContext 1 explicitly states that \"Pharmacological activation of AMPK... display lower fibrotic activity\" and that metformin (an AMPK activa"
+    },
+    {
+      "qid": "56",
+      "query": "APOE4 expression in iPSC-derived neurons increases AlphaBeta production and tau ",
+      "vstash_score": 3,
+      "vstash_answer": "Based on Context 1, the statement is **partially correct but requires a specific distinction regarding Amyloid-\u03b2 (A\u03b2) production**:\n\n*   **Tau Phosphorylation:** Correct. The context states that ApoE4",
+      "chroma_score": 3,
+      "chroma_answer": "Based on Context 1, the statement is **partially correct but contains an error regarding Amyloid-\u03b2 (A\u03b2) production**.\n\n*   **Correct:** APOE4 expression in human iPSC-derived neurons does increase **t"
+    },
+    {
+      "qid": "57",
+      "query": "APOE4 expression in iPSC-derived neurons increases AlphaBeta production and tau ",
+      "vstash_score": 3,
+      "vstash_answer": "Based on Context 1, the statement is **incorrect** regarding the timing of GABA neuron degeneration. The context states that ApoE4-expressing neurons \"displayed GABAergic neuron degeneration,\" whereas",
+      "chroma_score": 3,
+      "chroma_answer": "Based on the provided context, the statement is **incorrect** regarding the effect on GABA neuron degeneration.\n\nAccording to Context 1, ApoE4-expressing neurons displayed **GABAergic neuron degenerat"
+    },
+    {
+      "qid": "70",
+      "query": "Activation of PPM1D suppresses p53 function.",
+      "vstash_score": 2,
+      "vstash_answer": "Based on the provided context, **yes**, activation (or enhanced suppression) of p53 by PPM1D is a documented mechanism.\n\n*   **Context 1** states that *PPM1D* mutations result in \"enhanced suppression",
+      "chroma_score": 0,
+      "chroma_answer": "Based on the provided context, **yes**, activation (or enhanced suppression) of p53 by PPM1D results in the suppression of p53 function.\n\n*   **Context 1** states that functional studies demonstrate m"
+    },
+    {
+      "qid": "72",
+      "query": "Activator-inhibitor pairs are provided dorsally by Admpchordin.",
+      "vstash_score": 3,
+      "vstash_answer": "Based on Context 1, **ADMP** is expressed at low BMP levels in the Spemann organizer (dorsal side) and has BMP-like activity; it signals via the ALK-2 receptor but is unable to signal dorsally because",
+      "chroma_score": 3,
+      "chroma_answer": "Based on Context 1, **ADMP** is described as having BMP-like activity and signaling via the ALK-2 receptor, while it is unable to signal dorsally because of inhibition by **Chordin**. Therefore, ADMP "
+    },
+    {
+      "qid": "75",
+      "query": "Active H. pylori urease has a polymeric structure that compromises two subunits,",
+      "vstash_score": 0,
+      "vstash_answer": "Based on the provided context, there is **insufficient context** to confirm or deny whether active *H. pylori* urease has a polymeric structure comprising two subunits, UreA and UreB.\n\nWhile Context 3",
+      "chroma_score": 0,
+      "chroma_answer": "Based on the provided context, there is **insufficient context** to confirm or deny whether active *H. pylori* urease has a polymeric structure comprising two subunits, UreA and UreB.\n\nWhile Context 4"
+    },
+    {
+      "qid": "94",
+      "query": "Albendazole is used to treat lymphatic filariasis.",
+      "vstash_score": 2,
+      "vstash_answer": "insufficient context",
+      "chroma_score": 2,
+      "chroma_answer": "insufficient context"
+    },
+    {
+      "qid": "99",
+      "query": "Alizarin forms hydrogen bonds with residues involved in PGAM1 substrate binding.",
+      "vstash_score": 1,
+      "vstash_answer": "insufficient context",
+      "chroma_score": 1,
+      "chroma_answer": "insufficient context"
+    },
+    {
+      "qid": "100",
+      "query": "All hematopoietic stem cells segregate their chromosomes randomly.",
+      "vstash_score": 3,
+      "vstash_answer": "Based on Context 1, the statement is **true** specifically for **haematopoietic stem cells (HSCs)**. The text states that sequential administration of nucleoside analogues indicated that \"all HSCs seg",
+      "chroma_score": 3,
+      "chroma_answer": "Based on Context 3, the statement is true for **all hematopoietic stem cells (HSCs)** in the systems tested. The text states that \"all HSCs segregate their chromosomes randomly,\" a conclusion drawn fr"
+    },
+    {
+      "qid": "113",
+      "query": "Angiotensin converting enzyme inhibitors are associated with increased risk for ",
+      "vstash_score": 3,
+      "vstash_answer": "Based on Context 1, ACE inhibitor therapy can be associated with a syndrome of \"functional renal insufficiency\" (also referred to as acute renal failure). This condition most commonly develops shortly",
+      "chroma_score": 3,
+      "chroma_answer": "Yes, based on Context 1, angiotensin converting enzyme (ACE) inhibitor therapy can be associated with a syndrome of \"functional renal insufficiency\" and/or hyperkalemia. This form of acute renal failu"
+    },
+    {
+      "qid": "115",
+      "query": "Anthrax spores can be disposed of easily after they are dispersed.",
+      "vstash_score": 3,
+      "vstash_answer": "Based on Context 1, the statement is incorrect. The text indicates that *Bacillus anthracis* spores \"reaerosolized under common office activities,\" which has \"important implications for appropriate re",
+      "chroma_score": 3,
+      "chroma_answer": "Based on Context 1, the statement is incorrect. The text indicates that *Bacillus anthracis* spores \"reaerosolized under common office activities,\" and these findings have \"important implications for "
+    },
+    {
+      "qid": "118",
+      "query": "Antibiotic induced alterations in the gut microbiome reduce resistance against C",
+      "vstash_score": 3,
+      "vstash_answer": "Based on Context 1 and Context 2, antibiotic-induced alterations in the gut microbiome do reduce resistance against *Clostridium difficile*.\n\n*   **Context 1** states that antibiotics have \"significan",
+      "chroma_score": 3,
+      "chroma_answer": "Based on Context 1 and Context 2, antibiotic-induced shifts in the mouse gut microbiome significantly reduce colonization resistance against *Clostridium difficile*. These alterations decrease levels "
+    },
+    {
+      "qid": "124",
+      "query": "Antiretroviral therapy reduces rates of tuberculosis across a broad range of CD4",
+      "vstash_score": 3,
+      "vstash_answer": "Based on Context 1, antiretroviral therapy is strongly associated with a reduction in the incidence of tuberculosis across all baseline CD4 count categories (less than 200 cells/\u00b5l, 200 to 350 cells/\u00b5",
+      "chroma_score": 3,
+      "chroma_answer": "Based on Context 1, antiretroviral therapy is strongly associated with a reduction in the incidence of tuberculosis across all baseline CD4 count categories (less than 200 cells/\u00b5l, 200 to 350 cells/\u00b5"
+    },
+    {
+      "qid": "127",
+      "query": "Arginine 90 in p150n is important for interaction with EB1.",
+      "vstash_score": 1,
+      "vstash_answer": "insufficient context",
+      "chroma_score": 1,
+      "chroma_answer": "insufficient context"
+    },
+    {
+      "qid": "128",
+      "query": "Arterioles have a larger lumen diameter than venules.",
+      "vstash_score": 3,
+      "vstash_answer": "Based on the provided context, there is **insufficient context** to answer whether arterioles have a larger lumen diameter than venules.\n\nThe provided texts mention specific diameters for certain vess",
+      "chroma_score": 0,
+      "chroma_answer": "insufficient context"
+    },
+    {
+      "qid": "129",
+      "query": "Articles published in open access format are less likely to be cited than tradit",
+      "vstash_score": 3,
+      "vstash_answer": "Based on Context 1, this statement is **false**. The article by Gunther Eysenbach published in PLoS Biology provides robust evidence that open-access articles are **more** immediately recognized and c",
+      "chroma_score": 3,
+      "chroma_answer": "Based on Context 1, this statement is **false**. The text states that \"open-access articles (OA articles) are more immediately recognized and cited than non-OA articles.\" Specifically, the study found"
+    },
+    {
+      "qid": "130",
+      "query": "Articles published in open access format are more likely to be cited than tradit",
+      "vstash_score": 3,
+      "vstash_answer": "Based on Context 1, articles published in open access (OA) format are indeed more likely to be cited than non-OA (traditional subscription-based) articles within the same journal during the immediate ",
+      "chroma_score": 3,
+      "chroma_answer": "Based on Context 1, articles published in open-access (OA) format are indeed more likely to be cited than non-OA articles from the same journal. Specifically, a study by Gunther Eysenbach published in"
+    },
+    {
+      "qid": "132",
+      "query": "Aspirin inhibits the production of PGE2.",
+      "vstash_score": 3,
+      "vstash_answer": "Based on Context 1, aspirin therapy inhibits prostaglandin biosynthesis. Therefore, the statement is **true**.",
+      "chroma_score": 3,
+      "chroma_answer": "Based on Context 1, aspirin therapy inhibits prostaglandin biosynthesis without directly acting on lipoxygenases. Therefore, the statement is **true**."
+    },
+    {
+      "qid": "133",
+      "query": "Assembly of invadopodia is triggered by focal generation of phosphatidylinositol",
+      "vstash_score": 3,
+      "vstash_answer": "Based on Context 1, the statement is **supported**. The text explicitly states that \"Src-expression stimulated podosome formation at focal adhesions... after PtdIns(3,4)P2 accumulation\" and that the r",
+      "chroma_score": 3,
+      "chroma_answer": "Based on Context 1, the statement is **supported**. The text states that \"Src-expression stimulated podosome formation at focal adhesions... after PtdIns(3,4)P2 accumulation\" and that these structures"
+    }
+  ],
+  "chroma_mean_score": 2.4,
+  "vstash_wins": 4,
+  "chroma_wins": 1,
+  "ties": 25
+}
