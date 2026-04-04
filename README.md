@@ -48,6 +48,11 @@ Evaluated on the [BEIR benchmark](https://github.com/beir-cellar/beir) — the s
 
 **Zero cloud required for search. Inference is optional.**
 
+### What's new in v0.17
+
+- **Adaptive RRF** — IDF-based weight adjustment per query. Rare terms boost keyword search, common terms boost vector search. Long queries relax distance cutoff. Improves all 5 BEIR datasets.
+- **608 tests** across 27 test modules.
+
 ### What's new in v0.16
 
 - **Local-first LLM auto-detect** — New default backend `"local"` probes for Ollama, LM Studio, or any OpenAI-compatible server. Zero config needed — just start a local server and `vstash ask` works.
