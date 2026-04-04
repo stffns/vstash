@@ -50,8 +50,9 @@ Evaluated on the [BEIR benchmark](https://github.com/beir-cellar/beir) — the s
 
 ### What's new in v0.17
 
+- **Dynamic chunk_size** — `Memory(chunk_size=2048)` or `vstash add --chunk-size 2048`. Per-document override without modifying config. Validation: overlap < chunk_size.
 - **Adaptive RRF** — IDF-based weight adjustment per query. Rare terms boost keyword search, common terms boost vector search. Long queries relax distance cutoff. Improves all 5 BEIR datasets.
-- **608 tests** across 27 test modules.
+- **612 tests** across 27 test modules.
 
 ### What's new in v0.16
 
