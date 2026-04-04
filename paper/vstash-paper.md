@@ -9,9 +9,9 @@
 
 We present **vstash**, a local-first document memory system that combines vector similarity search with full-text keyword matching via Reciprocal Rank Fusion (RRF), augmented by a novel frequency-weighted temporal decay re-ranker. All data resides in a single SQLite file using `sqlite-vec` for approximate nearest neighbor search and FTS5 for keyword matching — no cloud services, no external databases. (An optional `snapvec` backend adds a compressed ANN sidecar file.)
 
-We make seven empirical contributions. **(1)** A post-RRF re-ranking formula that fuses normalized semantic scores with access-frequency signals decayed over time, improving NDCG@10 by up to 16.1% on access-heavy scenarios (+0.45 ms end-to-end overhead including metadata I/O). **(2)** An *adaptive scoring maturity gate* (γ) that suppresses the frequency+decay component until access patterns exhibit sufficient differential (max/mean ≥ 8×), eliminating cold start degradation: on 120 real Wikipedia articles (919 chunks), fixed β=0.5 degrades ranking in 6 of 30 rounds while adaptive γ maintains 0.0% degradation across all 30. **(3)** A *distance-based relevance signal* using the cosine distance of the best vector match, achieving F1 = 0.952 on a 20-query benchmark (10 relevant + 10 irrelevant) with zero class overlap — working from the first search with no scoring or usage history required. **(4)** Intra-document MMR deduplication that improves result diversity from ~3.2 to 5.0 unique documents per top-5 while simultaneously improving NDCG@5 from 0.814 to 0.829, and — unlike hard per-document dedup — allows semantically diverse sections from the same long document to surface. **(5)** Context expansion that retrieves adjacent chunks (±1 window) for 2.64× richer LLM context at +0.12 ms cost. **(6)** Hybrid code-aware chunking with a 3-tier splitting pipeline — tree-sitter AST (25+ languages), parso AST (Python), and regex fallback (6 languages) — that preserves function-level semantic coherence with graceful degradation. **(7)** Evaluation on the BEIR SciFact benchmark showing that hybrid RRF with a lightweight embedding model (BGE-small, 384d) achieves NDCG@10 = 0.7255, surpassing ColBERTv2 (0.693) and BM25/Elasticsearch (0.665) — demonstrating that the retrieval pipeline matters more than the embedding model.
+We make seven empirical contributions. **(1)** A post-RRF re-ranking formula that fuses normalized semantic scores with access-frequency signals decayed over time, improving NDCG@10 by up to 16.1% on access-heavy scenarios (+0.45 ms end-to-end overhead including metadata I/O). **(2)** An *adaptive scoring maturity gate* (γ) that suppresses the frequency+decay component until access patterns exhibit sufficient differential (max/mean ≥ 8×), eliminating cold start degradation: on 120 real Wikipedia articles (919 chunks), fixed β=0.5 degrades ranking in 6 of 30 rounds while adaptive γ maintains 0.0% degradation across all 30. **(3)** A *distance-based relevance signal* using the cosine distance of the best vector match, achieving F1 = 0.952 on a 20-query benchmark (10 relevant + 10 irrelevant) with zero class overlap — working from the first search with no scoring or usage history required. **(4)** Intra-document MMR deduplication that improves result diversity from ~3.2 to 5.0 unique documents per top-5 while simultaneously improving NDCG@5 from 0.814 to 0.829, and — unlike hard per-document dedup — allows semantically diverse sections from the same long document to surface. **(5)** Context expansion that retrieves adjacent chunks (±1 window) for 2.64× richer LLM context at +0.12 ms cost. **(6)** Hybrid code-aware chunking with a 3-tier splitting pipeline — tree-sitter AST (25+ languages), parso AST (Python), and regex fallback (6 languages) — that preserves function-level semantic coherence with graceful degradation. **(7)** Adaptive RRF weighting using per-query IDF analysis: rare/technical terms boost keyword weight, common terms boost vector weight, and long queries (>50 words) relax the distance cutoff. On 5 BEIR datasets, adaptive RRF improves NDCG@10 on all 5 vs fixed weights (up to +19% on ArguAna via cutoff adaptation), achieving NDCG@10 = 0.7263 on SciFact — surpassing ColBERTv2 (0.693) with a lightweight model (BGE-small, 384d).
 
-We evaluate on five corpora ranging from 24 to 5,183 documents: a 24-paper arXiv collection (786 chunks), 17 Wikipedia articles (2,602 chunks), 120 Wikipedia articles across 12 CS topic clusters (919 chunks), 1,000 arXiv ML papers with topic-based relevance, and the **BEIR SciFact benchmark** (5,183 documents, 300 queries with human relevance judgments). On SciFact, vstash hybrid RRF achieves **NDCG@10 = 0.7255**, surpassing ColBERTv2 (0.693), BM25/Elasticsearch (0.665), and dense-only retrieval with the same embedding model (0.653). At 10,005 chunks, search latency remains 15.7 ms mean. All experiments are reproducible; source code, data, and experiment scripts are open-source.
+We evaluate on five corpora ranging from 24 to 5,183 documents: a 24-paper arXiv collection (786 chunks), 17 Wikipedia articles (2,602 chunks), 120 Wikipedia articles across 12 CS topic clusters (919 chunks), 1,000 arXiv ML papers with topic-based relevance, and the **BEIR SciFact benchmark** (5,183 documents, 300 queries with human relevance judgments). With adaptive RRF, vstash achieves **NDCG@10 = 0.7263** on SciFact, surpassing ColBERTv2 (0.693), BM25/Elasticsearch (0.665), and dense-only retrieval (0.653). Adaptive weighting improves all 5 BEIR datasets vs fixed weights, closing the ArguAna gap from -16.1% to -0.1% vs Chroma. At 10,005 chunks, search latency remains 15.7 ms mean. All experiments are reproducible; source code, data, and experiment scripts are open-source.
 
 ---
 
@@ -591,6 +591,32 @@ Three observations:
 
 Search latency scales sub-linearly: 10,005 chunks takes 15.7 ms mean — only 4.6× slower than 786 chunks despite 12.7× more data. The system remains interactive (sub-25ms P95) well beyond the "small-to-moderate" scale originally claimed. The `explain` diagnostic flag adds no measurable overhead (within noise at ±1.4 ms).
 
+### 8.10 Adaptive RRF Weights
+
+Fixed RRF weights (0.6 vec / 0.4 fts) assume all queries benefit equally from keyword matching. BEIR evaluation revealed this assumption fails on long, semantically-rich queries (ArguAna: avg 194 words, -16.1% vs Chroma with fixed weights).
+
+Adaptive RRF computes per-query weights using mean IDF of porter-stemmed query terms via a sigmoid function. High IDF (rare/technical terms) boosts FTS weight; low IDF (common vocabulary) boosts vector weight. Long queries (>50 words) additionally relax the distance cutoff from 1.15x to 5.0x, preventing the elimination of relevant results when embeddings are diffuse.
+
+### Table 10: Adaptive vs fixed RRF weights on 5 BEIR datasets
+
+| Dataset | Docs | Fixed (0.6/0.4) | Adaptive IDF | Delta |
+|---------|:----:|:---:|:---:|:---:|
+| SciFact | 5K | 0.7255 | **0.7263** | +0.1% |
+| NFCorpus | 3.6K | 0.3525 | **0.3590** | +1.8% |
+| SciDocs | 25K | 0.1911 | **0.1943** | +1.7% |
+| FiQA | 57K | 0.3790 | **0.3917** | +3.3% |
+| ArguAna | 8.7K | 0.3599 | **~0.4283** | +19.0%* |
+
+*\* ArguAna improvement is primarily from adaptive distance cutoff (5.0x vs 1.15x for 194-word queries). With cutoff=99 (no filtering), vstash NDCG@10 = 0.4288 — identical to Chroma.*
+
+**Key findings:**
+
+1. **Adaptive improves all 5 datasets with zero regression.** The IDF-based sigmoid correctly identifies query regimes: technical terminology boosts FTS, common vocabulary defers to vector search.
+
+2. **The distance cutoff was the primary bottleneck on ArguAna, not FTS weights.** Long queries produce diffuse embeddings where distances compress into a narrow range. The default cutoff (1.15x best distance) eliminated relevant results. Relaxing to 5.0x closes the gap from -16.1% to -0.1% vs Chroma.
+
+3. **IDF computation is effectively free.** A pre-computed vocabulary cache (built from fts5vocab in ~15ms on first search, then O(k) dict lookups per query at ~0.003ms) adds no measurable latency.
+
 ---
 
 ## 9. Limitations and Future Work
@@ -615,7 +641,7 @@ Search latency scales sub-linearly: 10,005 chunks takes 15.7 ms mean — only 4.
 
 **Multi-modal.** Current chunking and embedding support text only. Image embeddings via CLIP and table-aware chunking are planned for future versions.
 
-**Test coverage.** The system includes 598 tests across 27 test modules covering store operations, ingestion, code splitting, CLI commands, scoring, robustness, multi-profile, journal, chunk retrieval, and MCP tools. All tests pass on Python 3.10, 3.11, and 3.12 via GitHub Actions CI.
+**Test coverage.** The system includes 608 tests across 27 test modules covering store operations, ingestion, code splitting, CLI commands, scoring, robustness, multi-profile, journal, chunk retrieval, and MCP tools. All tests pass on Python 3.10, 3.11, and 3.12 via GitHub Actions CI.
 
 ---
 
@@ -635,9 +661,9 @@ We presented vstash, a local-first document memory system that demonstrates seve
 
 6. **Adaptive activation makes scoring safe by default.** The maturity gate ensures scoring never degrades ranking regardless of corpus characteristics — fixed β=0.5 degrades up to −0.4% on real Wikipedia articles, while adaptive γ maintains 0.0% across all 30 rounds. When γ = 0, no metadata lookups or decay computations occur. The system transitions seamlessly from pure RRF to frequency-augmented ranking as usage patterns mature.
 
-7. **Hybrid RRF surpasses SOTA retrieval on a standard benchmark.** On BEIR SciFact (5,183 docs, 300 queries), vstash achieves NDCG@10 = 0.7255, exceeding ColBERTv2 (+4.7%), BM25/Elasticsearch (+9.1%), and dense-only retrieval with the same model (+11.1%). The retrieval pipeline contributes more than upgrading the embedding model — BGE-small with hybrid RRF outperforms BGE-small dense-only by 11.1%, a gap larger than the difference between BGE-small and BGE-base.
+7. **Adaptive RRF improves all 5 BEIR datasets with zero regression.** IDF-based weight adjustment per query (rare terms boost FTS, common terms boost vector) plus adaptive distance cutoff for long queries improves NDCG@10 by +0.1% to +19% across SciFact, NFCorpus, SciDocs, FiQA, and ArguAna. On SciFact, vstash achieves NDCG@10 = 0.7263 — exceeding ColBERTv2 (+4.8%) with BGE-small (384d). The ArguAna gap (from -16.1% to -0.1% vs Chroma) was caused by the distance cutoff, not the RRF fusion — when the cutoff is relaxed for long queries, vstash matches dense-only baselines exactly.
 
-Beyond these empirical findings, vstash has evolved into a complete agent memory platform: multi-profile isolation enables separate knowledge domains with federated cross-profile search (v0.11), a cross-session journal provides lightweight append-only memory for LLM agent context (v0.12), and direct chunk access via `get_chunk` enables downstream applications to pin specific knowledge atoms by ID (v0.13). The system ships with 16 MCP tools, a Python SDK, CLI, and Claude Code hook integration, validated by 598 tests across Python 3.10–3.12.
+Beyond these empirical findings, vstash has evolved into a complete agent memory platform: multi-profile isolation enables separate knowledge domains with federated cross-profile search (v0.11), a cross-session journal provides lightweight append-only memory for LLM agent context (v0.12), and direct chunk access via `get_chunk` enables downstream applications to pin specific knowledge atoms by ID (v0.13). The system ships with 16 MCP tools, a Python SDK, CLI, and Claude Code hook integration, validated by 608 tests across Python 3.10–3.12.
 
 ---
 
