@@ -119,6 +119,22 @@ code_aware = true
 
 When `code_aware` is enabled, source code files are split at top-level function and class definitions using a 3-tier backend: tree-sitter AST (25+ languages, requires `pip install vstash[treesitter]`) → parso AST (Python, included by default) → regex (Python, JS/TS, Go, Rust, Java). Non-code files use semantic chunking (Markdown headers → paragraphs → fixed-window fallback).
 
+**Per-document override:** Chunk size can be overridden per document via the SDK or CLI without changing the config file:
+
+```python
+# SDK — larger chunks for medical/legal documents
+mem = Memory(project="medical", chunk_size=2048, chunk_overlap=256)
+mem.add("protocol.pdf")                        # uses 2048
+mem.add("code.py", chunk_size=512)             # per-file override
+```
+
+```bash
+# CLI
+vstash add paper.pdf --chunk-size 2048 --chunk-overlap 256
+```
+
+Validation: `chunk_size` must be positive, `chunk_overlap` must be non-negative and less than `chunk_size`.
+
 ---
 
 ## `[scoring]`
