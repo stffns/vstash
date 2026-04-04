@@ -139,6 +139,9 @@ class VstashStore:
         self._thread_local.last_best_distance = 0.0
         self._conn = self._connect()
 
+        # --- Adaptive RRF cache ---
+        self._idf_cache: tuple[dict[str, float], int] | None = None
+
         # --- SnapVec backend (optional) ---
         self._snap: SnapIndex | None = None  # type: ignore[name-defined]
         self._vector_backend = vector_backend
@@ -564,6 +567,7 @@ class VstashStore:
                 for row in rows:
                     self._delete_by_doc_id(row[0])
                 self._conn.commit()
+                self._invalidate_idf_cache()
                 if self._snap_dirty:
                     self._save_snapvec()
             except Exception:
@@ -645,8 +649,8 @@ class VstashStore:
         query_embedding: list[float],
         query_text: str,
         top_k: int = 5,
-        vec_weight: float = 0.6,
-        fts_weight: float = 0.4,
+        vec_weight: float | None = None,
+        fts_weight: float | None = None,
         adaptive_rrf: bool = True,
         distance_cutoff: float = 1.15,
         collection: str | None = None,
@@ -685,10 +689,15 @@ class VstashStore:
             Ranked list of SearchResult ordered by descending score.
         """
         # Adaptive RRF: compute weights from query characteristics (IDF + length)
-        if adaptive_rrf:
+        # Skip if caller provided explicit weights
+        if adaptive_rrf and vec_weight is None and fts_weight is None:
             vec_weight, fts_weight, distance_cutoff = self._compute_adaptive_rrf_params(
                 query_text, default_cutoff=distance_cutoff
             )
+        if vec_weight is None:
+            vec_weight = 0.6
+        if fts_weight is None:
+            fts_weight = 0.4
 
         # Determine effective pool size — over-fetch when scoring is enabled
         effective_k = top_k
@@ -1515,20 +1524,21 @@ class VstashStore:
     def _stem_terms(self, words: list[str]) -> list[str]:
         """Stem words using the same FTS5 porter tokenizer as the index.
 
-        Uses an in-memory FTS5 table to ensure stemming is identical to
-        what fts5vocab reports.  ~0.02ms per call.
+        Uses a thread-local in-memory FTS5 table to ensure stemming is
+        identical to what fts5vocab reports.  ~0.02ms per call.  Thread-safe
+        because each thread gets its own connection.
         """
-        if not hasattr(self, "_stem_conn"):
+        conn = getattr(self._thread_local, "_stem_conn", None)
+        if conn is None:
             import sqlite3
 
-            self._stem_conn = sqlite3.connect(":memory:")
-            self._stem_conn.execute(
-                'CREATE VIRTUAL TABLE _stem USING fts5(x, tokenize="porter ascii")'
-            )
-            self._stem_conn.execute("CREATE VIRTUAL TABLE _stem_v USING fts5vocab(_stem, row)")
-        self._stem_conn.execute("DELETE FROM _stem")
-        self._stem_conn.execute("INSERT INTO _stem VALUES (?)", [" ".join(words)])
-        rows = self._stem_conn.execute("SELECT term FROM _stem_v").fetchall()
+            conn = sqlite3.connect(":memory:")
+            conn.execute('CREATE VIRTUAL TABLE _stem USING fts5(x, tokenize="porter ascii")')
+            conn.execute("CREATE VIRTUAL TABLE _stem_v USING fts5vocab(_stem, row)")
+            self._thread_local._stem_conn = conn
+        conn.execute("DELETE FROM _stem")
+        conn.execute("INSERT INTO _stem VALUES (?)", [" ".join(words)])
+        rows = conn.execute("SELECT term FROM _stem_v").fetchall()
         return [r[0] for r in rows]
 
     def _build_idf_cache(self) -> tuple[dict[str, float], int]:
@@ -1542,7 +1552,7 @@ class VstashStore:
         Returns:
             Tuple of (term_idf_dict, total_doc_count).
         """
-        if hasattr(self, "_idf_cache"):
+        if self._idf_cache is not None:
             return self._idf_cache
 
         total_docs = self._conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
@@ -1564,8 +1574,7 @@ class VstashStore:
 
     def _invalidate_idf_cache(self) -> None:
         """Clear the IDF cache after document changes."""
-        if hasattr(self, "_idf_cache"):
-            del self._idf_cache
+        self._idf_cache = None
 
     def _compute_adaptive_rrf_params(
         self, query_text: str, default_cutoff: float = 1.15
@@ -1593,8 +1602,8 @@ class VstashStore:
 
         idf_dict, total_docs = self._build_idf_cache()
 
-        if total_docs == 0:
-            return 0.6, 0.4, default_cutoff  # default
+        if total_docs < 2:
+            return 0.6, 0.4, default_cutoff  # default (IDF meaningless with <2 docs)
 
         # Stem query terms using the same porter tokenizer as FTS5
         # so lookups match the fts5vocab keys exactly
@@ -2027,6 +2036,7 @@ class VstashStore:
                         progress_cb(processed, total)
 
                 self._conn.commit()
+                self._invalidate_idf_cache()
             except Exception:
                 self._conn.rollback()
                 self._reload_snapvec()

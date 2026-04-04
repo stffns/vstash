@@ -881,7 +881,7 @@ class TestAdaptiveRRF:
         """IDF cache should be built on first call and reused."""
         # First call builds cache
         populated_store._compute_adaptive_rrf_params("test")
-        assert hasattr(populated_store, "_idf_cache")
+        assert populated_store._idf_cache is not None
 
         # Cache should contain terms
         idf_dict, total_docs = populated_store._idf_cache
@@ -897,7 +897,7 @@ class TestAdaptiveRRF:
         """Adding a document should invalidate the IDF cache."""
         dim = sample_store.embedding_dim
         sample_store._compute_adaptive_rrf_params("test")
-        assert hasattr(sample_store, "_idf_cache")
+        assert sample_store._idf_cache is not None
 
         sample_store.add_document(
             path="/test/new.md",
@@ -906,15 +906,16 @@ class TestAdaptiveRRF:
             embeddings=[[0.1] * dim],
             source_type="markdown",
         )
-        assert not hasattr(sample_store, "_idf_cache")
+        assert sample_store._idf_cache is None
 
     def test_idf_cache_invalidated_on_delete(self, populated_store: VstashStore) -> None:
         """Deleting a document should invalidate the IDF cache."""
+
         populated_store._compute_adaptive_rrf_params("test")
-        assert hasattr(populated_store, "_idf_cache")
+        assert populated_store._idf_cache is not None
 
         populated_store.delete_document("/test/python_guide.md")
-        assert not hasattr(populated_store, "_idf_cache")
+        assert populated_store._idf_cache is None
 
     def test_no_regression_vs_fixed(self, populated_store: VstashStore) -> None:
         """Adaptive should not degrade results vs fixed on the test corpus."""
