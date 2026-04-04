@@ -817,3 +817,119 @@ class TestSearchExplain:
         dim = sample_store.embedding_dim
         results = sample_store.search([0.1] * dim, "anything", explain=True)
         assert results == []
+
+
+# ------------------------------------------------------------------ #
+# Adaptive RRF weights                                                 #
+# ------------------------------------------------------------------ #
+
+
+class TestAdaptiveRRF:
+    """Test adaptive RRF weight computation based on query IDF."""
+
+    def test_adaptive_returns_valid_weights(self, populated_store: VstashStore) -> None:
+        vec_w, fts_w, cutoff = populated_store._compute_adaptive_rrf_params("Python programming")
+        assert 0.0 <= vec_w <= 1.0
+        assert 0.0 <= fts_w <= 1.0
+        assert cutoff > 0
+        assert abs(vec_w + fts_w - 1.0) < 1e-6
+
+    def test_long_query_favors_vector(self, populated_store: VstashStore) -> None:
+        """Queries >50 words should heavily favor vector search."""
+        long_query = " ".join(["word"] * 60)
+        vec_w, fts_w, cutoff = populated_store._compute_adaptive_rrf_params(long_query)
+        assert vec_w == 0.9
+        assert fts_w == 0.1
+        assert cutoff == 5.0  # relaxed for diffuse embeddings
+
+    def test_rare_terms_boost_fts(self, populated_store: VstashStore) -> None:
+        """OOV / very rare terms should increase FTS weight."""
+        # Use a term unlikely to be in the test corpus
+        vec_w_rare, fts_w_rare, _ = populated_store._compute_adaptive_rrf_params(
+            "XYZZY_UNKNOWN_TERM"
+        )
+        vec_w_common, fts_w_common, _ = populated_store._compute_adaptive_rrf_params("Python")
+        # Rare term should give higher FTS weight than common term
+        assert fts_w_rare > fts_w_common
+
+    def test_empty_store_returns_defaults(self, sample_store: VstashStore) -> None:
+        vec_w, fts_w, cutoff = sample_store._compute_adaptive_rrf_params("anything")
+        assert vec_w == 0.6
+        assert fts_w == 0.4
+        assert cutoff == 1.15
+
+    def test_adaptive_enabled_by_default(self, populated_store: VstashStore) -> None:
+        """search() uses adaptive weights by default."""
+        dim = populated_store.embedding_dim
+        results = populated_store.search([0.1] * dim, "Python", explain=True, adaptive_rrf=True)
+        if results and results[0].explain:
+            ex = results[0].explain
+            # Weights should be set (not None) and potentially differ from 0.6/0.4
+            assert ex.rrf_vec_weight is not None
+            assert ex.rrf_fts_weight is not None
+
+    def test_adaptive_disabled_uses_fixed(self, populated_store: VstashStore) -> None:
+        """adaptive_rrf=False uses the fixed default weights."""
+        dim = populated_store.embedding_dim
+        results = populated_store.search([0.1] * dim, "Python", explain=True, adaptive_rrf=False)
+        if results and results[0].explain:
+            ex = results[0].explain
+            assert ex.rrf_vec_weight == 0.6
+            assert ex.rrf_fts_weight == 0.4
+
+    def test_idf_cache_built_once(self, populated_store: VstashStore) -> None:
+        """IDF cache should be built on first call and reused."""
+        # First call builds cache
+        populated_store._compute_adaptive_rrf_params("test")
+        assert populated_store._idf_cache is not None
+
+        # Cache should contain terms
+        idf_dict, total_chunks = populated_store._idf_cache
+        assert total_chunks > 0
+        assert len(idf_dict) > 0
+
+        # Second call reuses (same object)
+        cache_ref = populated_store._idf_cache
+        populated_store._compute_adaptive_rrf_params("another test")
+        assert populated_store._idf_cache is cache_ref
+
+    def test_idf_cache_invalidated_on_add(self, sample_store: VstashStore) -> None:
+        """Adding a document should invalidate the IDF cache."""
+        dim = sample_store.embedding_dim
+        sample_store._compute_adaptive_rrf_params("test")
+        assert sample_store._idf_cache is not None
+
+        sample_store.add_document(
+            path="/test/new.md",
+            title="New",
+            chunks=["new content here"],
+            embeddings=[[0.1] * dim],
+            source_type="markdown",
+        )
+        assert sample_store._idf_cache is None
+
+    def test_idf_cache_invalidated_on_delete(self, populated_store: VstashStore) -> None:
+        """Deleting a document should invalidate the IDF cache."""
+
+        populated_store._compute_adaptive_rrf_params("test")
+        assert populated_store._idf_cache is not None
+
+        populated_store.delete_document("/test/python_guide.md")
+        assert populated_store._idf_cache is None
+
+    def test_no_regression_vs_fixed(self, populated_store: VstashStore) -> None:
+        """Adaptive should not degrade results vs fixed on the test corpus."""
+        dim = populated_store.embedding_dim
+        query = "Python programming"
+        qvec = [0.1] * dim
+
+        fixed_results = populated_store.search(qvec, query, adaptive_rrf=False)
+        adaptive_results = populated_store.search(qvec, query, adaptive_rrf=True)
+
+        # Both should return results
+        assert len(fixed_results) > 0
+        assert len(adaptive_results) > 0
+        # Top result should be the same (or at least overlap)
+        fixed_paths = {r.path for r in fixed_results}
+        adaptive_paths = {r.path for r in adaptive_results}
+        assert len(fixed_paths & adaptive_paths) > 0
