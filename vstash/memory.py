@@ -262,7 +262,6 @@ class Memory:
             collection=self._resolve_collection(collection),
             project=self._resolve_project(project),
             layer=layer,
-            scoring=self._cfg.scoring,
         )
 
     def get_chunk(self, chunk_id: int) -> ChunkInfo | None:

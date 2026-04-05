@@ -3,7 +3,7 @@
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![PyPI](https://img.shields.io/pypi/v/vstash)](https://pypi.org/project/vstash/)
 [![python](https://img.shields.io/badge/python-3.10+-blue)]()
-[![tests](https://img.shields.io/badge/tests-615_passing-brightgreen)]()
+[![tests](https://img.shields.io/badge/tests-576_passing-brightgreen)]()
 [![BEIR SciFact](https://img.shields.io/badge/BEIR_SciFact-NDCG@10_0.726-brightgreen)]()
 [![MCP](https://img.shields.io/badge/MCP-16_tools-blue)]()
 [![latency](https://img.shields.io/badge/latency-<25ms_@10K_chunks-brightgreen)]()
@@ -54,7 +54,8 @@ Evaluated on the [BEIR benchmark](https://github.com/beir-cellar/beir) — the s
 
 - **Dynamic chunk_size** — `Memory(chunk_size=2048)` or `vstash add --chunk-size 2048`. Per-document override without modifying config. Validation: overlap < chunk_size.
 - **Adaptive RRF** — IDF-based weight adjustment per query. Rare terms boost keyword search, common terms boost vector search. Long queries relax distance cutoff. Improves all 5 BEIR datasets.
-- **615 tests** across 28 test modules (+ 6 benchmark regression tests).
+- **576 tests** across 26 test modules (+ 6 benchmark regression tests).
+- **Scoring pipeline removed** — frequency+decay, history recall, and cross-encoder reranking all evaluated and removed after failing to improve NDCG on BEIR datasets.
 
 ### What's new in v0.16
 

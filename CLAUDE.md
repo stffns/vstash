@@ -2,7 +2,7 @@
 
 ## What is vstash?
 
-Local-first document memory with instant semantic search. Single SQLite file, zero cloud dependencies for search. Hybrid retrieval (vector + FTS5 + RRF) with frequency/decay scoring.
+Local-first document memory with instant semantic search. Single SQLite file, zero cloud dependencies for search. Hybrid retrieval (vector + FTS5 + adaptive RRF + MMR dedup).
 
 ## Quick reference
 
@@ -68,7 +68,7 @@ docs/               # User-facing documentation
 
 - **Hybrid search**: Vector (sqlite-vec cosine) + FTS5 keyword, combined via Reciprocal Rank Fusion (k=60).
 - **Adaptive RRF**: IDF-based weight adjustment per query. Rare terms boost FTS; common terms boost vector. Long queries (>50 words) relax distance cutoff. Cached via fts5vocab.
-- **Scoring**: Post-RRF re-ranking with frequency + temporal decay. Adaptive maturity gate (γ) suppresses scoring until access patterns show outlier signal.
+- **Pipeline**: vector search → FTS5 keyword → adaptive RRF fusion (IDF-weighted) → MMR dedup. Frequency+decay scoring was evaluated and removed after failing to improve NDCG on BEIR datasets.
 - **MMR dedup**: Intra-document Maximal Marginal Relevance replaces hard per-document dedup. `mmr_lambda=0.5` default, configurable.
 - **Embeddings**: FastEmbed (ONNX) or MLX (Apple Silicon). Default `BAAI/bge-small-en-v1.5` (384 dims). Multilingual models available via `vstash reindex`.
 - **Code-aware chunking**: Hybrid 3-tier splitting — tree-sitter AST (25+ languages, optional) → parso AST (Python) → regex (6 languages). Graceful degradation. See `code_split.py`.
@@ -83,7 +83,7 @@ docs/               # User-facing documentation
 - **Pydantic v2** for all config and data models (frozen=True)
 - **Type hints** on all public functions
 - **ruff** for linting and formatting (enforced in CI)
-- **pytest** for testing (615 tests + 6 benchmark regression tests as of v0.17.3)
+- **pytest** for testing (576 tests + 6 benchmark regression tests as of v0.17.5)
 - **Conventional commits** with emoji prefixes (feat, fix, docs, chore, perf)
 - **No AI co-author lines** — do NOT add `Co-Authored-By` or any AI attribution to commit messages
 
