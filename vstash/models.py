@@ -34,11 +34,7 @@ class ExplainInfo(BaseModel):
     fts_rank: int | None = Field(default=None, description="Rank in FTS5 keyword search (0-based)")
     rrf_vec: float = Field(default=0.0, description="RRF contribution from vector search")
     rrf_fts: float = Field(default=0.0, description="RRF contribution from FTS5 search")
-    rrf_total: float = Field(default=0.0, description="Combined RRF score before scoring")
-    freq_score: float | None = Field(default=None, description="Normalized frequency score [0,1]")
-    decay_days: float | None = Field(default=None, description="Days since last access")
-    gamma: float | None = Field(default=None, description="Scoring maturity gate (0=off, 1=full)")
-    effective_beta: float | None = Field(default=None, description="Beta * gamma applied")
+    rrf_total: float = Field(default=0.0, description="Combined RRF score")
     mmr_penalty: float = Field(
         default=0.0, description="MMR applied penalty: (1-lambda)*max_similarity"
     )

@@ -143,35 +143,6 @@ class TestReindexSafety:
 # ------------------------------------------------------------------ #
 
 
-class TestScoringMaturityGate:
-    """Verify maturity gate handles edge cases safely."""
-
-    def test_maturity_gate_returns_zero_with_no_accessed_chunks(
-        self, populated_store: VstashStore
-    ) -> None:
-        """No accessed chunks → γ = 0."""
-        gamma = populated_store.scoring_maturity()
-        assert gamma == 0.0
-
-    def test_maturity_gate_handles_few_accessed_chunks(self, populated_store: VstashStore) -> None:
-        """Fewer than 10 accessed chunks → γ = 0."""
-        # Access a few chunks (less than 10)
-        for i in range(5):
-            populated_store._conn.execute(
-                "UPDATE chunks SET access_count = 1 WHERE id = (SELECT id FROM chunks LIMIT 1 OFFSET ?)",
-                [i],
-            )
-        populated_store._conn.commit()
-        gamma = populated_store.scoring_maturity()
-        assert gamma == 0.0
-
-    def test_maturity_gate_safe_with_zero_mean(self, populated_store: VstashStore) -> None:
-        """Even if somehow mean=0, no division by zero."""
-        # This shouldn't happen with access_count > 0 filter, but be safe
-        gamma = populated_store.scoring_maturity()
-        # Should return 0.0, not raise
-        assert isinstance(gamma, float)
-
 
 # ------------------------------------------------------------------ #
 # Watch worker shutdown                                               #

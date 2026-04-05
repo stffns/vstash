@@ -268,7 +268,7 @@ def ask(
                     collection=collection,
                     project=project,
                     layer=layer,
-                    scoring=cfg.scoring,
+
                     expand_window=1,
                 )
                 chunks = [r for _, r in tagged]
@@ -280,7 +280,7 @@ def ask(
                     collection=collection,
                     project=project,
                     layer=layer,
-                    scoring=cfg.scoring,
+
                 )
 
         if not chunks:
@@ -397,7 +397,7 @@ def search(
                     collection=collection,
                     project=project,
                     layer=layer,
-                    scoring=cfg.scoring,
+
                     expand_window=1,
                 )
                 chunks = [r for _, r in tagged]
@@ -410,7 +410,7 @@ def search(
                     collection=collection,
                     project=project,
                     layer=layer,
-                    scoring=cfg.scoring,
+
                     explain=explain,
                 )
 
@@ -426,7 +426,6 @@ def search(
 
         # Relevance signal (skip for federated — no single best_distance)
         tier = "high"
-        scoring_enabled = cfg.scoring is not None and cfg.scoring.enabled
         if not all_profiles:
             best_distance = store.last_best_distance
             tier = relevance_tier(best_distance)
@@ -536,24 +535,6 @@ def search(
                     f"(vec: {ex.rrf_vec:.4f} + fts: {ex.rrf_fts:.4f}){weight_info}"
                 )
 
-                # Scoring (only if active)
-                if ex.gamma is not None:
-                    if ex.effective_beta is not None and ex.effective_beta > 0:
-                        freq_str = f"{ex.freq_score:.2f}" if ex.freq_score is not None else "0.00"
-                        decay_str = (
-                            f"{ex.decay_days:.1f}d ago"
-                            if ex.decay_days is not None
-                            else "never accessed"
-                        )
-                        lines.append(
-                            f"  Scoring: freq={freq_str}, decay={decay_str}, "
-                            f"\u03b3={ex.gamma:.2f} \u2192 \u03b2_eff={ex.effective_beta:.3f}"
-                        )
-                    else:
-                        lines.append(
-                            f"  Scoring: \u03b3={ex.gamma:.2f} (below threshold, inactive)"
-                        )
-
                 # MMR
                 if ex.mmr_penalty > 0:
                     lines.append(f"  MMR:     -{ex.mmr_penalty:.2f} penalty (same-doc similarity)")
@@ -564,22 +545,6 @@ def search(
                     console.print(f"[dim]{line}[/dim]")
                 console.print()
 
-        # Show scoring warm-up progress when scoring is disabled
-        if not all_profiles and not scoring_enabled:
-            total_accesses = store.total_access_count()
-            target = 500  # ~100 searches × 5 results
-            if total_accesses >= target:
-                console.print(
-                    "\n[dim]Scoring ready! You have enough usage history. "
-                    "Enable in vstash.toml: [bold]scoring.enabled = true[/bold][/dim]"
-                )
-            elif total_accesses >= 50:
-                pct = min(100, int(total_accesses / target * 100))
-                bar_filled = pct // 5  # 20-char bar
-                bar = "█" * bar_filled + "░" * (20 - bar_filled)
-                console.print(
-                    f"\n[dim]Learning preferences: {bar} {pct}% ({total_accesses}/{target})[/dim]"
-                )
 
 
 # ------------------------------------------------------------------ #
@@ -650,7 +615,7 @@ def chat(
 
                 # Search
                 q_embedding = embed_query(query, cfg.embeddings.model)
-                chunks = store.search(q_embedding, query, top_k=k, scoring=cfg.scoring)
+                chunks = store.search(q_embedding, query, top_k=k)
 
                 if not chunks:
                     console.print("[yellow]No relevant context found.[/yellow]")
