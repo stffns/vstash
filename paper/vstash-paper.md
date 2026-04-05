@@ -37,7 +37,7 @@ We introduce **vstash**, a single-file system built on SQLite that addresses all
 - **Intra-document MMR deduplication** that prevents a single document from flooding top-*k* while allowing semantically diverse sections from the same document to surface, improving diversity (5.0 unique docs per top-5) and NDCG@5 (+1.8%) (§3.4).
 - **Context expansion** via adjacent chunk retrieval for 2.64× richer LLM context at negligible latency cost (§3.5).
 - **Hybrid code-aware chunking** with a 3-tier splitting pipeline — tree-sitter AST (25+ languages), parso AST (Python), and regex fallback (6 languages) — with graceful degradation and decorator attachment (§6).
-- An **open-source system** with CLI, Python SDK, 15-tool MCP server for LLM agent integration, multi-profile support, cross-session journal memory, and reproducible experiment scripts (§3).
+- An **open-source system** with CLI, Python SDK, 16-tool MCP server for LLM agent integration, multi-profile support, cross-session journal memory, and reproducible experiment scripts (§3).
 
 ---
 

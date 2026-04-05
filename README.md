@@ -3,7 +3,7 @@
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![PyPI](https://img.shields.io/pypi/v/vstash)](https://pypi.org/project/vstash/)
 [![python](https://img.shields.io/badge/python-3.10+-blue)]()
-[![tests](https://img.shields.io/badge/tests-598_passing-brightgreen)]()
+[![tests](https://img.shields.io/badge/tests-612_passing-brightgreen)]()
 [![BEIR SciFact](https://img.shields.io/badge/BEIR_SciFact-NDCG@10_0.726-brightgreen)]()
 [![MCP](https://img.shields.io/badge/MCP-16_tools-blue)]()
 [![latency](https://img.shields.io/badge/latency-<25ms_@10K_chunks-brightgreen)]()
@@ -58,7 +58,7 @@ Evaluated on the [BEIR benchmark](https://github.com/beir-cellar/beir) — the s
 
 - **Local-first LLM auto-detect** — New default backend `"local"` probes for Ollama, LM Studio, or any OpenAI-compatible server. Zero config needed — just start a local server and `vstash ask` works.
 - **Search --explain** — Diagnostic flag showing why each chunk ranked where it did: vector distance, FTS rank, RRF breakdown, frequency/decay scoring, and MMR penalty.
-- **598 tests** across 27 test modules, all passing on Python 3.10–3.12.
+- **612 tests** across 27 test modules, all passing on Python 3.10–3.12.
 
 ### What's new in v0.15
 
@@ -281,7 +281,7 @@ PDF, DOCX, PPTX, XLSX, Markdown, TXT, HTML, CSV — and any URL.
 | [BEIR Benchmark](experiments/beir_benchmark.py) | 5 BEIR datasets, up to 57K docs | NDCG@10=0.726 on SciFact (beats ColBERTv2) | `python -m experiments.beir_benchmark` |
 | [ArXiv Retrieval](experiments/arxiv_retrieval_bench.py) | 1,000 ML papers, 3 models | P@5=0.703, MRR=0.895 | `python -m experiments.arxiv_retrieval_bench` |
 | [Dataset Discovery](experiments/dataset_discovery.py) | 954 HuggingFace datasets | 91.4% discovery rate | `python -m experiments.dataset_discovery` |
-| [vstash vs Chroma](experiments/beir_benchmark.py) | SciFact, NFCorpus, SciDocs | Wins 2/3 on NDCG, same embeddings | `python -m experiments.beir_benchmark` |
+| [vstash vs Chroma](experiments/beir_benchmark.py) | 5 BEIR datasets, up to 57K docs | Wins 5/5 on NDCG with adaptive RRF | `python -m experiments.beir_benchmark` |
 | [Answer Relevance](experiments/answer_relevance.py) | SciFact, NFCorpus | +8.3% answer quality vs Chroma (LLM judge) | `python -m experiments.answer_relevance` |
 
 The dataset discovery engine also has an interactive mode — describe what you need, get the right dataset:

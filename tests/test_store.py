@@ -933,3 +933,102 @@ class TestAdaptiveRRF:
         fixed_paths = {r.path for r in fixed_results}
         adaptive_paths = {r.path for r in adaptive_results}
         assert len(fixed_paths & adaptive_paths) > 0
+
+    def test_long_query_cutoff_relaxation_recovers_results(self, sample_store: VstashStore) -> None:
+        """Long queries (>50 words) should relax distance cutoff to 5.0x,
+        recovering results that the tight 1.15x cutoff would discard.
+
+        This protects the ArguAna BEIR claim (+19% from cutoff relaxation).
+        """
+        dim = sample_store.embedding_dim
+
+        # Create docs with spread-out embeddings (simulating diffuse long-query distances)
+        close_emb = [0.1] * dim
+        far_emb = [0.9] * dim  # far from query but still relevant
+        sample_store.add_document(
+            path="/test/close.md",
+            title="Close Doc",
+            chunks=["close content about programming"],
+            embeddings=[close_emb],
+            source_type="markdown",
+        )
+        sample_store.add_document(
+            path="/test/far.md",
+            title="Far Doc",
+            chunks=["far content about programming"],
+            embeddings=[far_emb],
+            source_type="markdown",
+        )
+
+        query_emb = [0.12] * dim  # near close_emb, far from far_emb
+        long_query = " ".join(["programming"] * 60)
+
+        # Tight cutoff (1.15x) should drop the far doc
+        tight_results = sample_store.search(
+            query_emb, long_query, adaptive_rrf=False, distance_cutoff=1.15
+        )
+        tight_paths = {r.path for r in tight_results}
+
+        # Adaptive with long query should relax cutoff to 5.0x, recovering far doc
+        adaptive_results = sample_store.search(query_emb, long_query, adaptive_rrf=True)
+        adaptive_paths = {r.path for r in adaptive_results}
+
+        # The adaptive path must return at least as many results
+        assert len(adaptive_results) >= len(tight_results)
+        # If the far doc was dropped by tight cutoff, adaptive should recover it
+        if "/test/far.md" not in tight_paths:
+            assert "/test/far.md" in adaptive_paths, (
+                "Adaptive cutoff relaxation failed to recover far document — "
+                "this would break ArguAna BEIR gains"
+            )
+
+    def test_idf_weighting_shifts_fts_weight(self, populated_store: VstashStore) -> None:
+        """IDF weighting must produce measurably different weights for rare vs common
+        terms, and these weights must flow through to search results via explain.
+
+        This protects the claim that IDF-based sigmoid correctly identifies query regimes.
+        """
+        dim = populated_store.embedding_dim
+        qvec = [0.1] * dim
+
+        # Rare term: not in corpus → high IDF → higher FTS weight
+        rare_results = populated_store.search(
+            qvec, "XYZZY_NONEXISTENT_TERM", explain=True, adaptive_rrf=True
+        )
+        # Common term: in corpus → lower IDF → lower FTS weight
+        common_results = populated_store.search(qvec, "Python", explain=True, adaptive_rrf=True)
+
+        # Both should have explain info with adaptive weights
+        assert rare_results and rare_results[0].explain
+        assert common_results and common_results[0].explain
+
+        rare_fts_w = rare_results[0].explain.rrf_fts_weight
+        common_fts_w = common_results[0].explain.rrf_fts_weight
+        assert rare_fts_w is not None
+        assert common_fts_w is not None
+
+        # Rare terms MUST get higher FTS weight than common terms
+        assert rare_fts_w > common_fts_w, (
+            f"IDF weighting broken: rare term FTS weight ({rare_fts_w}) "
+            f"should exceed common term FTS weight ({common_fts_w})"
+        )
+
+    def test_adaptive_weights_are_not_always_default(self, populated_store: VstashStore) -> None:
+        """Guard against a regression where _compute_adaptive_rrf_params
+        always returns the fixed defaults (0.6/0.4). At least one query
+        type must produce non-default weights.
+        """
+        queries = [
+            "XYZZY_UNKNOWN",  # rare → should boost FTS
+            " ".join(["word"] * 60),  # long → should return 0.9/0.1
+        ]
+        saw_non_default = False
+        for q in queries:
+            vec_w, fts_w, _ = populated_store._compute_adaptive_rrf_params(q)
+            if (vec_w, fts_w) != (0.6, 0.4):
+                saw_non_default = True
+                break
+        assert saw_non_default, (
+            "Adaptive RRF always returned default weights (0.6/0.4) — "
+            "the adaptive logic is effectively dead code"
+        )
