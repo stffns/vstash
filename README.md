@@ -3,7 +3,7 @@
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![PyPI](https://img.shields.io/pypi/v/vstash)](https://pypi.org/project/vstash/)
 [![python](https://img.shields.io/badge/python-3.10+-blue)]()
-[![tests](https://img.shields.io/badge/tests-612_passing-brightgreen)]()
+[![tests](https://img.shields.io/badge/tests-615_passing-brightgreen)]()
 [![BEIR SciFact](https://img.shields.io/badge/BEIR_SciFact-NDCG@10_0.726-brightgreen)]()
 [![MCP](https://img.shields.io/badge/MCP-16_tools-blue)]()
 [![latency](https://img.shields.io/badge/latency-<25ms_@10K_chunks-brightgreen)]()
@@ -26,11 +26,11 @@ Evaluated on the [BEIR benchmark](https://github.com/beir-cellar/beir) — the s
 
 | Dataset | vstash (NDCG@10) | ColBERTv2 | BM25 | Dense-only | 
 |---------|:---:|:---:|:---:|:---:|
-| **SciFact** (5K docs) | **0.726** | 0.693 (+4.8%) | 0.665 (+9.2%) | 0.653 (+11.2%) |
-| **NFCorpus** (3.6K docs) | **0.359** | 0.344 (+4.4%) | 0.325 (+10.5%) | 0.338 (+6.2%) |
-| **SciDocs** (25K docs) | **0.194** | 0.154 (+26.2%) | 0.158 (+23.0%) | 0.163 (+19.2%) |
-| **FiQA** (57K docs) | **0.392** | 0.356 (+10.0%) | 0.236 (+65.8%) | 0.402 (−2.5%) |
-| **ArguAna** (8.7K docs) | **0.437** | 0.463 (−5.6%) | 0.315 (+38.7%) | 0.584 (−25.2%) |
+| SciFact (5K docs) | **0.726** | 0.693 (+4.8%) | 0.665 (+9.2%) | 0.653 (+11.2%) |
+| NFCorpus (3.6K docs) | **0.359** | 0.344 (+4.4%) | 0.325 (+10.5%) | 0.338 (+6.2%) |
+| SciDocs (25K docs) | **0.194** | 0.154 (+26.2%) | 0.158 (+23.0%) | 0.163 (+19.2%) |
+| FiQA (57K docs) | **0.392** | 0.356 (+10.0%) | 0.236 (+65.8%) | **0.402** (−2.5%) |
+| ArguAna (8.7K docs) | 0.437 | **0.463** (−5.6%) | 0.315 (+38.7%) | **0.584** (−25.2%) |
 
 *Same embedding model (BGE-small 384d) across all comparisons. Adaptive RRF improves all 5 datasets vs fixed weights. Results reproducible via `python -m experiments.beir_benchmark`.*
 
@@ -54,7 +54,7 @@ Evaluated on the [BEIR benchmark](https://github.com/beir-cellar/beir) — the s
 
 - **Dynamic chunk_size** — `Memory(chunk_size=2048)` or `vstash add --chunk-size 2048`. Per-document override without modifying config. Validation: overlap < chunk_size.
 - **Adaptive RRF** — IDF-based weight adjustment per query. Rare terms boost keyword search, common terms boost vector search. Long queries relax distance cutoff. Improves all 5 BEIR datasets.
-- **612 tests** across 27 test modules.
+- **615 tests** across 28 test modules (+ 6 benchmark regression tests).
 
 ### What's new in v0.16
 
@@ -280,10 +280,9 @@ PDF, DOCX, PPTX, XLSX, Markdown, TXT, HTML, CSV — and any URL.
 
 | Experiment | Corpus | Key Result | Command |
 |---|---|---|---|
-| [BEIR Benchmark](experiments/beir_benchmark.py) | 5 BEIR datasets, up to 57K docs | NDCG@10=0.726 on SciFact (beats ColBERTv2) | `python -m experiments.beir_benchmark` |
+| [BEIR Benchmark](experiments/beir_benchmark.py) | 5 BEIR datasets, up to 57K docs | Beats BM25 5/5, ColBERTv2 4/5; NDCG@10=0.726 on SciFact | `python -m experiments.beir_benchmark` |
 | [ArXiv Retrieval](experiments/arxiv_retrieval_bench.py) | 1,000 ML papers, 3 models | P@5=0.703, MRR=0.895 | `python -m experiments.arxiv_retrieval_bench` |
 | [Dataset Discovery](experiments/dataset_discovery.py) | 954 HuggingFace datasets | 91.4% discovery rate | `python -m experiments.dataset_discovery` |
-| [vstash vs Chroma](experiments/beir_benchmark.py) | 5 BEIR datasets, up to 57K docs | Wins 5/5 on NDCG with adaptive RRF | `python -m experiments.beir_benchmark` |
 | [Answer Relevance](experiments/answer_relevance.py) | SciFact, NFCorpus | +8.3% answer quality vs Chroma (LLM judge) | `python -m experiments.answer_relevance` |
 
 The dataset discovery engine also has an interactive mode — describe what you need, get the right dataset:
