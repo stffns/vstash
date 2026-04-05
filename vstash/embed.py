@@ -36,7 +36,14 @@ KNOWN_DIMS: dict[str, int] = {
     "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2": 384,
     "sentence-transformers/paraphrase-multilingual-mpnet-base-v2": 768,
     "intfloat/multilingual-e5-large": 1024,
+    # EmbeddingGemma (Google, ONNX via onnx-community)
+    # +7.4% NDCG vs BGE-small on SciFact, 100+ languages
+    "embeddinggemma-300m": 768,
 }
+
+# EmbeddingGemma ONNX config
+_GEMMA_ONNX_REPO = "onnx-community/embeddinggemma-300m-ONNX"
+_GEMMA_MAX_TOKENS = 2048
 
 # Mapping from standard model names to MLX community variants
 _MLX_MODEL_MAP: dict[str, str] = {
@@ -150,6 +157,71 @@ def _warmup_onnx(model_name: str) -> None:
 
 
 # ------------------------------------------------------------------ #
+# EmbeddingGemma backend (ONNX Runtime direct)                        #
+# ------------------------------------------------------------------ #
+
+_gemma_session: object | None = None
+_gemma_tokenizer: object | None = None
+_gemma_lock = threading.Lock()
+
+
+def _is_gemma_model(model_name: str) -> bool:
+    """Check if the model name refers to EmbeddingGemma."""
+    return "embeddinggemma" in model_name.lower().replace("-", "").replace("_", "")
+
+
+def _init_gemma() -> tuple:
+    """Lazily initialize EmbeddingGemma ONNX session and tokenizer."""
+    global _gemma_session, _gemma_tokenizer  # noqa: PLW0603
+    if _gemma_session is None:
+        with _gemma_lock:
+            if _gemma_session is None:
+                import onnxruntime as ort
+                from huggingface_hub import hf_hub_download
+                from tokenizers import Tokenizer
+
+                model_path = hf_hub_download(_GEMMA_ONNX_REPO, "onnx/model.onnx")
+                hf_hub_download(_GEMMA_ONNX_REPO, "onnx/model.onnx_data")
+                tokenizer_path = hf_hub_download(_GEMMA_ONNX_REPO, "tokenizer.json")
+                _gemma_session = ort.InferenceSession(model_path)
+                _gemma_tokenizer = Tokenizer.from_file(tokenizer_path)
+                _gemma_tokenizer.enable_truncation(max_length=_GEMMA_MAX_TOKENS)
+    return _gemma_session, _gemma_tokenizer
+
+
+def _embed_gemma_one(text: str) -> list[float]:
+    """Embed a single text with EmbeddingGemma."""
+    import numpy as np
+
+    session, tokenizer = _init_gemma()
+    encoding = tokenizer.encode(text)
+    input_ids = np.array([encoding.ids[:_GEMMA_MAX_TOKENS]], dtype=np.int64)
+    attention_mask = np.array([encoding.attention_mask[:_GEMMA_MAX_TOKENS]], dtype=np.int64)
+    outputs = session.run(
+        ["sentence_embedding"],
+        {"input_ids": input_ids, "attention_mask": attention_mask},
+    )
+    emb = outputs[0]
+    emb = emb / np.linalg.norm(emb, axis=1, keepdims=True)
+    return emb[0].tolist()
+
+
+def _embed_gemma(texts: list[str], model_name: str) -> list[list[float]]:
+    """Embed a batch of texts with EmbeddingGemma."""
+    return [_embed_gemma_one(t) for t in texts]
+
+
+def _query_gemma(text: str, model_name: str) -> list[float]:
+    """Embed a single query with EmbeddingGemma."""
+    return _embed_gemma_one(text)
+
+
+def _warmup_gemma(model_name: str) -> None:
+    """Pre-load EmbeddingGemma ONNX model."""
+    _embed_gemma_one("warmup")
+
+
+# ------------------------------------------------------------------ #
 # MLX backend (Apple Silicon GPU)                                      #
 # ------------------------------------------------------------------ #
 
@@ -250,6 +322,9 @@ def warmup(model_name: str, backend: BackendType = "auto") -> None:
         model_name: Model identifier.
         backend: Backend to use — 'onnx', 'mlx', or 'auto'.
     """
+    if _is_gemma_model(model_name):
+        _warmup_gemma(model_name)
+        return
     resolved = _resolve(backend)
     if resolved == "mlx":
         _warmup_mlx(model_name)
@@ -272,6 +347,8 @@ def embed_texts(
     Returns:
         List of float vectors, one per input text.
     """
+    if _is_gemma_model(model_name):
+        return _embed_gemma(texts, model_name)
     resolved = _resolve(backend)
     if resolved == "mlx":
         return _embed_mlx(texts, model_name)
@@ -293,6 +370,8 @@ def embed_query(
     Returns:
         Float vector for the query.
     """
+    if _is_gemma_model(model_name):
+        return _query_gemma(text, model_name)
     resolved = _resolve(backend)
     if resolved == "mlx":
         return _query_mlx(text, model_name)
