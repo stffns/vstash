@@ -4,11 +4,11 @@
 [![PyPI](https://img.shields.io/pypi/v/vstash)](https://pypi.org/project/vstash/)
 [![python](https://img.shields.io/badge/python-3.10+-blue)]()
 [![tests](https://img.shields.io/badge/tests-576_passing-brightgreen)]()
-[![BEIR SciFact](https://img.shields.io/badge/BEIR_SciFact-NDCG@10_0.780-brightgreen)]()
+[![BEIR SciFact](https://img.shields.io/badge/BEIR_SciFact-NDCG@10_0.726-brightgreen)]()
 [![MCP](https://img.shields.io/badge/MCP-16_tools-blue)]()
 [![latency](https://img.shields.io/badge/latency-<25ms_@10K_chunks-brightgreen)]()
 
-**Local hybrid retrieval engine — NDCG@10 = 0.780 on BEIR SciFact, +12.6% over ColBERTv2.**
+**Local hybrid retrieval engine that beats ColBERTv2 on BEIR SciFact. Beats BM25 on all 5 BEIR datasets.**
 
 Single SQLite file. Zero cloud dependencies. Sub-25ms at 10K chunks.
 
