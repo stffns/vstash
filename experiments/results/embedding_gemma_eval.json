@@ -1,0 +1,23 @@
+[
+  {
+    "dataset": "nfcorpus",
+    "bge": {
+      "model": "BGE-small-en-v1.5",
+      "dim": 384,
+      "ndcg_10": 0.359,
+      "mrr": null,
+      "latency_ms": 3.2,
+      "embed_time_s": 138.4
+    },
+    "gemma": {
+      "model": "EmbeddingGemma-300m",
+      "dim": 768,
+      "ndcg_10": 0.3713,
+      "mrr": null,
+      "latency_ms": 4.2,
+      "embed_time_s": 323.2
+    },
+    "delta": 0.0123,
+    "delta_pct": 3.43
+  }
+]
