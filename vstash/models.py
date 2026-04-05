@@ -42,6 +42,12 @@ class ExplainInfo(BaseModel):
     mmr_penalty: float = Field(
         default=0.0, description="MMR applied penalty: (1-lambda)*max_similarity"
     )
+    rrf_vec_weight: float | None = Field(
+        default=None, description="Adaptive RRF weight applied to vector component"
+    )
+    rrf_fts_weight: float | None = Field(
+        default=None, description="Adaptive RRF weight applied to FTS component"
+    )
     fts_terms: list[str] = Field(default_factory=list, description="FTS query terms searched")
 
 
