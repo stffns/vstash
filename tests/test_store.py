@@ -226,34 +226,6 @@ class TestMMRDedup:
         assert any("machine learning" in t for t in texts)
         assert any("database" in t for t in texts)
 
-    def test_mmr_lambda_1_is_hard_dedup(self, sample_store: VstashStore) -> None:
-        """With mmr_lambda=1.0, behaves like the old hard per-document dedup."""
-        dim = sample_store.embedding_dim
-        from vstash.config import ScoringConfig
-
-        # Two very different chunks from same doc
-        emb_a = [1.0] + [0.0] * (dim - 1)
-        emb_b = [0.0] + [1.0] + [0.0] * (dim - 2)
-        sample_store.add_document(
-            path="/test/book.pdf",
-            title="Big Book",
-            chunks=["chapter about topic A", "chapter about topic B"],
-            embeddings=[emb_a, emb_b],
-        )
-        sample_store.add_document(
-            path="/test/other.md",
-            title="Other Doc",
-            chunks=["related content"],
-            embeddings=[[0.5] * dim],
-        )
-        # mmr_lambda=1.0 means pure relevance, no diversity → hard dedup
-        scoring = ScoringConfig(enabled=False, mmr_lambda=1.0)
-        query_emb = [0.7] + [0.7] + [0.0] * (dim - 2)
-        results = sample_store.search(query_emb, "topics", top_k=5, scoring=scoring)
-        book_results = [r for r in results if r.title == "Big Book"]
-        # Hard dedup: only 1 chunk per document
-        assert len(book_results) == 1
-
     def test_mmr_does_not_affect_cross_document_ranking(self, sample_store: VstashStore) -> None:
         """Chunks from different documents should never penalize each other."""
         dim = sample_store.embedding_dim
@@ -408,39 +380,6 @@ class TestExpandContext:
         """Empty results should return empty."""
         expanded = sample_store.expand_context([], window=1)
         assert expanded == []
-
-
-class TestTotalAccessCount:
-    """Test total access count aggregation."""
-
-    def test_total_access_count_initial(self, sample_store: VstashStore) -> None:
-        """Fresh store should have zero total accesses."""
-        dim = sample_store.embedding_dim
-        sample_store.add_document(
-            path="/test/doc.md",
-            title="Doc",
-            chunks=["some text"],
-            embeddings=[[0.1] * dim],
-        )
-        assert sample_store.total_access_count() == 0
-
-    def test_total_access_count_after_tracking(self, sample_store: VstashStore) -> None:
-        """Total should reflect tracked accesses."""
-        dim = sample_store.embedding_dim
-        sample_store.add_document(
-            path="/test/doc.md",
-            title="Doc",
-            chunks=["some text", "more text"],
-            embeddings=[[0.1] * dim, [0.2] * dim],
-        )
-        # Get chunk ids
-        rows = sample_store._conn.execute("SELECT id FROM chunks").fetchall()
-        chunk_ids = [r["id"] for r in rows]
-        # Track 3 times
-        for _ in range(3):
-            sample_store.track_access(chunk_ids)
-        # 2 chunks × 3 accesses = 6
-        assert sample_store.total_access_count() == 6
 
 
 class TestAdaptiveRelevanceThreshold:
@@ -688,82 +627,6 @@ class TestSearchTelemetry:
         summary = sample_store.search_telemetry_summary()
         assert summary == {}
 
-
-class TestScoringMaturity:
-    """Tests for adaptive scoring maturity (γ) — outlier-based activation."""
-
-    def test_empty_store_returns_zero(self, sample_store: VstashStore) -> None:
-        """No chunks → γ = 0."""
-        assert sample_store.scoring_maturity() == 0.0
-
-    def test_uniform_access_returns_zero(self, sample_store: VstashStore) -> None:
-        """All chunks accessed equally → no outlier → γ = 0."""
-        dim = sample_store.embedding_dim
-        sample_store.add_document(
-            path="/test/uniform.md",
-            title="Uniform",
-            chunks=[f"chunk {i}" for i in range(20)],
-            embeddings=[[0.1 * (i + 1) / 20] * dim for i in range(20)],
-        )
-        # Give all chunks the same access count
-        sample_store._conn.execute("UPDATE chunks SET access_count = 5")
-        sample_store._conn.commit()
-        assert sample_store.scoring_maturity() == 0.0
-
-    def test_moderate_outlier_partial_gamma(self, sample_store: VstashStore) -> None:
-        """Max/mean ratio between 8 and 15 → 0 < γ < 1."""
-        dim = sample_store.embedding_dim
-        sample_store.add_document(
-            path="/test/moderate.md",
-            title="Moderate",
-            chunks=[f"chunk {i}" for i in range(20)],
-            embeddings=[[0.1 * (i + 1) / 20] * dim for i in range(20)],
-        )
-        # 19 chunks with access_count=2, 1 chunk with access_count=25
-        # mean ≈ 3.15, max=25, ratio ≈ 7.94 → just below 8, let's use 30
-        # mean ≈ 3.4, max=30, ratio ≈ 8.82 → between 8 and 15
-        sample_store._conn.execute("UPDATE chunks SET access_count = 2")
-        sample_store._conn.execute(
-            "UPDATE chunks SET access_count = 30 WHERE id = (SELECT id FROM chunks LIMIT 1)"
-        )
-        sample_store._conn.commit()
-        gamma = sample_store.scoring_maturity()
-        assert 0.0 < gamma < 1.0
-
-    def test_strong_outlier_full_gamma(self, sample_store: VstashStore) -> None:
-        """Max/mean ratio ≥ 15 → γ = 1.0."""
-        dim = sample_store.embedding_dim
-        sample_store.add_document(
-            path="/test/strong.md",
-            title="Strong",
-            chunks=[f"chunk {i}" for i in range(20)],
-            embeddings=[[0.1 * (i + 1) / 20] * dim for i in range(20)],
-        )
-        # 19 chunks with access_count=1, 1 chunk with access_count=200
-        # mean ≈ 10.95, max=200, ratio ≈ 18.3 → well above 15
-        sample_store._conn.execute("UPDATE chunks SET access_count = 1")
-        sample_store._conn.execute(
-            "UPDATE chunks SET access_count = 200 WHERE id = (SELECT id FROM chunks LIMIT 1)"
-        )
-        sample_store._conn.commit()
-        gamma = sample_store.scoring_maturity()
-        assert gamma == 1.0
-
-    def test_too_few_chunks_returns_zero(self, sample_store: VstashStore) -> None:
-        """Fewer than 10 accessed chunks → γ = 0 regardless of ratio."""
-        dim = sample_store.embedding_dim
-        sample_store.add_document(
-            path="/test/small.md",
-            title="Small",
-            chunks=[f"chunk {i}" for i in range(5)],
-            embeddings=[[0.1 * (i + 1) / 5] * dim for i in range(5)],
-        )
-        sample_store._conn.execute("UPDATE chunks SET access_count = 1")
-        sample_store._conn.execute(
-            "UPDATE chunks SET access_count = 100 WHERE id = (SELECT id FROM chunks LIMIT 1)"
-        )
-        sample_store._conn.commit()
-        assert sample_store.scoring_maturity() == 0.0
 
 
 # ------------------------------------------------------------------ #

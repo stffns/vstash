@@ -25,7 +25,6 @@ import threading
 import numpy as np
 import sqlite_vec
 
-from .config import ScoringConfig
 from .models import ChunkInfo, DocumentInfo, ExplainInfo, SearchResult, StoreStats
 
 # SQLite's SQLITE_LIMIT_VARIABLE_NUMBER default is 999; batch IN clauses below this.
@@ -94,19 +93,6 @@ RRF_K = 60
 # typically semantic paraphrases where keywords add noise.
 _ADAPTIVE_RRF_LONG_QUERY = 50
 
-# Frequency score saturation point — access counts above this
-# produce diminishing returns in the log1p normalization.
-FREQ_SATURATION = 100
-
-# Adaptive scoring: minimum max/mean ratio (among accessed chunks) before
-# memory scoring activates.  Empirically, scoring only helps when there are
-# clear "favorite" chunks (benchmark-focused scenario needed ~30× differential
-# for +16% NDCG).  8× is conservative: it activates only after genuine
-# power-user patterns develop, not from uniform Zipf-like browsing.
-SCORING_SIGNAL_RATIO = 8.0
-
-# Adaptive scoring: γ reaches 1.0 at this max/mean ratio.
-SCORING_SIGNAL_SATURATE = 15.0
 
 
 class VstashStore:
@@ -655,8 +641,6 @@ class VstashStore:
         collection: str | None = None,
         project: str | None = None,
         layer: str | None = None,
-        scoring: ScoringConfig | None = None,
-        _gamma_override: float | None = None,
         explain: bool = False,
         adaptive_rrf: bool = True,
     ) -> list[SearchResult]:
@@ -669,9 +653,6 @@ class VstashStore:
         distance are discarded before RRF scoring.  This prevents irrelevant
         noise (e.g. Art of War appearing in deep learning queries).
 
-        When ``scoring`` is provided and enabled, results are over-fetched,
-        re-ranked with frequency+decay, and truncated to ``top_k``.
-
         Args:
             query_embedding: Query vector from the embedding model.
             query_text: Raw query text for FTS5 keyword matching.
@@ -683,7 +664,6 @@ class VstashStore:
             collection: If set, restrict search to documents in this collection.
             project: If set, restrict search to documents with this project tag.
             layer: If set, restrict search to documents with this layer tag.
-            scoring: ScoringConfig instance. If enabled, applies frequency+decay re-ranking.
 
         Returns:
             Ranked list of SearchResult ordered by descending score.
@@ -701,17 +681,8 @@ class VstashStore:
         elif fts_weight is None:
             fts_weight = 1.0 - vec_weight
 
-        # Determine effective pool size — only over-fetch when scoring will
-        # actually rerank (γ > 0).  Over-fetching with γ=0 adds ~2x latency
-        # for zero ranking benefit.
-        effective_k = top_k
-        _pre_gamma: float | None = None
-        if scoring is not None and scoring.enabled:
-            _pre_gamma = _gamma_override if _gamma_override is not None else self.scoring_maturity()
-            if _pre_gamma > 0:
-                effective_k = max(top_k, scoring.over_fetch)
-
         # Adaptive candidate pool — avoid pulling half the corpus on small DBs
+        effective_k = top_k
         total_chunks = self._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
         candidate_pool = min(effective_k * 10, max(effective_k * 3, total_chunks // 3))
 
@@ -867,34 +838,11 @@ class VstashStore:
         # Sort by RRF score descending
         ranked = sorted(scores.values(), key=lambda x: float(x["rrf"]), reverse=True)
 
-        # Apply frequency+decay re-ranking if scoring is enabled.
-        # The effective beta is scaled by γ (scoring maturity) so that
-        # scoring has zero influence until access patterns are meaningful.
-        _explain_gamma: float | None = None
-        _explain_eff_beta: float | None = None
-        if scoring is not None and scoring.enabled:
-            gamma = _pre_gamma if _pre_gamma is not None else self.scoring_maturity()
-            if explain:
-                _explain_gamma = gamma
-            if gamma > 0:
-                effective_beta = scoring.beta * gamma
-                if explain:
-                    _explain_eff_beta = effective_beta
-                ranked = ranked[:effective_k]
-                ranked = self.rerank_with_decay(
-                    ranked,
-                    alpha=scoring.alpha,
-                    beta=effective_beta,
-                    decay_lambda=scoring.decay_lambda,
-                    _explain=explain,
-                )
-
         # Intra-document MMR deduplication: allow multiple chunks from the
         # same document only when they are semantically diverse (e.g. different
         # chapters of a book).  Chunks from different documents compete purely
         # on score — no cross-document penalty.
-        mmr_lambda = scoring.mmr_lambda if scoring is not None else 0.5
-        ranked = self._mmr_dedup(ranked, top_k, mmr_lambda, _explain=explain)
+        ranked = self._mmr_dedup(ranked, top_k, mmr_lambda=0.5, _explain=explain)
 
         # --- Build ExplainInfo per chunk when requested ---
         _explain_map: dict[int, ExplainInfo] = {}
@@ -912,10 +860,6 @@ class VstashStore:
                     rrf_vec=rrf_vec_val,
                     rrf_fts=rrf_fts_val,
                     rrf_total=round(rrf_vec_val + rrf_fts_val, 6),
-                    freq_score=r.get("_freq_normalized"),
-                    decay_days=r.get("_decay_days"),
-                    gamma=_explain_gamma,
-                    effective_beta=_explain_eff_beta,
                     mmr_penalty=round(float(r.get("_mmr_penalty", 0.0)), 4),
                     fts_terms=fts_terms,
                     rrf_vec_weight=vec_weight,
@@ -935,16 +879,6 @@ class VstashStore:
             for r in ranked
         ]
 
-        # Track access for returned chunks (best-effort, failures don't affect results).
-        # Always track when track_access is True, even if scoring is disabled —
-        # this builds up usage history for future scoring enablement.
-        if scoring is not None and scoring.track_access:
-            try:
-                result_ids = [int(r["id"]) for r in ranked if "id" in r]
-                if result_ids:
-                    self.track_access(result_ids)
-            except Exception:
-                logging.getLogger(__name__).debug("Access tracking failed", exc_info=True)
 
         return results
 
@@ -1649,171 +1583,6 @@ class VstashStore:
         vec_weight = 1.0 - fts_weight
 
         return round(vec_weight, 3), round(fts_weight, 3), default_cutoff
-
-    # ------------------------------------------------------------------ #
-    # Adaptive Scoring — maturity gate                                     #
-    # ------------------------------------------------------------------ #
-
-    def scoring_maturity(self) -> float:
-        """Compute γ ∈ [0, 1] measuring whether access patterns have enough
-        differential to make frequency+decay scoring useful.
-
-        Uses the max/mean ratio of access counts among accessed chunks.
-        When all chunks have similar access counts (ratio < SCORING_SIGNAL_RATIO),
-        γ = 0 and scoring is effectively disabled.  As the ratio grows toward
-        SCORING_SIGNAL_SATURATE, γ ramps linearly to 1.0.
-
-        Returns:
-            Float in [0, 1].  0 = no useful signal, 1 = full scoring weight.
-        """
-        row = self._conn.execute(
-            "SELECT AVG(access_count) AS mean, MAX(access_count) AS max_val, "
-            "COUNT(*) AS n "
-            "FROM chunks WHERE access_count > 0"
-        ).fetchone()
-
-        if not row or not row["mean"] or not row["max_val"] or row["n"] < 10:
-            return 0.0
-
-        mean = float(row["mean"])
-        if mean < 1e-9:
-            return 0.0
-        ratio = float(row["max_val"]) / mean
-        if ratio < SCORING_SIGNAL_RATIO:
-            return 0.0
-
-        # Linear ramp from 0 → 1 between SIGNAL_RATIO and SIGNAL_SATURATE
-        denominator = SCORING_SIGNAL_SATURATE - SCORING_SIGNAL_RATIO
-        if denominator <= 1e-9:
-            return 1.0
-        return min(1.0, (ratio - SCORING_SIGNAL_RATIO) / denominator)
-
-    # ------------------------------------------------------------------ #
-    # Frequency + Decay Scoring                                            #
-    # ------------------------------------------------------------------ #
-
-    def rerank_with_decay(
-        self,
-        candidates: list[dict[str, object]],
-        *,
-        alpha: float = 0.8,
-        beta: float = 0.2,
-        decay_lambda: float = 0.05,
-        _explain: bool = False,
-    ) -> list[dict[str, object]]:
-        """Re-rank candidates post-RRF with frequency + temporal decay.
-
-        Normalizes RRF scores to [0, 1] via min-max scaling so that
-        the alpha/beta weights operate on comparable scales.
-
-        Args:
-            candidates: List of dicts with keys: id, rrf, text, title, path, chunk.
-            alpha: Weight for semantic similarity (normalized RRF).
-            beta: Weight for access history (frequency * decay).
-            decay_lambda: Exponential decay rate.
-
-        Returns:
-            Same list, sorted by final_score descending, with final_score added.
-        """
-        if not candidates:
-            return candidates
-
-        # Short-circuit: if beta ≈ 0 (e.g. γ suppressed it), skip the
-        # metadata DB lookup entirely — ranking is determined by RRF alone.
-        # We still min-max normalize so that normalized_rrf is in [0, 1].
-        if beta < 1e-9:
-            rrf_scores = [float(c["rrf"]) for c in candidates]
-            min_rrf = min(rrf_scores)
-            rrf_range = max(rrf_scores) - min_rrf
-            for c in candidates:
-                normalized = (float(c["rrf"]) - min_rrf) / rrf_range if rrf_range > 0 else 1.0
-                c["final_score"] = alpha * normalized
-            candidates.sort(key=lambda c: float(c["final_score"]), reverse=True)
-            return candidates
-
-        # Fetch access metadata for all candidate chunk IDs
-        chunk_ids = [int(c["id"]) for c in candidates]
-        placeholders = ",".join("?" * len(chunk_ids))
-        rows = self._conn.execute(
-            f"SELECT id, access_count, last_accessed_at, created_at "
-            f"FROM chunks WHERE id IN ({placeholders})",
-            chunk_ids,
-        ).fetchall()
-        meta = {row["id"]: dict(row) for row in rows}
-
-        # Min-max scaling of RRF scores
-        rrf_scores = [float(c["rrf"]) for c in candidates]
-        min_rrf = min(rrf_scores)
-        max_rrf = max(rrf_scores)
-        rrf_range = max_rrf - min_rrf
-
-        now = datetime.now(timezone.utc)
-
-        for c in candidates:
-            chunk_id = int(c["id"])
-            info = meta.get(chunk_id, {})
-            access_count = info.get("access_count", 0) or 0
-            last_accessed = info.get("last_accessed_at")
-            created = info.get("created_at")
-
-            # Normalize RRF to [0, 1]
-            normalized_rrf = (float(c["rrf"]) - min_rrf) / rrf_range if rrf_range > 0 else 1.0
-
-            # Never-accessed chunks get zero frequency boost — no access
-            # history means no signal to boost with.
-            days_ago: float | None = None
-            if access_count == 0:
-                freq_normalized = 0.0
-            else:
-                # Temporal decay (clamp to 0 to guard against clock skew)
-                ref_str = last_accessed or created
-                if ref_str is None:
-                    days_ago = 0.0
-                else:
-                    ref_dt = datetime.fromisoformat(ref_str)
-                    if ref_dt.tzinfo is None:
-                        ref_dt = ref_dt.replace(tzinfo=timezone.utc)
-                    days_ago = max(0.0, (now - ref_dt).total_seconds() / 86400)
-
-                freq_score = access_count * math.exp(-decay_lambda * days_ago)
-                freq_normalized = min(1.0, math.log1p(freq_score) / math.log1p(FREQ_SATURATION))
-            c["final_score"] = alpha * normalized_rrf + beta * freq_normalized
-            if _explain:
-                c["_rrf_before_scoring"] = c["rrf"]
-                c["_freq_normalized"] = round(freq_normalized, 4)
-                # days_ago is only set when access_count > 0
-                c["_decay_days"] = round(days_ago, 2) if days_ago is not None else None
-
-        candidates.sort(key=lambda c: float(c["final_score"]), reverse=True)
-        return candidates
-
-    def track_access(self, chunk_ids: list[int]) -> None:
-        """Record access for the given chunks (batch UPDATE).
-
-        Increments access_count and sets last_accessed_at for each chunk.
-        Called after search results are built so failures don't affect results.
-
-        Args:
-            chunk_ids: List of chunk IDs that were returned to the user.
-        """
-        if not chunk_ids:
-            return
-        now_iso = datetime.now(timezone.utc).isoformat()
-        placeholders = ",".join("?" * len(chunk_ids))
-        with self._write_lock:
-            self._conn.execute(
-                f"UPDATE chunks SET access_count = COALESCE(access_count, 0) + 1, "
-                f"last_accessed_at = ? WHERE id IN ({placeholders})",
-                [now_iso, *chunk_ids],
-            )
-            self._conn.commit()
-
-    def total_access_count(self) -> int:
-        """Return the sum of all access_count values across chunks."""
-        row = self._conn.execute(
-            "SELECT COALESCE(SUM(access_count), 0) AS total FROM chunks"
-        ).fetchone()
-        return int(row["total"])
 
     def record_spread(self, spread: float) -> None:
         """Record a search spread value for adaptive threshold computation.
