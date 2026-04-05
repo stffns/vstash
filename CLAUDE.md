@@ -85,6 +85,7 @@ docs/               # User-facing documentation
 - **ruff** for linting and formatting (enforced in CI)
 - **pytest** for testing (608 tests as of v0.17.0 (adaptive RRF, BEIR benchmark))
 - **Conventional commits** with emoji prefixes (feat, fix, docs, chore, perf)
+- **No AI co-author lines** — do NOT add `Co-Authored-By` or any AI attribution to commit messages
 
 ## Database schema
 
