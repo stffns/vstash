@@ -701,10 +701,15 @@ class VstashStore:
         elif fts_weight is None:
             fts_weight = 1.0 - vec_weight
 
-        # Determine effective pool size — over-fetch when scoring is enabled
+        # Determine effective pool size — only over-fetch when scoring will
+        # actually rerank (γ > 0).  Over-fetching with γ=0 adds ~2x latency
+        # for zero ranking benefit.
         effective_k = top_k
+        _pre_gamma: float | None = None
         if scoring is not None and scoring.enabled:
-            effective_k = max(top_k, scoring.over_fetch)
+            _pre_gamma = _gamma_override if _gamma_override is not None else self.scoring_maturity()
+            if _pre_gamma > 0:
+                effective_k = max(top_k, scoring.over_fetch)
 
         # Adaptive candidate pool — avoid pulling half the corpus on small DBs
         total_chunks = self._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
@@ -868,7 +873,7 @@ class VstashStore:
         _explain_gamma: float | None = None
         _explain_eff_beta: float | None = None
         if scoring is not None and scoring.enabled:
-            gamma = _gamma_override if _gamma_override is not None else self.scoring_maturity()
+            gamma = _pre_gamma if _pre_gamma is not None else self.scoring_maturity()
             if explain:
                 _explain_gamma = gamma
             if gamma > 0:
