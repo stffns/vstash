@@ -268,7 +268,6 @@ def ask(
                     collection=collection,
                     project=project,
                     layer=layer,
-
                     expand_window=1,
                 )
                 chunks = [r for _, r in tagged]
@@ -280,7 +279,6 @@ def ask(
                     collection=collection,
                     project=project,
                     layer=layer,
-
                 )
 
         if not chunks:
@@ -397,7 +395,6 @@ def search(
                     collection=collection,
                     project=project,
                     layer=layer,
-
                     expand_window=1,
                 )
                 chunks = [r for _, r in tagged]
@@ -410,7 +407,6 @@ def search(
                     collection=collection,
                     project=project,
                     layer=layer,
-
                     explain=explain,
                 )
 
@@ -544,7 +540,6 @@ def search(
                 for line in lines:
                     console.print(f"[dim]{line}[/dim]")
                 console.print()
-
 
 
 # ------------------------------------------------------------------ #

@@ -94,7 +94,6 @@ RRF_K = 60
 _ADAPTIVE_RRF_LONG_QUERY = 50
 
 
-
 class VstashStore:
     """SQLite-backed vector + FTS5 hybrid store with RRF ranking.
 
@@ -878,7 +877,6 @@ class VstashStore:
             )
             for r in ranked
         ]
-
 
         return results
 
