@@ -96,3 +96,5 @@ target-version = "py310"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = ["benchmark: BEIR benchmark regression tests (slow, requires cached data)"]
+addopts = "-m 'not benchmark'"

@@ -26,11 +26,13 @@ Evaluated on the [BEIR benchmark](https://github.com/beir-cellar/beir) — the s
 
 | Dataset | vstash (NDCG@10) | ColBERTv2 | BM25 | Dense-only | 
 |---------|:---:|:---:|:---:|:---:|
-| **SciFact** (5K docs) | **0.726** | 0.693 (+4.7%) | 0.665 (+9.1%) | 0.653 (+11.1%) |
-| **SciDocs** (25K docs) | **0.191** | 0.154 (+24.1%) | 0.158 (+21.0%) | 0.163 (+17.2%) |
-| **NFCorpus** (3.6K docs) | **0.353** | 0.344 (+2.5%) | 0.325 (+8.5%) | 0.338 (+4.3%) |
+| **SciFact** (5K docs) | **0.726** | 0.693 (+4.8%) | 0.665 (+9.2%) | 0.653 (+11.2%) |
+| **NFCorpus** (3.6K docs) | **0.359** | 0.344 (+4.4%) | 0.325 (+10.5%) | 0.338 (+6.2%) |
+| **SciDocs** (25K docs) | **0.194** | 0.154 (+26.2%) | 0.158 (+23.0%) | 0.163 (+19.2%) |
+| **FiQA** (57K docs) | **0.392** | 0.356 (+10.0%) | 0.236 (+65.8%) | 0.402 (−2.5%) |
+| **ArguAna** (8.7K docs) | **0.437** | 0.463 (−5.6%) | 0.315 (+38.7%) | 0.584 (−25.2%) |
 
-*Same embedding model (BGE-small 384d) across all comparisons. vstash advantage comes from RRF fusion of vector + keyword search, not from a better model.*
+*Same embedding model (BGE-small 384d) across all comparisons. Adaptive RRF improves all 5 datasets vs fixed weights. Results reproducible via `python -m experiments.beir_benchmark`.*
 
 ---
 
