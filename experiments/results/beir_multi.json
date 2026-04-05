@@ -3,45 +3,45 @@
     "dataset": "scifact",
     "docs": 5183,
     "queries": 300,
-    "ndcg_10": 0.7255,
-    "mrr": 0.6968,
-    "recall_10": 0.8399,
-    "latency_ms": 12.7
+    "ndcg_10": 0.7263,
+    "mrr": 0.6975,
+    "recall_10": 0.8406,
+    "latency_ms": 9.6
   },
   {
     "dataset": "nfcorpus",
     "docs": 3633,
     "queries": 323,
-    "ndcg_10": 0.3525,
-    "mrr": 0.5608,
-    "recall_10": 0.1634,
-    "latency_ms": 4.7
+    "ndcg_10": 0.3590,
+    "mrr": 0.5752,
+    "recall_10": 0.1697,
+    "latency_ms": 3.1
   },
   {
     "dataset": "fiqa",
     "docs": 57638,
     "queries": 648,
-    "ndcg_10": 0.3789,
-    "mrr": 0.4586,
-    "recall_10": 0.4524,
-    "latency_ms": 81.8
+    "ndcg_10": 0.3917,
+    "mrr": 0.4781,
+    "recall_10": 0.4492,
+    "latency_ms": 75.0
   },
   {
     "dataset": "scidocs",
     "docs": 25657,
     "queries": 1000,
-    "ndcg_10": 0.1911,
-    "mrr": 0.3337,
-    "recall_10": 0.1988,
-    "latency_ms": 35.6
+    "ndcg_10": 0.1943,
+    "mrr": 0.3424,
+    "recall_10": 0.1995,
+    "latency_ms": 31.7
   },
   {
     "dataset": "arguana",
     "docs": 8674,
     "queries": 1406,
-    "ndcg_10": 0.3599,
-    "mrr": 0.2348,
-    "recall_10": 0.7575,
-    "latency_ms": 668.3
+    "ndcg_10": 0.4370,
+    "mrr": 0.3029,
+    "recall_10": 0.8514,
+    "latency_ms": 646.3
   }
 ]
