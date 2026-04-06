@@ -238,6 +238,9 @@ class Memory:
         collection: object = _UNSET,
         project: object = _UNSET,
         layer: str | None = None,
+        recency_boost: float = 0.0,
+        added_after: str | None = None,
+        added_before: str | None = None,
     ) -> list[SearchResult]:
         """Semantic search without LLM inference.
 
@@ -250,6 +253,12 @@ class Memory:
             collection: Override the default collection filter. Pass None for no filter.
             project: Override the default project filter. Pass None for no filter.
             layer: Filter by layer tag.
+            recency_boost: Temporal decay multiplier (0.0 = off). When > 0,
+                recent chunks score higher. Use ~0.5 for mild bias, ~1.0 for strong.
+            added_after: ISO date (e.g. '2024-01-15') — only return results
+                from documents added on or after this date.
+            added_before: ISO date (e.g. '2024-06-01') — only return results
+                from documents added before this date.
 
         Returns:
             Ranked list of SearchResult ordered by relevance.
@@ -262,6 +271,9 @@ class Memory:
             collection=self._resolve_collection(collection),
             project=self._resolve_project(project),
             layer=layer,
+            recency_boost=recency_boost,
+            added_after=added_after,
+            added_before=added_before,
         )
 
     def get_chunk(self, chunk_id: int) -> ChunkInfo | None:
