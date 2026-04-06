@@ -1,4 +1,4 @@
-# vstash: Local-First Hybrid Retrieval with Temporal Memory Scoring for LLM Agents
+# vstash: Local-First Hybrid Retrieval with Adaptive Fusion for LLM Agents
 
 **Jayson Steffens**
 [github.com/stffns/vstash](https://github.com/stffns/vstash)
@@ -46,7 +46,7 @@ We introduce **vstash**, a single-file system built on SQLite that addresses all
 
 **Hybrid retrieval.** Reciprocal Rank Fusion (RRF) [Cormack et al., 2009] merges ranked lists without requiring comparable scores. Ma et al. [2024] showed RRF outperforms learned re-rankers on out-of-domain data. Our contribution is the post-RRF normalization step that enables fusion with frequency-based signals.
 
-**Temporal decay in memory.** The Ebbinghaus forgetting curve [1885] inspires exponential decay models. Zep [2025] uses temporal knowledge graphs; MaRS [2025] models cognitive forgetting. PAM [2026] exploits temporal co-occurrence. We apply decay directly in the scoring formula rather than in graph structure.
+**Temporal decay in memory.** The Ebbinghaus forgetting curve [1885] inspires exponential decay models. Zep [2025] uses temporal knowledge graphs; MaRS [2025] models cognitive forgetting. PAM [2026] exploits temporal co-occurrence. We explored decay directly in the scoring formula (§4) but found it did not improve retrieval quality on real benchmarks. In v0.19, we introduced an opt-in temporal recency boost as a simpler alternative.
 
 **Code-aware chunking.** Tree-sitter-based approaches parse full ASTs but require language grammars. Our hybrid 3-tier approach uses tree-sitter when available (25+ languages via optional dependency), parso for Python (base dependency), and regex at column 0 as a fallback — providing graceful degradation from full AST precision to pattern-based detection without hard dependencies.
 
@@ -84,8 +84,7 @@ We introduce **vstash**, a single-file system built on SQLite that addresses all
 │                    │                 ├──► RRF Fusion             │
 │                    └──► FTS5 BM25 ───┘        │                 │
 │                                               ▼                 │
-│                                    Freq+Decay Re-rank           │
-│                                    (over-fetch 50, §4)          │
+│                                    Recency Boost (opt-in, §4)   │
 │                                               │                 │
 │                                               ▼                 │
 │                                    MMR Dedup (§3.4)              │
@@ -110,7 +109,7 @@ We introduce **vstash**, a single-file system built on SQLite that addresses all
 │  journal)│  .journal()) │  list, stats, export) │              │
 └─────────────────────────────────────────────────────────────────┘
 ```
-*Figure 1: vstash architecture (v0.17). All data resides in a single SQLite file per profile (with an optional `.snpv` sidecar when using the snapvec backend). The retrieval pipeline applies adaptive RRF fusion (IDF-weighted), intra-document MMR deduplication, a distance-based relevance signal, and context expansion. Multi-profile support enables isolated databases with federated search across profiles.*
+*Figure 1: vstash architecture (v0.19). All data resides in a single SQLite file per profile (with an optional `.snpv` sidecar when using the snapvec backend). The retrieval pipeline applies adaptive RRF fusion (IDF-weighted), optional recency boost, intra-document MMR deduplication, a distance-based relevance signal, and context expansion. Multi-profile support enables isolated databases with federated search across profiles.*
 
 vstash stores all data in a single SQLite database using WAL mode for concurrent read safety:
 
@@ -149,7 +148,7 @@ vstash integrates with LLM agents through three interfaces:
 
 ### 3.4 Intra-Document MMR Deduplication
 
-After RRF ranking (and optional scoring), multiple chunks from the same document often cluster in the top-*k*. This floods results with redundant content and reduces diversity.
+After RRF ranking (and optional recency boost), multiple chunks from the same document often cluster in the top-*k*. This floods results with redundant content and reduces diversity.
 
 Our initial approach used hard per-document deduplication — keeping only the highest-scoring chunk per document path. This improved diversity from ~3.2 to 5.0 unique documents per top-5 and NDCG@5 from 0.814 to 0.829. However, hard dedup discards *all* secondary chunks from a document, even when they cover semantically distinct topics (e.g., different chapters of a textbook).
 
@@ -207,9 +206,13 @@ Journal entries are designed for ephemeral cross-session context: action items, 
 
 ---
 
-## 4. Frequency + Decay Scoring
+## 4. Temporal Scoring: From Frequency+Decay to Recency Boost
 
-After RRF retrieval, we apply a two-stage re-ranking.
+> **Note (v0.19):** The frequency+decay scoring system described in §4.1–4.5 was implemented in v0.5.0, evaluated extensively on BEIR benchmarks (§8.2, §8.6, §8.10), and **removed in v0.18.0** after failing to improve NDCG on any tested dataset. It is documented here as a negative result (contribution 6 in the abstract). In v0.19.0, it was replaced by a simpler opt-in recency boost (§4.6).
+
+### Historical: Frequency+Decay Re-ranking (v0.5–v0.17)
+
+After RRF retrieval, we applied a two-stage re-ranking.
 
 ### 4.1 Min-Max Normalization
 
@@ -273,6 +276,25 @@ score(c) = α · ŝ_rrf(c) + (β · γ) · min(1, log(1 + f(c)) / log(1 + S))
 The metric requires only one SQL query (`SELECT AVG, MAX, COUNT FROM chunks WHERE access_count > 0`) and a minimum of 10 accessed chunks to activate, avoiding false triggering on tiny corpora.
 
 **Short-circuit optimization.** When γ = 0, the system skips `rerank_with_decay` entirely — no metadata lookup, no decay computation. This means scoring adds zero overhead during the cold start period.
+
+### 4.6 Recency Boost (v0.19)
+
+Based on the negative results from frequency+decay scoring, we designed a simpler temporal mechanism: an opt-in multiplicative recency boost applied post-RRF, pre-MMR:
+
+```
+boosted_score(c) = rrf_score(c) × (1 + B × e^(-0.05 × days_ago(c)))
+```
+
+where *B* is the `recency_boost` parameter (0.0 = off, default) and *days_ago* is computed from the chunk's `created_at` timestamp.
+
+**Key design differences from frequency+decay:**
+
+1. **No access counting.** Popularity (frequency) is orthogonal to relevance — the BEIR results proved this. Recency (temporal proximity) is a genuine signal for agentic memory.
+2. **Multiplicative, not additive.** The boost amplifies existing relevance rather than competing with it. A semantically irrelevant chunk gets zero benefit from recency.
+3. **Opt-in, not global.** Off by default (B=0.0) so pure retrieval is unaffected. Enabled per-call for agentic use cases.
+4. **No maturity gate needed.** Without access counting, there is no cold-start degradation to gate against.
+
+**Temporal filters.** Complementing the soft recency boost, `added_after` and `added_before` parameters provide hard date boundaries at the SQL level, filtering documents by ingestion timestamp before search begins.
 
 ---
 
@@ -647,7 +669,7 @@ NDCG measures retrieval ranking in isolation. To evaluate what users actually ex
 
 **LLM judge for relevance labels.** Tables 2a–2b use an LLM judge (Qwen 3.5:9B) for graded relevance labels with partial human validation (27/30 agreement on a 30-label subset). Full human annotation was not performed. The agreement rate suggests the ablation directions are reliable, but absolute NDCG values should be interpreted with this caveat — particularly the P@3 = 1.000 result, which could be sensitive to label noise.
 
-**Post-RRF scoring does not help.** We explored three approaches to post-RRF enhancement — frequency+decay scoring (§8.10), history-augmented recall, and cross-encoder reranking — all of which failed to improve NDCG on BEIR datasets. The frequency+decay system was removed in v0.17.5 after the scoring lifecycle experiment on SciFact showed -1.6% NDCG with adaptive γ and -9.0% with fixed β=0.5. Off-the-shelf cross-encoders (ms-marco-MiniLM, BGE-reranker-base) also degraded NDCG by -0.3% to -3.1% while adding 560-2100ms latency. The hybrid RRF pipeline with adaptive IDF weighting appears to be at its ceiling for the BGE-small embedding model.
+**Post-RRF scoring does not help.** We explored three approaches to post-RRF enhancement — frequency+decay scoring (§8.10), history-augmented recall, and cross-encoder reranking — all of which failed to improve NDCG on BEIR datasets. The frequency+decay system was removed in v0.18.0 after the scoring lifecycle experiment on SciFact showed -1.6% NDCG with adaptive γ and -9.0% with fixed β=0.5. Off-the-shelf cross-encoders (ms-marco-MiniLM, BGE-reranker-base) also degraded NDCG by -0.3% to -3.1% while adding 560-2100ms latency. The hybrid RRF pipeline with adaptive IDF weighting appears to be at its ceiling for the BGE-small embedding model. In v0.19.0, an opt-in recency boost was introduced for agentic memory use cases where temporal proximity matters (§4.6).
 
 **Discard telemetry awaits field validation.** The search_events table and dismiss tracking (§5.4) are fully instrumented as a designed validation path: once sufficient real-world usage accumulates, dismiss rates across relevance tiers will either confirm or refine the F1 = 0.952 threshold established on our 20-query benchmark. The instrumentation is in place; the signal is prospective.
 
@@ -655,13 +677,13 @@ NDCG measures retrieval ranking in isolation. To evaluate what users actually ex
 
 **Fixed RRF weights degrade on long queries.** The default vec/fts weight ratio (0.6/0.4) assumes short keyword-style queries where FTS5 adds complementary signal. On BEIR ArguAna (avg query length 194 words, max 868), this assumption breaks: keyword matching on 194 OR-joined terms generates noise rather than signal, degrading NDCG@10 by −38.4% vs dense-only and inflating latency to 668ms (vs 35.6ms on the larger SciDocs corpus with 9-word queries). An adaptive weight scheme — reducing FTS weight for longer queries and increasing it for short keyword queries — is a natural extension. The breakpoints (e.g., >50 words → vec 0.9/fts 0.1; <5 words → vec 0.4/fts 0.6) require empirical tuning across diverse benchmarks. See GitHub issue #88.
 
-**MMR λ sensitivity.** The intra-document MMR deduplication (§3.4) uses a fixed λ=0.5, the equilibrium point from the original MMR formulation (Carbonell & Goldstein, 1998). Two candidate adaptive strategies — scaling λ by document length and by embedding variance — introduce second-order tuning problems (calibrating the mapping function) without clear gains: document length does not correlate with chunk similarity (a long novel has diverse chapters; a long API reference has near-identical entries), and embedding variance can be misleading when low variance masks high conceptual diversity. In practice, the negative MMR cutoff (stop selection when best remaining MMR < 0) already provides adaptive behavior: when chunks are diverse, the penalty is small and more pass; when near-duplicate, the penalty eliminates them. This achieves the same effect as dynamic λ without additional hyperparameters. The parameter is user-configurable via `scoring.mmr_lambda` in `vstash.toml` for domain-specific tuning.
+**MMR λ sensitivity.** The intra-document MMR deduplication (§3.4) uses a fixed λ=0.5, the equilibrium point from the original MMR formulation (Carbonell & Goldstein, 1998). Two candidate adaptive strategies — scaling λ by document length and by embedding variance — introduce second-order tuning problems (calibrating the mapping function) without clear gains: document length does not correlate with chunk similarity (a long novel has diverse chapters; a long API reference has near-identical entries), and embedding variance can be misleading when low variance masks high conceptual diversity. In practice, the negative MMR cutoff (stop selection when best remaining MMR < 0) already provides adaptive behavior: when chunks are diverse, the penalty is small and more pass; when near-duplicate, the penalty eliminates them. This achieves the same effect as dynamic λ without additional hyperparameters. The parameter is currently fixed at 0.5; user-configurable λ is deferred pending empirical evidence of benefit.
 
 **Implicit feedback.** Tracking which results the user expands, copies, or follows up on could refine the relevance signal and accelerate scoring warm-up — closing the loop between usage and retrieval quality.
 
 **Multi-modal.** Current chunking and embedding support text only. Image embeddings via CLIP and table-aware chunking are planned for future versions.
 
-**Test coverage.** The system includes 576 tests across 26 test modules covering store operations, ingestion, code splitting, CLI commands, robustness, multi-profile, journal, chunk retrieval, adaptive RRF, and MCP tools, plus 6 BEIR benchmark regression tests. All tests pass on Python 3.10, 3.11, and 3.12 via GitHub Actions CI.
+**Test coverage.** The system includes 591 tests across 26 test modules covering store operations, ingestion, code splitting, CLI commands, robustness, multi-profile, journal, chunk retrieval, adaptive RRF, and MCP tools, plus 6 BEIR benchmark regression tests. All tests pass on Python 3.10, 3.11, and 3.12 via GitHub Actions CI.
 
 ---
 
@@ -669,7 +691,7 @@ NDCG measures retrieval ranking in isolation. To evaluate what users actually ex
 
 We presented vstash, a local-first document memory system that demonstrates six findings and one negative result relevant to LLM agent memory:
 
-1. **Post-RRF scoring does not improve retrieval on real benchmarks.** Frequency+decay reranking (-1.6% NDCG on SciFact), history-augmented recall (0% effect), and off-the-shelf cross-encoder reranking (-0.3% to -3.1%) all failed to improve the hybrid RRF baseline. The maturity gate (γ) successfully prevented catastrophic degradation (fixed β=0.5 caused -9.0%) but the scoring itself added no value. This negative result led to the removal of the scoring pipeline in v0.17.5, simplifying the system to: vector + FTS5 → adaptive RRF → MMR dedup.
+1. **Post-RRF scoring does not improve retrieval on real benchmarks.** Frequency+decay reranking (-1.6% NDCG on SciFact), history-augmented recall (0% effect), and off-the-shelf cross-encoder reranking (-0.3% to -3.1%) all failed to improve the hybrid RRF baseline. The maturity gate (γ) successfully prevented catastrophic degradation (fixed β=0.5 caused -9.0%) but the scoring itself added no value. This negative result led to the removal of the scoring pipeline in v0.18.0, simplifying the system to: vector + FTS5 → adaptive RRF → MMR dedup. In v0.19.0, an opt-in recency boost was introduced as a simpler alternative for agentic memory (§4.6).
 
 2. **Vector distance is a promising autonomous relevance signal.** The cosine distance of the best vector match achieves F1 = 0.952 on a small benchmark (n=20) with zero class overlap, no scoring dependency, and no warm-up period. The result is preliminary (95% CI for accuracy: [0.759, 0.994]) but supersedes our initial score-spread approach (F1 = 0.667, complete class overlap) and eliminates the need for human threshold tuning.
 
@@ -681,7 +703,7 @@ We presented vstash, a local-first document memory system that demonstrates six 
 
 6. **Adaptive RRF improves all 5 BEIR datasets with zero regression.** IDF-based weight adjustment per query (rare terms boost FTS, common terms boost vector) plus adaptive distance cutoff for long queries improves NDCG@10 by +0.1% to +21.4% across SciFact, NFCorpus, SciDocs, FiQA, and ArguAna. On SciFact, vstash achieves NDCG@10 = 0.7263 — exceeding ColBERTv2 (+4.8%) with BGE-small (384d). The ArguAna improvement is primarily from the adaptive distance cutoff — long queries (avg 194 words) produce diffuse embeddings where the default 1.15x cutoff eliminates relevant results; relaxing to 5.0x recovers them.
 
-Beyond these empirical findings, vstash has evolved into a complete agent memory platform: multi-profile isolation enables separate knowledge domains with federated cross-profile search (v0.11), a cross-session journal provides lightweight append-only memory for LLM agent context (v0.12), and direct chunk access via `get_chunk` enables downstream applications to pin specific knowledge atoms by ID (v0.13). The system ships with 16 MCP tools, a Python SDK, CLI, and Claude Code hook integration, validated by 576 tests (plus 6 BEIR benchmark regression tests) across Python 3.10–3.12.
+Beyond these empirical findings, vstash has evolved into a complete agent memory platform: multi-profile isolation enables separate knowledge domains with federated cross-profile search (v0.11), a cross-session journal provides lightweight append-only memory for LLM agent context (v0.12), and direct chunk access via `get_chunk` enables downstream applications to pin specific knowledge atoms by ID (v0.13). The system ships with 16 MCP tools, a Python SDK, CLI, and Claude Code hook integration, validated by 591 tests (plus 6 BEIR benchmark regression tests) across Python 3.10–3.12.
 
 ---
 
