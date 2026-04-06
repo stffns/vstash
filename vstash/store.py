@@ -645,6 +645,9 @@ class VstashStore:
         layer: str | None = None,
         explain: bool = False,
         adaptive_rrf: bool = True,
+        recency_boost: float = 0.0,
+        added_after: str | None = None,
+        added_before: str | None = None,
     ) -> list[SearchResult]:
         """Hybrid search: vector (semantic) + FTS5 (keyword) combined with RRF.
 
@@ -693,6 +696,8 @@ class VstashStore:
             collection=collection,
             project=project,
             layer=layer,
+            added_after=added_after,
+            added_before=added_before,
         )
 
         # --- Vector search ---
@@ -839,6 +844,34 @@ class VstashStore:
 
         # Sort by RRF score descending
         ranked = sorted(scores.values(), key=lambda x: float(x["rrf"]), reverse=True)
+
+        # --- Recency boost (temporal decay) ---
+        # When recency_boost > 0, multiply each chunk's RRF score by a decay
+        # factor based on how recently it was created.  This biases results
+        # toward recent content — useful for agentic memory where the latest
+        # context is more likely to be relevant.
+        if recency_boost > 0 and ranked:
+            now = datetime.now(timezone.utc)
+            chunk_ids = [int(r["id"]) for r in ranked]
+            placeholders = ",".join("?" * len(chunk_ids))
+            rows = self._conn.execute(
+                f"SELECT id, created_at FROM chunks WHERE id IN ({placeholders})",
+                chunk_ids,
+            ).fetchall()
+            created_map = {}
+            for row in rows:
+                try:
+                    created_map[row["id"]] = datetime.fromisoformat(row["created_at"])
+                except (TypeError, ValueError):
+                    pass
+            for r in ranked:
+                cid = int(r["id"])
+                if cid in created_map:
+                    days_ago = max(0.0, (now - created_map[cid]).total_seconds() / 86400)
+                    decay = math.exp(-0.05 * days_ago)
+                    r["rrf"] = float(r["rrf"]) * (1.0 + recency_boost * decay)
+            # Re-sort after boost
+            ranked = sorted(ranked, key=lambda x: float(x["rrf"]), reverse=True)
 
         # Intra-document MMR deduplication: allow multiple chunks from the
         # same document only when they are semantically diverse (e.g. different
@@ -1031,6 +1064,8 @@ class VstashStore:
         project: str | None = None,
         layer: str | None = None,
         tags: str | None = None,
+        added_after: str | None = None,
+        added_before: str | None = None,
     ) -> tuple[list[str], list[str]]:
         """Build filter conditions for document metadata.
 
@@ -1040,6 +1075,8 @@ class VstashStore:
             project: Filter by project tag.
             layer: Filter by layer tag.
             tags: Filter by tag (LIKE match within comma-separated tags).
+            added_after: ISO date — only documents added on or after this date.
+            added_before: ISO date — only documents added before this date.
 
         Returns:
             Tuple of (condition strings, bind parameters).
@@ -1059,6 +1096,12 @@ class VstashStore:
         if tags:
             conditions.append(f"{prefix}tags LIKE ?")
             params.append(f"%{tags}%")
+        if added_after:
+            conditions.append(f"{prefix}added_at >= ?")
+            params.append(added_after)
+        if added_before:
+            conditions.append(f"{prefix}added_at < ?")
+            params.append(added_before)
         return conditions, params
 
     @staticmethod
@@ -1068,6 +1111,8 @@ class VstashStore:
         project: str | None = None,
         layer: str | None = None,
         tags: str | None = None,
+        added_after: str | None = None,
+        added_before: str | None = None,
     ) -> tuple[str, str, list[str]]:
         """Build SQL filter clauses for document metadata.
 
@@ -1081,6 +1126,8 @@ class VstashStore:
             project: Filter by project tag.
             layer: Filter by layer tag.
             tags: Filter by tag (LIKE match).
+            added_after: ISO date — only documents added on or after this date.
+            added_before: ISO date — only documents added before this date.
         """
         conditions_d2, params = VstashStore._get_filter_conditions(
             "d2",
@@ -1088,6 +1135,8 @@ class VstashStore:
             project=project,
             layer=layer,
             tags=tags,
+            added_after=added_after,
+            added_before=added_before,
         )
 
         if not conditions_d2:
@@ -1109,6 +1158,8 @@ class VstashStore:
             project=project,
             layer=layer,
             tags=tags,
+            added_after=added_after,
+            added_before=added_before,
         )
         col_clause = "AND " + " AND ".join(conditions_d)
         return vec_clause, col_clause, params

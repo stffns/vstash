@@ -188,6 +188,31 @@ class ScoringConfig(BaseModel):
         return self
 
 
+class RecencyConfig(BaseModel):
+    """Temporal recency boost for agentic memory.
+
+    When enabled, search results are boosted by a temporal decay factor
+    that favors recently created chunks.  This is independent of the
+    retrieval pipeline (vector + FTS5 + RRF) — it only biases the final
+    ranking toward recency.
+
+    Designed for agentic memory where recent context matters more than
+    old context.  Off by default for pure retrieval; the SDK's
+    ``Memory.search()`` can enable it per call.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    boost: float = Field(
+        default=0.0,
+        ge=0,
+        description=(
+            "Recency boost multiplier (0.0 = off, 0.5 = mild, 1.0 = strong). "
+            "Applied as score *= (1 + boost * exp(-0.05 * days_ago))."
+        ),
+    )
+
+
 class VstashConfig(BaseModel):
     """Root configuration for vstash."""
 
@@ -201,6 +226,7 @@ class VstashConfig(BaseModel):
     chunking: ChunkingConfig = Field(default_factory=ChunkingConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     scoring: ScoringConfig = Field(default_factory=ScoringConfig)
+    recency: RecencyConfig = Field(default_factory=RecencyConfig)
 
     @property
     def cerebras_api_key(self) -> str:
