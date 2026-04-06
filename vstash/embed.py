@@ -206,9 +206,46 @@ def _embed_gemma_one(text: str) -> list[float]:
     return emb[0].tolist()
 
 
+_GEMMA_BATCH_SIZE = 16
+
+
 def _embed_gemma(texts: list[str], model_name: str) -> list[list[float]]:
-    """Embed a batch of texts with EmbeddingGemma."""
-    return [_embed_gemma_one(t) for t in texts]
+    """Embed a batch of texts with EmbeddingGemma using batched inference."""
+    import numpy as np
+
+    if not texts:
+        return []
+
+    session, tokenizer = _init_gemma()
+    all_embeddings: list[list[float]] = []
+
+    for i in range(0, len(texts), _GEMMA_BATCH_SIZE):
+        batch = texts[i : i + _GEMMA_BATCH_SIZE]
+        encodings = tokenizer.encode_batch(batch)
+        # Pad to max length in this batch
+        max_len = max(len(e.ids) for e in encodings)
+        batch_ids = np.array(
+            [e.ids[:max_len] + [0] * (max_len - len(e.ids)) for e in encodings],
+            dtype=np.int64,
+        )
+        batch_mask = np.array(
+            [
+                e.attention_mask[:max_len] + [0] * (max_len - len(e.attention_mask))
+                for e in encodings
+            ],
+            dtype=np.int64,
+        )
+        outputs = session.run(
+            ["sentence_embedding"],
+            {"input_ids": batch_ids, "attention_mask": batch_mask},
+        )
+        embs = outputs[0]
+        norms = np.linalg.norm(embs, axis=1, keepdims=True)
+        norms = np.maximum(norms, 1e-9)
+        embs = embs / norms
+        all_embeddings.extend(embs.tolist())
+
+    return all_embeddings
 
 
 def _query_gemma(text: str, model_name: str) -> list[float]:
