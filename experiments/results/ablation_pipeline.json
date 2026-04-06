@@ -1,0 +1,16 @@
+{
+  "experiment": "ablation_pipeline",
+  "dataset": "scifact",
+  "model": "BAAI/bge-small-en-v1.5",
+  "stages": {
+    "vector_only": 0.7159,
+    "fixed_rrf": 0.7255,
+    "adaptive_rrf_mmr": 0.7263
+  },
+  "deltas": {
+    "fts_rrf": 0.0096,
+    "adaptive_idf_mmr": 0.0008,
+    "total_lift": 0.0104,
+    "total_lift_pct": 1.45
+  }
+}

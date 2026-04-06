@@ -894,3 +894,223 @@ class TestAdaptiveRRF:
             "Adaptive RRF always returned default weights (0.6/0.4) — "
             "the adaptive logic is effectively dead code"
         )
+
+
+# ------------------------------------------------------------------ #
+# batch_mode — deferred IDF cache invalidation                        #
+# ------------------------------------------------------------------ #
+
+
+class TestBatchMode:
+    """Tests for ``VstashStore.batch_mode()`` context manager."""
+
+    def test_single_invalidation_during_batch(self, sample_store: "VstashStore"):
+        """Inside batch_mode, _invalidate_idf_cache defers the actual clear."""
+        dim = sample_store.embedding_dim
+
+        # Prime the IDF cache so we can observe invalidation
+        sample_store.add_document(
+            path="/seed.md",
+            title="seed",
+            chunks=["seed text"],
+            embeddings=[[0.1] * dim],
+        )
+        sample_store._build_idf_cache()
+        assert sample_store._idf_cache is not None
+
+        with sample_store.batch_mode():
+            # Add a doc — should NOT clear the cache yet
+            sample_store.add_document(
+                path="/a.md",
+                title="a",
+                chunks=["alpha"],
+                embeddings=[[0.2] * dim],
+            )
+            assert sample_store._idf_cache is not None, "Cache was cleared inside batch_mode"
+            assert sample_store._batch_dirty is True
+
+            # Add another doc — still deferred
+            sample_store.add_document(
+                path="/b.md",
+                title="b",
+                chunks=["beta"],
+                embeddings=[[0.3] * dim],
+            )
+            assert sample_store._idf_cache is not None
+
+        # After exiting batch_mode, cache should be invalidated
+        assert sample_store._idf_cache is None
+        assert sample_store._batch_dirty is False
+
+    def test_no_invalidation_when_batch_clean(self, sample_store: "VstashStore"):
+        """If no mutations happen inside batch_mode, cache stays intact."""
+        dim = sample_store.embedding_dim
+        sample_store.add_document(
+            path="/seed.md",
+            title="seed",
+            chunks=["seed"],
+            embeddings=[[0.1] * dim],
+        )
+        sample_store._build_idf_cache()
+        assert sample_store._idf_cache is not None
+
+        with sample_store.batch_mode():
+            pass  # no mutations
+
+        assert sample_store._idf_cache is not None, "Cache was invalidated despite no mutations"
+
+    def test_nested_batch_mode(self, sample_store: "VstashStore"):
+        """Nested batch_mode defers invalidation until outermost exits."""
+        dim = sample_store.embedding_dim
+        sample_store.add_document(
+            path="/seed.md",
+            title="seed",
+            chunks=["seed"],
+            embeddings=[[0.1] * dim],
+        )
+        sample_store._build_idf_cache()
+
+        with sample_store.batch_mode():
+            with sample_store.batch_mode():
+                sample_store.add_document(
+                    path="/inner.md",
+                    title="inner",
+                    chunks=["inner"],
+                    embeddings=[[0.2] * dim],
+                )
+                assert sample_store._idf_cache is not None
+            # inner exited but outer still active — should NOT invalidate
+            assert sample_store._idf_cache is not None
+            assert sample_store._batch_depth == 1
+
+        # outermost exited — now invalidate
+        assert sample_store._idf_cache is None
+        assert sample_store._batch_depth == 0
+
+    def test_batch_mode_exception_still_invalidates(self, sample_store: "VstashStore"):
+        """If an exception occurs inside batch_mode, cache is still invalidated."""
+        dim = sample_store.embedding_dim
+        sample_store.add_document(
+            path="/seed.md",
+            title="seed",
+            chunks=["seed"],
+            embeddings=[[0.1] * dim],
+        )
+        sample_store._build_idf_cache()
+
+        try:
+            with sample_store.batch_mode():
+                sample_store.add_document(
+                    path="/x.md",
+                    title="x",
+                    chunks=["x"],
+                    embeddings=[[0.2] * dim],
+                )
+                raise RuntimeError("simulated failure")
+        except RuntimeError:
+            pass
+
+        assert sample_store._idf_cache is None
+        assert sample_store._batch_depth == 0
+        assert sample_store._batch_dirty is False
+
+    def test_search_works_after_batch(self, sample_store: "VstashStore"):
+        """Search returns correct results after batch_mode exits."""
+        dim = sample_store.embedding_dim
+
+        with sample_store.batch_mode():
+            sample_store.add_document(
+                path="/doc.md",
+                title="Python Guide",
+                chunks=["Python is a programming language"],
+                embeddings=[[0.5] * dim],
+            )
+
+        results = sample_store.search([0.5] * dim, "Python programming", top_k=5)
+        assert len(results) >= 1
+        assert results[0].path == "/doc.md"
+
+    def test_delete_inside_batch(self, sample_store: "VstashStore"):
+        """delete_document inside batch_mode defers cache invalidation."""
+        dim = sample_store.embedding_dim
+        sample_store.add_document(
+            path="/to_delete.md",
+            title="ephemeral",
+            chunks=["temporary content"],
+            embeddings=[[0.4] * dim],
+        )
+        sample_store._build_idf_cache()
+        assert sample_store._idf_cache is not None
+
+        with sample_store.batch_mode():
+            sample_store.delete_document("/to_delete.md")
+            assert sample_store._idf_cache is not None, (
+                "Cache was cleared inside batch_mode during delete"
+            )
+
+        assert sample_store._idf_cache is None
+
+    def test_delete_by_prefix_inside_batch(self, sample_store: "VstashStore"):
+        """delete_by_path_prefix inside batch_mode defers cache invalidation."""
+        dim = sample_store.embedding_dim
+        for i in range(3):
+            sample_store.add_document(
+                path=f"/bulk/doc_{i}.md",
+                title=f"bulk {i}",
+                chunks=[f"bulk content {i}"],
+                embeddings=[[0.1 * (i + 1)] * dim],
+            )
+        sample_store._build_idf_cache()
+        assert sample_store._idf_cache is not None
+
+        with sample_store.batch_mode():
+            deleted = sample_store.delete_by_path_prefix("/bulk/")
+            assert deleted == 3
+            assert sample_store._idf_cache is not None
+
+        assert sample_store._idf_cache is None
+
+    def test_nested_exception_with_recovery(self, sample_store: "VstashStore"):
+        """Inner batch raises, outer batch catches and continues normally."""
+        dim = sample_store.embedding_dim
+        sample_store.add_document(
+            path="/seed.md",
+            title="seed",
+            chunks=["seed"],
+            embeddings=[[0.1] * dim],
+        )
+        sample_store._build_idf_cache()
+
+        with sample_store.batch_mode():
+            sample_store.add_document(
+                path="/before.md",
+                title="before",
+                chunks=["before"],
+                embeddings=[[0.2] * dim],
+            )
+            try:
+                with sample_store.batch_mode():
+                    sample_store.add_document(
+                        path="/inner.md",
+                        title="inner",
+                        chunks=["inner"],
+                        embeddings=[[0.3] * dim],
+                    )
+                    raise ValueError("inner failure")
+            except ValueError:
+                pass
+
+            # Outer batch still active — cache still deferred
+            assert sample_store._idf_cache is not None
+            assert sample_store._batch_depth == 1
+
+            sample_store.add_document(
+                path="/after.md",
+                title="after",
+                chunks=["after"],
+                embeddings=[[0.4] * dim],
+            )
+
+        # Outermost exited — now invalidated
+        assert sample_store._idf_cache is None
+        assert sample_store._batch_depth == 0

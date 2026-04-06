@@ -1,0 +1,14 @@
+[
+  {
+    "dataset": "nfcorpus",
+    "vector_only": 0.3334,
+    "fixed_rrf": 0.3525,
+    "full": 0.359
+  },
+  {
+    "dataset": "scidocs",
+    "vector_only": 0.1906,
+    "fixed_rrf": 0.1911,
+    "full": 0.1943
+  }
+]
