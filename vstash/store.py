@@ -17,7 +17,7 @@ import sqlite3
 import struct
 from datetime import datetime, timezone
 from pathlib import Path
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from types import TracebackType
 
@@ -1528,11 +1528,15 @@ class VstashStore:
         self._idf_cache = None
 
     @contextmanager
-    def batch_mode(self) -> Generator[None, None, None]:
+    def batch_mode(self) -> Iterator[None]:
         """Context manager that defers IDF cache invalidation.
 
         Use this when adding or deleting many documents in a loop to avoid
         redundant cache rebuilds.  Supports re-entrant (nested) usage.
+
+        Not thread-safe — intended for single-threaded batch operations.
+        Searches executed during a batch may use stale IDF weights; the
+        cache is refreshed once the outermost batch exits.
 
         Example::
 

@@ -1029,3 +1029,88 @@ class TestBatchMode:
         results = sample_store.search([0.5] * dim, "Python programming", top_k=5)
         assert len(results) >= 1
         assert results[0].path == "/doc.md"
+
+    def test_delete_inside_batch(self, sample_store: "VstashStore"):
+        """delete_document inside batch_mode defers cache invalidation."""
+        dim = sample_store.embedding_dim
+        sample_store.add_document(
+            path="/to_delete.md",
+            title="ephemeral",
+            chunks=["temporary content"],
+            embeddings=[[0.4] * dim],
+        )
+        sample_store._build_idf_cache()
+        assert sample_store._idf_cache is not None
+
+        with sample_store.batch_mode():
+            sample_store.delete_document("/to_delete.md")
+            assert sample_store._idf_cache is not None, (
+                "Cache was cleared inside batch_mode during delete"
+            )
+
+        assert sample_store._idf_cache is None
+
+    def test_delete_by_prefix_inside_batch(self, sample_store: "VstashStore"):
+        """delete_by_path_prefix inside batch_mode defers cache invalidation."""
+        dim = sample_store.embedding_dim
+        for i in range(3):
+            sample_store.add_document(
+                path=f"/bulk/doc_{i}.md",
+                title=f"bulk {i}",
+                chunks=[f"bulk content {i}"],
+                embeddings=[[0.1 * (i + 1)] * dim],
+            )
+        sample_store._build_idf_cache()
+        assert sample_store._idf_cache is not None
+
+        with sample_store.batch_mode():
+            deleted = sample_store.delete_by_path_prefix("/bulk/")
+            assert deleted == 3
+            assert sample_store._idf_cache is not None
+
+        assert sample_store._idf_cache is None
+
+    def test_nested_exception_with_recovery(self, sample_store: "VstashStore"):
+        """Inner batch raises, outer batch catches and continues normally."""
+        dim = sample_store.embedding_dim
+        sample_store.add_document(
+            path="/seed.md",
+            title="seed",
+            chunks=["seed"],
+            embeddings=[[0.1] * dim],
+        )
+        sample_store._build_idf_cache()
+
+        with sample_store.batch_mode():
+            sample_store.add_document(
+                path="/before.md",
+                title="before",
+                chunks=["before"],
+                embeddings=[[0.2] * dim],
+            )
+            try:
+                with sample_store.batch_mode():
+                    sample_store.add_document(
+                        path="/inner.md",
+                        title="inner",
+                        chunks=["inner"],
+                        embeddings=[[0.3] * dim],
+                    )
+                    raise ValueError("inner failure")
+            except ValueError:
+                pass
+
+            # Outer batch still active — cache still deferred
+            assert sample_store._idf_cache is not None
+            assert sample_store._batch_depth == 1
+
+            sample_store.add_document(
+                path="/after.md",
+                title="after",
+                chunks=["after"],
+                embeddings=[[0.4] * dim],
+            )
+
+        # Outermost exited — now invalidated
+        assert sample_store._idf_cache is None
+        assert sample_store._batch_depth == 0
