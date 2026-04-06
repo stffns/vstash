@@ -91,14 +91,11 @@ chunks = mem.search("project decisions", recency_boost=0.5, added_after="2024-01
 
 ### CLI
 
-```bash
-vstash search "deploy status" --recency-boost 1.0
-vstash search "Q1 goals" --added-after 2024-01-01 --added-before 2024-04-01
-```
+Recency boost and temporal filters are available via the Python SDK and MCP tools. CLI support for `--recency-boost`, `--added-after`, and `--added-before` flags is planned.
 
 ### MCP Server
 
-Both `vstash_search` and `vstash_ask` accept `recency_boost`, `added_after`, and `added_before` parameters.
+`vstash_search` accepts `recency_boost`, `added_after`, and `added_before`. `vstash_ask` accepts `added_after` and `added_before` (no recency boost — ask is pure retrieval + LLM).
 
 ---
 
@@ -125,7 +122,7 @@ MMR(c) = λ · score(c) − (1 − λ) · max_sim(c, selected_same_doc)
 
 | Term | Meaning |
 |------|---------|
-| `λ` (mmr_lambda) | Balance between relevance and diversity (hardcoded 0.5) |
+| `λ` | Balance between relevance and diversity (fixed at 0.5) |
 | `score(c)` | RRF score (or boosted score if recency is active) |
 | `max_sim` | Maximum cosine similarity to already-selected chunks from the same document |
 
@@ -149,6 +146,6 @@ This is applied in CLI (search, ask, chat) and MCP server.
 
 ## Historical Note
 
-v0.5.0–v0.17 included a frequency+decay scoring system that re-ranked results using access counts and temporal decay with an adaptive maturity gate (γ). This was removed in v0.18.0 after benchmarks showed it degraded NDCG on all tested datasets (SciFact: -1.6%, scoring grid: 0%, cross-encoder: -0.3% to -3.1%). The database columns (`access_count`, `last_accessed_at`, `created_at`) are preserved for backward compatibility.
+v0.5.0–v0.17 included a frequency+decay scoring system that re-ranked results using access counts and temporal decay with an adaptive maturity gate (γ). This was removed in v0.18.0 after benchmarks showed it degraded NDCG on all tested datasets (SciFact: -1.6%, scoring grid: 0%, cross-encoder: -0.3% to -3.1%). The database columns `access_count` and `last_accessed_at` are preserved for backward compatibility. The `created_at` column is actively used by the v0.19 recency boost computation.
 
 The v0.19.0 recency boost is a simpler, more targeted replacement: pure temporal decay without access counting, opt-in rather than global, and applied as a multiplicative boost rather than a weighted blend.

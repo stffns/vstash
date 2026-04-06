@@ -43,8 +43,8 @@ The vstash tools should appear in Claude's tool list.
 |------|-------------|
 | `vstash_add(path)` | Ingest a file, directory, or URL into memory |
 | `vstash_remember(text, title)` | Ingest text directly without a file |
-| `vstash_ask(query, top_k, added_after?, added_before?)` | Semantic search + LLM-generated answer with sources and temporal filters |
-| `vstash_search(query, top_k, recency_boost?, added_after?, added_before?)` | Hybrid search with context expansion, recency boost, and temporal filters |
+| `vstash_ask(query, ...)` | Semantic search + LLM answer with temporal filters |
+| `vstash_search(query, ...)` | Hybrid search with recency boost, temporal filters, and context expansion |
 | `vstash_get_chunk(chunk_id)` | Retrieve a single chunk by database row ID |
 | `vstash_get_document_chunks(path, collection?)` | Get all chunk texts for a document by path |
 | `vstash_list()` | List all ingested documents |

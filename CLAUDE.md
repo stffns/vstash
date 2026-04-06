@@ -69,7 +69,7 @@ docs/               # User-facing documentation
 - **Hybrid search**: Vector (sqlite-vec cosine) + FTS5 keyword, combined via Reciprocal Rank Fusion (k=60).
 - **Adaptive RRF**: IDF-based weight adjustment per query. Rare terms boost FTS; common terms boost vector. Long queries (>50 words) relax distance cutoff. Cached via fts5vocab.
 - **Pipeline**: vector search → FTS5 keyword → adaptive RRF fusion (IDF-weighted) → optional recency boost → MMR dedup. Frequency+decay scoring was evaluated and removed in v0.18.0. Replaced by opt-in recency boost in v0.19.0.
-- **MMR dedup**: Intra-document Maximal Marginal Relevance replaces hard per-document dedup. `mmr_lambda=0.5` default, configurable.
+- **MMR dedup**: Intra-document Maximal Marginal Relevance replaces hard per-document dedup. `mmr_lambda=0.5` (fixed).
 - **Embeddings**: FastEmbed (ONNX) or MLX (Apple Silicon). Default `BAAI/bge-small-en-v1.5` (384 dims). Multilingual models available via `vstash reindex`.
 - **Code-aware chunking**: Hybrid 3-tier splitting — tree-sitter AST (25+ languages, optional) → parso AST (Python) → regex (6 languages). Graceful degradation. See `code_split.py`.
 - **Single SQLite file**: WAL mode, foreign keys, all data in one `.db`.

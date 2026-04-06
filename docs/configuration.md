@@ -152,7 +152,7 @@ boost = 0.0   # off by default — pure retrieval unaffected
 # boost = 1.0 # strong recency bias
 ```
 
-The `recency_boost` parameter can also be set per-call in `store.search()`, `Memory.search()`, and MCP tools, overriding the config default.
+The `recency_boost` parameter can also be set per-call in `store.search()`, `Memory.search()`, and `vstash_search` MCP tool, overriding the config default. `vstash_ask` supports temporal filters but not recency boost.
 
 ### Temporal filters
 

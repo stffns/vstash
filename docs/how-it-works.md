@@ -128,7 +128,7 @@ MMR(c) = λ · score(c) − (1 − λ) · max_sim(c, selected_same_doc)
 
 Chunks from *different* documents compete purely on score. When multiple chunks from the *same* document are candidates, the second is penalized by its cosine similarity to the first. If two sections are semantically diverse, both appear; if they're near-duplicates, the second is suppressed.
 
-Configure with `mmr_lambda` (default 0.5): 0.0 = maximum diversity, 1.0 = one chunk per document (old hard dedup behavior). See [Recency Boost & Temporal Filters](scoring.md#intra-document-mmr-deduplication) for the full explanation.
+MMR lambda is fixed at 0.5, balancing relevance and diversity. See [Recency Boost & Temporal Filters](scoring.md#intra-document-mmr-deduplication) for the full explanation.
 
 ### Distance-Based Relevance Signal
 
