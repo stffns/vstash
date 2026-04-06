@@ -538,10 +538,10 @@ async function sendChat() {
       const {done, value} = await reader.read();
       if (done) break;
       buf += decoder.decode(value, {stream: true});
-      const parts = buf.split('\n\n');
+      const parts = buf.split(/\r?\n\r?\n/);
       buf = parts.pop();
       for (const part of parts) {
-        const dataLine = part.split('\n').find(l => l.startsWith('data: '));
+        const dataLine = part.split(/\r?\n/).find(l => l.startsWith("data: "));
         if (!dataLine) continue;
         try {
           const evt = JSON.parse(dataLine.slice(6));
