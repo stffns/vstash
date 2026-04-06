@@ -461,7 +461,7 @@ Share memory across machines and expose to non-Python tools.
 - **sqlite-vec** is new and underused — devs will want to see it in production
 - **Backend agnostic** — Cerebras for speed, OpenAI for flexibility, Ollama for privacy
 - **Dead simple** — `pip install vstash`, one config file, running in 5 minutes
-- **Typed and tested** — Pydantic v2 models + 556 pytest tests across 14 modules
+- **Typed and tested** — Pydantic v2 models + 591 pytest tests across 26 modules
 - **Benchmarked** — E2E timing, grep comparison, chunking A/B, SDK overhead, scalability to 500K chunks
 
 ---

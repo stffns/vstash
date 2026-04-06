@@ -3,7 +3,7 @@
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![PyPI](https://img.shields.io/pypi/v/vstash)](https://pypi.org/project/vstash/)
 [![python](https://img.shields.io/badge/python-3.10+-blue)]()
-[![tests](https://img.shields.io/badge/tests-576_passing-brightgreen)]()
+[![tests](https://img.shields.io/badge/tests-591_passing-brightgreen)]()
 [![BEIR SciFact](https://img.shields.io/badge/BEIR_SciFact-NDCG@10_0.726-brightgreen)]()
 [![MCP](https://img.shields.io/badge/MCP-16_tools-blue)]()
 [![latency](https://img.shields.io/badge/latency-<25ms_@10K_chunks-brightgreen)]()
@@ -44,18 +44,28 @@ Evaluated on the [BEIR benchmark](https://github.com/beir-cellar/beir) — the s
 | Vector store | sqlite-vec | Single `.db` file, cosine similarity, zero deps |
 | Keyword search | FTS5 (SQLite) | Exact matches, built into SQLite |
 | Hybrid ranking | Reciprocal Rank Fusion | Semantic + keyword fusion — beats both alone |
-| Scoring | Frequency + temporal decay | Results improve with usage, adaptive maturity gate |
+| Recency | Optional temporal boost | Recent content ranks higher for agentic memory (off by default) |
 | Dedup | Intra-document MMR | Diverse sections from long docs, not redundant chunks |
 | Inference | Local auto-detect / Cloud | Ollama, LM Studio, Cerebras, OpenAI — all optional |
 
 **Zero cloud required for search. Inference is optional.**
 
+### What's new in v0.19
+
+- **Recency boost** — `recency_boost` parameter on `search()` applies temporal decay favoring recent chunks. Designed for agentic memory. Off by default so pure retrieval is unaffected.
+- **Temporal filters** — `added_after`/`added_before` ISO date parameters for hard time boundaries on all search surfaces.
+- **`RecencyConfig`** — new `[recency]` section in `vstash.toml`.
+- **591 tests** across 26 test modules.
+
+### What's new in v0.18
+
+- **Batch IDF cache** — `store.batch_mode()` context manager defers cache invalidation during bulk ingest (50x → 1x invalidation).
+- **Scoring pipeline removed** — frequency+decay, history recall, and cross-encoder reranking all evaluated and removed after failing to improve NDCG on BEIR datasets. Replaced by the simpler recency boost in v0.19.
+
 ### What's new in v0.17
 
 - **Dynamic chunk_size** — `Memory(chunk_size=2048)` or `vstash add --chunk-size 2048`. Per-document override without modifying config. Validation: overlap < chunk_size.
 - **Adaptive RRF** — IDF-based weight adjustment per query. Rare terms boost keyword search, common terms boost vector search. Long queries relax distance cutoff. Improves all 5 BEIR datasets.
-- **576 tests** across 26 test modules (+ 6 benchmark regression tests).
-- **Scoring pipeline removed** — frequency+decay, history recall, and cross-encoder reranking all evaluated and removed after failing to improve NDCG on BEIR datasets.
 
 ### What's new in v0.16
 
@@ -304,7 +314,7 @@ Run all experiments: `python -m experiments.run_all`
 |---|---|
 | [Configuration](docs/configuration.md) | Full TOML reference — all sections and options |
 | [How It Works](docs/how-it-works.md) | Ingestion pipeline, search pipeline, chunking strategies, RRF |
-| [Memory Scoring](docs/scoring.md) | Frequency + decay re-ranking — formula, tuning, disabling |
+| [Recency & Temporal Filters](docs/scoring.md) | Recency boost, temporal date filters, MMR dedup |
 | [MCP Server](docs/mcp-server.md) | MCP integration — 16 tools for any MCP-compatible client |
 | [Agent Integration](docs/claude-integration.md) | Claude Code, Claude Desktop, and other LLM agents |
 | [LangChain](docs/langchain.md) | VstashRetriever for chains and agents |
@@ -319,7 +329,7 @@ Run all experiments: `python -m experiments.run_all`
 - **Phase 2 ✅:** Usability — MCP server, collections, watch mode, metadata, export
 - **Phase 3 ✅:** Python SDK — `from vstash import Memory`
 - **Phase 4 ✅:** LangChain integration — `VstashRetriever`
-- **Phase 5 ✅:** Memory scoring — frequency + temporal decay re-ranking
+- **Phase 5 ✅:** Memory scoring — recency boost + temporal filters (v0.19)
 - **Phase 6 ✅:** Retrieval quality — distance-based relevance signal, document dedup, context expansion
 - **Phase 7 ✅:** Multilingual — cross-lingual embeddings, `vstash reindex`, MMR dedup
 - **Phase 8 ✅:** Hybrid code splitting — tree-sitter + parso + regex, 25+ languages
