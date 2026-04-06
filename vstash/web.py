@@ -40,34 +40,29 @@ logger = logging.getLogger(__name__)
 
 _config: VstashConfig | None = None
 _store: VstashStore | None = None
-_lock = threading.Lock()
 
 
 def _get_config() -> VstashConfig:
     global _config  # noqa: PLW0603
     if _config is None:
-        with _lock:
-            if _config is None:
-                _config = load_config()
+        _config = load_config()
     return _config
 
 
 def _get_store() -> VstashStore:
     global _store  # noqa: PLW0603
     if _store is None:
-        with _lock:
-            if _store is None:
-                from .profile import resolve_db_path
+        from .profile import resolve_db_path
 
-                cfg = _get_config()
-                dim = get_embedding_dim(cfg.embeddings.model)
-                db_path = str(resolve_db_path(config_db_path=cfg.storage.db_path))
-                _store = VstashStore(
-                    db_path,
-                    embedding_dim=dim,
-                    vector_backend=cfg.storage.vector_backend,
-                    snapvec_bits=cfg.storage.snapvec_bits,
-                )
+        cfg = _get_config()
+        dim = get_embedding_dim(cfg.embeddings.model)
+        db_path = str(resolve_db_path(config_db_path=cfg.storage.db_path))
+        _store = VstashStore(
+            db_path,
+            embedding_dim=dim,
+            vector_backend=cfg.storage.vector_backend,
+            snapvec_bits=cfg.storage.snapvec_bits,
+        )
     return _store
 
 
@@ -278,6 +273,8 @@ async def index(request: Request) -> HTMLResponse:
 
 def create_app() -> Starlette:
     """Create the Starlette app with all routes."""
+    # Eagerly initialize store to avoid lazy-init deadlocks with asyncio
+    _get_store()
     return Starlette(
         routes=[
             Route("/", index),
