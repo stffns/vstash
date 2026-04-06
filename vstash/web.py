@@ -124,7 +124,7 @@ async def api_search(request: Request) -> JSONResponse:
 
 async def api_chat(request: Request) -> Any:
     """POST /api/chat — streaming chat with memory context (SSE)."""
-    from sse_starlette.sse import EventSourceResponse
+    from starlette.responses import StreamingResponse
 
     body = await request.json()
     query = body.get("query", "")
@@ -142,25 +142,33 @@ async def api_chat(request: Request) -> Any:
     chunks = store.expand_context(chunks, window=1)
     sources = list({c.path: {"title": c.title, "path": c.path} for c in chunks}.values())
 
+    if not chunks:
+
+        async def no_results():
+            yield f"data: {json.dumps({'token': 'No relevant documents found in memory.'})}\n\n"
+            yield f"data: {json.dumps({'done': True, 'sources': []})}\n\n"
+
+        return StreamingResponse(no_results(), media_type="text/event-stream")
+
     # Build history
     _chat_history.append({"role": "user", "content": query})
 
-    async def event_generator():
+    async def generate():
         full_response = ""
         try:
             for token in chat_stream(query, chunks, cfg, history=_chat_history[:-1]):
                 full_response += token
-                yield {"event": "token", "data": json.dumps({"token": token})}
+                yield f"data: {json.dumps({'token': token})}\n\n"
             _chat_history.append({"role": "assistant", "content": full_response})
-            yield {
-                "event": "done",
-                "data": json.dumps({"sources": sources}),
-            }
+            yield f"data: {json.dumps({'done': True, 'sources': sources})}\n\n"
         except Exception as exc:
             logger.exception("Chat stream error")
-            yield {"event": "error", "data": json.dumps({"error": str(exc)})}
+            msg = str(exc)
+            if "Connection refused" in msg or "connect" in msg.lower():
+                msg = f"LLM backend not available. Check your inference config (current: {cfg.inference.backend}). Error: {msg}"
+            yield f"data: {json.dumps({'error': msg})}\n\n"
 
-    return EventSourceResponse(event_generator())
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 async def api_chat_reset(request: Request) -> JSONResponse:
@@ -517,6 +525,12 @@ async function sendChat() {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({query}),
     });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({error: 'Server error'}));
+      aMsg.textContent = err.error || 'Request failed';
+      chatSend.disabled = false;
+      return;
+    }
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = '';
@@ -524,34 +538,35 @@ async function sendChat() {
       const {done, value} = await reader.read();
       if (done) break;
       buf += decoder.decode(value, {stream: true});
-      const lines = buf.split('\\n');
-      buf = lines.pop();
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const raw = line.slice(6);
-          try {
-            const evt = JSON.parse(raw);
-            if (evt.token) {
-              aMsg.textContent += evt.token;
-              msgBox.scrollTop = msgBox.scrollHeight;
-            }
-            if (evt.sources) {
-              const srcDiv = document.createElement('div');
-              srcDiv.className = 'sources';
-              srcDiv.innerHTML = 'Sources: ' + evt.sources.map(s =>
-                `<a title="${esc(s.path)}">${esc(s.title)}</a>`
-              ).join(', ');
-              aMsg.appendChild(srcDiv);
-            }
-            if (evt.error) {
-              aMsg.textContent += '\\n[Error: ' + evt.error + ']';
-            }
-          } catch(e) {}
-        }
+      const parts = buf.split('\n\n');
+      buf = parts.pop();
+      for (const part of parts) {
+        const dataLine = part.split('\n').find(l => l.startsWith('data: '));
+        if (!dataLine) continue;
+        try {
+          const evt = JSON.parse(dataLine.slice(6));
+          if (evt.token) {
+            aMsg.textContent += evt.token;
+            msgBox.scrollTop = msgBox.scrollHeight;
+          }
+          if (evt.done && evt.sources) {
+            const srcDiv = document.createElement('div');
+            srcDiv.className = 'sources';
+            srcDiv.innerHTML = 'Sources: ' + evt.sources.map(s =>
+              `<a title="${esc(s.path)}">${esc(s.title)}</a>`
+            ).join(', ');
+            aMsg.appendChild(srcDiv);
+          }
+          if (evt.error) {
+            aMsg.textContent = evt.error;
+            aMsg.style.color = '#f85149';
+          }
+        } catch(e) {}
       }
     }
   } catch(e) {
     aMsg.textContent = 'Connection error: ' + e.message;
+    aMsg.style.color = '#f85149';
   }
   chatSend.disabled = false;
   chatInput.focus();
