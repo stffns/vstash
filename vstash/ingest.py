@@ -816,14 +816,17 @@ def ingest_directory(
     )
 
     results: list[IngestResult] = []
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[bold]Processing directory[/bold]"),
-        BarColumn(),
-        MofNCompleteColumn(),
-        TimeElapsedColumn(),
-        console=console,
-    ) as progress:
+    with (
+        store.batch_mode(),
+        Progress(
+            SpinnerColumn(),
+            TextColumn("[bold]Processing directory[/bold]"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            console=console,
+        ) as progress,
+    ):
         task = progress.add_task("", total=len(files))
         for f in files:
             progress.update(task, description=f.name)

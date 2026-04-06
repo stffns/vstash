@@ -17,7 +17,8 @@ import sqlite3
 import struct
 from datetime import datetime, timezone
 from pathlib import Path
-from collections.abc import Callable
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
 from types import TracebackType
 
 import threading
@@ -126,6 +127,8 @@ class VstashStore:
 
         # --- Adaptive RRF cache ---
         self._idf_cache: tuple[dict[str, float], int] | None = None
+        self._batch_depth: int = 0
+        self._batch_dirty: bool = False
 
         # --- SnapVec backend (optional) ---
         self._snap: SnapIndex | None = None  # type: ignore[name-defined]
@@ -1513,8 +1516,39 @@ class VstashStore:
         return self._idf_cache
 
     def _invalidate_idf_cache(self) -> None:
-        """Clear the IDF cache after document changes."""
+        """Clear the IDF cache after document changes.
+
+        When inside a batch_mode() context, the actual invalidation is
+        deferred until the batch exits so that bulk ingestion does not
+        trigger repeated cache rebuilds.
+        """
+        if self._batch_depth > 0:
+            self._batch_dirty = True
+            return
         self._idf_cache = None
+
+    @contextmanager
+    def batch_mode(self) -> Generator[None, None, None]:
+        """Context manager that defers IDF cache invalidation.
+
+        Use this when adding or deleting many documents in a loop to avoid
+        redundant cache rebuilds.  Supports re-entrant (nested) usage.
+
+        Example::
+
+            with store.batch_mode():
+                for path in paths:
+                    store.add_document(...)
+            # IDF cache is invalidated once here
+        """
+        self._batch_depth += 1
+        try:
+            yield
+        finally:
+            self._batch_depth -= 1
+            if self._batch_depth == 0 and self._batch_dirty:
+                self._idf_cache = None
+                self._batch_dirty = False
 
     def _compute_adaptive_rrf_params(
         self, query_text: str, default_cutoff: float = 1.15
