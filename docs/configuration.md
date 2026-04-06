@@ -137,32 +137,36 @@ Validation: `chunk_size` must be positive, `chunk_overlap` must be non-negative 
 
 ---
 
-## `[scoring]`
+## `[recency]`
 
-Frequency + temporal decay re-ranking. See [Memory Scoring](scoring.md) for a full explanation.
+*Added in v0.19.0.* Temporal recency boost for agentic memory. See [Recency Boost & Temporal Filters](scoring.md) for details.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `enabled` | bool | `true` | Enable frequency + decay re-ranking |
-| `alpha` | float | `0.8` | Weight for semantic similarity (RRF) |
-| `beta` | float | `0.2` | Weight for access history |
-| `decay_lambda` | float | `0.05` | Temporal decay rate (higher = faster forgetting) |
-| `over_fetch` | int | `50` | Candidates to retrieve before re-ranking |
-| `track_access` | bool | `true` | Record access counts on each search |
-| `mmr_lambda` | float | `0.5` | MMR diversity for intra-document dedup. 1.0 = hard dedup (one chunk per doc), 0.0 = maximum diversity |
+| `boost` | float | `0.0` | Default recency boost multiplier. 0.0 = off, 0.5 = mild, 1.0 = strong. Applied as `score *= (1 + boost * exp(-0.05 * days_ago))` |
 
 ```toml
-[scoring]
-enabled = true
-alpha = 0.8
-beta = 0.2
-decay_lambda = 0.05
-over_fetch = 50
-track_access = true
-mmr_lambda = 0.5
+[recency]
+boost = 0.0   # off by default — pure retrieval unaffected
+# boost = 0.5 # mild recency bias for agentic memory
+# boost = 1.0 # strong recency bias
 ```
 
-Set `enabled = false` to revert to pure RRF ranking. Set `mmr_lambda = 1.0` to restore the pre-v0.8 hard dedup behavior (at most one chunk per document).
+The `recency_boost` parameter can also be set per-call in `store.search()`, `Memory.search()`, and `vstash_search` MCP tool, overriding the config default. `vstash_ask` supports temporal filters but not recency boost.
+
+### Temporal filters
+
+`added_after` and `added_before` parameters are available on all search surfaces (store, SDK, MCP). These are per-call only — no config setting.
+
+```python
+mem.search("meeting notes", added_after="2024-06-01", added_before="2024-12-31")
+```
+
+---
+
+## `[scoring]` (deprecated)
+
+The `[scoring]` section from v0.5–v0.17 is still parsed for backward compatibility — existing `vstash.toml` files won't error. However, all scoring parameters are ignored. The frequency+decay scoring pipeline was removed in v0.18.0 and replaced by the simpler `[recency]` boost in v0.19.0.
 
 ---
 

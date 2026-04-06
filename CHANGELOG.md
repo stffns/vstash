@@ -2,6 +2,69 @@
 
 All notable changes to vstash are documented here.
 
+## [0.19.0] — 2026-04-06
+
+### Added
+- **Recency boost** — `recency_boost` parameter on `store.search()`, `Memory.search()`, and MCP `vstash_search`. Applies temporal decay to RRF scores, favoring recently created chunks. Off by default (0.0) so pure retrieval is unaffected.
+- **Temporal filters** — `added_after`/`added_before` ISO date parameters for hard time boundaries on all search surfaces (store, SDK, MCP search, MCP ask).
+- **`RecencyConfig`** — new `[recency]` config section in `vstash.toml` with configurable `boost` default.
+- 7 new tests for recency boost and temporal filters.
+
+### Changed
+- 591 tests (up from 584).
+
+---
+
+## [0.18.2] — 2026-04-06
+
+### Added
+- **Batch IDF cache invalidation** — `store.batch_mode()` context manager defers IDF cache invalidation during bulk operations. `ingest_directory` now triggers 1 invalidation instead of N.
+- 8 new tests for batch_mode: deferral, nesting, exception safety, deletes, search correctness.
+
+### Fixed
+- Insecure `tempfile.mktemp()` replaced with `mkstemp()` in ablation experiment.
+- Guaranteed cleanup with `try/finally` in ablation experiment.
+
+### Changed
+- 584 tests (up from 576).
+
+---
+
+## [0.18.1] — 2026-04-05
+
+### Added
+- **Multi-dataset ablation experiment** — pipeline lift measured across SciFact, NFCorpus, SciDocs, FiQA, ArguAna.
+- **Pipeline ablation on BEIR SciFact** — vector-only → +FTS/RRF → +adaptive IDF+MMR.
+
+---
+
+## [0.18.0] — 2026-04-05
+
+### Removed
+- **Frequency+decay scoring pipeline** — `rerank_with_decay()`, `scoring_maturity()`, `track_access()`, `total_access_count()` removed after failing to improve NDCG on any benchmark (SciFact: -1.6%, scoring grid: 0%, cross-encoder: -0.3% to -3.1%).
+- Over-fetch logic, scoring parameters on `search()`, scoring fields in `ExplainInfo`.
+- `test_scoring.py` and `test_scoring_e2e.py` (850+ lines).
+
+### Kept
+- `access_count`, `last_accessed_at`, `created_at` columns on chunks (backward compat, zero cost).
+- `ScoringConfig` class in `config.py` (backward compat for existing `vstash.toml` files).
+- All scoring experiment files (historical evidence).
+
+### Changed
+- Pipeline simplified: vector + FTS5 → adaptive RRF → MMR dedup.
+- 576 tests (down from ~580 due to removed scoring tests, up from additions).
+
+---
+
+## [0.17.5] — 2026-04-04
+
+### Added
+- **Dynamic chunk_size** — `Memory(chunk_size=2048)` or `vstash add --chunk-size 2048`. Per-document override without modifying config.
+- **Adaptive RRF** — IDF-based weight adjustment per query. Rare terms boost FTS weight; common terms boost vector weight. Long queries relax distance cutoff.
+- 6 benchmark regression tests for BEIR NDCG@10 thresholds.
+
+---
+
 ## [0.10.4] — 2026-04-01
 
 ### Added
