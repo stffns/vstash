@@ -1791,21 +1791,31 @@ class VstashStore:
             return results
 
         expanded = []
+        chunk_ids = [r.chunk_id for r in results]
+
+        # Batch lookup doc_id for all search results to avoid N+1 slow queries
+        doc_ids: dict[int, str] = {}
+        if chunk_ids:
+            # Batch queries in chunks of _SQLITE_PARAM_BATCH
+            for i in range(0, len(chunk_ids), _SQLITE_PARAM_BATCH):
+                batch = chunk_ids[i : i + _SQLITE_PARAM_BATCH]
+                placeholders = ",".join("?" * len(batch))
+                rows = self._conn.execute(
+                    f"SELECT id, doc_id FROM chunks WHERE id IN ({placeholders})",
+                    batch,
+                ).fetchall()
+                for row in rows:
+                    doc_ids[row["id"]] = row["doc_id"]
+
         for r in results:
-            # Resolve doc_id via chunk text match to avoid cross-collection
-            # leakage when the same path exists in multiple collections.
-            doc_row = self._conn.execute(
-                "SELECT c.doc_id FROM chunks c JOIN documents d ON d.id = c.doc_id "
-                "WHERE d.path = ? AND c.seq = ? AND c.text = ? LIMIT 1",
-                [r.path, r.chunk, r.text],
-            ).fetchone()
-            if not doc_row:
+            doc_id = doc_ids.get(r.chunk_id)
+            if not doc_id:
                 expanded.append(r)
                 continue
 
             row = self._conn.execute(
                 "SELECT text FROM chunks WHERE doc_id = ? AND seq BETWEEN ? AND ? ORDER BY seq",
-                [doc_row["doc_id"], r.chunk - window, r.chunk + window],
+                [doc_id, r.chunk - window, r.chunk + window],
             ).fetchall()
 
             if row:
