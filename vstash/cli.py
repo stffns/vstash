@@ -994,6 +994,26 @@ def watch(
 
 
 @app.command()
+def serve(
+    ctx: typer.Context,
+    port: int = typer.Option(8585, "--port", "-p", help="Port to serve on"),
+    host: str = typer.Option("127.0.0.1", "--host", help="Host to bind to"),
+) -> None:
+    """Launch the vstash web interface — a pocket memory agent.
+
+    Opens a browser-based chat and search interface on localhost.
+    Chat with your documents, search your memory, upload files.
+    """
+    import uvicorn
+
+    from .web import create_app
+
+    console.print(f"[bold cyan]vstash[/bold cyan] serving at [link]http://{host}:{port}[/link]")
+    console.print("[dim]Press Ctrl+C to stop[/dim]")
+    uvicorn.run(create_app(), host=host, port=port, log_level="warning")
+
+
+@app.command()
 def remember(
     ctx: typer.Context,
     text: str | None = typer.Argument(None, help="Text to ingest (or pipe via stdin)"),
