@@ -1,6 +1,6 @@
 # How It Works
 
-vstash combines three retrieval strategies — vector similarity, keyword matching, and memory scoring — into a single fast pipeline. Everything runs locally except the optional LLM call.
+vstash combines vector similarity, keyword matching, and adaptive ranking into a single fast pipeline. Everything runs locally except the optional LLM call.
 
 ---
 
@@ -73,8 +73,8 @@ query
   → embed query            (FastEmbed ONNX)
   → vector search          (sqlite-vec: top-k × 10 candidates by cosine similarity)
   → keyword search         (FTS5: top-k × 10 candidates by BM25)
-  → RRF fusion             (merge both rankings)
-  → memory scoring         (frequency + temporal decay re-ranking)
+  → adaptive RRF fusion    (IDF-weighted merge of both rankings)
+  → recency boost          (optional: temporal decay favoring recent chunks)
   → MMR dedup              (intra-document diversity via Maximal Marginal Relevance)
   → relevance signal       (distance-based confidence: high/medium/low)
   → context expansion      (±1 adjacent chunks for LLM context)
@@ -100,17 +100,21 @@ This ensures:
 - Technical queries with rare terms benefit from exact keyword matching
 - A chunk ranked high in both lists gets a strong combined score
 
-### Memory Scoring
+### Recency Boost (optional)
 
-After RRF, an optional second pass re-ranks results using access frequency and recency:
+*Added in v0.19.0*
+
+After RRF, an optional recency multiplier biases scores toward recently created content:
 
 ```
-final_score = α · normalized_rrf + (β · γ) · log(1 + access_count · e^(−λ · days_ago))
+boosted_score = rrf_score × (1 + recency_boost × e^(−0.05 × days_ago))
 ```
 
-The **adaptive maturity gate (γ)** scales the frequency component based on how differentiated access patterns are. When usage is uniform or sparse (max/mean ratio < 8×), γ = 0 and scoring is completely suppressed — pure RRF results are returned with zero overhead. As access patterns develop clear favorites (ratio ≥ 15×), γ ramps to 1.0 and full scoring applies. This eliminates cold start degradation: fixed β=0.5 degrades NDCG by -8.6% from day one, while adaptive γ maintains 0.0% degradation.
+When `recency_boost=0.0` (default), this step is skipped entirely — pure RRF results are returned. When enabled, chunks created today get the full boost while chunks older than ~3 months are effectively unaffected.
 
-Chunks you search for often and recently get a boost. See [Memory Scoring](scoring.md) for the full explanation, parameters, and tuning guide.
+Designed for agentic memory where recent context matters more than old context. See [Recency Boost & Temporal Filters](scoring.md) for usage, parameters, and examples.
+
+**Temporal filters** (`added_after`/`added_before`) provide hard date boundaries at the SQL level, complementing the soft recency boost.
 
 ### Intra-Document MMR Deduplication
 
@@ -124,7 +128,7 @@ MMR(c) = λ · score(c) − (1 − λ) · max_sim(c, selected_same_doc)
 
 Chunks from *different* documents compete purely on score. When multiple chunks from the *same* document are candidates, the second is penalized by its cosine similarity to the first. If two sections are semantically diverse, both appear; if they're near-duplicates, the second is suppressed.
 
-Configure with `mmr_lambda` (default 0.5): 0.0 = maximum diversity, 1.0 = one chunk per document (old hard dedup behavior). See [Memory Scoring](scoring.md#intra-document-mmr-deduplication) for the full explanation.
+MMR lambda is fixed at 0.5, balancing relevance and diversity. See [Recency Boost & Temporal Filters](scoring.md#intra-document-mmr-deduplication) for the full explanation.
 
 ### Distance-Based Relevance Signal
 

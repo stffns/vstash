@@ -25,7 +25,7 @@ vstash stats
 
 ```
 vstash/
-  __init__.py       # version (__version__ = "0.16.0")
+  __init__.py       # version (__version__ = "0.19.0")
   cli.py            # typer CLI — add, search, ask, chat, list, stats, forget, reindex, watch, config, export, remember, profile, journal
   profile.py        # Multi-profile management: resolution chain, CRUD, federated search
   journal.py        # Cross-session memory: save, recall, log, prune, transcript parsing
@@ -68,8 +68,8 @@ docs/               # User-facing documentation
 
 - **Hybrid search**: Vector (sqlite-vec cosine) + FTS5 keyword, combined via Reciprocal Rank Fusion (k=60).
 - **Adaptive RRF**: IDF-based weight adjustment per query. Rare terms boost FTS; common terms boost vector. Long queries (>50 words) relax distance cutoff. Cached via fts5vocab.
-- **Pipeline**: vector search → FTS5 keyword → adaptive RRF fusion (IDF-weighted) → MMR dedup. Frequency+decay scoring was evaluated and removed after failing to improve NDCG on BEIR datasets.
-- **MMR dedup**: Intra-document Maximal Marginal Relevance replaces hard per-document dedup. `mmr_lambda=0.5` default, configurable.
+- **Pipeline**: vector search → FTS5 keyword → adaptive RRF fusion (IDF-weighted) → optional recency boost → MMR dedup. Frequency+decay scoring was evaluated and removed in v0.18.0. Replaced by opt-in recency boost in v0.19.0.
+- **MMR dedup**: Intra-document Maximal Marginal Relevance replaces hard per-document dedup. `mmr_lambda=0.5` (fixed).
 - **Embeddings**: FastEmbed (ONNX) or MLX (Apple Silicon). Default `BAAI/bge-small-en-v1.5` (384 dims). Multilingual models available via `vstash reindex`.
 - **Code-aware chunking**: Hybrid 3-tier splitting — tree-sitter AST (25+ languages, optional) → parso AST (Python) → regex (6 languages). Graceful degradation. See `code_split.py`.
 - **Single SQLite file**: WAL mode, foreign keys, all data in one `.db`.
@@ -83,7 +83,7 @@ docs/               # User-facing documentation
 - **Pydantic v2** for all config and data models (frozen=True)
 - **Type hints** on all public functions
 - **ruff** for linting and formatting (enforced in CI)
-- **pytest** for testing (576 tests + 6 benchmark regression tests as of v0.17.5)
+- **pytest** for testing (591 tests + 6 benchmark regression tests as of v0.19.0)
 - **Conventional commits** with emoji prefixes (feat, fix, docs, chore, perf)
 - **No AI co-author lines** — do NOT add `Co-Authored-By` or any AI attribution to commit messages
 

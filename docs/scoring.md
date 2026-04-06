@@ -1,64 +1,101 @@
-# Memory Scoring: Frequency + Temporal Decay with Adaptive Activation
+# Recency Boost & Temporal Filters
 
-*Added in v0.5.0 · Adaptive maturity gate added in v0.7.0*
+*Recency boost added in v0.19.0 · Replaces frequency+decay scoring (removed in v0.18.0)*
 
-vstash learns which chunks matter to you. Every time you search or ask a question, vstash records which chunks were returned. Over time, frequently-accessed and recently-accessed chunks get a relevance boost, while chunks you haven't touched in months decay naturally.
+vstash supports two complementary mechanisms for time-aware search:
 
-This means vstash gets better the more you use it — the documents you actually rely on rise to the top.
+1. **Recency boost** — a soft ranking bias that favors recently created chunks
+2. **Temporal filters** — hard date boundaries that exclude documents outside a range
+
+Both are opt-in and off by default, so pure retrieval quality is unaffected.
 
 ---
 
-## How It Works
+## Recency Boost
 
-After the standard hybrid search (vector similarity + keyword matching via RRF), vstash applies a second re-ranking pass:
+After hybrid search (vector + FTS5 + RRF), an optional recency multiplier biases scores toward recent content:
 
 ```
-final_score = α · normalized_rrf + (β · γ) · log(1 + access_count · e^(−λ · days_ago))
+boosted_score = rrf_score × (1 + recency_boost × e^(−0.05 × days_ago))
 ```
-
-where **γ** is the adaptive maturity gate (see below).
 
 | Term | Meaning |
 |------|---------|
-| `normalized_rrf` | The original search relevance score, normalized to [0, 1] |
-| `access_count` | How many times this chunk has been returned in searches |
-| `days_ago` | Days since the chunk was last accessed |
-| `α` (alpha) | How much weight to give semantic relevance |
-| `β` (beta) | How much weight to give access history |
-| `λ` (decay_lambda) | How fast old accesses lose their influence |
+| `rrf_score` | The original hybrid search score from RRF fusion |
+| `recency_boost` | Multiplier strength (0.0 = off, 1.0 = strong) |
+| `days_ago` | Days since the chunk was created |
 
-The process:
+**Decay curve:**
 
-1. **Over-fetch** — retrieve more candidates than needed (default: 50 instead of `top_k`)
-2. **Normalize** — min-max normalize the RRF scores to [0, 1]
-3. **Score** — apply the formula above to each candidate
-4. **Truncate** — return the top `top_k` results
+| Age | Decay factor | Effect at boost=1.0 |
+|-----|:---:|---------|
+| Today | 1.00 | Score doubled |
+| 1 week | 0.70 | +70% boost |
+| 1 month | 0.22 | +22% boost |
+| 3 months | 0.01 | ~1% boost (negligible) |
+| 1 year | ~0 | No effect |
+
+### When to use it
+
+- **Agentic memory** — an agent's recent context is more likely to be relevant
+- **Active projects** — recent notes and decisions matter more than old ones
+- **Conversational recall** — "what was I working on?" benefits from recency
+
+### When NOT to use it
+
+- **Reference retrieval** — "how does OAuth2 work?" has a timeless answer
+- **Benchmarking** — leave it off (0.0) for BEIR-style evaluations
+- **Mixed corpora** — if old documents are equally important, recency adds noise
 
 ---
 
-## Parameters
+## Temporal Filters
 
-| Parameter | Default | What it controls |
-|-----------|---------|------------------|
-| `alpha` | `0.8` | Semantic relevance weight. Higher = trust the search engine more |
-| `beta` | `0.2` | Access history weight. Higher = favor frequently-used chunks |
-| `decay_lambda` | `0.05` | Decay speed. `0.05` = weeks matter, `0.1` = days matter |
-| `over_fetch` | `50` | How many candidates to consider before re-ranking |
-| `track_access` | `true` | Whether to record access counts on each search |
+Hard date boundaries that filter at the SQL level — no ranking pollution:
+
+```python
+# Only documents added in Q1 2024
+results = store.search(query, added_after="2024-01-01", added_before="2024-04-01")
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `added_after` | ISO date string | Only documents added on or after this date |
+| `added_before` | ISO date string | Only documents added before this date |
+
+Filters apply to `documents.added_at` (ingestion timestamp). They work independently of `recency_boost` and can be combined with it.
 
 ---
 
-## Tuning Guide
+## Usage
 
-**Most users don't need to change anything.** The defaults (α=0.8, β=0.2, λ=0.05) were validated across 16 configurations × 5 usage scenarios × 10 queries.
+### Python SDK
 
-If you do want to tune:
+```python
+from vstash import Memory
 
-- **"I want pure semantic search, no memory"** → set `enabled = false`
-- **"vstash should learn my preferences faster"** → increase `beta` (e.g., 0.4) and decrease `alpha` (e.g., 0.6)
-- **"Old documents stay relevant for months"** → decrease `decay_lambda` (e.g., 0.02)
-- **"I only care about what I accessed this week"** → increase `decay_lambda` (e.g., 0.15)
-- **"Reference docs that I check once should always rank high"** → keep `alpha` high (0.9), `beta` low (0.1)
+mem = Memory(project="my_agent")
+
+# Pure retrieval (no recency bias)
+chunks = mem.search("OAuth2 PKCE flow")
+
+# Agentic recall (favor recent context)
+chunks = mem.search("what was the deploy issue?", recency_boost=1.0)
+
+# Time-bounded search
+chunks = mem.search("meeting notes", added_after="2024-06-01")
+
+# Combined: recent + time window
+chunks = mem.search("project decisions", recency_boost=0.5, added_after="2024-01-01")
+```
+
+### CLI
+
+Recency boost and temporal filters are available via the Python SDK and MCP tools. CLI support for `--recency-boost`, `--added-after`, and `--added-before` flags is planned.
+
+### MCP Server
+
+`vstash_search` accepts `recency_boost`, `added_after`, and `added_before`. `vstash_ask` accepts `added_after` and `added_before` (no recency boost — ask is pure retrieval + LLM).
 
 ---
 
@@ -67,66 +104,17 @@ If you do want to tune:
 In `vstash.toml`:
 
 ```toml
-[scoring]
-enabled = true        # set to false to disable entirely
-alpha = 0.8           # RRF weight
-beta = 0.2            # access history weight
-decay_lambda = 0.05   # temporal decay rate
-over_fetch = 50       # candidates before re-ranking
-track_access = true   # record access counts
+[recency]
+boost = 0.0   # default recency_boost for all searches (0.0 = off)
 ```
 
-See [Configuration Reference](configuration.md) for the full TOML reference.
-
----
-
-## Performance
-
-Scoring adds **~0.12ms** to a ~0.7ms search pipeline — negligible overhead. The ANN vector lookup dominates at ~71% of total latency. All stages remain sub-millisecond at P99.
-
----
-
-## Adaptive Maturity Gate (γ)
-
-*Added in v0.7.0*
-
-The adaptive maturity gate automatically suppresses scoring when access patterns don't carry meaningful signal. It uses the **max/mean ratio** of access counts among accessed chunks:
-
-```
-γ = clamp((R - 8.0) / (15.0 - 8.0), 0, 1)
-
-where R = max(access_count) / mean(access_count)   [chunks with access_count > 0]
-```
-
-| R (max/mean) | γ | Effect |
-|:---:|:---:|--------|
-| < 8× | 0.0 | Scoring suppressed — pure RRF, no reranking overhead |
-| 8× – 15× | 0.0 – 1.0 | Linear ramp — partial scoring |
-| ≥ 15× | 1.0 | Full scoring active |
-
-**Why this matters:** Without γ, a fixed β=0.5 degrades NDCG by -8.6% from day one because uniform access counts inject noise rather than signal. With γ, the system maintains 0.0% degradation across all 30 rounds of a 120-document experiment — scoring only activates when there's a genuine outlier in the access pattern.
-
-**Short-circuit optimization:** When γ = 0, the system skips the re-ranking step entirely — no per-result metadata fetch, no decay computation. Some lightweight bookkeeping still occurs (maturity estimation query, over-fetch sizing), so overhead during cold start is minimal rather than strictly zero.
-
-The gate requires at least 10 accessed chunks to activate, avoiding false triggering on tiny corpora.
-
----
-
-## Cold Start
-
-New chunks start with `access_count = 0` (ingestion does not count as an access). This means freshly-ingested documents aren't penalized — they compete on semantic relevance until they accumulate enough access history for the memory component to matter.
-
-With the adaptive maturity gate (v0.7.0), scoring can be **enabled by default** with no cold start penalty. The system transitions seamlessly from pure RRF to frequency-augmented ranking as usage patterns mature, with zero user intervention.
+Per-call `recency_boost` overrides the config default.
 
 ---
 
 ## Intra-Document MMR Deduplication
 
-*Added in v0.8.0*
-
-Before v0.8, vstash used hard per-document dedup: only the highest-scoring chunk from each document appeared in results. This works well for short documents but hides relevant content in long documents — a book with two important chapters on different topics would only show one.
-
-v0.8 replaces this with **Maximal Marginal Relevance (MMR)** applied within documents:
+After recency boost (or directly after RRF if boost is off), vstash applies **Maximal Marginal Relevance (MMR)** within documents to balance relevance and diversity:
 
 ```
 MMR(c) = λ · score(c) − (1 − λ) · max_sim(c, selected_same_doc)
@@ -134,32 +122,17 @@ MMR(c) = λ · score(c) − (1 − λ) · max_sim(c, selected_same_doc)
 
 | Term | Meaning |
 |------|---------|
-| `λ` (mmr_lambda) | Balance between relevance and diversity (default 0.5) |
-| `score(c)` | Normalized RRF or final_score of the candidate |
+| `λ` | Balance between relevance and diversity (fixed at 0.5) |
+| `score(c)` | RRF score (or boosted score if recency is active) |
 | `max_sim` | Maximum cosine similarity to already-selected chunks from the same document |
 
-**How it works:**
-1. Chunks from *different* documents compete purely on score — no cross-document penalty.
-2. When multiple chunks from the *same* document are candidates, the second chunk is penalized by its similarity to the first.
-3. If two chapters are semantically diverse (low cosine similarity), both appear. If they're near-duplicates, the second is suppressed.
-4. Selection stops when the best remaining candidate has negative MMR (redundancy exceeds relevance).
-
-**Configuration:**
-
-```toml
-[scoring]
-mmr_lambda = 0.5   # 0.0 = max diversity, 1.0 = hard dedup (one per doc)
-```
-
-**Impact:** On a 35-chunk paper, cross-section queries return 3–5× more relevant results than hard dedup. NDCG@5 improves from 0.814 to 0.829. Overhead is ~0.36ms (embedding fetch + similarity matrix).
+Chunks from *different* documents compete purely on score. When multiple chunks from the *same* document are candidates, the second is penalized by its similarity to the first. If two chapters are semantically diverse, both appear; if they're near-duplicates, the second is suppressed.
 
 ---
 
 ## Relevance Signal
 
-*Added in v0.6.0*
-
-Separate from scoring, vstash provides a **distance-based relevance signal** that works from the very first search — no scoring or access history required. The cosine distance of the best vector match estimates confidence:
+Separate from recency and scoring, vstash provides a **distance-based relevance signal** that works from the very first search:
 
 | Distance | Tier | F1 |
 |----------|------|-----|
@@ -167,27 +140,12 @@ Separate from scoring, vstash provides a **distance-based relevance signal** tha
 | 0.95–0.98 | medium | — |
 | > 0.98 | low | — |
 
-This is applied in CLI (search, ask, chat) and MCP server. See [How It Works](how-it-works.md) for details.
+This is applied in CLI (search, ask, chat) and MCP server.
 
 ---
 
-## Discard Telemetry
+## Historical Note
 
-*Added in v0.6.0*
+v0.5.0–v0.17 included a frequency+decay scoring system that re-ranked results using access counts and temporal decay with an adaptive maturity gate (γ). This was removed in v0.18.0 after benchmarks showed it degraded NDCG on all tested datasets (SciFact: -1.6%, scoring grid: 0%, cross-encoder: -0.3% to -3.1%). The database columns `access_count` and `last_accessed_at` are preserved for backward compatibility. The `created_at` column is actively used by the v0.19 recency boost computation.
 
-Every search records an event with query, distance, relevance tier, and result count to a `search_events` table. In chat mode, events are marked as "dismissed" when the user exits after a non-high result. The table is pruned to 1,000 entries and indexed by `(relevance_tier, created_at)`.
-
-This allows validating the relevance signal against real-world usage patterns over time.
-
----
-
-## Disabling Scoring
-
-To revert to pure RRF ranking:
-
-```toml
-[scoring]
-enabled = false
-```
-
-Access tracking also stops when scoring is disabled (unless you explicitly set `track_access = true`).
+The v0.19.0 recency boost is a simpler, more targeted replacement: pure temporal decay without access counting, opt-in rather than global, and applied as a multiplicative boost rather than a weighted blend.

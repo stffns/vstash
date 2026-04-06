@@ -1,3 +1,5 @@
+> **ARCHIVED (v0.18.0):** This plan describes the frequency+decay scoring system that was implemented in v0.5.0 and removed in v0.18.0 after benchmarks showed no improvement. See [Recency Boost & Temporal Filters](scoring.md) for the current approach.
+
 # Frequency + Decay Memory Scoring
 ## Implementation Plan — vstash
 
