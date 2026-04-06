@@ -1,23 +1,65 @@
 [
   {
-    "dataset": "nfcorpus",
+    "dataset": "scidocs",
     "bge": {
       "model": "BGE-small-en-v1.5",
       "dim": 384,
-      "ndcg_10": 0.359,
+      "ndcg_10": 0.1943,
       "mrr": null,
-      "latency_ms": 3.2,
-      "embed_time_s": 138.4
+      "latency_ms": 34.5,
+      "embed_time_s": 959.5
     },
     "gemma": {
       "model": "EmbeddingGemma-300m",
       "dim": 768,
-      "ndcg_10": 0.3713,
+      "ndcg_10": 0.1707,
       "mrr": null,
-      "latency_ms": 4.2,
-      "embed_time_s": 323.2
+      "latency_ms": 37.5,
+      "embed_time_s": 1545.6
     },
-    "delta": 0.0123,
-    "delta_pct": 3.43
+    "delta": -0.0236,
+    "delta_pct": -12.15
+  },
+  {
+    "dataset": "fiqa",
+    "bge": {
+      "model": "BGE-small-en-v1.5",
+      "dim": 384,
+      "ndcg_10": 0.3917,
+      "mrr": null,
+      "latency_ms": 78.1,
+      "embed_time_s": 2159.6
+    },
+    "gemma": {
+      "model": "EmbeddingGemma-300m",
+      "dim": 768,
+      "ndcg_10": 0.3543,
+      "mrr": null,
+      "latency_ms": 86.2,
+      "embed_time_s": 2684.8
+    },
+    "delta": -0.0374,
+    "delta_pct": -9.55
+  },
+  {
+    "dataset": "arguana",
+    "bge": {
+      "model": "BGE-small-en-v1.5",
+      "dim": 384,
+      "ndcg_10": 0.437,
+      "mrr": null,
+      "latency_ms": 634.7,
+      "embed_time_s": 262.1
+    },
+    "gemma": {
+      "model": "EmbeddingGemma-300m",
+      "dim": 768,
+      "ndcg_10": 0.4284,
+      "mrr": null,
+      "latency_ms": 645.7,
+      "embed_time_s": 449.5
+    },
+    "delta": -0.0086,
+    "delta_pct": -1.97
   }
 ]
