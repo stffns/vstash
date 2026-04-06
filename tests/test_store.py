@@ -1114,3 +1114,160 @@ class TestBatchMode:
         # Outermost exited — now invalidated
         assert sample_store._idf_cache is None
         assert sample_store._batch_depth == 0
+
+
+# ------------------------------------------------------------------ #
+# Recency boost + temporal filters                                     #
+# ------------------------------------------------------------------ #
+
+
+class TestRecencyBoost:
+    """Tests for recency_boost parameter in search()."""
+
+    def test_recency_boost_zero_is_noop(self, populated_store: "VstashStore"):
+        """recency_boost=0.0 should not change result ordering."""
+        dim = populated_store.embedding_dim
+        q = [0.1] * dim
+        base = populated_store.search(q, "Python", top_k=5, recency_boost=0.0)
+        normal = populated_store.search(q, "Python", top_k=5)
+        assert [r.chunk_id for r in base] == [r.chunk_id for r in normal]
+
+    def test_recency_boost_favors_recent(self, sample_store: "VstashStore"):
+        """Chunks created recently should rank higher with recency_boost > 0."""
+        dim = sample_store.embedding_dim
+        from datetime import datetime, timedelta, timezone
+
+        old_time = (datetime.now(timezone.utc) - timedelta(days=365)).isoformat()
+        # Add old doc
+        sample_store.add_document(
+            path="/old.md",
+            title="Old Doc",
+            chunks=["Python programming basics"],
+            embeddings=[[0.5] * dim],
+        )
+        # Manually backdate the chunk's created_at
+        sample_store._conn.execute(
+            "UPDATE chunks SET created_at = ? WHERE doc_id = (SELECT id FROM documents WHERE path = '/old.md')",
+            [old_time],
+        )
+        sample_store._conn.commit()
+
+        # Add recent doc with same semantic content
+        sample_store.add_document(
+            path="/new.md",
+            title="New Doc",
+            chunks=["Python programming basics"],
+            embeddings=[[0.5] * dim],
+        )
+
+        # Without recency boost — both should have equal scores
+        q = [0.5] * dim
+        results_no_boost = sample_store.search(q, "Python programming", top_k=5, recency_boost=0.0)
+        assert len(results_no_boost) >= 2
+
+        # With strong recency boost — new doc should rank first
+        results_boosted = sample_store.search(q, "Python programming", top_k=5, recency_boost=2.0)
+        assert results_boosted[0].path == "/new.md"
+
+    def test_recency_boost_preserves_results(self, populated_store: "VstashStore"):
+        """recency_boost should not add or remove results, only reorder."""
+        dim = populated_store.embedding_dim
+        q = [0.15] * dim
+        base = populated_store.search(q, "programming", top_k=5)
+        boosted = populated_store.search(q, "programming", top_k=5, recency_boost=1.0)
+        assert set(r.chunk_id for r in base) == set(r.chunk_id for r in boosted)
+
+
+class TestTemporalFilters:
+    """Tests for added_after/added_before date filters."""
+
+    def test_added_after_filters_old_docs(self, sample_store: "VstashStore"):
+        """added_after should exclude documents added before the cutoff."""
+        dim = sample_store.embedding_dim
+
+        sample_store.add_document(
+            path="/old.md",
+            title="Old",
+            chunks=["old content about Python"],
+            embeddings=[[0.5] * dim],
+        )
+        # Backdate the document
+        sample_store._conn.execute(
+            "UPDATE documents SET added_at = '2023-01-01T00:00:00' WHERE path = '/old.md'"
+        )
+        sample_store._conn.commit()
+
+        sample_store.add_document(
+            path="/new.md",
+            title="New",
+            chunks=["new content about Python"],
+            embeddings=[[0.5] * dim],
+        )
+
+        q = [0.5] * dim
+        # Filter: only docs from 2024 onwards
+        results = sample_store.search(q, "Python", top_k=5, added_after="2024-01-01")
+        paths = [r.path for r in results]
+        assert "/new.md" in paths
+        assert "/old.md" not in paths
+
+    def test_added_before_filters_new_docs(self, sample_store: "VstashStore"):
+        """added_before should exclude documents added after the cutoff."""
+        dim = sample_store.embedding_dim
+
+        sample_store.add_document(
+            path="/old.md",
+            title="Old",
+            chunks=["old content"],
+            embeddings=[[0.5] * dim],
+        )
+        sample_store._conn.execute(
+            "UPDATE documents SET added_at = '2023-06-01T00:00:00' WHERE path = '/old.md'"
+        )
+        sample_store._conn.commit()
+
+        sample_store.add_document(
+            path="/new.md",
+            title="New",
+            chunks=["new content"],
+            embeddings=[[0.5] * dim],
+        )
+
+        q = [0.5] * dim
+        results = sample_store.search(q, "content", top_k=5, added_before="2024-01-01")
+        paths = [r.path for r in results]
+        assert "/old.md" in paths
+        assert "/new.md" not in paths
+
+    def test_date_range_filter(self, sample_store: "VstashStore"):
+        """Combining added_after and added_before creates a date range."""
+        dim = sample_store.embedding_dim
+
+        for date, name in [("2023-01-01", "jan"), ("2023-06-15", "jun"), ("2024-01-01", "new")]:
+            sample_store.add_document(
+                path=f"/{name}.md",
+                title=name,
+                chunks=[f"{name} content about testing"],
+                embeddings=[[0.5] * dim],
+            )
+            sample_store._conn.execute(
+                "UPDATE documents SET added_at = ? WHERE path = ?",
+                [f"{date}T00:00:00", f"/{name}.md"],
+            )
+            sample_store._conn.commit()
+
+        q = [0.5] * dim
+        results = sample_store.search(
+            q, "testing", top_k=5, added_after="2023-03-01", added_before="2023-12-31"
+        )
+        paths = [r.path for r in results]
+        assert "/jun.md" in paths
+        assert "/jan.md" not in paths
+        assert "/new.md" not in paths
+
+    def test_no_filter_returns_all(self, populated_store: "VstashStore"):
+        """Without temporal filters, all documents are returned."""
+        dim = populated_store.embedding_dim
+        q = [0.15] * dim
+        results = populated_store.search(q, "programming", top_k=10)
+        assert len(results) >= 1

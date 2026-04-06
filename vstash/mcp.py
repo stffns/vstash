@@ -410,6 +410,8 @@ def vstash_ask(
     collection: str | None = None,
     project: str | None = None,
     layer: str | None = None,
+    added_after: str | None = None,
+    added_before: str | None = None,
 ) -> str:
     """Query vstash memory and get an LLM-generated answer with sources.
 
@@ -422,6 +424,8 @@ def vstash_ask(
         collection: If set, restrict search to this collection only.
         project: If set, restrict search to documents with this project tag.
         layer: If set, restrict search to documents with this layer tag.
+        added_after: ISO date (e.g. '2024-01-15') — only documents added on or after.
+        added_before: ISO date (e.g. '2024-06-01') — only documents added before.
 
     Returns:
         JSON string with answer text and source documents.
@@ -442,6 +446,8 @@ def vstash_ask(
             collection=collection,
             project=project,
             layer=layer,
+            added_after=added_after,
+            added_before=added_before,
         )
 
         if not chunks:
@@ -496,6 +502,9 @@ def vstash_search(
     collection: str | None = None,
     project: str | None = None,
     layer: str | None = None,
+    recency_boost: float = 0.0,
+    added_after: str | None = None,
+    added_before: str | None = None,
 ) -> str:
     """Search vstash memory without LLM — returns raw chunks with scores.
 
@@ -511,6 +520,10 @@ def vstash_search(
         collection: If set, restrict search to this collection only.
         project: If set, restrict search to documents with this project tag.
         layer: If set, restrict search to documents with this layer tag.
+        recency_boost: Temporal decay multiplier (0.0 = off). When > 0,
+            recent chunks score higher. Use 0.5 for mild bias, 1.0 for strong.
+        added_after: ISO date (e.g. '2024-01-15') — only documents added on or after.
+        added_before: ISO date (e.g. '2024-06-01') — only documents added before.
 
     Returns:
         JSON object with chunks array and relevance hint.
@@ -528,6 +541,9 @@ def vstash_search(
             collection=collection,
             project=project,
             layer=layer,
+            recency_boost=float(recency_boost),
+            added_after=added_after,
+            added_before=added_before,
         )
 
         if not chunks:
