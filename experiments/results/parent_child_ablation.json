@@ -1,0 +1,40 @@
+{
+  "nfcorpus": {
+    "baseline (1:1)": {
+      "ndcg_10": 0.3589,
+      "mrr": 0.5755,
+      "recall_10": 0.1696,
+      "latency_ms": 3.3,
+      "parents": 3633,
+      "children": 3642,
+      "ratio": 1.0
+    },
+    "pc_512": {
+      "ndcg_10": 0.3564,
+      "mrr": 0.5725,
+      "recall_10": 0.1685,
+      "latency_ms": 3.8,
+      "parents": 3633,
+      "children": 3907,
+      "ratio": 1.08
+    },
+    "pc_256": {
+      "ndcg_10": 0.359,
+      "mrr": 0.5732,
+      "recall_10": 0.1737,
+      "latency_ms": 5.7,
+      "parents": 3633,
+      "children": 6830,
+      "ratio": 1.88
+    },
+    "pc_128": {
+      "ndcg_10": 0.3497,
+      "mrr": 0.5604,
+      "recall_10": 0.1709,
+      "latency_ms": 8.7,
+      "parents": 3633,
+      "children": 12403,
+      "ratio": 3.41
+    }
+  }
+}

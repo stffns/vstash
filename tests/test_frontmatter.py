@@ -73,7 +73,11 @@ class TestStoreMetadataFilter:
 
     @pytest.fixture()
     def store_with_metadata(self, tmp_path: object) -> object:
-        """Create a store with documents in different projects/layers."""
+        """Create a store with documents in different projects/layers.
+
+        Yields the store and closes it after the test to avoid leaking
+        sqlite connections.
+        """
         from vstash.store import VstashStore
 
         db_path = str(tmp_path) + "/test.db"  # type: ignore[operator]
@@ -117,7 +121,8 @@ class TestStoreMetadataFilter:
             chunks=["General readme chunk"],
             embeddings=[[0.4] * dim],
         )
-        return store
+        yield store  # type: ignore[misc]
+        store.close()
 
     def test_list_all(self, store_with_metadata: object) -> None:
         store = store_with_metadata  # type: ignore[assignment]
