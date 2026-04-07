@@ -124,8 +124,25 @@ Evaluated on the [BEIR benchmark](https://github.com/beir-cellar/beir) — the s
 
 ## Install
 
+The minimum install gives you the SDK and the search/recall path:
+
 ```bash
 pip install vstash
+```
+
+For the full CLI experience (`vstash add`, `vstash serve`) install the
+relevant extras — vstash keeps heavy parsers and the web stack optional
+so a programmatic-only consumer doesn't pay for them:
+
+```bash
+# CLI ingestion (PDF, DOCX, PPTX, XLSX, HTML, …)
+pip install 'vstash[ingest]'
+
+# Web UI + /health + /metrics endpoints (vstash serve)
+pip install 'vstash[serve]'
+
+# Everything at once (CLI + serve + LLM backends + watch + …)
+pip install 'vstash[all]'
 ```
 
 Or from source:
@@ -133,7 +150,7 @@ Or from source:
 ```bash
 git clone https://github.com/stffns/vstash
 cd vstash
-pip install -e .
+pip install -e '.[all]'
 ```
 
 ---
