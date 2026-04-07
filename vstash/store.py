@@ -1923,5 +1923,19 @@ class VstashStore:
             return processed
 
     def close(self) -> None:
-        """Close the database connection."""
+        """Close the database connection and any thread-local resources.
+
+        Also closes the thread-local FTS5 stemming connection used by
+        ``_stem_words()`` if one was created in the current thread.
+        Connections in *other* threads cannot be closed from here — they
+        will be cleaned up when their owning threads exit.
+        """
+        # Close the thread-local stem connection if this thread has one.
+        stem_conn = getattr(self._thread_local, "_stem_conn", None)
+        if stem_conn is not None:
+            try:
+                stem_conn.close()
+            except Exception:
+                pass
+            self._thread_local._stem_conn = None
         self._conn.close()

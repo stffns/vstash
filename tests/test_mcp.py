@@ -33,9 +33,18 @@ from vstash.mcp import (
 
 
 def _reset_singletons() -> None:
-    """Reset module-level singletons between tests."""
+    """Reset module-level singletons between tests.
+
+    Closes any previously cached store before clearing it to avoid
+    leaking sqlite connections across tests.
+    """
     import vstash.mcp as mcp_mod
 
+    if mcp_mod._store is not None:
+        try:
+            mcp_mod._store.close()
+        except Exception:
+            pass
     mcp_mod._config = None
     mcp_mod._store = None
 
