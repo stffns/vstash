@@ -31,6 +31,21 @@ from .models import ChunkInfo, DocumentInfo, ExplainInfo, SearchResult, StoreSta
 # SQLite's SQLITE_LIMIT_VARIABLE_NUMBER default is 999; batch IN clauses below this.
 _SQLITE_PARAM_BATCH = 900
 
+# vstash uses one in-memory FTS5 connection per thread for stemming
+# (see VstashStore._stem_terms).  On shutdown, ``close()`` running on
+# the main thread releases connections whose owner threads have
+# already exited — that requires libsqlite to support cross-thread
+# Connection.close(), which it does in any threadsafety mode > 0.
+# Modern Python ships with serialized mode (level 3) by default; we
+# fail loudly if someone is on an exotic single-threaded build so the
+# breakage is obvious instead of a silent crash inside libsqlite.
+if sqlite3.threadsafety == 0:  # pragma: no cover
+    raise RuntimeError(
+        "vstash requires sqlite3 built with threading support "
+        f"(sqlite3.threadsafety > 0, got {sqlite3.threadsafety}). "
+        "Most Python builds use threadsafety=3 (serialized) by default."
+    )
+
 # Probe for snapvec availability (optional dependency)
 try:
     from snapvec import SnapIndex
@@ -123,6 +138,13 @@ class VstashStore:
         # Thread-local so concurrent searches on a shared instance don't race.
         self._thread_local = threading.local()
         self._thread_local.last_best_distance = 0.0
+        # Per-thread in-memory FTS5 stemming connections.  We use a plain
+        # dict keyed by thread id (instead of threading.local()) so that
+        # close() can iterate and release connections from any thread —
+        # otherwise stem conns created in worker threads (vstash serve,
+        # MCP) would leak until process exit.
+        self._stem_conns: dict[int, sqlite3.Connection] = {}
+        self._stem_lock = threading.Lock()
         self._conn = self._connect()
 
         # --- Adaptive RRF cache ---
@@ -1517,16 +1539,38 @@ class VstashStore:
     def _stem_terms(self, words: list[str]) -> list[str]:
         """Stem words using the same FTS5 porter tokenizer as the index.
 
-        Uses a thread-local in-memory FTS5 table to ensure stemming is
-        identical to what fts5vocab reports.  ~0.02ms per call.  Thread-safe
-        because each thread gets its own connection.
+        Uses a per-thread in-memory FTS5 connection so stemming is
+        identical to what fts5vocab reports.  ~0.02ms per call.
+
+        **Threading model and the close-from-other-thread trick.**
+
+        Each calling thread gets its own dedicated connection, registered
+        in ``self._stem_conns`` keyed by thread id.  Connections are
+        opened with ``check_same_thread=False`` *not* to enable sharing
+        — they are still **only used from their owning thread** (the
+        dict-by-tid lookup guarantees that) — but to allow ``close()``
+        running on the main thread at shutdown to release connections
+        whose owner threads have already exited.
+
+        This is safe **only** when the underlying libsqlite is built
+        with threading support, which Python's bundled sqlite3 always
+        does in modern versions (``sqlite3.threadsafety >= 1``).  If
+        someone were to run on an exotic build with
+        ``sqlite3.threadsafety == 0`` (single-threaded mode), the close
+        from another thread could crash.  We assert that at module
+        import time so the failure mode is loud, not silent.
         """
-        conn = getattr(self._thread_local, "_stem_conn", None)
-        if conn is None:
-            conn = sqlite3.connect(":memory:")
-            conn.execute('CREATE VIRTUAL TABLE _stem USING fts5(x, tokenize="porter ascii")')
-            conn.execute("CREATE VIRTUAL TABLE _stem_v USING fts5vocab(_stem, row)")
-            self._thread_local._stem_conn = conn
+        tid = threading.get_ident()
+        with self._stem_lock:
+            conn = self._stem_conns.get(tid)
+            if conn is None:
+                conn = sqlite3.connect(":memory:", check_same_thread=False)
+                conn.execute('CREATE VIRTUAL TABLE _stem USING fts5(x, tokenize="porter ascii")')
+                conn.execute("CREATE VIRTUAL TABLE _stem_v USING fts5vocab(_stem, row)")
+                self._stem_conns[tid] = conn
+        # Use the connection outside the lock — each thread only ever
+        # touches its own connection (lookup by tid above), so no
+        # cross-thread access happens here.
         conn.execute("DELETE FROM _stem")
         conn.execute("INSERT INTO _stem VALUES (?)", [" ".join(words)])
         rows = conn.execute("SELECT term FROM _stem_v").fetchall()
@@ -1923,23 +1967,26 @@ class VstashStore:
             return processed
 
     def close(self) -> None:
-        """Close the database connection and any thread-local resources.
+        """Close the database connection and all stem-conn resources.
 
-        Also closes the thread-local FTS5 stemming connection used by
-        ``_stem_terms()`` if one was created in the current thread.
-        Connections in *other* threads cannot be closed from here — they
-        will be cleaned up when their owning threads exit.  See #125 for
-        a follow-up that closes stem connections from any thread.
+        Releases every per-thread FTS5 stemming connection registered
+        by ``_stem_terms()``, regardless of which thread created them.
+        SQLite in-memory connections can be closed from any thread
+        (unlike file connections opened with ``check_same_thread=True``),
+        so this is safe to call from the main thread on shutdown of a
+        multi-threaded server like ``vstash serve`` or the MCP server.
         """
         import contextlib
 
-        # Close the thread-local stem connection if this thread has one.
-        stem_conn = getattr(self._thread_local, "_stem_conn", None)
-        if stem_conn is not None:
-            # sqlite3.Error covers the realistic failure modes (already
-            # closed, locked, etc.).  Anything else is a real bug worth
-            # surfacing rather than silently swallowing during teardown.
-            with contextlib.suppress(sqlite3.Error):
-                stem_conn.close()
-            self._thread_local._stem_conn = None
+        # Close all per-thread stem connections under the lock so we
+        # don't race a worker thread that's just creating a new one.
+        with self._stem_lock:
+            for stem_conn in self._stem_conns.values():
+                # sqlite3.Error covers the realistic failure modes
+                # (already closed, locked, etc.).  Anything else is a
+                # real bug worth surfacing rather than silently
+                # swallowing during teardown.
+                with contextlib.suppress(sqlite3.Error):
+                    stem_conn.close()
+            self._stem_conns.clear()
         self._conn.close()
