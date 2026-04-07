@@ -113,6 +113,97 @@ class TestIdempotentIngest:
 
 
 # ------------------------------------------------------------------ #
+# Multi-collection regression                                          #
+# ------------------------------------------------------------------ #
+
+
+class TestMultiCollectionRecovery:
+    """The same path can live in multiple collections; partial recovery
+    in one collection must not touch the others."""
+
+    def test_completeness_is_collection_scoped(self, sample_store: VstashStore) -> None:
+        dim = sample_store.embedding_dim
+        sample_store.add_document(
+            path="/shared.md",
+            title="Shared",
+            chunks=["alpha"],
+            embeddings=[[0.1] * dim],
+            collection="work",
+        )
+        # The same path is missing in 'research' even though it exists in 'work'.
+        assert sample_store.doc_completeness("/shared.md", collection="work") == "complete"
+        assert sample_store.doc_completeness("/shared.md", collection="research") == "missing"
+
+    def test_partial_recovery_does_not_wipe_other_collection(
+        self, sample_store: VstashStore, tmp_path: Path
+    ) -> None:
+        """Re-ingesting a partial copy in collection A must not delete
+        the complete copy in collection B."""
+        cfg = VstashConfig()
+        f = tmp_path / "shared.md"
+        f.write_text("the only content this file ever has")
+
+        # Two clean copies in two collections.
+        ingest(str(f), cfg, sample_store, collection="work")
+        ingest(str(f), cfg, sample_store, collection="research")
+
+        target = str(f.resolve())
+        assert sample_store.doc_completeness(target, collection="work") == "complete"
+        assert sample_store.doc_completeness(target, collection="research") == "complete"
+
+        # Corrupt only the 'work' copy.
+        sample_store._conn.execute(
+            "UPDATE documents SET chunk_count = 99 WHERE path = ? AND collection = ?",
+            [target, "work"],
+        )
+        sample_store._conn.commit()
+        assert sample_store.doc_completeness(target, collection="work") == "partial"
+        assert sample_store.doc_completeness(target, collection="research") == "complete"
+
+        # Re-ingest into 'work' should heal 'work' and leave 'research' alone.
+        ingest(str(f), cfg, sample_store, collection="work")
+
+        assert sample_store.doc_completeness(target, collection="work") == "complete"
+        assert sample_store.doc_completeness(target, collection="research") == "complete"
+
+    def test_delete_document_collection_filter(self, sample_store: VstashStore) -> None:
+        """delete_document(path, collection=X) must only remove from X."""
+        dim = sample_store.embedding_dim
+        for col in ("work", "research"):
+            sample_store.add_document(
+                path="/shared.md",
+                title="Shared",
+                chunks=["alpha"],
+                embeddings=[[0.1] * dim],
+                collection=col,
+            )
+
+        deleted = sample_store.delete_document("/shared.md", collection="work")
+        assert deleted is True
+        assert sample_store.doc_completeness("/shared.md", collection="work") == "missing"
+        assert sample_store.doc_completeness("/shared.md", collection="research") == "complete"
+
+    def test_delete_document_no_collection_keeps_old_behavior(
+        self, sample_store: VstashStore
+    ) -> None:
+        """Without a collection arg, delete_document still wipes every
+        copy of the path — preserving the existing public contract."""
+        dim = sample_store.embedding_dim
+        for col in ("work", "research"):
+            sample_store.add_document(
+                path="/shared.md",
+                title="Shared",
+                chunks=["alpha"],
+                embeddings=[[0.1] * dim],
+                collection=col,
+            )
+
+        sample_store.delete_document("/shared.md")
+        assert sample_store.doc_completeness("/shared.md", collection="work") == "missing"
+        assert sample_store.doc_completeness("/shared.md", collection="research") == "missing"
+
+
+# ------------------------------------------------------------------ #
 # integrity_check                                                      #
 # ------------------------------------------------------------------ #
 
@@ -220,6 +311,23 @@ class TestIntegrityRepair:
 
         results = {c.name: c for c in sample_store.integrity_check()}
         assert results["no_orphan_chunks"].passed
+
+    def test_fts_integrity_check_passes_on_clean_store(self, sample_store: VstashStore) -> None:
+        """Sanity: a clean store passes the FTS5 'integrity-check'
+        command.  Forcing real FTS5 corruption from Python is hostile
+        (it requires manipulating shadow tables in ways SQLite resists),
+        so we cover the happy path here and trust the SQLite-native
+        check + repair contract for the failure mode."""
+        dim = sample_store.embedding_dim
+        sample_store.add_document(
+            path="/a.md",
+            title="A",
+            chunks=["hello world", "another chunk with words"],
+            embeddings=[[0.1] * dim, [0.2] * dim],
+        )
+        results = {c.name: c for c in sample_store.integrity_check()}
+        assert results["fts_index_parity"].passed
+        assert results["fts_index_parity"].repairable
 
     def test_repair_is_no_op_when_clean(self, sample_store: VstashStore) -> None:
         dim = sample_store.embedding_dim

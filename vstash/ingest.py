@@ -426,7 +426,12 @@ def ingest(
     #     rows and re-ingest fresh (still treated as a non-error path)
     #   - "missing":  ingest from scratch
     if not force:
-        status = store.doc_completeness(source_path)
+        # Pass collection: doc_completeness must check the *exact*
+        # (collection, path) row, not "any document with this path",
+        # otherwise a partial copy in collection A could mask the
+        # health of collection B.  Same reason we restrict the
+        # delete_document call below to the target collection.
+        status = store.doc_completeness(source_path, collection=collection)
         if status == "complete":
             return IngestResult(
                 status="skipped",
@@ -436,7 +441,9 @@ def ingest(
         if status == "partial":
             # Drop the half-ingested document so the fresh ingest below
             # produces a clean state instead of duplicating chunks.
-            store.delete_document(source_path)
+            # Scope to ``collection`` so we don't wipe other collections'
+            # complete copies of the same path.
+            store.delete_document(source_path, collection=collection)
 
     # Should we try code-aware chunking?
     is_code = source_type == "code" and not _is_url(source) and cfg.chunking.code_aware

@@ -771,27 +771,39 @@ class VstashStore:
                 raise
             return len(rows)
 
-    def doc_completeness(self, path: str) -> Literal["missing", "partial", "complete"]:
+    def doc_completeness(
+        self, path: str, collection: str = "default"
+    ) -> Literal["missing", "partial", "complete"]:
         """Report whether a document at ``path`` is fully ingested (#134).
 
         ``doc_exists`` only checks the documents row; this method goes
         further and verifies that:
-          - the documents row exists
+          - the documents row exists for ``(collection, path)``
           - ``COUNT(chunks) == documents.chunk_count``
           - every chunk has a matching ``vec_chunks`` row (sqlite-vec
             backend only — snapvec lives outside SQLite and is not
             checked here)
 
+        ``collection`` is required for correctness: the same path can
+        be ingested into multiple collections (each gets its own
+        ``doc_id = sha256(collection:path)``), and a partial copy in
+        one collection must not mark another collection's complete
+        copy as healable.
+
         Used by idempotent ``ingest()`` to decide whether to skip
         (``"complete"``), re-ingest (``"partial"`` — delete the partial
         rows first), or freshly ingest (``"missing"``).
         """
+        # Use the same hash recipe as add_document so we look up the
+        # *exact* row that a fresh ingest would write to.  Looking up
+        # by ``WHERE path = ?`` would conflate collections.
+        doc_id = hashlib.sha256(f"{collection}:{path}".encode("utf-8")).hexdigest()[:32]
         row = self._conn.execute(
-            "SELECT id, chunk_count FROM documents WHERE path = ?", [path]
+            "SELECT chunk_count FROM documents WHERE id = ?", [doc_id]
         ).fetchone()
         if row is None:
             return "missing"
-        doc_id, declared_chunks = row[0], int(row[1] or 0)
+        declared_chunks = int(row[0] or 0)
 
         actual_chunks = int(
             self._conn.execute("SELECT COUNT(*) FROM chunks WHERE doc_id = ?", [doc_id]).fetchone()[
@@ -820,24 +832,39 @@ class VstashStore:
 
         return "complete"
 
-    def delete_document(self, path: str) -> bool:
+    def delete_document(self, path: str, collection: str | None = None) -> bool:
         """Remove a document and all its chunks from the store.
 
-        Deletes all copies of the document regardless of collection.
+        By default, deletes every copy of ``path`` regardless of
+        collection (the existing behavior, which several callers depend
+        on).  When ``collection`` is provided, only the document for
+        that exact ``(collection, path)`` pair is removed — used by
+        idempotent ingest recovery so a partial copy in one collection
+        doesn't wipe a complete copy in another.
 
         Args:
             path: File path or URL to remove.
+            collection: If set, restrict deletion to this collection.
 
         Returns:
             True if at least one document was found and deleted.
         """
         with self._write_lock:
-            doc_ids = [
-                row[0]
-                for row in self._conn.execute(
-                    "SELECT id FROM documents WHERE path = ?", [path]
-                ).fetchall()
-            ]
+            if collection is None:
+                doc_ids = [
+                    row[0]
+                    for row in self._conn.execute(
+                        "SELECT id FROM documents WHERE path = ?", [path]
+                    ).fetchall()
+                ]
+            else:
+                doc_ids = [
+                    row[0]
+                    for row in self._conn.execute(
+                        "SELECT id FROM documents WHERE path = ? AND collection = ?",
+                        [path, collection],
+                    ).fetchall()
+                ]
             if not doc_ids:
                 return False
             try:
@@ -2455,19 +2482,21 @@ class VstashStore:
                 )
             )
 
-        # 3. FTS5 index parity: COUNT(*) of fts_chunks should match
-        # COUNT(*) of chunks since fts_chunks is content=chunks.
+        # 3. FTS5 index integrity.  ``fts_chunks`` is a content=chunks
+        # virtual table, which means ``COUNT(*)`` reads from the
+        # underlying chunks table — it cannot detect index drift.
+        # The canonical way to check an FTS5 index is the built-in
+        # ``'integrity-check'`` command, which scans the index and
+        # raises ``sqlite3.DatabaseError`` if anything is amiss.
         try:
-            fts_total = int(self._conn.execute("SELECT COUNT(*) FROM fts_chunks").fetchone()[0])
-            chunks_total = int(self._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0])
-            fts_passed = fts_total == chunks_total
+            self._conn.execute("INSERT INTO fts_chunks(fts_chunks) VALUES('integrity-check')")
             checks.append(
                 IntegrityCheck(
                     name="fts_index_parity",
-                    description="fts_chunks has one entry per chunk",
-                    passed=fts_passed,
-                    affected_count=abs(chunks_total - fts_total),
-                    detail=f"chunks={chunks_total}, fts={fts_total}" if not fts_passed else "",
+                    description="FTS5 integrity-check passes",
+                    passed=True,
+                    affected_count=0,
+                    detail="",
                     repairable=True,
                 )
             )
@@ -2475,10 +2504,10 @@ class VstashStore:
             checks.append(
                 IntegrityCheck(
                     name="fts_index_parity",
-                    description="fts_chunks has one entry per chunk",
+                    description="FTS5 integrity-check passes",
                     passed=False,
-                    affected_count=0,
-                    detail=f"FTS5 query failed: {exc}",
+                    affected_count=1,
+                    detail=f"FTS5 integrity-check failed: {exc}",
                     repairable=True,
                 )
             )
@@ -2560,6 +2589,13 @@ class VstashStore:
         check_by_name = {c.name: c for c in checks}
 
         with self._write_lock:
+            # The fts_index_parity probe inside integrity_check() is a
+            # DML statement (``INSERT INTO fts(fts) VALUES(...)``), so
+            # the stdlib sqlite3 driver opens an implicit transaction
+            # for it.  Commit any pending state before BEGIN IMMEDIATE
+            # so the explicit transaction below isn't preempted.
+            if self._conn.in_transaction:
+                self._conn.commit()
             try:
                 self._conn.execute("BEGIN IMMEDIATE")
 
