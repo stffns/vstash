@@ -25,7 +25,7 @@ vstash stats
 
 ```
 vstash/
-  __init__.py       # version (__version__ = "0.19.0")
+  __init__.py       # version (__version__ = "0.25.0")
   cli.py            # typer CLI — add, search, ask, chat, list, stats, forget, reindex, watch, config, export, remember, profile, journal
   profile.py        # Multi-profile management: resolution chain, CRUD, federated search
   journal.py        # Cross-session memory: save, recall, log, prune, transcript parsing
@@ -76,6 +76,11 @@ docs/               # User-facing documentation
 - **Optional snapvec backend**: Compressed ANN via PolarQuant. Opt-in with `storage.vector_backend = "snapvec"`. sqlite-vec stays default.
 - **Local-first LLM**: Default backend `"local"` auto-detects Ollama, LM Studio, or any OpenAI-compatible local server.
 - **BEIR benchmark results**: NDCG@10=0.7263 on SciFact with adaptive RRF (surpasses ColBERTv2 0.693). Wins 5/5 BEIR datasets vs BM25, 4/5 vs ColBERTv2.
+- **Integrity & recovery (v0.24)**: `doc_completeness` → idempotent ingest; `integrity_check` runs 5 invariants (chunk_count/vec/FTS5 parity, orphans, PRAGMA); `integrity_repair` is collection-scoped and rebuilds FTS5. Exposed as `vstash check [--repair] [--json]`.
+- **Explicit contracts & schema versioning (v0.25)**: `SCHEMA_VERSION` + `KNOWN_SCHEMA_VERSIONS` stamped per-DB; `SchemaVersionError` on unknown versions; `INSERT OR IGNORE` for concurrent fresh-open; forward-compatible top-level config keys (warn-on-unknown). `SearchResult.score` is comparable within a query but **not across queries**.
+- **Operational observability (v0.21–v0.22)**: in-process metrics registry, slow query log, `miss_analysis()` API for ranking debugging (traces where a chunk was eliminated in the pipeline + rule-based suggestions).
+- **Explicit limits (v0.23)**: `vstash/validation.py` + `[limits]` section with 7 knobs and a `LimitError(ValueError)` hierarchy. Rejects pathological inputs at `VstashStore`/`Memory` boundaries before they hit SQLite/sqlite-vec/ONNX.
+- **Threading hardening (v0.20)**: `SQLITE_THREADSAFE=1` assumption is checked explicitly at `open()`; STEM connections can be closed from any thread.
 
 ## Conventions
 
@@ -83,7 +88,7 @@ docs/               # User-facing documentation
 - **Pydantic v2** for all config and data models (frozen=True)
 - **Type hints** on all public functions
 - **ruff** for linting and formatting (enforced in CI)
-- **pytest** for testing (591 tests + 6 benchmark regression tests as of v0.19.0)
+- **pytest** for testing (726 tests + 6 benchmark regression tests as of v0.25.0)
 - **Conventional commits** with emoji prefixes (feat, fix, docs, chore, perf)
 - **No AI co-author lines** — do NOT add `Co-Authored-By` or any AI attribution to commit messages
 

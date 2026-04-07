@@ -50,12 +50,38 @@ Evaluated on the [BEIR benchmark](https://github.com/beir-cellar/beir) — the s
 
 **Zero cloud required for search. Inference is optional.**
 
+### What's new in v0.25
+
+- **Explicit contracts + schema versioning** — `SCHEMA_VERSION` stamped in every database, `SchemaVersionError` on unknown on-disk versions, concurrent-safe `INSERT OR IGNORE` stamping, and forward-compatible top-level config keys (warn-on-unknown instead of hard-fail). `SearchResult.score` comparability semantics now documented explicitly.
+- **CLI hardening (v0.25.1)** — rich-escaped exception messages, dedicated `vstash[serve]` extra, clearer install docs.
+
+### What's new in v0.24
+
+- **Integrity and recovery** — `vstash check [--repair] [--json]` runs five invariants (chunk_count parity, vec/snapvec parity, FTS5 parity, orphan chunks, SQLite `PRAGMA integrity_check`) and rebuilds FTS5 / recomputes chunk counts / deletes orphans on repair. Collection-scoped (v0.24.1).
+- **Idempotent re-ingest** — `doc_completeness` classifies paths as missing/partial/complete; `ingest()` skips complete docs, drops and re-ingests partial ones, and ingests missing ones fresh. Re-running `vstash add <path>` is now a safe no-op on unchanged files.
+
+### What's new in v0.23
+
+- **Explicit limits at API boundaries** — new `vstash/validation.py` and `[limits]` config section with seven knobs (`max_query_chars`, `max_top_k`, `max_distance_cutoff`, `max_recency_boost`, `max_path_chars`, `max_chunks_per_document`, `max_chunk_chars`) and a `LimitError(ValueError)` hierarchy. Malformed inputs raise typed Python exceptions at the `VstashStore`/`Memory` boundary instead of opaque SQLite/ONNX failures deep in the stack.
+
+### What's new in v0.22
+
+- **Operational observability** — in-process metrics registry with per-stage latency histograms and a slow query log capturing query text, stage breakdown, and result counts. Accessible via the Python SDK and MCP tools.
+
+### What's new in v0.21
+
+- **Ranking miss analysis** — `VstashStore.miss_analysis(query, expected_doc)` diagnoses *why* an expected document did not appear in a result set, returning a structured trace (vector cutoff, FTS5 stem mismatch, RRF dropout, MMR penalty, distance cutoff) and rule-based suggestions. Available via SDK, CLI, and MCP.
+
+### What's new in v0.20
+
+- **Threading hardening** — `SQLITE_THREADSAFE=1` assumption is now checked and surfaced explicitly at `open()`. STEM (embedding) connections can be closed from any thread, fixing an asyncio/threading deadlock in the MCP server path.
+- **726 tests** across 30+ test modules (up from 591 in v0.19).
+
 ### What's new in v0.19
 
 - **Recency boost** — `recency_boost` parameter on `search()` applies temporal decay favoring recent chunks. Designed for agentic memory. Off by default so pure retrieval is unaffected.
 - **Temporal filters** — `added_after`/`added_before` ISO date parameters for hard time boundaries on all search surfaces.
 - **`RecencyConfig`** — new `[recency]` section in `vstash.toml`.
-- **591 tests** across 26 test modules.
 
 ### What's new in v0.18
 
