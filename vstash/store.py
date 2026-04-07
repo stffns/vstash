@@ -1926,7 +1926,7 @@ class VstashStore:
         """Close the database connection and any thread-local resources.
 
         Also closes the thread-local FTS5 stemming connection used by
-        ``_stem_words()`` if one was created in the current thread.
+        ``_stem_terms()`` if one was created in the current thread.
         Connections in *other* threads cannot be closed from here — they
         will be cleaned up when their owning threads exit.
         """
