@@ -152,6 +152,16 @@ A single chunk (~250 tokens) is often too small for good LLM answers. In LLM-fac
 
 Raw `vstash search` preserves chunk-level granularity — expansion only applies when chunks are sent to an LLM.
 
+### Score semantics
+
+`SearchResult.score` is the RRF score for the chunk under the current query. Concrete bounds:
+
+- **Range:** typically `[0, ~0.033]` because `1/(60 + 0) ≈ 0.0167` is the maximum per RRF component. Recency boost can push the combined value slightly higher.
+- **Within a single result list, higher means more relevant.**
+- **NOT comparable across queries.** Two queries can have wildly different score scales because the candidate pool, the adaptive RRF weights (vstash retunes them per query based on IDF), and the post-processing all vary by query. Do not threshold the raw score to gate "is this match good enough?" — that's what the relevance tier (above) is for.
+
+The full contract for `SearchResult` and the rest of the public API is in [`docs/api-stability.md`](api-stability.md).
+
 ---
 
 ## Storage
