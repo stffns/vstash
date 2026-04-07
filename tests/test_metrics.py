@@ -275,3 +275,63 @@ class TestStoreInstrumentation:
         assert snap["gauges"]["docs_total"] == 1
         assert snap["gauges"]["chunks_total"] == 2
         assert snap["gauges"]["collections_total"] == 1
+
+
+# ------------------------------------------------------------------ #
+# Embedding drift detection (silent killer defense)                     #
+# ------------------------------------------------------------------ #
+
+
+class TestEmbeddingDrift:
+    def test_first_open_sets_metadata(self, sample_store: VstashStore):
+        """First call to check_embedding_drift records the model."""
+        assert sample_store.get_meta("embedding_model") is None
+        result = sample_store.check_embedding_drift("BAAI/bge-small-en-v1.5")
+        assert result is None
+        assert sample_store.get_meta("embedding_model") == "BAAI/bge-small-en-v1.5"
+        assert sample_store.get_meta("fastembed_version") is not None
+
+    def test_matching_model_returns_none(self, sample_store: VstashStore):
+        """Opening with the same model twice does not warn."""
+        sample_store.check_embedding_drift("BAAI/bge-small-en-v1.5")
+        result = sample_store.check_embedding_drift("BAAI/bge-small-en-v1.5")
+        assert result is None
+
+    def test_different_model_returns_warning(self, sample_store: VstashStore):
+        """Switching embedding models triggers a warning message."""
+        sample_store.check_embedding_drift("BAAI/bge-small-en-v1.5")
+        result = sample_store.check_embedding_drift("BAAI/bge-base-en-v1.5")
+        assert result is not None
+        assert "mismatch" in result.lower()
+        assert "bge-small" in result
+        assert "bge-base" in result
+
+    def test_fastembed_version_drift_on_affected_model(self, sample_store: VstashStore):
+        """Changing fastembed version while using a pooling-affected
+        multilingual model triggers a dedicated warning."""
+        affected_model = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+        # Seed the store as if it were built with an old fastembed
+        sample_store.set_meta("embedding_model", affected_model)
+        sample_store.set_meta("fastembed_version", "0.4.9")  # pre-pooling-change
+
+        result = sample_store.check_embedding_drift(affected_model)
+        assert result is not None
+        assert "pooling" in result.lower()
+        assert "0.4.9" in result
+
+    def test_fastembed_drift_ignored_for_unaffected_model(self, sample_store: VstashStore):
+        """BGE models use CLS pooling throughout fastembed history, so a
+        version change does NOT need a warning."""
+        sample_store.set_meta("embedding_model", "BAAI/bge-small-en-v1.5")
+        sample_store.set_meta("fastembed_version", "0.4.9")
+        result = sample_store.check_embedding_drift("BAAI/bge-small-en-v1.5")
+        assert result is None
+
+    def test_meta_roundtrip(self, sample_store: VstashStore):
+        """get_meta/set_meta are a plain key/value store."""
+        assert sample_store.get_meta("custom_key") is None
+        sample_store.set_meta("custom_key", "custom_value")
+        assert sample_store.get_meta("custom_key") == "custom_value"
+        # Upsert semantics
+        sample_store.set_meta("custom_key", "updated")
+        assert sample_store.get_meta("custom_key") == "updated"

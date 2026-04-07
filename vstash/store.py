@@ -416,6 +416,16 @@ class VstashStore:
                 created_at      TEXT NOT NULL
             );
 
+            -- Store metadata: key-value table for tracking what the
+            -- current DB was built with.  Used to detect embedding model
+            -- drift (e.g. query embedded with one model, corpus embedded
+            -- with another) which would silently degrade retrieval.
+            CREATE TABLE IF NOT EXISTS store_meta (
+                key        TEXT PRIMARY KEY,
+                value      TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_search_events_tier
             ON search_events(relevance_tier, created_at);
 
@@ -489,6 +499,90 @@ class VstashStore:
                 WHERE access_count = 1 AND last_accessed_at IS NULL
             """)
             conn.commit()
+
+    # ------------------------------------------------------------------ #
+    # Store metadata (key/value)                                            #
+    # ------------------------------------------------------------------ #
+
+    def get_meta(self, key: str) -> str | None:
+        """Read a key from the store_meta table.  Returns None if unset."""
+        row = self._conn.execute("SELECT value FROM store_meta WHERE key = ?", [key]).fetchone()
+        return str(row["value"]) if row is not None else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        """Upsert a key into the store_meta table."""
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._write_lock:
+            self._conn.execute(
+                "INSERT INTO store_meta (key, value, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, "
+                "updated_at = excluded.updated_at",
+                [key, value, now_iso],
+            )
+            self._conn.commit()
+
+    def check_embedding_drift(self, current_model: str) -> str | None:
+        """Detect if the current embedding model differs from what the
+        DB was built with.  Returns a warning message if drift is
+        detected, or None if everything matches.
+
+        This is the single most important check a substrate can do for
+        a user: embedding model drift silently degrades retrieval
+        quality without producing any visible error.
+
+        On first use (empty store_meta), this sets the model name and
+        returns None.  Subsequent opens compare and warn on mismatch.
+        """
+        stored_model = self.get_meta("embedding_model")
+        stored_fastembed = self.get_meta("fastembed_version")
+
+        # Detect current fastembed version (best-effort)
+        try:
+            import fastembed
+
+            current_fastembed = fastembed.__version__
+        except Exception:
+            current_fastembed = "unknown"
+
+        if stored_model is None:
+            # First time seeing metadata — claim the DB with the current
+            # model so future opens can detect drift.
+            self.set_meta("embedding_model", current_model)
+            self.set_meta("fastembed_version", current_fastembed)
+            return None
+
+        if stored_model != current_model:
+            return (
+                f"Embedding model mismatch: this database was built with "
+                f"'{stored_model}' but the current config uses '{current_model}'. "
+                f"Query embeddings and stored embeddings are incompatible. "
+                f"Run `vstash reindex --model {current_model}` or revert the "
+                f"config to '{stored_model}'."
+            )
+
+        # Same model name, but fastembed version changed AND the model
+        # is one of the known-affected ones (multilingual variants that
+        # switched from CLS pooling to mean pooling in fastembed 0.5.2+).
+        _POOLING_DRIFT_MODELS = {
+            "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+            "sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
+        }
+        if (
+            current_model in _POOLING_DRIFT_MODELS
+            and stored_fastembed is not None
+            and stored_fastembed != current_fastembed
+        ):
+            return (
+                f"fastembed version changed from {stored_fastembed} to "
+                f"{current_fastembed} while using '{current_model}'. "
+                "This model switched from CLS pooling to mean pooling "
+                "in fastembed 0.5.2, producing incompatible embeddings. "
+                "Run `vstash reindex` to re-embed the corpus with the "
+                "current fastembed version, or pin fastembed to the "
+                "version that created the DB."
+            )
+
+        return None
 
     # ------------------------------------------------------------------ #
     # Write                                                                #
