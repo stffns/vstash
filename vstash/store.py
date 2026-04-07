@@ -512,21 +512,24 @@ class VstashStore:
         """
         from . import __version__ as _vstash_version
 
+        # Use INSERT OR IGNORE so two processes opening the same fresh
+        # DB concurrently can't crash on a UNIQUE constraint — whichever
+        # one wins the race stamps the version, the other no-ops.  We
+        # always re-read after the (potentially-skipped) insert so the
+        # value we validate is the one actually in the DB.
+        now_iso = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            "INSERT OR IGNORE INTO store_meta (key, value, updated_at) VALUES (?, ?, ?)",
+            ["schema_version", SCHEMA_VERSION, now_iso],
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO store_meta (key, value, updated_at) VALUES (?, ?, ?)",
+            ["vstash_version", _vstash_version, now_iso],
+        )
+        conn.commit()
+
         row = conn.execute("SELECT value FROM store_meta WHERE key = 'schema_version'").fetchone()
-
-        if row is None:
-            now_iso = datetime.now(timezone.utc).isoformat()
-            conn.execute(
-                "INSERT INTO store_meta (key, value, updated_at) VALUES (?, ?, ?)",
-                ["schema_version", SCHEMA_VERSION, now_iso],
-            )
-            conn.execute(
-                "INSERT OR REPLACE INTO store_meta (key, value, updated_at) VALUES (?, ?, ?)",
-                ["vstash_version", _vstash_version, now_iso],
-            )
-            conn.commit()
-            return
-
+        # row cannot be None here — we just inserted (or ignored) it.
         existing = str(row["value"])
         if existing not in KNOWN_SCHEMA_VERSIONS:
             msg = (
@@ -536,16 +539,6 @@ class VstashStore:
                 f"Upgrade vstash or restore the DB from a compatible backup."
             )
             raise SchemaVersionError(msg)
-
-        # Refresh the recorded vstash version so post-mortem readers
-        # know which build last touched the DB.  Schema version is
-        # left alone — it changes only via explicit migration.
-        now_iso = datetime.now(timezone.utc).isoformat()
-        conn.execute(
-            "INSERT OR REPLACE INTO store_meta (key, value, updated_at) VALUES (?, ?, ?)",
-            ["vstash_version", _vstash_version, now_iso],
-        )
-        conn.commit()
 
     def _migrate_schema(self, conn: sqlite3.Connection) -> None:
         """Add missing columns to existing databases."""
