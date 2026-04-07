@@ -47,6 +47,31 @@ from .models import (
 _SQLITE_PARAM_BATCH = 900
 
 # ------------------------------------------------------------------ #
+# Schema versioning (#135)                                             #
+# ------------------------------------------------------------------ #
+
+#: Current schema version.  Bumped only when a change requires a
+#: migration the runtime cannot perform automatically (column drop,
+#: type change, semantics change).  Pure additive ALTER TABLE migrations
+#: stay within the same version because they're handled in
+#: ``_migrate_schema``.
+SCHEMA_VERSION = "1"
+
+#: Schema versions this build of vstash knows how to read.  Anything
+#: not in this set raises :class:`SchemaVersionError` on open.
+KNOWN_SCHEMA_VERSIONS: frozenset[str] = frozenset({"1"})
+
+
+class SchemaVersionError(RuntimeError):
+    """Raised when an existing DB declares a schema version this build
+    of vstash does not recognize.
+
+    The right remedy is to upgrade vstash, restore from backup, or run
+    a future ``vstash migrate`` command (not yet implemented).
+    """
+
+
+# ------------------------------------------------------------------ #
 # Miss-analysis tracing (#108)                                         #
 # ------------------------------------------------------------------ #
 
@@ -464,6 +489,56 @@ class VstashStore:
             ON documents(layer);
         """)
         conn.commit()
+
+        # Schema version check (#135).  Stamps fresh DBs with the
+        # current SCHEMA_VERSION and validates existing DBs against
+        # the known set.  Legacy DBs created before this stamp existed
+        # are treated as v1 — that's the only schema vstash has shipped.
+        self._check_schema_version(conn)
+
+    def _check_schema_version(self, conn: sqlite3.Connection) -> None:
+        """Read or stamp the schema version in ``store_meta``.
+
+        On a fresh DB the version row does not exist yet — we write
+        the current :data:`SCHEMA_VERSION`.  On an existing DB we read
+        the row and compare against :data:`KNOWN_SCHEMA_VERSIONS`:
+
+        - Match → no-op.
+        - Missing → assume legacy v1 (the only schema ever shipped) and
+          stamp it for next time.
+        - Unknown → raise :class:`SchemaVersionError` so the caller
+          knows the DB was written by a newer vstash than this build
+          can safely read.
+        """
+        from . import __version__ as _vstash_version
+
+        # Use INSERT OR IGNORE so two processes opening the same fresh
+        # DB concurrently can't crash on a UNIQUE constraint — whichever
+        # one wins the race stamps the version, the other no-ops.  We
+        # always re-read after the (potentially-skipped) insert so the
+        # value we validate is the one actually in the DB.
+        now_iso = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            "INSERT OR IGNORE INTO store_meta (key, value, updated_at) VALUES (?, ?, ?)",
+            ["schema_version", SCHEMA_VERSION, now_iso],
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO store_meta (key, value, updated_at) VALUES (?, ?, ?)",
+            ["vstash_version", _vstash_version, now_iso],
+        )
+        conn.commit()
+
+        row = conn.execute("SELECT value FROM store_meta WHERE key = 'schema_version'").fetchone()
+        # row cannot be None here — we just inserted (or ignored) it.
+        existing = str(row["value"])
+        if existing not in KNOWN_SCHEMA_VERSIONS:
+            msg = (
+                f"Database at {self.db_path} declares schema_version={existing!r}, "
+                f"which this build of vstash ({_vstash_version}) does not recognize. "
+                f"Known versions: {sorted(KNOWN_SCHEMA_VERSIONS)}. "
+                f"Upgrade vstash or restore the DB from a compatible backup."
+            )
+            raise SchemaVersionError(msg)
 
     def _migrate_schema(self, conn: sqlite3.Connection) -> None:
         """Add missing columns to existing databases."""
