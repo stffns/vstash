@@ -62,7 +62,13 @@ def _get_store() -> VstashStore:
             embedding_dim=dim,
             vector_backend=cfg.storage.vector_backend,
             snapvec_bits=cfg.storage.snapvec_bits,
+            observability=cfg.observability,
         )
+        # Detect embedding model drift on non-empty stores.
+        if _store.stats().chunks > 0:
+            drift_msg = _store.check_embedding_drift(cfg.embeddings.model)
+            if drift_msg:
+                logger.warning(drift_msg)
     return _store
 
 
@@ -267,6 +273,71 @@ async def index(request: Request) -> HTMLResponse:
 
 
 # ------------------------------------------------------------------ #
+# Observability endpoints (#132)                                        #
+# ------------------------------------------------------------------ #
+
+
+def _do_health_check() -> None:
+    """Lightweight liveness probe: verify the SQLite connection is alive
+    by running ``SELECT 1``.  Cheap enough to run on every probe without
+    fighting a busy ingest lock."""
+    store = _get_store()
+    store._conn.execute("SELECT 1").fetchone()
+
+
+async def api_health(request: Request) -> JSONResponse:
+    """GET /health — returns 200 if the store connection is reachable.
+
+    Designed for load balancers, Docker health probes, and uptime
+    monitoring.  Runs a trivial ``SELECT 1`` — not ``stats()`` — so a
+    busy ingest doesn't cause k8s to restart healthy pods.
+
+    Returns a minimal payload with version and uptime for dashboards
+    that want a single round-trip for identity + liveness.
+    """
+    from . import __version__
+    from .metrics import registry
+
+    try:
+        await _run_sync(_do_health_check)
+    except Exception:
+        # Log the full exception server-side but return a generic error
+        # to the client.  /health is typically exposed without auth so
+        # we must not leak file paths, stack traces, or library
+        # internals to whoever is probing.
+        logger.exception("health check failed")
+        return _json({"status": "error"}, status=503)
+
+    snap = registry.snapshot()
+    return _json(
+        {
+            "status": "ok",
+            "version": __version__,
+            "uptime_seconds": snap["uptime_seconds"],
+        },
+        status=200,
+    )
+
+
+async def api_metrics(request: Request) -> JSONResponse:
+    """GET /metrics — snapshot of the metrics registry as JSON.
+
+    Intentionally not Prometheus text format — keeps dependencies light
+    and the JSON is trivial to scrape.  Operators running Prometheus
+    can stand up a small translator in their agent.
+
+    Note: gauges are refreshed by ``stats()`` calls (via the CLI or
+    programmatic use), not by this endpoint.  Scrapers polling every
+    few seconds don't need fresh-to-the-millisecond values, and forcing
+    a ``SELECT COUNT(*)`` here would serialize all scrapes behind the
+    single SQLite connection.
+    """
+    from .metrics import registry
+
+    return _json(registry.snapshot())
+
+
+# ------------------------------------------------------------------ #
 # App factory                                                          #
 # ------------------------------------------------------------------ #
 
@@ -284,6 +355,8 @@ def create_app() -> Starlette:
             Route("/api/documents", api_documents),
             Route("/api/stats", api_stats),
             Route("/api/upload", api_upload, methods=["POST"]),
+            Route("/health", api_health),
+            Route("/metrics", api_metrics),
         ],
     )
 

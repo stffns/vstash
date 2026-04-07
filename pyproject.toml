@@ -24,7 +24,12 @@ classifiers = [
 ]
 dependencies = [
     "pydantic>=2.0.0,<3",
-    "fastembed>=0.4.0,<1",
+    # fastembed>=0.5.2 for consistent mean-pooling semantics on the
+    # multilingual models.  Pre-0.5.2 used CLS pooling which produces
+    # incompatible embeddings — a user upgrading across that boundary
+    # with an existing corpus would silently degrade retrieval.  See
+    # docs/embedding-models.md and check_embedding_drift() in store.py.
+    "fastembed>=0.5.2,<1",
     "sqlite-vec>=0.1.6",
     "typer>=0.12.0",
     "rich>=13.0.0",
