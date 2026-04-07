@@ -26,7 +26,16 @@ import threading
 import numpy as np
 import sqlite_vec
 
-from .models import ChunkInfo, DocumentInfo, ExplainInfo, SearchResult, StoreStats
+from .models import (
+    ChunkInfo,
+    DocumentInfo,
+    ExplainInfo,
+    MissAnalysis,
+    MissAnalysisActualResult,
+    SearchResult,
+    StageVerdict,
+    StoreStats,
+)
 
 # SQLite's SQLITE_LIMIT_VARIABLE_NUMBER default is 999; batch IN clauses below this.
 _SQLITE_PARAM_BATCH = 900
@@ -145,6 +154,9 @@ class VstashStore:
         # MCP) would leak until process exit.
         self._stem_conns: dict[int, sqlite3.Connection] = {}
         self._stem_lock = threading.Lock()
+        # Last per-stage verdicts captured by search() when called with
+        # _track_chunk.  Used by miss_analysis() to build a MissAnalysis.
+        self._last_track_verdicts: list[dict[str, str | int | float | bool | None]] = []
         self._conn = self._connect()
 
         # --- Adaptive RRF cache ---
@@ -670,6 +682,7 @@ class VstashStore:
         recency_boost: float = 0.0,
         added_after: str | None = None,
         added_before: str | None = None,
+        _track_chunk: int | None = None,
     ) -> list[SearchResult]:
         """Hybrid search: vector (semantic) + FTS5 (keyword) combined with RRF.
 
@@ -695,6 +708,33 @@ class VstashStore:
         Returns:
             Ranked list of SearchResult ordered by descending score.
         """
+        # Per-search tracking buffer for miss analysis (#108).  When
+        # _track_chunk is None, every helper call below short-circuits
+        # to a no-op so the hot path stays clean.
+        track_verdicts: list[dict[str, str | int | float | bool | None]] = []
+        track_target: int | None = _track_chunk
+
+        def _track(
+            stage: str,
+            passed: bool,
+            rank: int | None = None,
+            score: float | None = None,
+            detail: str = "",
+            counterfactual: str | None = None,
+        ) -> None:
+            if track_target is None:
+                return
+            track_verdicts.append(
+                {
+                    "stage": stage,
+                    "passed": passed,
+                    "rank": rank,
+                    "score": score,
+                    "detail": detail,
+                    "counterfactual": counterfactual,
+                }
+            )
+
         # Adaptive RRF: compute weights from query characteristics (IDF + length)
         # Skip if caller provided explicit weights
         if adaptive_rrf and vec_weight is None and fts_weight is None:
@@ -770,15 +810,95 @@ class VstashStore:
                 [_serialize(query_embedding), candidate_pool, *filter_params],
             ).fetchall()
 
+        # --- Track: vector search stage ---
+        if track_target is not None:
+            target_vec_rank: int | None = None
+            target_vec_distance: float | None = None
+            for i, row in enumerate(vec_rows):
+                if int(row["id"]) == track_target:
+                    target_vec_rank = i
+                    target_vec_distance = float(row["distance"])
+                    break
+            if target_vec_rank is not None:
+                _track(
+                    "vector_search",
+                    passed=True,
+                    rank=target_vec_rank,
+                    score=target_vec_distance,
+                    detail=(
+                        f"Found in vector candidate pool at rank {target_vec_rank + 1}/{len(vec_rows)} "
+                        f"with distance {target_vec_distance:.4f}"
+                    ),
+                )
+            else:
+                _track(
+                    "vector_search",
+                    passed=False,
+                    rank=None,
+                    score=None,
+                    detail=(
+                        f"Not in vector candidate pool of size {candidate_pool}. "
+                        "The chunk's embedding is too far from the query embedding."
+                    ),
+                    counterfactual="Would need candidate_pool > current rank to appear",
+                )
+
         # --- Filter by vector distance gap ---
         # The best (closest) result has the smallest distance.
         # Remove results that are semantically too far from the ideal match.
         if vec_rows:
             best_distance = float(vec_rows[0]["distance"])
             self.last_best_distance = best_distance
-            if best_distance > 0:
-                threshold = best_distance * distance_cutoff
+            # Capture target distance BEFORE filtering for tracking
+            target_dist_before: float | None = None
+            if track_target is not None:
+                for r in vec_rows:
+                    if int(r["id"]) == track_target:
+                        target_dist_before = float(r["distance"])
+                        break
+            threshold = best_distance * distance_cutoff
+            cutoff_applied = best_distance > 0
+            if cutoff_applied:
                 vec_rows = [r for r in vec_rows if float(r["distance"]) <= threshold]
+            # Track distance cutoff verdict whenever we have a before-distance
+            # (i.e., the target was in vec_rows pre-filter)
+            if track_target is not None and target_dist_before is not None:
+                target_in_after = any(int(r["id"]) == track_target for r in vec_rows)
+                if not cutoff_applied:
+                    _track(
+                        "distance_cutoff",
+                        passed=True,
+                        score=target_dist_before,
+                        detail=(
+                            "Distance cutoff not applied (best_distance=0, perfect match available)"
+                        ),
+                    )
+                elif target_in_after:
+                    _track(
+                        "distance_cutoff",
+                        passed=True,
+                        score=target_dist_before,
+                        detail=(
+                            f"Distance {target_dist_before:.4f} ≤ threshold "
+                            f"{threshold:.4f} (best={best_distance:.4f} × cutoff={distance_cutoff:.2f})"
+                        ),
+                    )
+                else:
+                    needed_cutoff = (
+                        target_dist_before / best_distance if best_distance > 0 else float("inf")
+                    )
+                    _track(
+                        "distance_cutoff",
+                        passed=False,
+                        score=target_dist_before,
+                        detail=(
+                            f"Distance {target_dist_before:.4f} > threshold "
+                            f"{threshold:.4f} (best={best_distance:.4f} × cutoff={distance_cutoff:.2f})"
+                        ),
+                        counterfactual=(
+                            f"Would have passed with distance_cutoff ≥ {needed_cutoff:.2f}"
+                        ),
+                    )
         else:
             self.last_best_distance = 2.0  # max cosine distance = worst case
 
@@ -819,6 +939,36 @@ class VstashStore:
         except sqlite3.OperationalError:
             # FTS5 query syntax error (e.g. single char) — fall back to no FTS
             fts_rows = []
+
+        # --- Track: FTS search stage ---
+        if track_target is not None:
+            target_fts_rank: int | None = None
+            for i, row in enumerate(fts_rows):
+                if int(row["id"]) == track_target:
+                    target_fts_rank = i
+                    break
+            stemmed_terms = self._stem_terms(words) if words else []
+            if target_fts_rank is not None:
+                _track(
+                    "fts_search",
+                    passed=True,
+                    rank=target_fts_rank,
+                    detail=(
+                        f"Matched FTS at rank {target_fts_rank + 1}/{len(fts_rows)}. "
+                        f"Stemmed query terms: {stemmed_terms}"
+                    ),
+                )
+            else:
+                _track(
+                    "fts_search",
+                    passed=False,
+                    detail=(
+                        f"Did not match FTS5. Stemmed query terms: {stemmed_terms}. "
+                        "The chunk text does not contain any of these stems "
+                        "(after porter stemming)."
+                    ),
+                    counterfactual="Would need a query containing words from the chunk's vocabulary",
+                )
 
         # --- Reciprocal Rank Fusion ---
         scores: dict[int, dict[str, str | int | float]] = {}
@@ -867,6 +1017,36 @@ class VstashStore:
         # Sort by RRF score descending
         ranked = sorted(scores.values(), key=lambda x: float(x["rrf"]), reverse=True)
 
+        # --- Track: RRF fusion stage ---
+        if track_target is not None:
+            target_rrf_rank: int | None = None
+            target_rrf_score: float | None = None
+            for i, r in enumerate(ranked):
+                if int(r["id"]) == track_target:
+                    target_rrf_rank = i
+                    target_rrf_score = float(r["rrf"])
+                    break
+            if target_rrf_rank is not None:
+                _track(
+                    "rrf_fusion",
+                    passed=True,
+                    rank=target_rrf_rank,
+                    score=target_rrf_score,
+                    detail=(
+                        f"After RRF fusion: rank {target_rrf_rank + 1}/{len(ranked)}, "
+                        f"combined score {target_rrf_score:.6f}"
+                    ),
+                )
+            else:
+                _track(
+                    "rrf_fusion",
+                    passed=False,
+                    detail=(
+                        "Eliminated before RRF fusion (failed both vector and FTS, "
+                        "or filtered by metadata)"
+                    ),
+                )
+
         # --- Recency boost (temporal decay) ---
         # When recency_boost > 0, multiply each chunk's RRF score by a decay
         # factor based on how recently it was created.  This biases results
@@ -895,11 +1075,79 @@ class VstashStore:
             # Re-sort after boost
             ranked = sorted(ranked, key=lambda x: float(x["rrf"]), reverse=True)
 
+        # --- Track: recency boost stage ---
+        if track_target is not None and recency_boost > 0:
+            target_after_boost: int | None = None
+            for i, r in enumerate(ranked):
+                if int(r["id"]) == track_target:
+                    target_after_boost = i
+                    break
+            if target_after_boost is not None:
+                _track(
+                    "recency_boost",
+                    passed=True,
+                    rank=target_after_boost,
+                    detail=(f"After recency_boost={recency_boost}: rank {target_after_boost + 1}"),
+                )
+
+        # --- Pre-MMR ranks (for tracking what MMR removes) ---
+        pre_mmr_rank_of_target: int | None = None
+        if track_target is not None:
+            for i, r in enumerate(ranked):
+                if int(r["id"]) == track_target:
+                    pre_mmr_rank_of_target = i
+                    break
+
         # Intra-document MMR deduplication: allow multiple chunks from the
         # same document only when they are semantically diverse (e.g. different
         # chapters of a book).  Chunks from different documents compete purely
         # on score — no cross-document penalty.
         ranked = self._mmr_dedup(ranked, top_k, mmr_lambda=0.5, _explain=explain)
+
+        # --- Track: MMR + top_k cutoff ---
+        if track_target is not None:
+            target_final_rank: int | None = None
+            for i, r in enumerate(ranked):
+                if int(r["id"]) == track_target:
+                    target_final_rank = i
+                    break
+            # MMR verdict
+            if pre_mmr_rank_of_target is not None and target_final_rank is None:
+                _track(
+                    "mmr_dedup",
+                    passed=False,
+                    rank=pre_mmr_rank_of_target,
+                    detail=(
+                        f"Was rank {pre_mmr_rank_of_target + 1} pre-MMR but eliminated by "
+                        "intra-document MMR deduplication (another chunk from the same "
+                        "document was already selected and they're too similar)"
+                    ),
+                    counterfactual="Would survive with mmr_lambda > 0.5 (less aggressive dedup)",
+                )
+            elif target_final_rank is not None:
+                _track(
+                    "mmr_dedup",
+                    passed=True,
+                    rank=target_final_rank,
+                    detail=f"Survived MMR dedup at rank {target_final_rank + 1}",
+                )
+            # top_k cutoff verdict
+            if target_final_rank is not None:
+                if target_final_rank < top_k:
+                    _track(
+                        "top_k_cutoff",
+                        passed=True,
+                        rank=target_final_rank,
+                        detail=f"Final rank {target_final_rank + 1} ≤ top_k={top_k}",
+                    )
+                else:
+                    _track(
+                        "top_k_cutoff",
+                        passed=False,
+                        rank=target_final_rank,
+                        detail=f"Final rank {target_final_rank + 1} > top_k={top_k}",
+                        counterfactual=f"Would appear with top_k ≥ {target_final_rank + 1}",
+                    )
 
         # --- Build ExplainInfo per chunk when requested ---
         _explain_map: dict[int, ExplainInfo] = {}
@@ -936,7 +1184,253 @@ class VstashStore:
             for r in ranked
         ]
 
+        # Stash tracking buffer for miss_analysis() to consume.  Only set
+        # when tracking was active so the common path is unaffected.
+        if track_target is not None:
+            self._last_track_verdicts = track_verdicts
+
         return results
+
+    # ------------------------------------------------------------------ #
+    # Miss analysis (#108) — explain why a doc did NOT appear in top-k     #
+    # ------------------------------------------------------------------ #
+
+    def miss_analysis(
+        self,
+        query_embedding: list[float],
+        query_text: str,
+        *,
+        expected_path: str | None = None,
+        expected_chunk_id: int | None = None,
+        top_k: int = 5,
+        collection: str | None = None,
+        project: str | None = None,
+        layer: str | None = None,
+    ) -> MissAnalysis:
+        """Diagnose why an expected document did not appear in search results.
+
+        Runs the same search pipeline as ``search()`` but with per-stage
+        tracking enabled, then builds a structured ``MissAnalysis`` with
+        the trace, the actual top-k for context, and rule-based
+        suggestions.
+
+        Args:
+            query_embedding: Query vector (same as ``search()``).
+            query_text: Raw query text (same as ``search()``).
+            expected_path: Path of the document the caller expected to see.
+                Either this or ``expected_chunk_id`` must be provided.
+            expected_chunk_id: Specific chunk id to track instead of
+                resolving from a path.  Useful when the caller already has
+                a chunk id from a previous search.
+            top_k: Number of results to evaluate (same as ``search()``).
+            collection/project/layer: Same metadata filters as ``search()``.
+
+        Returns:
+            ``MissAnalysis`` with stage verdicts, actual top-k, and
+            suggestions.
+
+        Raises:
+            ValueError: if neither ``expected_path`` nor ``expected_chunk_id``
+                is given, or the path/id resolves to nothing.
+        """
+        if expected_path is None and expected_chunk_id is None:
+            raise ValueError("Provide either expected_path or expected_chunk_id")
+
+        # Resolve target chunk id
+        target_chunk_id: int
+        resolved_path: str | None = expected_path
+        if expected_chunk_id is not None:
+            row = self._conn.execute(
+                "SELECT c.id, d.path FROM chunks c JOIN documents d ON d.id = c.doc_id "
+                "WHERE c.id = ?",
+                [int(expected_chunk_id)],
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"Chunk id {expected_chunk_id} not found")
+            target_chunk_id = int(row["id"])
+            resolved_path = str(row["path"])
+        else:
+            # Pick the chunk of expected_path with the smallest distance
+            # to the query embedding — that's the "best representative"
+            # chunk of the expected document.
+            doc_chunks = self._conn.execute(
+                """
+                SELECT c.id
+                FROM chunks c
+                JOIN documents d ON d.id = c.doc_id
+                WHERE d.path = ?
+                """,
+                [expected_path],
+            ).fetchall()
+            if not doc_chunks:
+                raise ValueError(f"No chunks found for path: {expected_path}")
+            chunk_ids = [int(r["id"]) for r in doc_chunks]
+            # Score each candidate by distance to query embedding
+            placeholders = ",".join("?" * len(chunk_ids))
+            try:
+                vec_results = self._conn.execute(
+                    f"""
+                    SELECT v.rowid, v.distance
+                    FROM vec_chunks v
+                    WHERE v.embedding MATCH ?
+                      AND v.rowid IN ({placeholders})
+                      AND k = ?
+                    ORDER BY v.distance
+                    LIMIT 1
+                    """,
+                    [_serialize(query_embedding), *chunk_ids, len(chunk_ids)],
+                ).fetchall()
+            except sqlite3.Error:
+                vec_results = []
+            if vec_results:
+                target_chunk_id = int(vec_results[0]["rowid"])
+            else:
+                # Fallback: just pick the first chunk
+                target_chunk_id = chunk_ids[0]
+
+        # Run search with tracking enabled
+        results = self.search(
+            query_embedding=query_embedding,
+            query_text=query_text,
+            top_k=top_k,
+            collection=collection,
+            project=project,
+            layer=layer,
+            _track_chunk=target_chunk_id,
+        )
+
+        # Determine if the expected doc appeared in results
+        appeared = False
+        final_rank: int | None = None
+        for i, r in enumerate(results):
+            # Match either by chunk id or by path (in case parent agg
+            # changed the surface chunk id — though parent-child is gone now)
+            if r.chunk_id == target_chunk_id or (
+                resolved_path is not None and r.path == resolved_path
+            ):
+                appeared = True
+                final_rank = i
+                break
+
+        # Build StageVerdict list from the raw verdicts dict
+        stage_verdicts = [
+            StageVerdict(
+                stage=v["stage"],  # type: ignore[arg-type]
+                passed=bool(v["passed"]),
+                rank=v["rank"],  # type: ignore[arg-type]
+                score=v["score"],  # type: ignore[arg-type]
+                detail=str(v["detail"]),
+                counterfactual=v["counterfactual"],  # type: ignore[arg-type]
+            )
+            for v in self._last_track_verdicts
+        ]
+
+        # Find the first stage where the chunk failed
+        dropped_at: str | None = None
+        for v in stage_verdicts:
+            if not v.passed:
+                dropped_at = v.stage
+                break
+
+        # Actual top-k for context
+        actual_top_k = [
+            MissAnalysisActualResult(
+                rank=i,
+                chunk_id=r.chunk_id,
+                path=r.path,
+                title=r.title,
+                score=r.score,
+            )
+            for i, r in enumerate(results)
+        ]
+
+        # Generate rule-based suggestions
+        suggestions = self._build_miss_suggestions(stage_verdicts, dropped_at, appeared)
+
+        return MissAnalysis(
+            query=query_text,
+            expected_path=resolved_path,
+            expected_chunk_id=target_chunk_id,
+            top_k_requested=top_k,
+            appeared_in_results=appeared,
+            final_rank=final_rank,
+            dropped_at=dropped_at,
+            stage_verdicts=stage_verdicts,
+            actual_top_k=actual_top_k,
+            suggestions=suggestions,
+        )
+
+    @staticmethod
+    def _build_miss_suggestions(
+        stage_verdicts: list[StageVerdict],
+        dropped_at: str | None,
+        appeared: bool,
+    ) -> list[str]:
+        """Map stage failure modes to actionable suggestion strings.
+
+        Pure rule-based, no LLM calls.  Each rule corresponds to a
+        specific reason a chunk could fall out of the pipeline.
+        """
+        if appeared:
+            return ["The expected document IS in the top-k. No miss to analyze."]
+
+        suggestions: list[str] = []
+        # Index by stage for quick lookup
+        by_stage = {v.stage: v for v in stage_verdicts}
+
+        if dropped_at == "vector_search":
+            suggestions.append(
+                "The chunk's embedding is semantically far from the query. "
+                "Try reformulating using vocabulary that appears in the target document, "
+                "or increase the candidate pool size."
+            )
+            if "fts_search" in by_stage and by_stage["fts_search"].passed:
+                suggestions.append(
+                    "FTS5 keyword search DID find this chunk — consider raising fts_weight "
+                    "or relying on keyword matching for this query type."
+                )
+
+        if dropped_at == "distance_cutoff":
+            cf = by_stage["distance_cutoff"].counterfactual or ""
+            suggestions.append(
+                f"Distance cutoff dropped the chunk just past threshold. {cf}. "
+                "Pass distance_cutoff=2.0 (or higher) to relax the cutoff."
+            )
+
+        if dropped_at == "fts_search":
+            v = by_stage["fts_search"]
+            suggestions.append(
+                f"FTS5 keyword search did not match. {v.detail} "
+                "Either reformulate the query with words that appear in the chunk, "
+                "or rely entirely on vector search by setting fts_weight=0."
+            )
+
+        if dropped_at == "rrf_fusion":
+            suggestions.append(
+                "The chunk was eliminated before RRF fusion (no vector hit, no FTS hit, "
+                "or filtered by collection/project/layer)."
+            )
+
+        if dropped_at == "mmr_dedup":
+            cf = by_stage["mmr_dedup"].counterfactual or ""
+            suggestions.append(
+                "MMR deduplication eliminated this chunk because another chunk from the "
+                f"same document was already selected and they're too similar. {cf}"
+            )
+
+        if dropped_at == "top_k_cutoff":
+            cf = by_stage["top_k_cutoff"].counterfactual or ""
+            suggestions.append(
+                f"The chunk survived all stages but was just below the top_k cutoff. {cf}"
+            )
+
+        if not suggestions:
+            suggestions.append(
+                "Unable to localize the failure to a single stage. "
+                "Inspect stage_verdicts manually for details."
+            )
+
+        return suggestions
 
     # ------------------------------------------------------------------ #
     # MMR intra-document deduplication                                      #

@@ -98,3 +98,89 @@ class StoreStats(BaseModel):
     collections: int = Field(default=0, description="Number of distinct collections")
     db_size_mb: float = Field(description="Database file size in MB")
     db_path: str = Field(description="Absolute path to database file")
+
+
+# ------------------------------------------------------------------ #
+# Miss analysis (#108)                                                #
+# ------------------------------------------------------------------ #
+
+
+class StageVerdict(BaseModel):
+    """Outcome of a single chunk at one stage of the search pipeline.
+
+    Used by miss analysis to explain *why* an expected document did
+    not appear in the top-k of a query.
+    """
+
+    stage: Literal[
+        "vector_search",
+        "distance_cutoff",
+        "fts_search",
+        "rrf_fusion",
+        "recency_boost",
+        "mmr_dedup",
+        "top_k_cutoff",
+    ] = Field(description="Pipeline stage being inspected")
+    passed: bool = Field(description="Whether the chunk survived this stage")
+    rank: int | None = Field(
+        default=None, description="0-indexed rank of the chunk at this stage, if applicable"
+    )
+    score: float | None = Field(
+        default=None, description="Numeric score relevant to this stage (distance, RRF, etc.)"
+    )
+    detail: str = Field(description="Human-readable explanation of what happened")
+    counterfactual: str | None = Field(
+        default=None,
+        description="What would have changed the verdict ('would have passed if X')",
+    )
+
+
+class MissAnalysisActualResult(BaseModel):
+    """A chunk that DID appear in the top-k, included for context."""
+
+    rank: int
+    chunk_id: int
+    path: str
+    title: str
+    score: float
+
+
+class MissAnalysis(BaseModel):
+    """Diagnosis of why an expected document did not appear in search results.
+
+    See ``VstashStore.miss_analysis()`` for the full pipeline trace.
+    Returned by ``Memory.miss_analysis()`` and the CLI ``--miss`` flag.
+    """
+
+    query: str = Field(description="The search query that was run")
+    expected_path: str | None = Field(
+        default=None, description="Path of the expected document (if specified by path)"
+    )
+    expected_chunk_id: int | None = Field(
+        default=None,
+        description="ID of the specific chunk evaluated (best match within the expected doc)",
+    )
+    top_k_requested: int = Field(description="top_k value used for the search")
+    appeared_in_results: bool = Field(
+        description="True if the expected document IS in the top-k (no miss to analyze)"
+    )
+    final_rank: int | None = Field(
+        default=None,
+        description="Final rank of the expected chunk in top-k results, or None if it did not make the cut",
+    )
+    dropped_at: str | None = Field(
+        default=None,
+        description="Name of the first pipeline stage where the expected chunk was eliminated",
+    )
+    stage_verdicts: list[StageVerdict] = Field(
+        default_factory=list,
+        description="Per-stage trace describing what happened to the expected chunk",
+    )
+    actual_top_k: list[MissAnalysisActualResult] = Field(
+        default_factory=list,
+        description="The chunks that DID appear in top-k, for comparison",
+    )
+    suggestions: list[str] = Field(
+        default_factory=list,
+        description="Actionable, rule-based suggestions to improve the query",
+    )

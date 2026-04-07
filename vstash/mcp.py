@@ -588,6 +588,69 @@ def vstash_search(
 
 
 @mcp_server.tool()
+def vstash_miss_analysis(
+    query: str,
+    expected_path: str | None = None,
+    expected_chunk_id: int | None = None,
+    top_k: int = 5,
+    collection: str | None = None,
+    project: str | None = None,
+    layer: str | None = None,
+) -> str:
+    """Diagnose why an expected document did NOT appear in search results.
+
+    Use this when you (or the user) ran a search expecting a specific
+    document and it didn't show up in the top-k.  This tool runs the
+    full search pipeline with per-stage tracking and returns a structured
+    explanation of which stage eliminated the expected document, plus
+    rule-based suggestions to fix the query.
+
+    Args:
+        query: The search query to diagnose.
+        expected_path: Path of the document the user expected to see.
+            Either this or expected_chunk_id must be provided.
+        expected_chunk_id: Chunk id to track instead of resolving by path.
+        top_k: Number of results to evaluate (default: 5).
+        collection: If set, restrict to this collection only.
+        project: If set, restrict to documents with this project tag.
+        layer: If set, restrict to documents with this layer tag.
+
+    Returns:
+        JSON object with stage_verdicts, actual_top_k, dropped_at,
+        suggestions, and the original query/expected_path/chunk_id.
+    """
+    try:
+        if expected_path is None and expected_chunk_id is None:
+            return _error("Provide either expected_path or expected_chunk_id")
+        cfg = _get_config()
+        store = _get_store()
+        # Normalize path the same way add() does
+        if expected_path is not None and not expected_path.startswith(
+            ("http://", "https://", "text://")
+        ):
+            expected_path = str(Path(expected_path).resolve())
+        query_embedding = embed_query(query, cfg.embeddings.model)
+        analysis = store.miss_analysis(
+            query_embedding=query_embedding,
+            query_text=query,
+            expected_path=expected_path,
+            expected_chunk_id=int(expected_chunk_id) if expected_chunk_id is not None else None,
+            top_k=int(top_k),
+            collection=collection,
+            project=project,
+            layer=layer,
+        )
+        return _ok(analysis)
+    except ValueError as exc:
+        return _error(str(exc))
+    except FileNotFoundError:
+        return _error("vstash database not found. Ingest documents first with vstash_add.")
+    except Exception as exc:
+        logger.exception("vstash_miss_analysis failed")
+        return _error(f"Miss analysis failed: {exc}")
+
+
+@mcp_server.tool()
 def vstash_get_document_chunks(path: str, collection: str | None = None) -> str:
     """Get all chunk texts for a document by its path.
 
