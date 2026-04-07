@@ -395,12 +395,20 @@ def search(
     if miss is not None or miss_chunk is not None:
         import json as _json
 
-        if all_profiles:
+        def _miss_error(msg: str, exit_code: int = 1) -> typer.Exit:
+            """Emit an error consistently for both JSON and pretty output modes.
+
+            Returns the Exit exception so the caller can ``raise`` it,
+            which keeps ``raise ... from None`` chaining clean.
+            """
             if json_output:
-                print(_json.dumps({"error": "Miss analysis is not supported with --all-profiles."}))
+                print(_json.dumps({"error": msg}))
             else:
-                console.print("[red]Miss analysis is not supported with --all-profiles.[/red]")
-            raise typer.Exit(1)
+                console.print(f"[red]✗ {msg}[/red]")
+            return typer.Exit(exit_code)
+
+        if all_profiles:
+            raise _miss_error("Miss analysis is not supported with --all-profiles.")
         with store:
             k = top_k or cfg.chunking.top_k
             # Normalize the path the same way add() does
@@ -424,11 +432,7 @@ def search(
                         layer=layer,
                     )
             except ValueError as exc:
-                if json_output:
-                    print(_json.dumps({"error": str(exc)}))
-                else:
-                    console.print(f"[red]✗ {exc}[/red]")
-                raise typer.Exit(1) from None
+                raise _miss_error(str(exc)) from None
 
         # JSON output path (honored for both the no-miss and real-miss cases)
         if json_output:
