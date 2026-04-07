@@ -85,29 +85,33 @@ class Histogram:
     """Simple bucketed histogram with running sum and count.
 
     Used for latency distributions.  Buckets are fixed (not HDR) to keep
-    the implementation trivial and cheap.  For each observation, we
-    increment the smallest bucket whose upper bound >= value, plus all
-    higher buckets (standard Prometheus histogram semantics).
+    the implementation trivial and cheap.  Each ``observe()`` increments
+    **exactly one** bucket (O(buckets) lookup, not O(buckets²) as earlier
+    iterations of this class did).  The cumulative Prometheus-style view
+    is computed lazily in ``snapshot()``.
     """
 
     __slots__ = ("_buckets_upper", "_bucket_counts", "_sum", "_count")
 
     def __init__(self, buckets_ms: tuple[float, ...] = _DEFAULT_BUCKETS_MS) -> None:
         self._buckets_upper: tuple[float, ...] = buckets_ms
+        # Per-bucket counts (not cumulative — cumulation happens in snapshot).
         self._bucket_counts: list[int] = [0] * len(buckets_ms)
         self._sum: float = 0.0
         self._count: int = 0
 
     def observe(self, value_ms: float) -> None:
-        """Record a single observation in milliseconds."""
+        """Record a single observation in milliseconds.
+
+        Only the bucket corresponding to the value is incremented; the
+        cumulative histogram view is produced at snapshot time.
+        """
         self._sum += value_ms
         self._count += 1
         for i, upper in enumerate(self._buckets_upper):
             if value_ms <= upper:
-                # Increment this bucket and all higher (cumulative count)
-                for j in range(i, len(self._bucket_counts)):
-                    self._bucket_counts[j] += 1
-                break
+                self._bucket_counts[i] += 1
+                return
 
     def count(self) -> int:
         return self._count
@@ -119,15 +123,27 @@ class Histogram:
         return self._sum / self._count if self._count else 0.0
 
     def snapshot(self) -> dict[str, Any]:
-        """Return a JSON-serializable summary of the histogram."""
+        """Return a JSON-serializable summary of the histogram.
+
+        The ``buckets_ms`` field uses cumulative counts (Prometheus
+        ``_bucket`` semantics): each bucket's count is the number of
+        observations whose value was <= its upper bound.
+        """
+        cumulative = 0
+        buckets: list[dict[str, Any]] = []
+        for upper, count in zip(self._buckets_upper, self._bucket_counts):
+            cumulative += count
+            buckets.append(
+                {
+                    "le": upper if upper != float("inf") else "+Inf",
+                    "count": cumulative,
+                }
+            )
         return {
             "count": self._count,
             "sum_ms": round(self._sum, 3),
             "mean_ms": round(self.mean_ms(), 3),
-            "buckets_ms": [
-                {"le": upper if upper != float("inf") else "+Inf", "count": count}
-                for upper, count in zip(self._buckets_upper, self._bucket_counts)
-            ],
+            "buckets_ms": buckets,
         }
 
 
@@ -223,6 +239,11 @@ class Timer:
 
         with Timer("search_latency_ms"):
             run_expensive_thing()
+
+    For code paths where the body is too long to fit in a ``with`` block
+    (e.g. a 400-line ``search()`` method), prefer plain ``time.perf_counter``
+    with ``try/finally`` so that exceptions still record the latency and
+    increment counters.
     """
 
     __slots__ = ("_name", "_start")

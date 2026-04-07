@@ -202,6 +202,11 @@ class TestStoreInstrumentation:
         assert snap["histograms"]["search_latency_ms"]["count"] == 1
 
     def test_idf_cache_hits_and_misses(self, sample_store: VstashStore):
+        """The IDF cache should record exactly one miss per invalidation
+        and one hit per subsequent access.  add_document invalidates, so
+        we reset both the cache and the registry before measuring to get
+        deterministic counts.
+        """
         dim = sample_store.embedding_dim
         sample_store.add_document(
             path="/a.md",
@@ -209,16 +214,23 @@ class TestStoreInstrumentation:
             chunks=["alpha content"],
             embeddings=[[0.5] * dim],
         )
-        # First search: miss (first build)
+        # Reset everything so we have a clean baseline: cache cleared,
+        # counters at zero.  The first search rebuilds (miss), subsequent
+        # searches hit the cache.
+        sample_store._invalidate_idf_cache()
+        registry.reset()
+
         sample_store.search([0.5] * dim, "alpha", top_k=1)
-        # Second search: hit (cache primed)
         sample_store.search([0.5] * dim, "content", top_k=1)
+
         snap = registry.snapshot()
-        assert snap["counters"].get("idf_cache_misses", 0) >= 1
-        assert snap["counters"].get("idf_cache_hits", 0) >= 1
+        assert snap["counters"].get("idf_cache_misses", 0) == 1
+        assert snap["counters"].get("idf_cache_hits", 0) == 1
 
     def test_slow_query_log_triggers_counter(self, sample_store: VstashStore):
         """With threshold=0, every query is logged as slow."""
+        from vstash.config import ObservabilityConfig
+
         dim = sample_store.embedding_dim
         sample_store.add_document(
             path="/a.md",
@@ -226,7 +238,9 @@ class TestStoreInstrumentation:
             chunks=["hello"],
             embeddings=[[0.5] * dim],
         )
-        sample_store._slow_query_ms_threshold = 0.0
+        # Inject a new observability config; frozen Pydantic model so we
+        # replace the whole object instead of mutating a field.
+        sample_store._observability = ObservabilityConfig(slow_query_ms=0.0)
         sample_store.search([0.5] * dim, "hello", top_k=1)
         sample_store.search([0.5] * dim, "hello", top_k=1)
         snap = registry.snapshot()
@@ -234,6 +248,8 @@ class TestStoreInstrumentation:
 
     def test_slow_query_log_respects_high_threshold(self, sample_store: VstashStore):
         """With a very high threshold, no query is slow."""
+        from vstash.config import ObservabilityConfig
+
         dim = sample_store.embedding_dim
         sample_store.add_document(
             path="/a.md",
@@ -241,7 +257,7 @@ class TestStoreInstrumentation:
             chunks=["hello"],
             embeddings=[[0.5] * dim],
         )
-        sample_store._slow_query_ms_threshold = 999_999.0
+        sample_store._observability = ObservabilityConfig(slow_query_ms=999_999.0)
         sample_store.search([0.5] * dim, "hello", top_k=1)
         snap = registry.snapshot()
         assert snap["counters"].get("slow_queries_total", 0) == 0

@@ -62,8 +62,8 @@ def _get_store() -> VstashStore:
             embedding_dim=dim,
             vector_backend=cfg.storage.vector_backend,
             snapvec_bits=cfg.storage.snapvec_bits,
+            observability=cfg.observability,
         )
-        _store._slow_query_ms_threshold = cfg.observability.slow_query_ms
     return _store
 
 
@@ -272,20 +272,42 @@ async def index(request: Request) -> HTMLResponse:
 # ------------------------------------------------------------------ #
 
 
-async def api_health(request: Request) -> JSONResponse:
-    """GET /health — returns 200 if the store is reachable.
+def _do_health_check() -> None:
+    """Lightweight liveness probe: verify the SQLite connection is alive
+    by running ``SELECT 1``.  Cheap enough to run on every probe without
+    fighting a busy ingest lock."""
+    store = _get_store()
+    store._conn.execute("SELECT 1").fetchone()
 
-    Quick sanity check for load balancers, docker health probes, and
-    monitoring scripts.  Does not run a full search — just verifies
-    the SQLite connection is alive by reading a count.
+
+async def api_health(request: Request) -> JSONResponse:
+    """GET /health — returns 200 if the store connection is reachable.
+
+    Designed for load balancers, Docker health probes, and uptime
+    monitoring.  Runs a trivial ``SELECT 1`` — not ``stats()`` — so a
+    busy ingest doesn't cause k8s to restart healthy pods.
+
+    Returns a minimal payload with version and uptime for dashboards
+    that want a single round-trip for identity + liveness.
     """
+    from . import __version__
+    from .metrics import registry
+
     try:
-        store = _get_store()
-        await _run_sync(store.stats)
-        return _json({"status": "ok"}, status=200)
+        await _run_sync(_do_health_check)
     except Exception as exc:
         logger.exception("health check failed")
         return _json({"status": "error", "detail": str(exc)}, status=503)
+
+    snap = registry.snapshot()
+    return _json(
+        {
+            "status": "ok",
+            "version": __version__,
+            "uptime_seconds": snap["uptime_seconds"],
+        },
+        status=200,
+    )
 
 
 async def api_metrics(request: Request) -> JSONResponse:
@@ -294,12 +316,15 @@ async def api_metrics(request: Request) -> JSONResponse:
     Intentionally not Prometheus text format — keeps dependencies light
     and the JSON is trivial to scrape.  Operators running Prometheus
     can stand up a small translator in their agent.
+
+    Note: gauges are refreshed by ``stats()`` calls (via the CLI or
+    programmatic use), not by this endpoint.  Scrapers polling every
+    few seconds don't need fresh-to-the-millisecond values, and forcing
+    a ``SELECT COUNT(*)`` here would serialize all scrapes behind the
+    single SQLite connection.
     """
     from .metrics import registry
 
-    # Refresh the store gauges by calling stats() (which updates them).
-    store = _get_store()
-    await _run_sync(store.stats)
     return _json(registry.snapshot())
 
 

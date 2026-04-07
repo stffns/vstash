@@ -92,10 +92,8 @@ class Memory:
             embedding_dim=dim,
             vector_backend=self._cfg.storage.vector_backend,
             snapvec_bits=self._cfg.storage.snapvec_bits,
+            observability=self._cfg.observability,
         )
-        # Thread observability config through to the store so the
-        # slow-query log honors the user's [observability] settings.
-        self._store._slow_query_ms_threshold = self._cfg.observability.slow_query_ms
 
     # ------------------------------------------------------------------ #
     # Context manager                                                      #

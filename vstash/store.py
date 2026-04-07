@@ -15,6 +15,7 @@ import logging
 import math
 import sqlite3
 import struct
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from collections.abc import Callable, Iterator
@@ -26,6 +27,7 @@ import threading
 import numpy as np
 import sqlite_vec
 
+from .config import ObservabilityConfig
 from .models import (
     ChunkInfo,
     DocumentInfo,
@@ -186,6 +188,7 @@ class VstashStore:
         embedding_dim: int = 384,
         vector_backend: str = "sqlite-vec",
         snapvec_bits: int = 4,
+        observability: ObservabilityConfig | None = None,
     ) -> None:
         self.db_path = Path(db_path).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -210,10 +213,12 @@ class VstashStore:
         self._batch_dirty: bool = False
 
         # --- Observability ---
-        # Slow-query threshold in ms.  Updated externally from config
-        # by callers that load a VstashConfig (Memory, CLI, MCP, web).
-        # Default 100ms keeps the log noise-free for healthy systems.
-        self._slow_query_ms_threshold: float = 100.0
+        # Store the whole ObservabilityConfig object (frozen Pydantic
+        # model) so that future knobs can be added without touching
+        # every VstashStore construction site.  Callers pass it via
+        # ``observability=`` in the constructor; if omitted we use the
+        # defaults, which is what single-process CLI use expects.
+        self._observability: ObservabilityConfig = observability or ObservabilityConfig()
 
         # --- SnapVec backend (optional) ---
         self._snap: SnapIndex | None = None  # type: ignore[name-defined]
@@ -769,496 +774,522 @@ class VstashStore:
         # users of VstashStore should not pass it directly.
         track_target: int | None = _tracer.target if _tracer is not None else None
 
-        # Observability: start the wall-clock timer for search_latency_ms
-        # and increment the searches_total counter.  Slow queries are
-        # logged at the return path.
-        from .metrics import Timer, registry
+        # Observability: we wrap the entire body in try/finally so that
+        # latency and slow_queries_total are recorded even when the body
+        # raises.  An earlier version used Timer.__enter__/__exit__ with
+        # no finally — exceptions silently dropped the histogram write,
+        # causing searches_total to drift ahead of the histogram count
+        # (exactly the metrics skew you do NOT want when debugging a
+        # production incident).
+        from .metrics import registry
 
-        _search_timer = Timer("search_latency_ms")
-        _search_timer.__enter__()
+        _search_start = time.perf_counter()
+        _result_count = 0
+        # vec_weight/fts_weight may still be None here — initialize to
+        # 0.0 so the slow-query log in finally doesn't crash if we fail
+        # before adaptive RRF has resolved them.
+        _vec_weight_observed: float = 0.0
+        _fts_weight_observed: float = 0.0
         registry.counter_inc("searches_total")
+        try:
+            # Adaptive RRF: compute weights from query characteristics (IDF + length)
+            # Skip if caller provided explicit weights
+            if adaptive_rrf and vec_weight is None and fts_weight is None:
+                vec_weight, fts_weight, distance_cutoff = self._compute_adaptive_rrf_params(
+                    query_text, default_cutoff=distance_cutoff
+                )
+            if vec_weight is None and fts_weight is None:
+                vec_weight, fts_weight = 0.6, 0.4
+            elif vec_weight is None:
+                vec_weight = 1.0 - fts_weight
+            elif fts_weight is None:
+                fts_weight = 1.0 - vec_weight
 
-        # Adaptive RRF: compute weights from query characteristics (IDF + length)
-        # Skip if caller provided explicit weights
-        if adaptive_rrf and vec_weight is None and fts_weight is None:
-            vec_weight, fts_weight, distance_cutoff = self._compute_adaptive_rrf_params(
-                query_text, default_cutoff=distance_cutoff
+            # Adaptive candidate pool — avoid pulling half the corpus on small DBs
+            effective_k = top_k
+            total_chunks = self._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+            candidate_pool = min(effective_k * 10, max(effective_k * 3, total_chunks // 3))
+
+            # --- Build metadata filter ---
+            vec_clause, col_clause, filter_params = self._build_doc_filter(
+                collection=collection,
+                project=project,
+                layer=layer,
+                added_after=added_after,
+                added_before=added_before,
             )
-        if vec_weight is None and fts_weight is None:
-            vec_weight, fts_weight = 0.6, 0.4
-        elif vec_weight is None:
-            vec_weight = 1.0 - fts_weight
-        elif fts_weight is None:
-            fts_weight = 1.0 - vec_weight
 
-        # Adaptive candidate pool — avoid pulling half the corpus on small DBs
-        effective_k = top_k
-        total_chunks = self._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
-        candidate_pool = min(effective_k * 10, max(effective_k * 3, total_chunks // 3))
+            # --- Vector search ---
+            if self._snap is not None and len(self._snap) > 0:
+                # SnapVec ANN search — returns list[(id, distance)]
+                snap_results = self._snap.search(
+                    np.array(query_embedding, dtype=np.float32), k=candidate_pool
+                )
+                snap_ids = [int(r[0]) for r in snap_results]
+                snap_dists = {int(r[0]): float(r[1]) for r in snap_results}
 
-        # --- Build metadata filter ---
-        vec_clause, col_clause, filter_params = self._build_doc_filter(
-            collection=collection,
-            project=project,
-            layer=layer,
-            added_after=added_after,
-            added_before=added_before,
-        )
-
-        # --- Vector search ---
-        if self._snap is not None and len(self._snap) > 0:
-            # SnapVec ANN search — returns list[(id, distance)]
-            snap_results = self._snap.search(
-                np.array(query_embedding, dtype=np.float32), k=candidate_pool
-            )
-            snap_ids = [int(r[0]) for r in snap_results]
-            snap_dists = {int(r[0]): float(r[1]) for r in snap_results}
-
-            if snap_ids:
-                placeholders = ",".join("?" * len(snap_ids))
-                # Build filter clause adapted for snapvec (no v.rowid)
-                snap_filter = vec_clause.replace("v.rowid", "c.id") if vec_clause else ""
-                rows = self._conn.execute(
+                if snap_ids:
+                    placeholders = ",".join("?" * len(snap_ids))
+                    # Build filter clause adapted for snapvec (no v.rowid)
+                    snap_filter = vec_clause.replace("v.rowid", "c.id") if vec_clause else ""
+                    rows = self._conn.execute(
+                        f"""
+                        SELECT c.id, c.text, d.title, d.path, c.seq
+                        FROM chunks c
+                        JOIN documents d ON d.id = c.doc_id
+                        WHERE c.id IN ({placeholders})
+                          {snap_filter}
+                        """,
+                        [*snap_ids, *filter_params],
+                    ).fetchall()
+                    # Build dict for fast lookup, attach distance, preserve snap order
+                    row_by_id = {r["id"]: dict(r) for r in rows}
+                    vec_rows = []
+                    for sid in snap_ids:
+                        if sid in row_by_id:
+                            entry = row_by_id[sid]
+                            entry["distance"] = snap_dists.get(sid, 2.0)
+                            vec_rows.append(entry)
+                else:
+                    vec_rows = []
+            else:
+                vec_rows = self._conn.execute(
                     f"""
-                    SELECT c.id, c.text, d.title, d.path, c.seq
-                    FROM chunks c
+                    SELECT c.id, c.text, d.title, d.path, c.seq, v.distance
+                    FROM vec_chunks v
+                    JOIN chunks c ON c.id = v.rowid
                     JOIN documents d ON d.id = c.doc_id
-                    WHERE c.id IN ({placeholders})
-                      {snap_filter}
+                    WHERE v.embedding MATCH ?
+                      AND k = ?
+                      {vec_clause}
+                    ORDER BY v.distance
                     """,
-                    [*snap_ids, *filter_params],
+                    [_serialize(query_embedding), candidate_pool, *filter_params],
                 ).fetchall()
-                # Build dict for fast lookup, attach distance, preserve snap order
-                row_by_id = {r["id"]: dict(r) for r in rows}
-                vec_rows = []
-                for sid in snap_ids:
-                    if sid in row_by_id:
-                        entry = row_by_id[sid]
-                        entry["distance"] = snap_dists.get(sid, 2.0)
-                        vec_rows.append(entry)
-            else:
-                vec_rows = []
-        else:
-            vec_rows = self._conn.execute(
-                f"""
-                SELECT c.id, c.text, d.title, d.path, c.seq, v.distance
-                FROM vec_chunks v
-                JOIN chunks c ON c.id = v.rowid
-                JOIN documents d ON d.id = c.doc_id
-                WHERE v.embedding MATCH ?
-                  AND k = ?
-                  {vec_clause}
-                ORDER BY v.distance
-                """,
-                [_serialize(query_embedding), candidate_pool, *filter_params],
-            ).fetchall()
 
-        # --- Track: vector search stage ---
-        if track_target is not None:
-            target_vec_rank: int | None = None
-            target_vec_distance: float | None = None
-            for i, row in enumerate(vec_rows):
-                if int(row["id"]) == track_target:
-                    target_vec_rank = i
-                    target_vec_distance = float(row["distance"])
-                    break
-            if target_vec_rank is not None:
-                _tracer.record(
-                    "vector_search",
-                    passed=True,
-                    rank=target_vec_rank,
-                    score=target_vec_distance,
-                    detail=(
-                        f"Found in vector candidate pool at rank {target_vec_rank + 1}/{len(vec_rows)} "
-                        f"with distance {target_vec_distance:.4f}"
-                    ),
-                )
-            else:
-                _tracer.record(
-                    "vector_search",
-                    passed=False,
-                    rank=None,
-                    score=None,
-                    detail=(
-                        f"Not in vector candidate pool of size {candidate_pool}. "
-                        "The chunk's embedding is too far from the query embedding."
-                    ),
-                    counterfactual="Would need candidate_pool > current rank to appear",
-                )
-
-        # --- Filter by vector distance gap ---
-        # The best (closest) result has the smallest distance.
-        # Remove results that are semantically too far from the ideal match.
-        if vec_rows:
-            best_distance = float(vec_rows[0]["distance"])
-            self.last_best_distance = best_distance
-            # Capture target distance BEFORE filtering for tracking
-            target_dist_before: float | None = None
+            # --- Track: vector search stage ---
             if track_target is not None:
-                for r in vec_rows:
-                    if int(r["id"]) == track_target:
-                        target_dist_before = float(r["distance"])
+                target_vec_rank: int | None = None
+                target_vec_distance: float | None = None
+                for i, row in enumerate(vec_rows):
+                    if int(row["id"]) == track_target:
+                        target_vec_rank = i
+                        target_vec_distance = float(row["distance"])
                         break
-            threshold = best_distance * distance_cutoff
-            cutoff_applied = best_distance > 0
-            if cutoff_applied:
-                vec_rows = [r for r in vec_rows if float(r["distance"]) <= threshold]
-            # Track distance cutoff verdict whenever we have a before-distance
-            # (i.e., the target was in vec_rows pre-filter)
-            if track_target is not None and target_dist_before is not None:
-                target_in_after = any(int(r["id"]) == track_target for r in vec_rows)
-                if not cutoff_applied:
-                    # best_distance == 0: cutoff logic is skipped entirely.
-                    # Surface the target's absolute distance so users know
-                    # whether the bypass is a lucky rescue or a "carried by
-                    # the loophole" situation (high-distance chunks are
-                    # getting through because a perfect match exists).
+                if target_vec_rank is not None:
                     _tracer.record(
-                        "distance_cutoff",
+                        "vector_search",
                         passed=True,
-                        score=target_dist_before,
+                        rank=target_vec_rank,
+                        score=target_vec_distance,
                         detail=(
-                            f"Distance cutoff bypassed (best_distance=0, perfect "
-                            f"match exists). Target distance={target_dist_before:.4f}; "
-                            f"this would normally require cutoff ratio > "
-                            f"{target_dist_before * 100:.1f} to pass."
-                        ),
-                    )
-                elif target_in_after:
-                    _tracer.record(
-                        "distance_cutoff",
-                        passed=True,
-                        score=target_dist_before,
-                        detail=(
-                            f"Distance {target_dist_before:.4f} ≤ threshold "
-                            f"{threshold:.4f} (best={best_distance:.4f} × cutoff={distance_cutoff:.2f})"
+                            f"Found in vector candidate pool at rank {target_vec_rank + 1}/{len(vec_rows)} "
+                            f"with distance {target_vec_distance:.4f}"
                         ),
                     )
                 else:
-                    needed_cutoff = (
-                        target_dist_before / best_distance if best_distance > 0 else float("inf")
-                    )
                     _tracer.record(
-                        "distance_cutoff",
+                        "vector_search",
                         passed=False,
-                        score=target_dist_before,
+                        rank=None,
+                        score=None,
                         detail=(
-                            f"Distance {target_dist_before:.4f} > threshold "
-                            f"{threshold:.4f} (best={best_distance:.4f} × cutoff={distance_cutoff:.2f})"
+                            f"Not in vector candidate pool of size {candidate_pool}. "
+                            "The chunk's embedding is too far from the query embedding."
                         ),
-                        counterfactual=(
-                            f"Would have passed with distance_cutoff ≥ {needed_cutoff:.2f}"
+                        counterfactual="Would need candidate_pool > current rank to appear",
+                    )
+
+            # --- Filter by vector distance gap ---
+            # The best (closest) result has the smallest distance.
+            # Remove results that are semantically too far from the ideal match.
+            if vec_rows:
+                best_distance = float(vec_rows[0]["distance"])
+                self.last_best_distance = best_distance
+                # Capture target distance BEFORE filtering for tracking
+                target_dist_before: float | None = None
+                if track_target is not None:
+                    for r in vec_rows:
+                        if int(r["id"]) == track_target:
+                            target_dist_before = float(r["distance"])
+                            break
+                threshold = best_distance * distance_cutoff
+                cutoff_applied = best_distance > 0
+                if cutoff_applied:
+                    vec_rows = [r for r in vec_rows if float(r["distance"]) <= threshold]
+                # Track distance cutoff verdict whenever we have a before-distance
+                # (i.e., the target was in vec_rows pre-filter)
+                if track_target is not None and target_dist_before is not None:
+                    target_in_after = any(int(r["id"]) == track_target for r in vec_rows)
+                    if not cutoff_applied:
+                        # best_distance == 0: cutoff logic is skipped entirely.
+                        # Surface the target's absolute distance so users know
+                        # whether the bypass is a lucky rescue or a "carried by
+                        # the loophole" situation (high-distance chunks are
+                        # getting through because a perfect match exists).
+                        _tracer.record(
+                            "distance_cutoff",
+                            passed=True,
+                            score=target_dist_before,
+                            detail=(
+                                f"Distance cutoff bypassed (best_distance=0, perfect "
+                                f"match exists). Target distance={target_dist_before:.4f}; "
+                                f"this would normally require cutoff ratio > "
+                                f"{target_dist_before * 100:.1f} to pass."
+                            ),
+                        )
+                    elif target_in_after:
+                        _tracer.record(
+                            "distance_cutoff",
+                            passed=True,
+                            score=target_dist_before,
+                            detail=(
+                                f"Distance {target_dist_before:.4f} ≤ threshold "
+                                f"{threshold:.4f} (best={best_distance:.4f} × cutoff={distance_cutoff:.2f})"
+                            ),
+                        )
+                    else:
+                        needed_cutoff = (
+                            target_dist_before / best_distance
+                            if best_distance > 0
+                            else float("inf")
+                        )
+                        _tracer.record(
+                            "distance_cutoff",
+                            passed=False,
+                            score=target_dist_before,
+                            detail=(
+                                f"Distance {target_dist_before:.4f} > threshold "
+                                f"{threshold:.4f} (best={best_distance:.4f} × cutoff={distance_cutoff:.2f})"
+                            ),
+                            counterfactual=(
+                                f"Would have passed with distance_cutoff ≥ {needed_cutoff:.2f}"
+                            ),
+                        )
+            else:
+                self.last_best_distance = 2.0  # max cosine distance = worst case
+
+            # Track which chunk IDs passed the vector distance filter
+            relevant_chunk_ids: set[int] = {row["id"] for row in vec_rows}
+
+            # --- Explain: capture per-chunk vector rank and distance ---
+            _explain_vec: dict[int, tuple[int, float]] = {}  # chunk_id -> (rank, distance)
+            if explain:
+                for rank, row in enumerate(vec_rows):
+                    _explain_vec[int(row["id"])] = (rank, float(row["distance"]))
+
+            # --- FTS5 search ---
+            # Quote each word individually and join with OR for keyword matching.
+            # This preserves injection safety (each token is double-quoted to
+            # prevent FTS5 syntax like NEAR, NOT, OR from being interpreted)
+            # while allowing keyword-level matching instead of exact-phrase.
+            words = query_text.split()
+            quoted_words = ['"' + w.replace('"', '""') + '"' for w in words if len(w) > 1]
+            safe_query = (
+                " OR ".join(quoted_words)
+                if quoted_words
+                else '"' + query_text.replace('"', '""') + '"'
+            )
+            try:
+                fts_rows = self._conn.execute(
+                    f"""
+                    SELECT c.id, c.text, d.title, d.path, c.seq,
+                           rank as fts_rank
+                    FROM fts_chunks f
+                    JOIN chunks c ON c.id = f.rowid
+                    JOIN documents d ON d.id = c.doc_id
+                    WHERE fts_chunks MATCH ?
+                      {col_clause}
+                    ORDER BY rank
+                    LIMIT ?
+                    """,
+                    [safe_query, *filter_params, candidate_pool],
+                ).fetchall()
+            except sqlite3.OperationalError:
+                # FTS5 query syntax error (e.g. single char) — fall back to no FTS
+                fts_rows = []
+
+            # --- Track: FTS search stage ---
+            if track_target is not None:
+                target_fts_rank: int | None = None
+                for i, row in enumerate(fts_rows):
+                    if int(row["id"]) == track_target:
+                        target_fts_rank = i
+                        break
+                stemmed_terms = self._stem_terms(words) if words else []
+                if target_fts_rank is not None:
+                    _tracer.record(
+                        "fts_search",
+                        passed=True,
+                        rank=target_fts_rank,
+                        detail=(
+                            f"Matched FTS at rank {target_fts_rank + 1}/{len(fts_rows)}. "
+                            f"Stemmed query terms: {stemmed_terms}"
                         ),
                     )
-        else:
-            self.last_best_distance = 2.0  # max cosine distance = worst case
+                else:
+                    _tracer.record(
+                        "fts_search",
+                        passed=False,
+                        detail=(
+                            f"Did not match FTS5. Stemmed query terms: {stemmed_terms}. "
+                            "The chunk text does not contain any of these stems "
+                            "(after porter stemming)."
+                        ),
+                        counterfactual="Would need a query containing words from the chunk's vocabulary",
+                    )
 
-        # Track which chunk IDs passed the vector distance filter
-        relevant_chunk_ids: set[int] = {row["id"] for row in vec_rows}
+            # --- Reciprocal Rank Fusion ---
+            scores: dict[int, dict[str, str | int | float]] = {}
+            _explain_rrf_vec: dict[int, float] = {}  # chunk_id -> vec RRF contribution
+            _explain_rrf_fts: dict[int, float] = {}  # chunk_id -> fts RRF contribution
+            _explain_fts_rank: dict[int, int] = {}  # chunk_id -> fts rank
 
-        # --- Explain: capture per-chunk vector rank and distance ---
-        _explain_vec: dict[int, tuple[int, float]] = {}  # chunk_id -> (rank, distance)
-        if explain:
             for rank, row in enumerate(vec_rows):
-                _explain_vec[int(row["id"])] = (rank, float(row["distance"]))
-
-        # --- FTS5 search ---
-        # Quote each word individually and join with OR for keyword matching.
-        # This preserves injection safety (each token is double-quoted to
-        # prevent FTS5 syntax like NEAR, NOT, OR from being interpreted)
-        # while allowing keyword-level matching instead of exact-phrase.
-        words = query_text.split()
-        quoted_words = ['"' + w.replace('"', '""') + '"' for w in words if len(w) > 1]
-        safe_query = (
-            " OR ".join(quoted_words) if quoted_words else '"' + query_text.replace('"', '""') + '"'
-        )
-        try:
-            fts_rows = self._conn.execute(
-                f"""
-                SELECT c.id, c.text, d.title, d.path, c.seq,
-                       rank as fts_rank
-                FROM fts_chunks f
-                JOIN chunks c ON c.id = f.rowid
-                JOIN documents d ON d.id = c.doc_id
-                WHERE fts_chunks MATCH ?
-                  {col_clause}
-                ORDER BY rank
-                LIMIT ?
-                """,
-                [safe_query, *filter_params, candidate_pool],
-            ).fetchall()
-        except sqlite3.OperationalError:
-            # FTS5 query syntax error (e.g. single char) — fall back to no FTS
-            fts_rows = []
-
-        # --- Track: FTS search stage ---
-        if track_target is not None:
-            target_fts_rank: int | None = None
-            for i, row in enumerate(fts_rows):
-                if int(row["id"]) == track_target:
-                    target_fts_rank = i
-                    break
-            stemmed_terms = self._stem_terms(words) if words else []
-            if target_fts_rank is not None:
-                _tracer.record(
-                    "fts_search",
-                    passed=True,
-                    rank=target_fts_rank,
-                    detail=(
-                        f"Matched FTS at rank {target_fts_rank + 1}/{len(fts_rows)}. "
-                        f"Stemmed query terms: {stemmed_terms}"
-                    ),
-                )
-            else:
-                _tracer.record(
-                    "fts_search",
-                    passed=False,
-                    detail=(
-                        f"Did not match FTS5. Stemmed query terms: {stemmed_terms}. "
-                        "The chunk text does not contain any of these stems "
-                        "(after porter stemming)."
-                    ),
-                    counterfactual="Would need a query containing words from the chunk's vocabulary",
-                )
-
-        # --- Reciprocal Rank Fusion ---
-        scores: dict[int, dict[str, str | int | float]] = {}
-        _explain_rrf_vec: dict[int, float] = {}  # chunk_id -> vec RRF contribution
-        _explain_rrf_fts: dict[int, float] = {}  # chunk_id -> fts RRF contribution
-        _explain_fts_rank: dict[int, int] = {}  # chunk_id -> fts rank
-
-        for rank, row in enumerate(vec_rows):
-            chunk_id: int = row["id"]
-            vec_contrib = vec_weight * (1.0 / (RRF_K + rank))
-            scores[chunk_id] = {
-                "id": chunk_id,
-                "text": row["text"],
-                "title": row["title"],
-                "path": row["path"],
-                "chunk": row["seq"],
-                "rrf": vec_contrib,
-            }
-            if explain:
-                _explain_rrf_vec[chunk_id] = vec_contrib
-
-        for rank, row in enumerate(fts_rows):
-            chunk_id = row["id"]
-            # Only include FTS results that also passed vector relevance filter,
-            # OR that are in the top FTS results (strong keyword match).
-            is_fts_top = rank < effective_k * 2
-            fts_contribution = fts_weight * (1.0 / (RRF_K + rank))
-            if chunk_id in scores:
-                scores[chunk_id]["rrf"] = float(scores[chunk_id]["rrf"]) + fts_contribution
-                if explain:
-                    _explain_rrf_fts[chunk_id] = fts_contribution
-                    _explain_fts_rank[chunk_id] = rank
-            elif chunk_id in relevant_chunk_ids or is_fts_top:
+                chunk_id: int = row["id"]
+                vec_contrib = vec_weight * (1.0 / (RRF_K + rank))
                 scores[chunk_id] = {
                     "id": chunk_id,
                     "text": row["text"],
                     "title": row["title"],
                     "path": row["path"],
                     "chunk": row["seq"],
-                    "rrf": fts_contribution,
+                    "rrf": vec_contrib,
                 }
                 if explain:
-                    _explain_rrf_fts[chunk_id] = fts_contribution
-                    _explain_fts_rank[chunk_id] = rank
+                    _explain_rrf_vec[chunk_id] = vec_contrib
 
-        # Sort by RRF score descending
-        ranked = sorted(scores.values(), key=lambda x: float(x["rrf"]), reverse=True)
+            for rank, row in enumerate(fts_rows):
+                chunk_id = row["id"]
+                # Only include FTS results that also passed vector relevance filter,
+                # OR that are in the top FTS results (strong keyword match).
+                is_fts_top = rank < effective_k * 2
+                fts_contribution = fts_weight * (1.0 / (RRF_K + rank))
+                if chunk_id in scores:
+                    scores[chunk_id]["rrf"] = float(scores[chunk_id]["rrf"]) + fts_contribution
+                    if explain:
+                        _explain_rrf_fts[chunk_id] = fts_contribution
+                        _explain_fts_rank[chunk_id] = rank
+                elif chunk_id in relevant_chunk_ids or is_fts_top:
+                    scores[chunk_id] = {
+                        "id": chunk_id,
+                        "text": row["text"],
+                        "title": row["title"],
+                        "path": row["path"],
+                        "chunk": row["seq"],
+                        "rrf": fts_contribution,
+                    }
+                    if explain:
+                        _explain_rrf_fts[chunk_id] = fts_contribution
+                        _explain_fts_rank[chunk_id] = rank
 
-        # --- Track: RRF fusion stage ---
-        if track_target is not None:
-            target_rrf_rank: int | None = None
-            target_rrf_score: float | None = None
-            for i, r in enumerate(ranked):
-                if int(r["id"]) == track_target:
-                    target_rrf_rank = i
-                    target_rrf_score = float(r["rrf"])
-                    break
-            if target_rrf_rank is not None:
-                _tracer.record(
-                    "rrf_fusion",
-                    passed=True,
-                    rank=target_rrf_rank,
-                    score=target_rrf_score,
-                    detail=(
-                        f"After RRF fusion: rank {target_rrf_rank + 1}/{len(ranked)}, "
-                        f"combined score {target_rrf_score:.6f}"
-                    ),
-                )
-            else:
-                _tracer.record(
-                    "rrf_fusion",
-                    passed=False,
-                    detail=(
-                        "Eliminated before RRF fusion (failed both vector and FTS, "
-                        "or filtered by metadata)"
-                    ),
-                )
+            # Sort by RRF score descending
+            ranked = sorted(scores.values(), key=lambda x: float(x["rrf"]), reverse=True)
 
-        # --- Recency boost (temporal decay) ---
-        # When recency_boost > 0, multiply each chunk's RRF score by a decay
-        # factor based on how recently it was created.  This biases results
-        # toward recent content — useful for agentic memory where the latest
-        # context is more likely to be relevant.
-        if recency_boost > 0 and ranked:
-            now = datetime.now(timezone.utc)
-            chunk_ids = [int(r["id"]) for r in ranked]
-            placeholders = ",".join("?" * len(chunk_ids))
-            rows = self._conn.execute(
-                f"SELECT id, created_at FROM chunks WHERE id IN ({placeholders})",
-                chunk_ids,
-            ).fetchall()
-            created_map = {}
-            for row in rows:
-                try:
-                    created_map[row["id"]] = datetime.fromisoformat(row["created_at"])
-                except (TypeError, ValueError):
-                    pass
-            for r in ranked:
-                cid = int(r["id"])
-                if cid in created_map:
-                    days_ago = max(0.0, (now - created_map[cid]).total_seconds() / 86400)
-                    decay = math.exp(-0.05 * days_ago)
-                    r["rrf"] = float(r["rrf"]) * (1.0 + recency_boost * decay)
-            # Re-sort after boost
-            ranked = sorted(ranked, key=lambda x: float(x["rrf"]), reverse=True)
-
-        # --- Track: recency boost stage ---
-        if track_target is not None and recency_boost > 0:
-            target_after_boost: int | None = None
-            for i, r in enumerate(ranked):
-                if int(r["id"]) == track_target:
-                    target_after_boost = i
-                    break
-            if target_after_boost is not None:
-                _tracer.record(
-                    "recency_boost",
-                    passed=True,
-                    rank=target_after_boost,
-                    detail=(f"After recency_boost={recency_boost}: rank {target_after_boost + 1}"),
-                )
-
-        # --- Pre-MMR ranks (for tracking what MMR removes) ---
-        pre_mmr_rank_of_target: int | None = None
-        if track_target is not None:
-            for i, r in enumerate(ranked):
-                if int(r["id"]) == track_target:
-                    pre_mmr_rank_of_target = i
-                    break
-
-        # Intra-document MMR deduplication: allow multiple chunks from the
-        # same document only when they are semantically diverse (e.g. different
-        # chapters of a book).  Chunks from different documents compete purely
-        # on score — no cross-document penalty.
-        ranked = self._mmr_dedup(ranked, top_k, mmr_lambda=mmr_lambda, _explain=explain)
-
-        # --- Track: MMR + top_k cutoff ---
-        if track_target is not None:
-            target_final_rank: int | None = None
-            for i, r in enumerate(ranked):
-                if int(r["id"]) == track_target:
-                    target_final_rank = i
-                    break
-            # MMR verdict
-            if pre_mmr_rank_of_target is not None and target_final_rank is None:
-                _tracer.record(
-                    "mmr_dedup",
-                    passed=False,
-                    rank=pre_mmr_rank_of_target,
-                    detail=(
-                        f"Was rank {pre_mmr_rank_of_target + 1} pre-MMR but eliminated by "
-                        "intra-document MMR deduplication (another chunk from the same "
-                        f"document was already selected and they're too similar). "
-                        f"Current mmr_lambda={mmr_lambda:.2f}."
-                    ),
-                    counterfactual=(
-                        f"Try a higher mmr_lambda (>{mmr_lambda:.2f}) for less "
-                        "aggressive dedup, or mmr_lambda=1.0 to disable MMR entirely."
-                    ),
-                )
-            elif target_final_rank is not None:
-                _tracer.record(
-                    "mmr_dedup",
-                    passed=True,
-                    rank=target_final_rank,
-                    detail=f"Survived MMR dedup at rank {target_final_rank + 1}",
-                )
-            # top_k cutoff verdict
-            if target_final_rank is not None:
-                if target_final_rank < top_k:
+            # --- Track: RRF fusion stage ---
+            if track_target is not None:
+                target_rrf_rank: int | None = None
+                target_rrf_score: float | None = None
+                for i, r in enumerate(ranked):
+                    if int(r["id"]) == track_target:
+                        target_rrf_rank = i
+                        target_rrf_score = float(r["rrf"])
+                        break
+                if target_rrf_rank is not None:
                     _tracer.record(
-                        "top_k_cutoff",
+                        "rrf_fusion",
                         passed=True,
-                        rank=target_final_rank,
-                        detail=f"Final rank {target_final_rank + 1} ≤ top_k={top_k}",
+                        rank=target_rrf_rank,
+                        score=target_rrf_score,
+                        detail=(
+                            f"After RRF fusion: rank {target_rrf_rank + 1}/{len(ranked)}, "
+                            f"combined score {target_rrf_score:.6f}"
+                        ),
                     )
                 else:
                     _tracer.record(
-                        "top_k_cutoff",
+                        "rrf_fusion",
                         passed=False,
-                        rank=target_final_rank,
-                        detail=f"Final rank {target_final_rank + 1} > top_k={top_k}",
-                        counterfactual=f"Would appear with top_k ≥ {target_final_rank + 1}",
+                        detail=(
+                            "Eliminated before RRF fusion (failed both vector and FTS, "
+                            "or filtered by metadata)"
+                        ),
                     )
 
-        # --- Build ExplainInfo per chunk when requested ---
-        _explain_map: dict[int, ExplainInfo] = {}
-        if explain:
-            fts_terms = [w.strip('"') for w in quoted_words] if quoted_words else []
-            for r in ranked:
-                cid = int(r["id"])
-                vec_info = _explain_vec.get(cid)
-                rrf_vec_val = round(_explain_rrf_vec.get(cid, 0.0), 6)
-                rrf_fts_val = round(_explain_rrf_fts.get(cid, 0.0), 6)
-                _explain_map[cid] = ExplainInfo(
-                    vec_rank=vec_info[0] if vec_info else None,
-                    vec_distance=round(vec_info[1], 4) if vec_info else None,
-                    fts_rank=_explain_fts_rank.get(cid),
-                    rrf_vec=rrf_vec_val,
-                    rrf_fts=rrf_fts_val,
-                    rrf_total=round(rrf_vec_val + rrf_fts_val, 6),
-                    mmr_penalty=round(float(r.get("_mmr_penalty", 0.0)), 4),
-                    fts_terms=fts_terms,
-                    rrf_vec_weight=vec_weight,
-                    rrf_fts_weight=fts_weight,
+            # --- Recency boost (temporal decay) ---
+            # When recency_boost > 0, multiply each chunk's RRF score by a decay
+            # factor based on how recently it was created.  This biases results
+            # toward recent content — useful for agentic memory where the latest
+            # context is more likely to be relevant.
+            if recency_boost > 0 and ranked:
+                now = datetime.now(timezone.utc)
+                chunk_ids = [int(r["id"]) for r in ranked]
+                placeholders = ",".join("?" * len(chunk_ids))
+                rows = self._conn.execute(
+                    f"SELECT id, created_at FROM chunks WHERE id IN ({placeholders})",
+                    chunk_ids,
+                ).fetchall()
+                created_map = {}
+                for row in rows:
+                    try:
+                        created_map[row["id"]] = datetime.fromisoformat(row["created_at"])
+                    except (TypeError, ValueError):
+                        pass
+                for r in ranked:
+                    cid = int(r["id"])
+                    if cid in created_map:
+                        days_ago = max(0.0, (now - created_map[cid]).total_seconds() / 86400)
+                        decay = math.exp(-0.05 * days_ago)
+                        r["rrf"] = float(r["rrf"]) * (1.0 + recency_boost * decay)
+                # Re-sort after boost
+                ranked = sorted(ranked, key=lambda x: float(x["rrf"]), reverse=True)
+
+            # --- Track: recency boost stage ---
+            if track_target is not None and recency_boost > 0:
+                target_after_boost: int | None = None
+                for i, r in enumerate(ranked):
+                    if int(r["id"]) == track_target:
+                        target_after_boost = i
+                        break
+                if target_after_boost is not None:
+                    _tracer.record(
+                        "recency_boost",
+                        passed=True,
+                        rank=target_after_boost,
+                        detail=(
+                            f"After recency_boost={recency_boost}: rank {target_after_boost + 1}"
+                        ),
+                    )
+
+            # --- Pre-MMR ranks (for tracking what MMR removes) ---
+            pre_mmr_rank_of_target: int | None = None
+            if track_target is not None:
+                for i, r in enumerate(ranked):
+                    if int(r["id"]) == track_target:
+                        pre_mmr_rank_of_target = i
+                        break
+
+            # Intra-document MMR deduplication: allow multiple chunks from the
+            # same document only when they are semantically diverse (e.g. different
+            # chapters of a book).  Chunks from different documents compete purely
+            # on score — no cross-document penalty.
+            ranked = self._mmr_dedup(ranked, top_k, mmr_lambda=mmr_lambda, _explain=explain)
+
+            # --- Track: MMR + top_k cutoff ---
+            if track_target is not None:
+                target_final_rank: int | None = None
+                for i, r in enumerate(ranked):
+                    if int(r["id"]) == track_target:
+                        target_final_rank = i
+                        break
+                # MMR verdict
+                if pre_mmr_rank_of_target is not None and target_final_rank is None:
+                    _tracer.record(
+                        "mmr_dedup",
+                        passed=False,
+                        rank=pre_mmr_rank_of_target,
+                        detail=(
+                            f"Was rank {pre_mmr_rank_of_target + 1} pre-MMR but eliminated by "
+                            "intra-document MMR deduplication (another chunk from the same "
+                            f"document was already selected and they're too similar). "
+                            f"Current mmr_lambda={mmr_lambda:.2f}."
+                        ),
+                        counterfactual=(
+                            f"Try a higher mmr_lambda (>{mmr_lambda:.2f}) for less "
+                            "aggressive dedup, or mmr_lambda=1.0 to disable MMR entirely."
+                        ),
+                    )
+                elif target_final_rank is not None:
+                    _tracer.record(
+                        "mmr_dedup",
+                        passed=True,
+                        rank=target_final_rank,
+                        detail=f"Survived MMR dedup at rank {target_final_rank + 1}",
+                    )
+                # top_k cutoff verdict
+                if target_final_rank is not None:
+                    if target_final_rank < top_k:
+                        _tracer.record(
+                            "top_k_cutoff",
+                            passed=True,
+                            rank=target_final_rank,
+                            detail=f"Final rank {target_final_rank + 1} ≤ top_k={top_k}",
+                        )
+                    else:
+                        _tracer.record(
+                            "top_k_cutoff",
+                            passed=False,
+                            rank=target_final_rank,
+                            detail=f"Final rank {target_final_rank + 1} > top_k={top_k}",
+                            counterfactual=f"Would appear with top_k ≥ {target_final_rank + 1}",
+                        )
+
+            # --- Build ExplainInfo per chunk when requested ---
+            _explain_map: dict[int, ExplainInfo] = {}
+            if explain:
+                fts_terms = [w.strip('"') for w in quoted_words] if quoted_words else []
+                for r in ranked:
+                    cid = int(r["id"])
+                    vec_info = _explain_vec.get(cid)
+                    rrf_vec_val = round(_explain_rrf_vec.get(cid, 0.0), 6)
+                    rrf_fts_val = round(_explain_rrf_fts.get(cid, 0.0), 6)
+                    _explain_map[cid] = ExplainInfo(
+                        vec_rank=vec_info[0] if vec_info else None,
+                        vec_distance=round(vec_info[1], 4) if vec_info else None,
+                        fts_rank=_explain_fts_rank.get(cid),
+                        rrf_vec=rrf_vec_val,
+                        rrf_fts=rrf_fts_val,
+                        rrf_total=round(rrf_vec_val + rrf_fts_val, 6),
+                        mmr_penalty=round(float(r.get("_mmr_penalty", 0.0)), 4),
+                        fts_terms=fts_terms,
+                        rrf_vec_weight=vec_weight,
+                        rrf_fts_weight=fts_weight,
+                    )
+
+            results = [
+                SearchResult(
+                    chunk_id=int(r["id"]),
+                    text=str(r["text"]),
+                    title=str(r["title"]),
+                    path=str(r["path"]),
+                    chunk=int(r["chunk"]),
+                    score=round(float(r.get("final_score", r["rrf"])), 6),
+                    explain=_explain_map.get(int(r["id"])) if explain else None,
                 )
+                for r in ranked
+            ]
 
-        results = [
-            SearchResult(
-                chunk_id=int(r["id"]),
-                text=str(r["text"]),
-                title=str(r["title"]),
-                path=str(r["path"]),
-                chunk=int(r["chunk"]),
-                score=round(float(r.get("final_score", r["rrf"])), 6),
-                explain=_explain_map.get(int(r["id"])) if explain else None,
-            )
-            for r in ranked
-        ]
+            # Stash values the finally block needs to log slow queries
+            # with accurate data.
+            _result_count = len(results)
+            _vec_weight_observed = float(vec_weight)
+            _fts_weight_observed = float(fts_weight)
 
-        # Finalize search_latency_ms histogram and check slow-query threshold.
-        # The threshold is read from the config singleton loaded at module
-        # import time so this stays on the hot path without reaching for
-        # Pydantic validation again.
-        elapsed_ms = _search_timer.elapsed_ms()
-        _search_timer.__exit__(None, None, None)
-        if elapsed_ms >= self._slow_query_ms_threshold:
-            registry.counter_inc("slow_queries_total")
-            logger.warning(
-                "slow query: %.1fms query=%r results=%d vec_w=%.2f fts_w=%.2f",
-                elapsed_ms,
-                (query_text[:60] + "…") if len(query_text) > 60 else query_text,
-                len(results),
-                vec_weight,
-                fts_weight,
-            )
-
-        # _tracer.verdicts has been populated in-place by the record()
-        # calls above when tracking is enabled.  No store-level state.
-        return results
+            # _tracer.verdicts has been populated in-place by the record()
+            # calls above when tracking is enabled.  No store-level state.
+            return results
+        finally:
+            # Record latency and slow-query telemetry for every search,
+            # including those that raised.  _result_count is 0 if we
+            # failed before reaching the results-building block.
+            elapsed_ms = (time.perf_counter() - _search_start) * 1000.0
+            registry.histogram_observe("search_latency_ms", elapsed_ms)
+            if elapsed_ms >= self._observability.slow_query_ms:
+                registry.counter_inc("slow_queries_total")
+                # Sanitize query preview: strip control characters and
+                # non-printable codepoints so log shippers don't choke
+                # on embedded NULs or escape sequences.
+                preview = "".join(c if c.isprintable() else "?" for c in query_text[:60])
+                if len(query_text) > 60:
+                    preview += "…"
+                logger.warning(
+                    "slow query: %.1fms query=%s results=%d vec_w=%.2f fts_w=%.2f",
+                    elapsed_ms,
+                    preview,
+                    _result_count,
+                    _vec_weight_observed,
+                    _fts_weight_observed,
+                )
 
     # ------------------------------------------------------------------ #
     # Miss analysis (#108) — explain why a doc did NOT appear in top-k     #
