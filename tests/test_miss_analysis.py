@@ -230,8 +230,7 @@ class TestCallerOwnedTracer:
         # Create two tracers manually and drive search() directly to
         # confirm each buffer is independent.
         chunks = sample_store._conn.execute(
-            "SELECT c.id AS id, d.path AS path "
-            "FROM chunks c JOIN documents d ON d.id = c.doc_id"
+            "SELECT c.id AS id, d.path AS path FROM chunks c JOIN documents d ON d.id = c.doc_id"
         ).fetchall()
         id_a = next(r["id"] for r in chunks if r["path"] == "/a.md")
         id_b = next(r["id"] for r in chunks if r["path"] == "/b.md")

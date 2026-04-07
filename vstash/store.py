@@ -727,6 +727,7 @@ class VstashStore:
         recency_boost: float = 0.0,
         added_after: str | None = None,
         added_before: str | None = None,
+        mmr_lambda: float = 0.5,
         _tracer: _PipelineTracer | None = None,
     ) -> list[SearchResult]:
         """Hybrid search: vector (semantic) + FTS5 (keyword) combined with RRF.
@@ -1137,7 +1138,7 @@ class VstashStore:
         # same document only when they are semantically diverse (e.g. different
         # chapters of a book).  Chunks from different documents compete purely
         # on score — no cross-document penalty.
-        ranked = self._mmr_dedup(ranked, top_k, mmr_lambda=0.5, _explain=explain)
+        ranked = self._mmr_dedup(ranked, top_k, mmr_lambda=mmr_lambda, _explain=explain)
 
         # --- Track: MMR + top_k cutoff ---
         if track_target is not None:
@@ -1293,16 +1294,41 @@ class VstashStore:
             ).fetchone()[0]
             total_chunks_in_doc = int(sibling_count)
         else:
+            # Apply the same metadata filters used by the search pipeline
+            # so that miss_analysis("rate limits", expected_path="/x.md",
+            # collection="docs") resolves to the chunk(s) of /x.md that
+            # belong to collection="docs", not a cross-collection copy.
+            filter_conditions, filter_params = self._get_filter_conditions(
+                "d",
+                collection=collection,
+                project=project,
+                layer=layer,
+            )
+            where_extras = ""
+            if filter_conditions:
+                where_extras = " AND " + " AND ".join(filter_conditions)
             doc_chunks = self._conn.execute(
-                """
+                f"""
                 SELECT c.id
                 FROM chunks c
                 JOIN documents d ON d.id = c.doc_id
                 WHERE d.path = ?
+                  {where_extras}
                 """,
-                [expected_path],
+                [expected_path, *filter_params],
             ).fetchall()
             if not doc_chunks:
+                # Be helpful: differentiate "path exists but filtered out"
+                # from "path truly not in the store".
+                exists_elsewhere = self._conn.execute(
+                    "SELECT 1 FROM documents WHERE path = ? LIMIT 1", [expected_path]
+                ).fetchone()
+                if exists_elsewhere is not None:
+                    raise ValueError(
+                        f"Path {expected_path!r} exists but is excluded by the "
+                        "collection/project/layer filters passed to miss_analysis(). "
+                        "Re-run without filters to diagnose."
+                    )
                 raise ValueError(f"No chunks found for path: {expected_path}")
             chunk_ids = [int(r["id"]) for r in doc_chunks]
             total_chunks_in_doc = len(chunk_ids)
@@ -1314,24 +1340,36 @@ class VstashStore:
                 # Multi-chunk document: pick the chunk with the smallest
                 # distance to the query.  This biases the trace toward
                 # the best-case chunk; target_resolution reflects that.
-                placeholders = ",".join("?" * len(chunk_ids))
+                #
+                # Batch the IN clause to respect SQLITE_LIMIT_VARIABLE_NUMBER
+                # (default 999).  Books / long manuals can have 1000+ chunks,
+                # which would otherwise blow the limit.
+                best_rowid: int | None = None
+                best_dist: float = float("inf")
+                q_ser = _serialize(query_embedding)
                 try:
-                    vec_results = self._conn.execute(
-                        f"""
-                        SELECT v.rowid, v.distance
-                        FROM vec_chunks v
-                        WHERE v.embedding MATCH ?
-                          AND v.rowid IN ({placeholders})
-                          AND k = ?
-                        ORDER BY v.distance
-                        LIMIT 1
-                        """,
-                        [_serialize(query_embedding), *chunk_ids, len(chunk_ids)],
-                    ).fetchall()
+                    for start in range(0, len(chunk_ids), _SQLITE_PARAM_BATCH):
+                        batch = chunk_ids[start : start + _SQLITE_PARAM_BATCH]
+                        placeholders = ",".join("?" * len(batch))
+                        rows = self._conn.execute(
+                            f"""
+                            SELECT v.rowid, v.distance
+                            FROM vec_chunks v
+                            WHERE v.embedding MATCH ?
+                              AND v.rowid IN ({placeholders})
+                              AND k = ?
+                            ORDER BY v.distance
+                            LIMIT 1
+                            """,
+                            [q_ser, *batch, len(batch)],
+                        ).fetchall()
+                        if rows and float(rows[0]["distance"]) < best_dist:
+                            best_dist = float(rows[0]["distance"])
+                            best_rowid = int(rows[0]["rowid"])
                 except sqlite3.Error:
-                    vec_results = []
-                if vec_results:
-                    target_chunk_id = int(vec_results[0]["rowid"])
+                    best_rowid = None
+                if best_rowid is not None:
+                    target_chunk_id = best_rowid
                 else:
                     logging.getLogger(__name__).warning(
                         "miss_analysis: vec lookup failed for multi-chunk doc "
@@ -1379,12 +1417,30 @@ class VstashStore:
             for v in tracer.verdicts
         ]
 
-        # Find the first stage where the chunk failed
+        # Find the stage that actually eliminated the chunk from the
+        # pipeline.  Tricky: vector_search and fts_search are INDEPENDENT
+        # candidate generators — failing one does NOT drop the chunk,
+        # because the other modality can still surface it into RRF.
+        # Only the gate stages (distance_cutoff, rrf_fusion, mmr_dedup,
+        # top_k_cutoff) actually remove a chunk from the pipeline.
+        #
+        # Special case: if BOTH vector_search and fts_search failed, the
+        # chunk never reached RRF and the functional drop_at is "rrf_fusion"
+        # (it's invisible to the fusion layer).
+        _GATE_STAGES = {"distance_cutoff", "rrf_fusion", "mmr_dedup", "top_k_cutoff"}
         dropped_at: str | None = None
-        for v in stage_verdicts:
-            if not v.passed:
-                dropped_at = v.stage
-                break
+        by_stage = {v.stage: v for v in stage_verdicts}
+        vec_failed = "vector_search" in by_stage and not by_stage["vector_search"].passed
+        fts_failed = "fts_search" in by_stage and not by_stage["fts_search"].passed
+        if vec_failed and fts_failed:
+            # Both generators missed — chunk is invisible to RRF.
+            dropped_at = "rrf_fusion"
+        else:
+            # Otherwise, the first gate stage that failed is the drop point.
+            for v in stage_verdicts:
+                if v.stage in _GATE_STAGES and not v.passed:
+                    dropped_at = v.stage
+                    break
 
         # Actual top-k for context
         actual_top_k = [
@@ -1468,10 +1524,11 @@ class VstashStore:
                 )
 
         if dropped_at == "distance_cutoff":
-            cf = by_stage["distance_cutoff"].counterfactual or ""
+            cf = by_stage["distance_cutoff"].counterfactual
+            cf_clause = f" {cf}." if cf else ""
             suggestions.append(
-                f"Distance cutoff dropped the chunk just past threshold. {cf}. "
-                "Pass distance_cutoff=2.0 (or higher) to relax the cutoff."
+                "Distance cutoff dropped the chunk just past threshold."
+                f"{cf_clause} Pass distance_cutoff=2.0 (or higher) to relax the cutoff."
             )
             # Rescue hint: if FTS already matched, raising fts_weight
             # works even without touching the cutoff.
@@ -1513,16 +1570,18 @@ class VstashStore:
                 )
 
         if dropped_at == "mmr_dedup":
-            cf = by_stage["mmr_dedup"].counterfactual or ""
+            cf = by_stage["mmr_dedup"].counterfactual
+            cf_clause = f" {cf}" if cf else ""
             suggestions.append(
                 "MMR deduplication eliminated this chunk because another chunk from the "
-                f"same document was already selected and they're too similar. {cf}"
+                f"same document was already selected and they're too similar.{cf_clause}"
             )
 
         if dropped_at == "top_k_cutoff":
-            cf = by_stage["top_k_cutoff"].counterfactual or ""
+            cf = by_stage["top_k_cutoff"].counterfactual
+            cf_clause = f" {cf}" if cf else ""
             suggestions.append(
-                f"The chunk survived all stages but was just below the top_k cutoff. {cf}"
+                f"The chunk survived all stages but was just below the top_k cutoff.{cf_clause}"
             )
 
         if not suggestions:

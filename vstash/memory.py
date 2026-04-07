@@ -248,6 +248,7 @@ class Memory:
         recency_boost: float = 0.0,
         added_after: str | None = None,
         added_before: str | None = None,
+        mmr_lambda: float = 0.5,
     ) -> list[SearchResult]:
         """Semantic search without LLM inference.
 
@@ -281,6 +282,7 @@ class Memory:
             recency_boost=recency_boost,
             added_after=added_after,
             added_before=added_before,
+            mmr_lambda=mmr_lambda,
         )
 
     def miss_analysis(
