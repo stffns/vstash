@@ -896,12 +896,46 @@ def export(
 
 
 @app.command()
-def stats(ctx: typer.Context) -> None:
+def stats(
+    ctx: typer.Context,
+    detailed: bool = typer.Option(
+        False,
+        "--detailed",
+        "-d",
+        help="Show the full observability metrics registry (counters, gauges, histograms)",
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        "-j",
+        help="Output as JSON (machine-readable, good for scrapers)",
+    ),
+) -> None:
     """Show memory statistics."""
+    import json as _json
+
+    from .metrics import registry
+
     cfg, store = _get_store(profile=_profile_from_ctx(ctx))
 
     with store:
         s = store.stats()
+
+        if json_output:
+            payload = {
+                "documents": s.documents,
+                "chunks": s.chunks,
+                "collections": s.collections,
+                "db_path": s.db_path,
+                "db_size_mb": s.db_size_mb,
+                "inference_backend": cfg.inference.backend,
+                "inference_model": cfg.inference.model,
+                "embeddings_model": cfg.embeddings.model,
+            }
+            if detailed:
+                payload["metrics"] = registry.snapshot()
+            print(_json.dumps(payload, indent=2))
+            return
 
         console.print(
             Panel(
@@ -916,6 +950,29 @@ def stats(ctx: typer.Context) -> None:
                 border_style="cyan",
             )
         )
+
+        if detailed:
+            snap = registry.snapshot()
+            console.print()
+            console.print(
+                f"[bold cyan]Observability metrics[/bold cyan] "
+                f"[dim](uptime {snap['uptime_seconds']:.1f}s)[/dim]"
+            )
+            if snap["counters"]:
+                console.print("\n[bold]Counters:[/bold]")
+                for name, value in sorted(snap["counters"].items()):
+                    console.print(f"  {name} = {value}")
+            if snap["gauges"]:
+                console.print("\n[bold]Gauges:[/bold]")
+                for name, value in sorted(snap["gauges"].items()):
+                    console.print(f"  {name} = {value}")
+            if snap["histograms"]:
+                console.print("\n[bold]Histograms:[/bold]")
+                for name, h in sorted(snap["histograms"].items()):
+                    console.print(
+                        f"  {name}: count={h['count']} "
+                        f"mean={h['mean_ms']:.1f}ms sum={h['sum_ms']:.1f}ms"
+                    )
 
 
 # ------------------------------------------------------------------ #

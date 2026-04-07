@@ -115,6 +115,7 @@ def _get_store() -> VstashStore:
                     vector_backend=cfg.storage.vector_backend,
                     snapvec_bits=cfg.storage.snapvec_bits,
                 )
+                _store._slow_query_ms_threshold = cfg.observability.slow_query_ms
                 atexit.register(_store.close)
     return _store
 

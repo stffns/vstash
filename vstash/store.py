@@ -209,6 +209,12 @@ class VstashStore:
         self._batch_depth: int = 0
         self._batch_dirty: bool = False
 
+        # --- Observability ---
+        # Slow-query threshold in ms.  Updated externally from config
+        # by callers that load a VstashConfig (Memory, CLI, MCP, web).
+        # Default 100ms keeps the log noise-free for healthy systems.
+        self._slow_query_ms_threshold: float = 100.0
+
         # --- SnapVec backend (optional) ---
         self._snap: SnapIndex | None = None  # type: ignore[name-defined]
         self._vector_backend = vector_backend
@@ -763,6 +769,15 @@ class VstashStore:
         # users of VstashStore should not pass it directly.
         track_target: int | None = _tracer.target if _tracer is not None else None
 
+        # Observability: start the wall-clock timer for search_latency_ms
+        # and increment the searches_total counter.  Slow queries are
+        # logged at the return path.
+        from .metrics import Timer, registry
+
+        _search_timer = Timer("search_latency_ms")
+        _search_timer.__enter__()
+        registry.counter_inc("searches_total")
+
         # Adaptive RRF: compute weights from query characteristics (IDF + length)
         # Skip if caller provided explicit weights
         if adaptive_rrf and vec_weight is None and fts_weight is None:
@@ -1223,6 +1238,23 @@ class VstashStore:
             )
             for r in ranked
         ]
+
+        # Finalize search_latency_ms histogram and check slow-query threshold.
+        # The threshold is read from the config singleton loaded at module
+        # import time so this stays on the hot path without reaching for
+        # Pydantic validation again.
+        elapsed_ms = _search_timer.elapsed_ms()
+        _search_timer.__exit__(None, None, None)
+        if elapsed_ms >= self._slow_query_ms_threshold:
+            registry.counter_inc("slow_queries_total")
+            logger.warning(
+                "slow query: %.1fms query=%r results=%d vec_w=%.2f fts_w=%.2f",
+                elapsed_ms,
+                (query_text[:60] + "…") if len(query_text) > 60 else query_text,
+                len(results),
+                vec_weight,
+                fts_weight,
+            )
 
         # _tracer.verdicts has been populated in-place by the record()
         # calls above when tracking is enabled.  No store-level state.
@@ -2101,13 +2133,28 @@ class VstashStore:
 
         Returns:
             StoreStats with document count, chunk count, DB size, and path.
+
+        Side effect: updates the ``docs_total``, ``chunks_total``, and
+        ``collections_total`` gauges in the metrics registry so that
+        ``GET /metrics`` reflects the current DB state without the
+        caller having to touch the registry manually.
         """
+        from .metrics import registry
+
         doc_count: int = self._conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
         chunk_count: int = self._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
         col_count: int = self._conn.execute(
             "SELECT COUNT(DISTINCT collection) FROM documents"
         ).fetchone()[0]
         db_size: int = self.db_path.stat().st_size if self.db_path.exists() else 0
+
+        # Keep gauges in sync with what stats() just observed.
+        registry.gauge_set("docs_total", doc_count)
+        registry.gauge_set("chunks_total", chunk_count)
+        registry.gauge_set("collections_total", col_count)
+        registry.gauge_set("db_size_bytes", db_size)
+        registry.gauge_set("stem_conn_count", len(self._stem_conns))
+
         return StoreStats(
             documents=doc_count,
             chunks=chunk_count,
@@ -2245,8 +2292,12 @@ class VstashStore:
         Returns:
             Tuple of (term_idf_dict, total_chunk_count).
         """
+        from .metrics import registry
+
         if self._idf_cache is not None:
+            registry.counter_inc("idf_cache_hits")
             return self._idf_cache
+        registry.counter_inc("idf_cache_misses")
 
         total_chunks = self._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
         if total_chunks == 0:

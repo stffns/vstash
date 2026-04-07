@@ -63,6 +63,7 @@ def _get_store() -> VstashStore:
             vector_backend=cfg.storage.vector_backend,
             snapvec_bits=cfg.storage.snapvec_bits,
         )
+        _store._slow_query_ms_threshold = cfg.observability.slow_query_ms
     return _store
 
 
@@ -267,6 +268,42 @@ async def index(request: Request) -> HTMLResponse:
 
 
 # ------------------------------------------------------------------ #
+# Observability endpoints (#132)                                        #
+# ------------------------------------------------------------------ #
+
+
+async def api_health(request: Request) -> JSONResponse:
+    """GET /health — returns 200 if the store is reachable.
+
+    Quick sanity check for load balancers, docker health probes, and
+    monitoring scripts.  Does not run a full search — just verifies
+    the SQLite connection is alive by reading a count.
+    """
+    try:
+        store = _get_store()
+        await _run_sync(store.stats)
+        return _json({"status": "ok"}, status=200)
+    except Exception as exc:
+        logger.exception("health check failed")
+        return _json({"status": "error", "detail": str(exc)}, status=503)
+
+
+async def api_metrics(request: Request) -> JSONResponse:
+    """GET /metrics — snapshot of the metrics registry as JSON.
+
+    Intentionally not Prometheus text format — keeps dependencies light
+    and the JSON is trivial to scrape.  Operators running Prometheus
+    can stand up a small translator in their agent.
+    """
+    from .metrics import registry
+
+    # Refresh the store gauges by calling stats() (which updates them).
+    store = _get_store()
+    await _run_sync(store.stats)
+    return _json(registry.snapshot())
+
+
+# ------------------------------------------------------------------ #
 # App factory                                                          #
 # ------------------------------------------------------------------ #
 
@@ -284,6 +321,8 @@ def create_app() -> Starlette:
             Route("/api/documents", api_documents),
             Route("/api/stats", api_stats),
             Route("/api/upload", api_upload, methods=["POST"]),
+            Route("/health", api_health),
+            Route("/metrics", api_metrics),
         ],
     )
 

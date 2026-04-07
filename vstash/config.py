@@ -213,6 +213,29 @@ class RecencyConfig(BaseModel):
     )
 
 
+class ObservabilityConfig(BaseModel):
+    """Observability and operational metrics settings.
+
+    Controls the built-in metrics registry (counters, gauges,
+    histograms) and the slow-query logger.  The metrics registry
+    itself is always on and cheap; these settings only control
+    the slow-query log threshold and related operational hints.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    slow_query_ms: float = Field(
+        default=100.0,
+        ge=0,
+        description=(
+            "Search queries taking longer than this (in ms) are logged "
+            "to stderr with their query text, latency, and result count. "
+            "Set to 0 to log every query (debug), or a very high number "
+            "to effectively disable."
+        ),
+    )
+
+
 class VstashConfig(BaseModel):
     """Root configuration for vstash."""
 
@@ -227,6 +250,7 @@ class VstashConfig(BaseModel):
     storage: StorageConfig = Field(default_factory=StorageConfig)
     scoring: ScoringConfig = Field(default_factory=ScoringConfig)
     recency: RecencyConfig = Field(default_factory=RecencyConfig)
+    observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
 
     @property
     def cerebras_api_key(self) -> str:
