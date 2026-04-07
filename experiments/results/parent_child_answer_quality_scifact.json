@@ -1,0 +1,46 @@
+{
+  "dataset": "scifact",
+  "queries": 20,
+  "llm_model": "llama3.1-8b",
+  "configs": {
+    "baseline (1:1)": {
+      "mean_score": 1.8,
+      "score_distribution": {
+        "0": 0,
+        "1": 10,
+        "2": 4,
+        "3": 6
+      },
+      "zero_failures": 0,
+      "mean_context_chars": 8260,
+      "mean_answer_chars": 84,
+      "total_seconds": 19.7
+    },
+    "pc_256": {
+      "mean_score": 1.8,
+      "score_distribution": {
+        "0": 1,
+        "1": 9,
+        "2": 3,
+        "3": 7
+      },
+      "zero_failures": 1,
+      "mean_context_chars": 8089,
+      "mean_answer_chars": 70,
+      "total_seconds": 19.5
+    },
+    "pc_128": {
+      "mean_score": 1.85,
+      "score_distribution": {
+        "0": 0,
+        "1": 9,
+        "2": 5,
+        "3": 6
+      },
+      "zero_failures": 0,
+      "mean_context_chars": 7929,
+      "mean_answer_chars": 55,
+      "total_seconds": 19.2
+    }
+  }
+}
