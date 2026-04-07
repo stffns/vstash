@@ -21,7 +21,14 @@ from .chat import ask as _chat_ask
 from .config import VstashConfig, load_config
 from .embed import embed_query, get_embedding_dim
 from .ingest import ingest
-from .models import ChunkInfo, DocumentInfo, IngestResult, SearchResult, StoreStats
+from .models import (
+    ChunkInfo,
+    DocumentInfo,
+    IngestResult,
+    MissAnalysis,
+    SearchResult,
+    StoreStats,
+)
 from .store import VstashStore
 
 # Sentinel for distinguishing "parameter not provided" from explicit None.
@@ -241,6 +248,7 @@ class Memory:
         recency_boost: float = 0.0,
         added_after: str | None = None,
         added_before: str | None = None,
+        mmr_lambda: float = 0.5,
     ) -> list[SearchResult]:
         """Semantic search without LLM inference.
 
@@ -274,6 +282,68 @@ class Memory:
             recency_boost=recency_boost,
             added_after=added_after,
             added_before=added_before,
+            mmr_lambda=mmr_lambda,
+        )
+
+    def miss_analysis(
+        self,
+        query: str,
+        *,
+        expected_path: str | Path | None = None,
+        expected_chunk_id: int | None = None,
+        top_k: int = 5,
+        collection: object = _UNSET,
+        project: object = _UNSET,
+        layer: str | None = None,
+    ) -> MissAnalysis:
+        """Diagnose why an expected document did not appear in search results.
+
+        Runs the same search pipeline as ``search()`` with per-stage
+        instrumentation, then returns a structured trace explaining
+        which stage eliminated the expected document and how to fix it.
+
+        Args:
+            query: Natural language search query.
+            expected_path: Path of the document the caller expected to see.
+                Either this or ``expected_chunk_id`` must be provided.
+            expected_chunk_id: Specific chunk id to track instead.
+            top_k: Number of results to evaluate (same as ``search()``).
+            collection: Override default collection filter.
+            project: Override default project filter.
+            layer: Filter by layer tag.
+
+        Returns:
+            ``MissAnalysis`` with stage verdicts, the actual top-k for
+            comparison, and rule-based suggestions.
+
+        Raises:
+            ValueError: if neither ``expected_path`` nor
+                ``expected_chunk_id`` is provided, or the path/id resolves
+                to nothing.
+        """
+        if expected_path is None and expected_chunk_id is None:
+            raise ValueError("Provide either expected_path or expected_chunk_id")
+
+        # Normalize the path the same way add() does so it matches what's
+        # in the database (file paths get resolved, urls/text:// pass through)
+        path_str: str | None = None
+        if expected_path is not None:
+            ps = str(expected_path)
+            if ps.startswith(("http://", "https://", "text://")):
+                path_str = ps
+            else:
+                path_str = str(Path(ps).resolve())
+
+        q_embedding = embed_query(query, self._cfg.embeddings.model)
+        return self._store.miss_analysis(
+            query_embedding=q_embedding,
+            query_text=query,
+            expected_path=path_str,
+            expected_chunk_id=expected_chunk_id,
+            top_k=top_k,
+            collection=self._resolve_collection(collection),
+            project=self._resolve_project(project),
+            layer=layer,
         )
 
     def get_chunk(self, chunk_id: int) -> ChunkInfo | None:
