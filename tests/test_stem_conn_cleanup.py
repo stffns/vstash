@@ -12,9 +12,25 @@ running on the main thread and would leak until process exit.
 
 from __future__ import annotations
 
+import sqlite3
 import threading
 
 from vstash.store import VstashStore
+
+
+class TestThreadSafetyAssumption:
+    """Verify the libsqlite threading assumption that the fix relies on."""
+
+    def test_sqlite3_threadsafety_supports_cross_thread_close(self):
+        """vstash relies on sqlite3.threadsafety > 0 so close() can run
+        on a different thread than the one that created a connection.
+        Modern Python ships with threadsafety=3 (serialized).  This test
+        documents the assumption and fails loudly if the runtime breaks it.
+        """
+        assert sqlite3.threadsafety > 0, (
+            f"vstash assumes sqlite3.threadsafety > 0 (got {sqlite3.threadsafety}). "
+            "Cross-thread Connection.close() in _stem_terms cleanup will crash."
+        )
 
 
 class TestStemConnCleanup:
