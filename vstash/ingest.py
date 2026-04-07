@@ -466,7 +466,12 @@ def ingest(
             else:
                 text = _parse(source)
         except Exception as exc:
-            console.print(f"[red]✗ Error parsing {source}: {exc}[/red]")
+            # rich.markup.escape on the exception text so brackets in
+            # messages like "pip install vstash[ingest]" don't get
+            # interpreted as markup tags and silently dropped.
+            from rich.markup import escape as _rich_escape
+
+            console.print(f"[red]✗ Error parsing {source}: {_rich_escape(str(exc))}[/red]")
             return IngestResult(
                 status="error",
                 source=source,

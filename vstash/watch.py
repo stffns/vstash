@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from rich.console import Console
+from rich.markup import escape as _rich_escape
 
 from .config import SUPPORTED_EXTENSIONS
 
@@ -168,7 +169,7 @@ def start_watch(
                 elif result.status == "error":
                     console.print(f"[dim]{ts}[/dim] [red]✗[/red] Error: {result.error}")
             except Exception as exc:
-                console.print(f"[red]✗ Watch ingest error: {exc}[/red]")
+                console.print(f"[red]✗ Watch ingest error: {_rich_escape(str(exc))}[/red]")
 
     worker_thread = threading.Thread(target=_worker, daemon=True)
     worker_thread.start()
@@ -188,7 +189,7 @@ def start_watch(
                 ts = time.strftime("%H:%M:%S")
                 console.print(f"[dim]{ts}[/dim] [red]✗[/red] Removed: {Path(file_path).name}")
         except Exception as exc:
-            console.print(f"[red]✗ Watch delete error: {exc}[/red]")
+            console.print(f"[red]✗ Watch delete error: {_rich_escape(str(exc))}[/red]")
 
     def _handle_dir_delete(dir_path: str) -> None:
         """Remove all documents under a deleted directory from the store."""
@@ -203,7 +204,7 @@ def start_watch(
                     f"{Path(dir_path).name}/"
                 )
         except Exception as exc:
-            console.print(f"[red]✗ Watch dir delete error: {exc}[/red]")
+            console.print(f"[red]✗ Watch dir delete error: {_rich_escape(str(exc))}[/red]")
 
     class Handler(FileSystemEventHandler):
         """React to filesystem create/modify/delete events."""

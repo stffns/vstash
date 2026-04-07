@@ -68,6 +68,19 @@ app = typer.Typer(
 console = Console()
 
 
+def _safe_exc(exc: object) -> str:
+    """Escape rich markup in an exception's text so brackets in messages
+    like ``pip install vstash[ingest]`` survive ``console.print``.
+
+    Without this, rich treats ``[ingest]`` as an opening tag and silently
+    drops it from the rendered output, producing the truncated message
+    ``pip install vstash`` that misled e2e users on PyPI.
+    """
+    from rich.markup import escape as _escape
+
+    return _escape(str(exc))
+
+
 @app.callback()
 def _app_callback(
     ctx: typer.Context,
@@ -344,7 +357,7 @@ def ask(
                     console.print(
                         f"\n[yellow]⚠ Stream interrupted after {token_count} tokens.[/yellow]"
                     )
-                console.print(f"[red]✗ Inference error: {exc}[/red]")
+                console.print(f"[red]✗ Inference error: {_safe_exc(exc)}[/red]")
                 hint = _inference_hint(exc, cfg)
                 if hint:
                     console.print(f"[dim]  Hint: {hint}[/dim]")
@@ -354,7 +367,7 @@ def ask(
                 try:
                     response = chat_module.ask(query, chunks, cfg)
                 except ConnectionError as exc:
-                    console.print(f"[red]✗ Inference error: {exc}[/red]")
+                    console.print(f"[red]✗ Inference error: {_safe_exc(exc)}[/red]")
                     hint = _inference_hint(exc, cfg)
                     if hint:
                         console.print(f"[dim]  Hint: {hint}[/dim]")
@@ -769,7 +782,7 @@ def chat(
                         console.print(
                             f"\n[yellow]⚠ Stream interrupted after {token_count} tokens.[/yellow]"
                         )
-                    console.print(f"[red]✗ Inference error: {exc}[/red]")
+                    console.print(f"[red]✗ Inference error: {_safe_exc(exc)}[/red]")
                     hint = _inference_hint(exc, cfg)
                     if hint:
                         console.print(f"[dim]  Hint: {hint}[/dim]")
@@ -969,9 +982,17 @@ def stats(
         if detailed:
             snap = registry.snapshot()
             console.print()
+            # The metrics registry is in-memory and per-process.  A CLI
+            # invocation creates a fresh process, so uptime is always
+            # ~0s and counters/histograms reflect only this single
+            # invocation.  Make that explicit so the reader does not
+            # mistake the values for cumulative state — the long-running
+            # picture lives behind ``vstash serve``'s /metrics endpoint.
             console.print(
                 f"[bold cyan]Observability metrics[/bold cyan] "
-                f"[dim](uptime {snap['uptime_seconds']:.1f}s)[/dim]"
+                f"[dim](this CLI process only — uptime "
+                f"{snap['uptime_seconds']:.1f}s; for cumulative state "
+                f"see [bold]vstash serve[/bold]'s /metrics)[/dim]"
             )
             if snap["counters"]:
                 console.print("\n[bold]Counters:[/bold]")
@@ -1267,9 +1288,20 @@ def serve(
     Opens a browser-based chat and search interface on localhost.
     Chat with your documents, search your memory, upload files.
     """
-    import uvicorn
+    # Friendly error if the serve extras (uvicorn / starlette) aren't
+    # installed.  Without this catch, the user gets a raw ModuleNotFoundError
+    # traceback that doesn't tell them which extra to install.
+    try:
+        import uvicorn
 
-    from .web import create_app
+        from .web import create_app
+    except ImportError as exc:
+        missing = getattr(exc, "name", None) or "starlette/uvicorn"
+        console.print(
+            f"[red]✗[/red] vstash serve requires the [bold]serve[/bold] extra (missing: {missing})."
+        )
+        console.print("  Install with: [bold]pip install 'vstash\\[serve]'[/bold]")
+        raise typer.Exit(code=1) from exc
 
     console.print(f"[bold cyan]vstash[/bold cyan] serving at [link]http://{host}:{port}[/link]")
     console.print("[dim]Press Ctrl+C to stop[/dim]")
@@ -1397,7 +1429,7 @@ def profile_create(
             f"[dim]  Use: vstash --profile {name} add ...[/dim]"
         )
     except ValueError as exc:
-        console.print(f"[red]✗[/red] {exc}")
+        console.print(f"[red]✗[/red] {_safe_exc(exc)}")
         raise typer.Exit(1) from exc
 
 
@@ -1419,7 +1451,7 @@ def profile_delete(
         _delete(name)
         console.print(f"[green]✓[/green] Deleted profile [bold]{name}[/bold]")
     except ValueError as exc:
-        console.print(f"[red]✗[/red] {exc}")
+        console.print(f"[red]✗[/red] {_safe_exc(exc)}")
         raise typer.Exit(1) from exc
 
 
