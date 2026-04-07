@@ -236,6 +236,86 @@ class ObservabilityConfig(BaseModel):
     )
 
 
+class LimitsConfig(BaseModel):
+    """Explicit limits for the public store/search APIs (#133).
+
+    A good substrate is honest about its boundaries.  These limits gate
+    inputs that would otherwise crash inside SQLite, sqlite-vec, or the
+    embedding model with cryptic errors.  Defaults are intentionally
+    generous — they catch pathological inputs without inconveniencing
+    realistic ones.
+
+    Each limit is enforced once at the public API boundary in
+    :mod:`vstash.validation`; the hot path is unaffected.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    max_query_chars: int = Field(
+        default=10_000,
+        gt=0,
+        description=(
+            "Maximum number of characters allowed in a search query. "
+            "Above this, queries are rejected before reaching the embedding "
+            "model.  10 000 chars ≈ 2 000 tokens for most tokenizers."
+        ),
+    )
+    max_top_k: int = Field(
+        default=1_000,
+        gt=0,
+        description=(
+            "Maximum value of ``top_k`` accepted by ``search()``.  Larger "
+            "values would pull a substantial fraction of the corpus into "
+            "Python and sort it, with quadratic memory cost."
+        ),
+    )
+    max_distance_cutoff: float = Field(
+        default=1_000.0,
+        gt=0,
+        description=(
+            "Maximum value of ``distance_cutoff``.  The default cutoff "
+            "in ``search()`` is ~1.15; values above 1 000 are almost "
+            "certainly a caller bug."
+        ),
+    )
+    max_recency_boost: float = Field(
+        default=100.0,
+        gt=0,
+        description=(
+            "Maximum value of ``recency_boost``.  Sane values are 0.0 to "
+            "1.0; the cap exists to prevent float overflow in the decay "
+            "formula when callers pass huge numbers."
+        ),
+    )
+    max_path_chars: int = Field(
+        default=4_096,
+        gt=0,
+        description=(
+            "Maximum length of a document path.  POSIX ``PATH_MAX`` is "
+            "typically 4096; longer paths cannot be opened on most "
+            "filesystems anyway."
+        ),
+    )
+    max_chunks_per_document: int = Field(
+        default=50_000,
+        gt=0,
+        description=(
+            "Maximum number of chunks a single ``add_document`` call may "
+            "ingest.  Above this, the single transaction lock-steps the "
+            "whole DB and the right answer is to split the document."
+        ),
+    )
+    max_chunk_chars: int = Field(
+        default=1_048_576,  # 1 MiB
+        gt=0,
+        description=(
+            "Maximum size of an individual chunk in characters (default "
+            "1 MiB).  A chunk this large is almost always a chunking bug "
+            "and would crash the embedding model."
+        ),
+    )
+
+
 class VstashConfig(BaseModel):
     """Root configuration for vstash."""
 
@@ -251,6 +331,7 @@ class VstashConfig(BaseModel):
     scoring: ScoringConfig = Field(default_factory=ScoringConfig)
     recency: RecencyConfig = Field(default_factory=RecencyConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
+    limits: LimitsConfig = Field(default_factory=LimitsConfig)
 
     @property
     def cerebras_api_key(self) -> str:

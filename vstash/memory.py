@@ -74,6 +74,18 @@ class Memory:
         chunk_overlap: int | None = None,
     ) -> None:
         self._cfg = _load_config_from(config)
+
+        # Validate user-supplied identifiers up front (#133).  An empty
+        # or whitespace-only project / collection is a caller bug, not a
+        # filter — reject it now instead of corrupting the WHERE clause.
+        from .validation import validate_identifier
+
+        validate_identifier(project, field="project")
+        # collection has a default of "default", so only validate if the
+        # caller actually passed something else.  None means "no filter".
+        if collection != "default":
+            validate_identifier(collection, field="collection")
+
         self._project = project
         self._collection = collection
         self._chunk_size = chunk_size
@@ -93,6 +105,7 @@ class Memory:
             vector_backend=self._cfg.storage.vector_backend,
             snapvec_bits=self._cfg.storage.snapvec_bits,
             observability=self._cfg.observability,
+            limits=self._cfg.limits,
         )
         # Silent killer defense: warn if the DB was built with a
         # different embedding model or a fastembed version that changed

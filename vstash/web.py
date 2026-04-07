@@ -63,6 +63,7 @@ def _get_store() -> VstashStore:
             vector_backend=cfg.storage.vector_backend,
             snapvec_bits=cfg.storage.snapvec_bits,
             observability=cfg.observability,
+            limits=cfg.limits,
         )
         # Detect embedding model drift on non-empty stores.
         if _store.stats().chunks > 0:

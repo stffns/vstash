@@ -1,0 +1,215 @@
+"""
+validation.py — Explicit limits and fail-safe input validation (#133).
+
+A good substrate is honest about its boundaries.  This module rejects
+inputs that would otherwise crash inside SQLite, sqlite-vec, or the
+embedding model with cryptic errors — a 50_000-token query, a chunk
+the size of a JPEG, a top_k that would pull every chunk into Python.
+
+Validation lives at the **public API boundary** (``VstashStore`` and
+``Memory``) and never inside the hot path.  Each validator is a few
+comparisons; if your inputs are reasonable, the cost is unmeasurable.
+
+All validators raise a subclass of :class:`LimitError`, which itself
+extends :class:`ValueError`.  Catching ``ValueError`` continues to work
+for callers who don't care which limit was hit.
+
+Limits are configured via the ``[limits]`` section in ``vstash.toml``
+(see :class:`vstash.config.LimitsConfig`).  Defaults are intentionally
+generous — they catch pathological inputs without inconveniencing
+realistic ones.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .config import LimitsConfig
+
+
+# ------------------------------------------------------------------ #
+# Exception hierarchy                                                  #
+# ------------------------------------------------------------------ #
+
+
+class LimitError(ValueError):
+    """Base class for all vstash input validation errors.
+
+    Subclasses :class:`ValueError` so existing ``except ValueError``
+    handlers continue to work.  Catch this directly to handle any
+    vstash-imposed limit; catch a specific subclass to react to one
+    category.
+    """
+
+
+class QueryInvalidError(LimitError):
+    """Query text is missing, the wrong type, or otherwise unusable."""
+
+
+class QueryTooLongError(LimitError):
+    """Query text exceeds the configured maximum length."""
+
+
+class TopKOutOfRangeError(LimitError):
+    """``top_k`` is < 1 or above the configured maximum."""
+
+
+class DistanceCutoffOutOfRangeError(LimitError):
+    """``distance_cutoff`` is negative or above the configured maximum."""
+
+
+class RecencyBoostOutOfRangeError(LimitError):
+    """``recency_boost`` is negative or above the configured maximum."""
+
+
+class PathTooLongError(LimitError):
+    """Document path exceeds the configured maximum length."""
+
+
+class EmptyDocumentError(LimitError):
+    """Document has zero chunks."""
+
+
+class TooManyChunksError(LimitError):
+    """Document has more chunks than the configured maximum."""
+
+
+class ChunkTooLargeError(LimitError):
+    """A single chunk exceeds the configured character limit."""
+
+
+class EmbeddingMismatchError(LimitError):
+    """``chunks`` and ``embeddings`` lists have different lengths."""
+
+
+class InvalidIdentifierError(LimitError):
+    """``project`` / ``collection`` identifier is empty, too long, or contains
+    control characters."""
+
+
+# ------------------------------------------------------------------ #
+# Validators                                                           #
+# ------------------------------------------------------------------ #
+
+
+def validate_identifier(
+    value: str | None,
+    *,
+    field: str,
+    max_length: int = 256,
+) -> None:
+    """Validate a project / collection / layer identifier.
+
+    Accepts ``None`` (means "no filter") and any non-empty string up to
+    ``max_length`` characters that contains no ASCII control characters.
+    Whitespace-only strings are rejected because they almost always
+    indicate a bug in the caller.
+    """
+    if value is None:
+        return
+    if not isinstance(value, str):
+        msg = f"{field} must be a string, got {type(value).__name__}"
+        raise InvalidIdentifierError(msg)
+    if len(value) > max_length:
+        msg = f"{field} length {len(value)} exceeds max {max_length}"
+        raise InvalidIdentifierError(msg)
+    if not value.strip():
+        msg = f"{field} must not be empty or whitespace-only"
+        raise InvalidIdentifierError(msg)
+    if any(ord(c) < 32 or ord(c) == 127 for c in value):
+        msg = f"{field} contains control characters (e.g. NUL, tab, newline)"
+        raise InvalidIdentifierError(msg)
+
+
+def validate_search_input(
+    *,
+    query_text: str,
+    top_k: int,
+    distance_cutoff: float,
+    recency_boost: float,
+    limits: LimitsConfig,
+) -> None:
+    """Validate the public arguments to :meth:`VstashStore.search`.
+
+    Raises a :class:`LimitError` subclass if any argument is out of
+    range.  Empty queries are *allowed* (caller may have a legitimate
+    reason — e.g. embedding-only retrieval) but ``None`` and non-string
+    values are rejected.
+    """
+    if not isinstance(query_text, str):
+        msg = f"query must be a string, got {type(query_text).__name__}"
+        raise QueryInvalidError(msg)
+    if len(query_text) > limits.max_query_chars:
+        msg = (
+            f"query length {len(query_text)} exceeds limit "
+            f"{limits.max_query_chars} (set [limits] max_query_chars to override)"
+        )
+        raise QueryTooLongError(msg)
+
+    if not isinstance(top_k, int) or isinstance(top_k, bool):
+        msg = f"top_k must be an int, got {type(top_k).__name__}"
+        raise TopKOutOfRangeError(msg)
+    if top_k < 1:
+        msg = f"top_k must be >= 1, got {top_k}"
+        raise TopKOutOfRangeError(msg)
+    if top_k > limits.max_top_k:
+        msg = f"top_k {top_k} exceeds limit {limits.max_top_k} (set [limits] max_top_k to override)"
+        raise TopKOutOfRangeError(msg)
+
+    if distance_cutoff < 0 or distance_cutoff > limits.max_distance_cutoff:
+        msg = f"distance_cutoff {distance_cutoff} out of range [0, {limits.max_distance_cutoff}]"
+        raise DistanceCutoffOutOfRangeError(msg)
+
+    if recency_boost < 0 or recency_boost > limits.max_recency_boost:
+        msg = f"recency_boost {recency_boost} out of range [0, {limits.max_recency_boost}]"
+        raise RecencyBoostOutOfRangeError(msg)
+
+
+def validate_document_input(
+    *,
+    path: str,
+    chunks: list[str],
+    embeddings: list[list[float]],
+    limits: LimitsConfig,
+) -> None:
+    """Validate the inputs to :meth:`VstashStore.add_document`.
+
+    Catches the four most common pathological ingestion cases:
+      - path longer than the OS file system supports
+      - document with zero chunks (always a caller bug)
+      - document with absurdly many chunks (would lock the DB)
+      - a single chunk larger than ``max_chunk_chars`` (would crash the
+        embedding model and/or SQLite)
+
+    Also asserts that ``len(chunks) == len(embeddings)`` — a mismatch
+    is silently corruption-prone if it slips through.
+    """
+    if not isinstance(path, str):
+        msg = f"path must be a string, got {type(path).__name__}"
+        raise PathTooLongError(msg)
+    if len(path) > limits.max_path_chars:
+        msg = (
+            f"path length {len(path)} exceeds limit {limits.max_path_chars} "
+            f"(POSIX PATH_MAX is typically 4096)"
+        )
+        raise PathTooLongError(msg)
+
+    n_chunks = len(chunks)
+    if n_chunks == 0:
+        raise EmptyDocumentError("document has zero chunks")
+    if n_chunks > limits.max_chunks_per_document:
+        msg = f"document has {n_chunks} chunks, exceeds limit {limits.max_chunks_per_document}"
+        raise TooManyChunksError(msg)
+    if len(embeddings) != n_chunks:
+        msg = f"chunks ({n_chunks}) and embeddings ({len(embeddings)}) length mismatch"
+        raise EmbeddingMismatchError(msg)
+
+    cap = limits.max_chunk_chars
+    for i, c in enumerate(chunks):
+        if not isinstance(c, str):
+            msg = f"chunks[{i}] must be str, got {type(c).__name__}"
+            raise ChunkTooLargeError(msg)
+        if len(c) > cap:
+            msg = f"chunks[{i}] length {len(c)} exceeds limit {cap}"
+            raise ChunkTooLargeError(msg)

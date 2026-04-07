@@ -27,7 +27,8 @@ import threading
 import numpy as np
 import sqlite_vec
 
-from .config import ObservabilityConfig
+from .config import LimitsConfig, ObservabilityConfig
+from .validation import validate_document_input, validate_search_input
 from .models import (
     ChunkInfo,
     DocumentInfo,
@@ -189,6 +190,7 @@ class VstashStore:
         vector_backend: str = "sqlite-vec",
         snapvec_bits: int = 4,
         observability: ObservabilityConfig | None = None,
+        limits: LimitsConfig | None = None,
     ) -> None:
         self.db_path = Path(db_path).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -219,6 +221,13 @@ class VstashStore:
         # ``observability=`` in the constructor; if omitted we use the
         # defaults, which is what single-process CLI use expects.
         self._observability: ObservabilityConfig = observability or ObservabilityConfig()
+
+        # --- Limits / fail-safe validation (#133) ---
+        # Same pattern as observability: store the whole frozen Pydantic
+        # model so future knobs can be added without touching every
+        # construction site.  Validators are applied at the public API
+        # boundary (search, add_document) — never inside the hot path.
+        self._limits: LimitsConfig = limits or LimitsConfig()
 
         # --- SnapVec backend (optional) ---
         self._snap: SnapIndex | None = None  # type: ignore[name-defined]
@@ -630,6 +639,17 @@ class VstashStore:
         Returns:
             The generated document ID (32-char hex hash).
         """
+        # Fail-safe validation at the public API boundary (#133).  Catches
+        # the four common pathological ingestion cases (overlong path,
+        # zero chunks, way too many chunks, an oversized chunk) before
+        # we open a write transaction.
+        validate_document_input(
+            path=path,
+            chunks=chunks,
+            embeddings=embeddings,
+            limits=self._limits,
+        )
+
         doc_id = hashlib.sha256(f"{collection}:{path}".encode("utf-8")).hexdigest()[:32]
 
         with self._write_lock:
@@ -859,6 +879,19 @@ class VstashStore:
         Returns:
             Ranked list of SearchResult ordered by descending score.
         """
+        # Fail-safe validation at the public API boundary (#133).  Runs
+        # before any work — if the caller passed a 50k-token query or a
+        # negative top_k, we reject it here instead of crashing inside
+        # SQLite or the embedding model with a cryptic error.  Cost is
+        # a handful of comparisons.
+        validate_search_input(
+            query_text=query_text,
+            top_k=top_k,
+            distance_cutoff=distance_cutoff,
+            recency_boost=recency_boost,
+            limits=self._limits,
+        )
+
         # Per-search miss-analysis tracker (#108).  The tracer is owned
         # by the caller (miss_analysis) and passed in; this keeps the
         # tracking state thread-local to the caller and zero-cost on
