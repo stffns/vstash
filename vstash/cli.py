@@ -1043,7 +1043,13 @@ def check(
     cfg, store = _get_store(profile=_profile_from_ctx(ctx))
     with store:
         results = store.integrity_check()
-        repairs = store.integrity_repair() if repair else []
+        repairs: list = []
+        post_repair_results: list = []
+        if repair:
+            repairs = store.integrity_repair()
+            # Re-check inside the same connection so the exit code
+            # reflects the post-repair state without re-opening the DB.
+            post_repair_results = store.integrity_check()
 
     if json_output:
         payload = {
@@ -1090,9 +1096,7 @@ def check(
         )
         raise typer.Exit(code=1)
     if failed and repair:
-        # Re-check after repair to determine final exit code.
-        with _get_store(profile=_profile_from_ctx(ctx))[1] as store2:
-            still_failing = [c for c in store2.integrity_check() if not c.passed]
+        still_failing = [c for c in post_repair_results if not c.passed]
         if still_failing:
             raise typer.Exit(code=1)
 
