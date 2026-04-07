@@ -38,10 +38,15 @@ synthesize good answers, even if NDCG@10 stayed flat.
 
 Three experiments, all in this directory:
 
-### 1. NDCG ablation on BEIR (`parent_child_ablation.json`)
+### 1. NDCG ablation on BEIR
 
 Standard NDCG@10 retrieval metric on full BEIR test sets (300 queries
-each).
+each).  Both runs were executed with `experiments/parent_child_ablation.py`
+(in the abandoned `feat/parent-child-chunking` branch); only the
+NFCorpus run is persisted in `parent_child_ablation.json` because the
+script overwrote the file when SciFact was run separately.  The SciFact
+numbers below are from the run logs and the paired analyses below
+(which are persisted).
 
 | Dataset | baseline | pc_512 | pc_256 | pc_128 |
 |---------|---------:|-------:|-------:|-------:|

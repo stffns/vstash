@@ -1928,14 +1928,18 @@ class VstashStore:
         Also closes the thread-local FTS5 stemming connection used by
         ``_stem_terms()`` if one was created in the current thread.
         Connections in *other* threads cannot be closed from here — they
-        will be cleaned up when their owning threads exit.
+        will be cleaned up when their owning threads exit.  See #125 for
+        a follow-up that closes stem connections from any thread.
         """
+        import contextlib
+
         # Close the thread-local stem connection if this thread has one.
         stem_conn = getattr(self._thread_local, "_stem_conn", None)
         if stem_conn is not None:
-            try:
+            # sqlite3.Error covers the realistic failure modes (already
+            # closed, locked, etc.).  Anything else is a real bug worth
+            # surfacing rather than silently swallowing during teardown.
+            with contextlib.suppress(sqlite3.Error):
                 stem_conn.close()
-            except Exception:
-                pass
             self._thread_local._stem_conn = None
         self._conn.close()
