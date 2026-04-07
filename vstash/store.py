@@ -1156,9 +1156,13 @@ class VstashStore:
                     detail=(
                         f"Was rank {pre_mmr_rank_of_target + 1} pre-MMR but eliminated by "
                         "intra-document MMR deduplication (another chunk from the same "
-                        "document was already selected and they're too similar)"
+                        f"document was already selected and they're too similar). "
+                        f"Current mmr_lambda={mmr_lambda:.2f}."
                     ),
-                    counterfactual="Would survive with mmr_lambda > 0.5 (less aggressive dedup)",
+                    counterfactual=(
+                        f"Try a higher mmr_lambda (>{mmr_lambda:.2f}) for less "
+                        "aggressive dedup, or mmr_lambda=1.0 to disable MMR entirely."
+                    ),
                 )
             elif target_final_rank is not None:
                 _tracer.record(
