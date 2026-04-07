@@ -35,7 +35,7 @@ Running vstash in production (`vstash serve`, MCP server, long-lived agent loops
 |---|---|
 | `search_latency_ms` | End-to-end search latency including RRF, MMR, and formatting |
 
-Histogram buckets are fixed at powers of 2 in milliseconds: 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, +Inf. For percentile estimation, compute from the cumulative counts in the snapshot.
+Histogram buckets use fixed log-scale boundaries in milliseconds: 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, +Inf. For percentile estimation, compute from the cumulative counts in the snapshot.
 
 ## How to scrape
 
@@ -159,10 +159,26 @@ import requests
 def scrape():
     data = requests.get("http://localhost:8585/metrics").json()
     lines = []
+
+    # Counters and gauges map 1:1 to Prometheus scalars.
     for name, value in data["counters"].items():
+        lines.append(f"# TYPE vstash_{name} counter")
         lines.append(f"vstash_{name} {value}")
     for name, value in data["gauges"].items():
+        lines.append(f"# TYPE vstash_{name} gauge")
         lines.append(f"vstash_{name} {value}")
+
+    # Histograms expand to _bucket{le="..."}, _sum, and _count series.
+    # vstash already emits cumulative bucket counts, so they map directly
+    # onto Prometheus histogram semantics.
+    for name, hist in data["histograms"].items():
+        lines.append(f"# TYPE vstash_{name} histogram")
+        for bucket in hist["buckets_ms"]:
+            le = bucket["le"]  # float or "+Inf"
+            lines.append(f'vstash_{name}_bucket{{le="{le}"}} {bucket["count"]}')
+        lines.append(f"vstash_{name}_sum {hist['sum_ms']}")
+        lines.append(f"vstash_{name}_count {hist['count']}")
+
     return "\n".join(lines)
 ```
 

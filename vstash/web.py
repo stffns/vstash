@@ -300,9 +300,13 @@ async def api_health(request: Request) -> JSONResponse:
 
     try:
         await _run_sync(_do_health_check)
-    except Exception as exc:
+    except Exception:
+        # Log the full exception server-side but return a generic error
+        # to the client.  /health is typically exposed without auth so
+        # we must not leak file paths, stack traces, or library
+        # internals to whoever is probing.
         logger.exception("health check failed")
-        return _json({"status": "error", "detail": str(exc)}, status=503)
+        return _json({"status": "error"}, status=503)
 
     snap = registry.snapshot()
     return _json(

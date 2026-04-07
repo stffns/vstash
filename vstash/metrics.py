@@ -10,9 +10,9 @@ returns a JSON-serializable dict.
 Design:
   - Thread-safe via a single ``threading.Lock`` (contention is rare
     since metrics updates are cheap).
-  - Histograms are approximate: fixed power-of-2 buckets in milliseconds,
-    no percentile estimation — callers compute p50/p95/p99 from the
-    snapshot if needed.
+  - Histograms use fixed log-scale buckets in milliseconds (1, 2, 5,
+    10, 20, 50, 100, 200, 500, 1000, 2000, 5000, +Inf) — no percentile
+    estimation, callers compute p50/p95/p99 from the snapshot if needed.
   - The module exposes a single module-level ``registry`` singleton so
     instrumentation can reach it without passing it everywhere.
 """

@@ -2259,10 +2259,11 @@ class VstashStore:
         Returns:
             StoreStats with document count, chunk count, DB size, and path.
 
-        Side effect: updates the ``docs_total``, ``chunks_total``, and
-        ``collections_total`` gauges in the metrics registry so that
-        ``GET /metrics`` reflects the current DB state without the
-        caller having to touch the registry manually.
+        Side effect: refreshes the store-related gauges in the metrics
+        registry (``docs_total``, ``chunks_total``, ``collections_total``,
+        ``db_size_bytes``, and ``stem_conn_count``) so that scrapers of
+        ``vstash stats --detailed`` or ``GET /metrics`` reflect the
+        current state without having to touch the registry manually.
         """
         from .metrics import registry
 
