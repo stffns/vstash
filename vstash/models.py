@@ -48,7 +48,28 @@ class ExplainInfo(BaseModel):
 
 
 class SearchResult(BaseModel):
-    """A single search result from hybrid RRF search."""
+    """A single search result from hybrid RRF search.
+
+    **Score semantics (#135).**  ``score`` is the Reciprocal Rank
+    Fusion score with the canonical constant ``k=60``: for one
+    candidate, ``vec_weight * 1/(60 + rank_vec) + fts_weight *
+    1/(60 + rank_fts)``.  Concretely:
+
+    - **Range:** typically ``[0, ~0.033]``.  ``1/(60 + 0) ≈ 0.0167``
+      is the maximum per component, and recency boost / post-processing
+      can push the combined value slightly higher.
+    - **Within a single result list, higher means more relevant.**
+    - **NOT comparable across queries.**  Two queries can produce
+      different score scales because the candidate pool, adaptive RRF
+      weights, and post-processing all vary by query.  Do not threshold
+      the raw score to gate "is this match good enough?" — use
+      ``vstash explain`` or ``vstash relevance`` for that.
+    - Min/max within one list may be used for *display* normalization
+      (a progress bar, a heatmap) but never as a confidence signal.
+
+    The ``chunk_id`` field is a database row ID and is only valid
+    for the current index state — it may change on re-ingest.
+    """
 
     chunk_id: int = Field(
         description="Database row ID of the chunk (valid for current index state; may change on re-ingest)"
@@ -57,7 +78,12 @@ class SearchResult(BaseModel):
     title: str = Field(description="Source document title")
     path: str = Field(description="Source document path")
     chunk: int = Field(description="Chunk sequence number within document")
-    score: float = Field(description="RRF score (higher = more relevant)")
+    score: float = Field(
+        description=(
+            "RRF score (higher = more relevant within one query). "
+            "NOT comparable across queries — see class docstring."
+        )
+    )
     explain: ExplainInfo | None = Field(
         default=None, description="Diagnostic breakdown (when explain=True)"
     )

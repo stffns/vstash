@@ -317,9 +317,36 @@ class LimitsConfig(BaseModel):
 
 
 class VstashConfig(BaseModel):
-    """Root configuration for vstash."""
+    """Root configuration for vstash.
 
-    model_config = ConfigDict(frozen=True)
+    **Forward compatibility (#135).** Extra top-level keys in
+    ``vstash.toml`` are accepted with a one-time warning instead of
+    raising a hard error, so a user on an older vstash with a
+    newer-format config file is not blocked from running.  This is the
+    one place we deliberately relax Pydantic strictness — every nested
+    section keeps its strict schema.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _warn_on_unknown_top_level_keys(cls, values: object) -> object:
+        if not isinstance(values, dict):
+            return values
+        known = set(cls.model_fields.keys())
+        unknown = sorted(k for k in values if k not in known)
+        if unknown:
+            import logging as _logging
+
+            _logging.getLogger("vstash").warning(
+                "vstash.toml contains unknown top-level section(s): %s. "
+                "They are ignored by this build of vstash. "
+                "If you are on an older vstash, upgrade; if these were "
+                "removed intentionally, delete them from vstash.toml.",
+                ", ".join(unknown),
+            )
+        return values
 
     inference: InferenceConfig = Field(default_factory=InferenceConfig)
     cerebras: CerebrasConfig = Field(default_factory=CerebrasConfig)
