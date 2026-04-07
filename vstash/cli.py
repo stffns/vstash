@@ -386,10 +386,20 @@ def search(
     cfg, store = _get_store(warm=True, profile=_profile_from_ctx(ctx))
     _search_tagged: list[tuple[str, object]] | None = None
 
-    # Miss analysis branch — short-circuits the normal search flow
+    # Miss analysis branch — short-circuits the normal search flow.
+    # Exit code conventions for scripting:
+    #   0 — expected document IS in top-k (no miss)
+    #   1 — argument error (missing args, invalid path, etc.)
+    #   2 — expected document did NOT appear (analysis completed successfully,
+    #       but the miss is real — lets CI / monitoring scripts alert)
     if miss is not None or miss_chunk is not None:
+        import json as _json
+
         if all_profiles:
-            console.print("[red]Miss analysis is not supported with --all-profiles.[/red]")
+            if json_output:
+                print(_json.dumps({"error": "Miss analysis is not supported with --all-profiles."}))
+            else:
+                console.print("[red]Miss analysis is not supported with --all-profiles.[/red]")
             raise typer.Exit(1)
         with store:
             k = top_k or cfg.chunking.top_k
@@ -399,7 +409,7 @@ def search(
                 if miss.startswith(("http://", "https://", "text://")):
                     path_arg = miss
                 else:
-                    path_arg = str(Path(miss).resolve())
+                    path_arg = str(Path(miss).resolve(strict=False))
             try:
                 with console.status("[dim]Analyzing miss...[/dim]", spinner="dots"):
                     q_embedding = embed_query(query, cfg.embeddings.model)
@@ -414,20 +424,28 @@ def search(
                         layer=layer,
                     )
             except ValueError as exc:
-                console.print(f"[red]✗ {exc}[/red]")
+                if json_output:
+                    print(_json.dumps({"error": str(exc)}))
+                else:
+                    console.print(f"[red]✗ {exc}[/red]")
                 raise typer.Exit(1) from None
-        if json_output:
-            import json as _json
 
+        # JSON output path (honored for both the no-miss and real-miss cases)
+        if json_output:
             print(_json.dumps(analysis.model_dump(), indent=2))
-            raise typer.Exit()
-        # Pretty print
+            raise typer.Exit(0 if analysis.appeared_in_results else 2)
+
+        # Pretty print (Rich-styled)
         console.print()
         console.print(f"[bold]Query:[/bold] {query}")
-        console.print(
-            f"[bold]Expected:[/bold] "
-            f"{analysis.expected_path or f'chunk #{analysis.expected_chunk_id}'}"
-        )
+        expected_label = analysis.expected_path or f"chunk #{analysis.expected_chunk_id}"
+        console.print(f"[bold]Expected:[/bold] {expected_label}")
+        if analysis.target_resolution == "best_of_n":
+            console.print(
+                f"[dim]  → tracing best-matching chunk of "
+                f"{analysis.total_chunks_in_doc} in the document (bias warning: "
+                f"other chunks may fail differently)[/dim]"
+            )
         console.print(f"[bold]top_k:[/bold] {analysis.top_k_requested}")
         console.print()
         if analysis.appeared_in_results:
@@ -435,7 +453,7 @@ def search(
                 f"[green]✓ Expected document IS in results at rank "
                 f"{(analysis.final_rank or 0) + 1}. No miss to analyze.[/green]"
             )
-            raise typer.Exit()
+            raise typer.Exit(0)
         console.print(
             f"[red]✗ Expected document did NOT appear. Dropped at: "
             f"[bold]{analysis.dropped_at}[/bold][/red]\n"
@@ -455,7 +473,7 @@ def search(
             console.print("[bold cyan]Actual top results (for comparison):[/bold cyan]")
             for r in analysis.actual_top_k:
                 console.print(f"  {r.rank + 1}. {r.title} ({r.path}) — score {r.score:.4f}")
-        raise typer.Exit()
+        raise typer.Exit(2)
 
     with store:
         k = top_k or cfg.chunking.top_k

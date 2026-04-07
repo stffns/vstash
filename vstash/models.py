@@ -160,6 +160,25 @@ class MissAnalysis(BaseModel):
         default=None,
         description="ID of the specific chunk evaluated (best match within the expected doc)",
     )
+    target_resolution: Literal["explicit_id", "only_chunk", "best_of_n"] = Field(
+        default="only_chunk",
+        description=(
+            "How expected_chunk_id was chosen. "
+            "'explicit_id' = caller provided it directly. "
+            "'only_chunk' = the expected document has exactly one chunk. "
+            "'best_of_n' = the document has multiple chunks; we picked the one "
+            "closest to the query embedding (may bias trace toward a best case)."
+        ),
+    )
+    total_chunks_in_doc: int = Field(
+        default=1,
+        ge=1,
+        description=(
+            "Number of chunks in the expected document. "
+            "When > 1 with resolution='best_of_n', the trace reflects only "
+            "the single best-matching chunk, not the document as a whole."
+        ),
+    )
     top_k_requested: int = Field(description="top_k value used for the search")
     appeared_in_results: bool = Field(
         description="True if the expected document IS in the top-k (no miss to analyze)"
