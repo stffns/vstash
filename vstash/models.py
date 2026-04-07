@@ -90,6 +90,37 @@ class ChunkInfo(BaseModel):
     collection: str = Field(default="default", description="Document collection")
 
 
+class IntegrityCheck(BaseModel):
+    """Result of one integrity check run by ``VstashStore.integrity_check()``.
+
+    Each check is a small, focused invariant — orphan chunks, FTS index
+    out of sync, missing vec_chunks rows, etc.  Together they form a
+    battery that ``vstash check`` runs against the database after a
+    crash or suspected corruption.
+    """
+
+    name: str = Field(description="Short identifier for the check")
+    description: str = Field(description="Human-readable explanation of what the check verifies")
+    passed: bool = Field(description="True if the invariant holds")
+    affected_count: int = Field(
+        default=0, description="Number of rows / documents that violate the invariant"
+    )
+    detail: str = Field(default="", description="Free-text detail (sample IDs, error message)")
+    repairable: bool = Field(
+        default=False,
+        description="True if ``integrity_repair()`` knows how to fix this check",
+    )
+
+
+class IntegrityRepair(BaseModel):
+    """Result of one repair action attempted by ``VstashStore.integrity_repair()``."""
+
+    name: str = Field(description="Short identifier of the check that was repaired")
+    success: bool = Field(description="True if the repair completed without error")
+    affected_count: int = Field(default=0, description="Rows / documents touched by the repair")
+    detail: str = Field(default="", description="Free-text detail (action taken, error message)")
+
+
 class StoreStats(BaseModel):
     """Aggregate statistics about the vstash memory store."""
 

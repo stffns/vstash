@@ -419,13 +419,24 @@ def ingest(
     title = _get_title(source)
     source_type = _get_source_type(source)
 
-    # Check for duplicates unless force is set
-    if not force and store.doc_exists(source_path):
-        return IngestResult(
-            status="skipped",
-            source=source,
-            title=title,
-        )
+    # Idempotent re-ingest (#134).  Without --force, we now distinguish
+    # three states instead of "exists / not exists":
+    #   - "complete": fully ingested → skip
+    #   - "partial":  prior ingest crashed mid-flight → drop the partial
+    #     rows and re-ingest fresh (still treated as a non-error path)
+    #   - "missing":  ingest from scratch
+    if not force:
+        status = store.doc_completeness(source_path)
+        if status == "complete":
+            return IngestResult(
+                status="skipped",
+                source=source,
+                title=title,
+            )
+        if status == "partial":
+            # Drop the half-ingested document so the fresh ingest below
+            # produces a clean state instead of duplicating chunks.
+            store.delete_document(source_path)
 
     # Should we try code-aware chunking?
     is_code = source_type == "code" and not _is_url(source) and cfg.chunking.code_aware
