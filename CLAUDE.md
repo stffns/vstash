@@ -76,11 +76,11 @@ docs/               # User-facing documentation
 - **Optional snapvec backend**: Compressed ANN via PolarQuant. Opt-in with `storage.vector_backend = "snapvec"`. sqlite-vec stays default.
 - **Local-first LLM**: Default backend `"local"` auto-detects Ollama, LM Studio, or any OpenAI-compatible local server.
 - **BEIR benchmark results**: NDCG@10=0.7263 on SciFact with adaptive RRF (surpasses ColBERTv2 0.693). Wins 5/5 BEIR datasets vs BM25, 4/5 vs ColBERTv2.
-- **Integrity & recovery (v0.24)**: `doc_completeness` → idempotent ingest; `integrity_check` runs 5 invariants (chunk_count/vec/FTS5 parity, orphans, PRAGMA); `integrity_repair` is collection-scoped and rebuilds FTS5. Exposed as `vstash check [--repair] [--json]`.
-- **Explicit contracts & schema versioning (v0.25)**: `SCHEMA_VERSION` + `KNOWN_SCHEMA_VERSIONS` stamped per-DB; `SchemaVersionError` on unknown versions; `INSERT OR IGNORE` for concurrent fresh-open; forward-compatible top-level config keys (warn-on-unknown). `SearchResult.score` is comparable within a query but **not across queries**.
-- **Operational observability (v0.21–v0.22)**: in-process metrics registry, slow query log, `miss_analysis()` API for ranking debugging (traces where a chunk was eliminated in the pipeline + rule-based suggestions).
+- **Integrity & recovery (v0.24)**: `doc_completeness(path, collection)` → idempotent ingest; `integrity_check()` runs 5 invariants (chunk_count parity, vec/snapvec parity, FTS5 built-in `integrity-check`, orphans, PRAGMA) and returns a `list[IntegrityCheck]`; `integrity_repair()` is profile-scoped (rebuilds `fts_chunks`, recomputes chunk_count, deletes orphans). v0.24.1 made the **partial-ingest recovery path** (via `delete_document(path, collection=...)`) collection-scoped so repairing one collection cannot wipe a sibling collection's copy of the same path. Exposed as `vstash check [--repair] [--json]`.
+- **Explicit contracts & schema versioning (v0.25)**: `SCHEMA_VERSION` + `KNOWN_SCHEMA_VERSIONS` stamped in the `store_meta` table; `SchemaVersionError` on unknown versions; `INSERT OR IGNORE` for concurrent fresh-open; forward-compatible top-level config keys (warn-on-unknown). `SearchResult.score` is the RRF score with `k=60`, range `[0, ~0.033]`, comparable within a query but **not across queries**.
+- **Operational observability (v0.21–v0.22)**: in-process metrics registry, slow query log, `miss_analysis(query_embedding, query_text, *, expected_path=...)` API for ranking debugging (traces where a chunk was eliminated + rule-based suggestions).
 - **Explicit limits (v0.23)**: `vstash/validation.py` + `[limits]` section with 7 knobs and a `LimitError(ValueError)` hierarchy. Rejects pathological inputs at `VstashStore`/`Memory` boundaries before they hit SQLite/sqlite-vec/ONNX.
-- **Threading hardening (v0.20)**: `SQLITE_THREADSAFE=1` assumption is checked explicitly at `open()`; STEM connections can be closed from any thread.
+- **Threading hardening (v0.20)**: `sqlite3.threadsafety > 0` asserted at module import time; STEM (FTS5 Porter stemming) connections can be closed from any thread.
 
 ## Conventions
 

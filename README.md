@@ -57,8 +57,8 @@ Evaluated on the [BEIR benchmark](https://github.com/beir-cellar/beir) — the s
 
 ### What's new in v0.24
 
-- **Integrity and recovery** — `vstash check [--repair] [--json]` runs five invariants (chunk_count parity, vec/snapvec parity, FTS5 parity, orphan chunks, SQLite `PRAGMA integrity_check`) and rebuilds FTS5 / recomputes chunk counts / deletes orphans on repair. Collection-scoped (v0.24.1).
-- **Idempotent re-ingest** — `doc_completeness` classifies paths as missing/partial/complete; `ingest()` skips complete docs, drops and re-ingests partial ones, and ingests missing ones fresh. Re-running `vstash add <path>` is now a safe no-op on unchanged files.
+- **Integrity and recovery** — `vstash check [--repair] [--json]` runs five invariants (chunk_count parity, vec/snapvec parity, FTS5 `integrity-check`, orphan chunks, SQLite `PRAGMA integrity_check`) and rebuilds FTS5 / recomputes chunk counts / deletes orphans on repair. Returns a `list[IntegrityCheck]` (one per invariant). Repair itself is profile-scoped; the **partial-ingest recovery path** is collection-scoped via `delete_document(path, collection=...)` so repairing a partial ingest in one collection cannot wipe a sibling collection's complete copy (v0.24.1 hotfix).
+- **Idempotent re-ingest** — `doc_completeness(path, collection="default")` classifies paths as missing/partial/complete; `ingest()` skips complete docs, drops and re-ingests partial ones, and ingests missing ones fresh. Re-running `vstash add <path>` is now a safe no-op on unchanged files. `collection` is load-bearing: the same path can live in multiple collections and each is tracked independently.
 
 ### What's new in v0.23
 
@@ -74,7 +74,7 @@ Evaluated on the [BEIR benchmark](https://github.com/beir-cellar/beir) — the s
 
 ### What's new in v0.20
 
-- **Threading hardening** — `SQLITE_THREADSAFE=1` assumption is now checked and surfaced explicitly at `open()`. STEM (embedding) connections can be closed from any thread, fixing an asyncio/threading deadlock in the MCP server path.
+- **Threading hardening** — `sqlite3.threadsafety > 0` is now asserted at module import time (loud failure on exotic single-threaded builds instead of silent corruption). STEM (FTS5 Porter stemming) connections can be closed from any thread, fixing an asyncio/threading deadlock in the MCP server path where connections whose owner thread had exited could not be released.
 - **726 tests** across 30+ test modules (up from 591 in v0.19).
 
 ### What's new in v0.19

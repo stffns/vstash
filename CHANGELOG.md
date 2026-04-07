@@ -29,8 +29,11 @@ All notable changes to vstash are documented here.
 ## [0.24.1] — 2026-04-07
 
 ### Fixed
-- **Integrity hotfix** (#134, #142) — `integrity_repair` is now **collection-scoped**: operating on one collection cannot clobber data in another. Earlier global scope was too aggressive.
-- **FTS5 parity check** — corrected the invariant query so `integrity_check` no longer reports false positives on healthy stores.
+- **`doc_completeness` now takes `collection`** (#134, #142) — the classification ignored collection in v0.24, so a partial copy of a path in collection A could mask collection B's complete copy and the recovery delete could wipe B too. Now collection-scoped.
+- **`delete_document` gains optional `collection` kwarg** — default unchanged (delete every copy of the path) so existing callers in `watch.py` / `mcp.py` / `cli.py` / `journal.py` keep working; `ingest()`'s partial-recovery path passes the current collection explicitly.
+- **FTS5 parity invariant** — `fts_index_parity` used `COUNT(*) FROM fts_chunks` on a `content=chunks` virtual table, which reads from the underlying `chunks` table and could never detect FTS5 index drift. Replaced with the canonical FTS5 `integrity-check` command, which actually scans the index.
+- **Implicit transaction** — the FTS5 `integrity-check` is DML, so the stdlib `sqlite3` driver opens an implicit transaction for it; `integrity_repair()` now commits the pending state before `BEGIN IMMEDIATE` so the explicit transaction isn't preempted.
+- **CLI cleanup** — `vstash check --repair` now reads the post-repair state from the same connection instead of re-opening the store.
 
 ---
 
@@ -77,14 +80,14 @@ All notable changes to vstash are documented here.
 ## [0.20.2] — 2026-04-06
 
 ### Changed
-- **Threading hardening** (#128) — the assumption that the underlying `libsqlite` is built with `SQLITE_THREADSAFE=1` is now *explicit*: checked at `open()` and surfaced as a clear error rather than manifesting as sporadic corruption.
+- **Threading hardening** (#128) — `vstash/store.py` now asserts `sqlite3.threadsafety > 0` at **module import time**, surfacing the requirement loudly on exotic single-threaded libsqlite builds instead of letting it manifest as sporadic corruption at runtime. Most Python builds use `sqlite3.threadsafety = 3` (fully serialized) and pass this check transparently.
 
 ---
 
 ## [0.20.1] — 2026-04-06
 
 ### Fixed
-- **Close STEM connections from any thread** (#125, #127) — fixes an asyncio/threading deadlock in the MCP server path where embedding connections could only be closed from the thread that opened them.
+- **Close STEM (stemming) connections from any thread** (#125, #127) — fixes an asyncio/threading deadlock in the MCP server path. The per-thread FTS5 Porter stemming connections in `VstashStore._stem_conns` could previously only be `close()`d from the thread that opened them; after that thread exited, the connection leaked file descriptors and hung process shutdown. Connections are still only *used* from their owning thread (guaranteed by dict-by-tid lookup), but `check_same_thread=False` now lets the main thread release them at shutdown.
 
 ---
 

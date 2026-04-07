@@ -211,25 +211,25 @@ Journal entries are designed for ephemeral cross-session context: action items, 
 
 A memory substrate must be honest about what survived a crash. Partial ingests, aborted writes, and corrupted virtual tables are realities of long-running SQLite workloads; silently returning stale or missing chunks is worse than raising a clear error.
 
-**Idempotent ingest.** `VstashStore.doc_completeness(path)` classifies a document path as:
+**Idempotent ingest.** `VstashStore.doc_completeness(path, collection="default")` classifies a document path *within a specific collection* as:
 
-- **missing** — no rows in `documents`.
-- **partial** — present in `documents` but `chunk_count` disagrees with the actual `chunks` row count or `vec_chunks` parity, indicating an interrupted ingest.
+- **missing** — no row in `documents` for `(collection, path)`.
+- **partial** — the document row exists but `chunk_count` disagrees with the actual `chunks` row count or with `vec_chunks` parity, indicating an interrupted ingest.
 - **complete** — all parities hold.
 
-`ingest()` now consults this classification: *complete* documents are skipped (a re-ingest is a no-op), *partial* documents are dropped and re-ingested from scratch, and *missing* documents ingest normally. Re-running the same `vstash add <path>` is therefore safe and does not duplicate data.
+The `collection` parameter is load-bearing: the same path can be ingested into multiple collections (each gets its own `doc_id = sha256(collection:path)`), and a partial copy in one collection must not mark a sibling collection's complete copy as healable. `ingest()` consults this classification: *complete* documents are skipped (a re-ingest is a no-op), *partial* documents are dropped via a collection-scoped `delete_document(path, collection=...)` and re-ingested from scratch, and *missing* documents ingest normally. Re-running the same `vstash add <path>` is therefore safe and does not duplicate data across collections.
 
 **Integrity check.** `VstashStore.integrity_check()` runs five invariants over the store:
 
 1. **chunk_count parity** — `documents.chunk_count` matches `COUNT(*)` in `chunks` grouped by `doc_id`.
 2. **vec/snapvec parity** — every `chunks.id` has a corresponding row in `vec_chunks` (or the active `snapvec` backend).
-3. **fts_chunks parity** — FTS5 content rows match the base table.
+3. **fts_index integrity** — the `fts_chunks` FTS5 virtual table passes the built-in FTS5 `integrity-check` command (which actually scans the index for drift, unlike a naive `COUNT(*)` comparison against a `content=chunks` table — that was the subtly wrong check in v0.24.0, corrected in v0.24.1).
 4. **orphan chunks** — no `chunks` row points at a missing `doc_id`.
 5. **SQLite PRAGMA integrity_check** — delegates to the engine for page-level corruption detection.
 
-Results are returned as a structured `IntegrityCheck` Pydantic model and can be rendered as a rich table or JSON.
+Results are returned as a `list[IntegrityCheck]` (one Pydantic model per invariant) and can be rendered as a rich table or JSON.
 
-**Integrity repair.** `VstashStore.integrity_repair()` restores invariants without destroying user data: it recomputes `chunk_count` from the ground truth, rebuilds `fts_chunks` via the FTS5 `rebuild` incantation, and deletes orphan `chunks` rows along with their `vec_chunks` companions. Repair is **collection-scoped**: operating on one collection cannot clobber data in another (fixed in v0.24.1 after an initial global scope was found to be too aggressive).
+**Integrity repair.** `VstashStore.integrity_repair()` restores invariants without destroying user data: it recomputes `chunk_count` from the ground truth for every affected document, rebuilds `fts_chunks` via the FTS5 `rebuild` incantation, and deletes orphan `chunks` rows along with their `vec_chunks` companions. Repair is **profile-scoped** (it operates over the whole profile database, not per-collection) — the collection-aware surface in v0.24 lives one layer up, at the *recovery* path during `ingest()`: `delete_document(path, collection=...)` makes sure that repairing a partial ingest in one collection cannot wipe a sibling collection's complete copy of the same path (this was the primary v0.24.1 hotfix, alongside the FTS5 invariant correction above).
 
 **CLI surface.** All of the above is exposed via `vstash check [--repair] [--json]`, which is the recommended first step after any unclean shutdown, power loss, or cross-device copy of a profile database.
 
@@ -237,7 +237,7 @@ Results are returned as a structured `IntegrityCheck` Pydantic model and can be 
 
 Early versions of vstash treated schema evolution implicitly: a newer binary would silently read older databases. This works until it doesn't — a future breaking change could corrupt user data with no warning. v0.25 makes every load-bearing contract explicit.
 
-**Schema version.** A `SCHEMA_VERSION` constant in `vstash/store.py` is stamped into a new `meta` row at database creation, alongside the vstash version that created it. A `KNOWN_SCHEMA_VERSIONS` set declares which on-disk versions the current build can safely open. On every `open()`:
+**Schema version.** A `SCHEMA_VERSION` constant in `vstash/store.py` is stamped into the `store_meta` table (keys: `schema_version`, `vstash_version`) at database creation, alongside the vstash version that created it. A `KNOWN_SCHEMA_VERSIONS` set declares which on-disk versions the current build can safely open. On every `open()`:
 
 - **Fresh databases** are stamped with the current version via `INSERT OR IGNORE` — tolerating concurrent first-opens across threads or processes without races (v0.25.0 hotfix).
 - **Legacy, unstamped databases** are re-stamped as `v1` and carry on.
@@ -246,7 +246,7 @@ Early versions of vstash treated schema evolution implicitly: a newer binary wou
 
 **Forward-compatible config.** `VstashConfig` (Pydantic v2) now allows **unknown top-level keys** with a one-time warning, so a user running an older vstash against a newer-format `vstash.toml` is not hard-blocked. Nested sections keep strict validation — typos inside a known section like `[scoring]` or `[limits]` are still caught, so the laxity only covers genuine forward-compatibility, not drift within documented sections.
 
-**Score-comparability semantics.** `SearchResult.score` is now documented explicitly in the model docstring: it occupies a typical range of ~0.005–0.05 for raw RRF, is comparable across results **within a single query**, and is **not comparable across queries** because adaptive RRF weights differ per query. This previously ambiguous contract caused downstream tools to build cross-query thresholds on top of scores that cannot support them; the documentation change turns a silent footgun into a written-down rule.
+**Score-comparability semantics.** `SearchResult.score` is now documented explicitly in the model docstring: it is the canonical RRF score `w_v · 1/(60 + rank_vec) + w_f · 1/(60 + rank_fts)` with `k = 60`, so a single RRF component caps at `1/(60 + 0) ≈ 0.0167` and a two-component fused score occupies a typical range of `[0, ~0.033]` (recency boost and post-processing can push it slightly higher). Scores are comparable across results **within a single query**, and are **not comparable across queries** because the candidate pool, adaptive RRF weights, and post-processing all vary by query. This previously ambiguous contract caused downstream tools to build cross-query thresholds on top of scores that cannot support them; the documentation change turns a silent footgun into a written-down rule.
 
 ### 3.11 Operational Observability (v0.21–v0.22)
 
@@ -256,9 +256,9 @@ A substrate that runs in agents and servers must be debuggable from the outside.
 
 **Explicit limits validation (v0.23).** A new `vstash/validation.py` module rejects pathological inputs at the `VstashStore` and `Memory` boundaries before they ever reach SQLite, sqlite-vec, or the embedding model. A `LimitsConfig` section in `vstash.toml` exposes seven knobs: `max_query_chars`, `max_top_k`, `max_distance_cutoff`, `max_recency_boost`, `max_path_chars`, `max_chunks_per_document`, and `max_chunk_chars`. A `LimitError(ValueError)` hierarchy with one subclass per category lets callers catch a single bucket or the whole family. The net effect is that malformed inputs produce a typed Python exception at the API boundary rather than an opaque SQLite or ONNX failure deep in the stack.
 
-**Ranking miss analysis (v0.21).** `VstashStore.miss_analysis(query, expected_doc)` diagnoses *why* an expected document did not appear in a result set. It returns a structured trace identifying where in the pipeline the chunk was eliminated — vector ANN cutoff, FTS5 Porter-stem mismatch, RRF rank dropout, MMR redundancy penalty, or post-fusion distance cutoff — and emits rule-based suggestions (e.g., "consider lowering `max_distance` for long queries" or "the matching chunk is tokenized differently; try adding `\"<exact phrase>\"`"). This is exactly the transparent ranking diagnostic that upper-layer frameworks cannot offer, because they treat the retrieval engine as a black box.
+**Ranking miss analysis (v0.21).** `VstashStore.miss_analysis(query_embedding, query_text, *, expected_path=None, expected_chunk_id=None, top_k=5, ...)` diagnoses *why* an expected document did not appear in a result set. It runs the same pipeline as `search()` with per-stage tracking enabled, then returns a `MissAnalysis` model containing a structured trace identifying where in the pipeline the chunk was eliminated — vector ANN cutoff, FTS5 Porter-stem mismatch, RRF rank dropout, MMR redundancy penalty, or post-fusion distance cutoff — and rule-based suggestions (e.g., "consider lowering `max_distance` for long queries" or "the matching chunk is tokenized differently; try adding `"<exact phrase>"`"). This is exactly the transparent ranking diagnostic that upper-layer frameworks cannot offer, because they treat the retrieval engine as a black box.
 
-**Threading hardening (v0.20).** Two related fixes closed long-standing concurrency footguns: the assumption that the underlying `libsqlite` is built with `SQLITE_THREADSAFE=1` is now *explicit* — checked at `open()` and surfaced as a clear error rather than manifesting as sporadic corruption — and STEM (embedding) connections can now be closed from any thread, fixing an asyncio/threading deadlock in the MCP server path.
+**Threading hardening (v0.20).** Two related fixes closed long-standing concurrency footguns. First, the assumption that the underlying `libsqlite` is built with thread support is now *explicit*: `vstash/store.py` asserts `sqlite3.threadsafety > 0` at **module import time** (not at `open()`), so an exotic single-threaded build fails loudly at load rather than corrupting data later. Most Python builds use `sqlite3.threadsafety = 3` (fully serialized) and pass this check transparently. Second, STEM (FTS5 Porter stemming) connections — the per-thread `sqlite3` handles kept in `self._stem_conns` and used only by their owning thread for tokenization lookups — can now be `close()`d from any thread. This fixed an asyncio/threading deadlock in the MCP server path where a stem connection whose owner thread had exited could not be released, leaking file descriptors and eventually hanging shutdown.
 
 ---
 
