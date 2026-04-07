@@ -145,6 +145,15 @@ def add(
     ctx: typer.Context,
     sources: list[str] = typer.Argument(..., help="Files, directories, or URLs to ingest"),
     force: bool = typer.Option(False, "--force", "-f", help="Re-ingest even if already in memory"),
+    resume: bool = typer.Option(
+        False,
+        "--resume",
+        help=(
+            "Resume an interrupted ingest: skip files that are already fully "
+            "ingested and re-process partial ones.  Idempotent ingest is now "
+            "the default; this flag exists for explicitness."
+        ),
+    ),
     collection: str = typer.Option("default", "--collection", "-c", help="Collection to add to"),
     project: str | None = typer.Option(
         None, "--project", "-p", help="Project tag (overrides frontmatter)"
@@ -163,6 +172,12 @@ def add(
     ),
 ) -> None:
     """Add documents or URLs to memory."""
+    if force and resume:
+        console.print(
+            "[red]✗[/red] --force and --resume are mutually exclusive: "
+            "--force always re-ingests, --resume only fills in gaps."
+        )
+        raise typer.Exit(code=2)
     cfg, store = _get_store(profile=_profile_from_ctx(ctx))
     meta = {"project": project, "layer": layer, "tags": tags}
 
@@ -996,6 +1011,90 @@ def forget(
             console.print(f"[green]✓[/green] Removed [bold]{path}[/bold] from memory.")
         else:
             console.print(f"[yellow]Not found:[/yellow] {path}")
+
+
+# ------------------------------------------------------------------ #
+# vstash check                                                         #
+# ------------------------------------------------------------------ #
+
+
+@app.command()
+def check(
+    ctx: typer.Context,
+    repair: bool = typer.Option(
+        False,
+        "--repair",
+        help="Apply the safe-to-fix subset of repairs after running checks.",
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit results as JSON instead of a human-readable table.",
+    ),
+) -> None:
+    """Run database integrity checks and optionally repair (#134).
+
+    Verifies chunk_count parity, vec/snapvec index parity, FTS5 index
+    parity, orphan chunks, and SQLite-level PRAGMA integrity_check.
+    Exit code is 0 if every check passes, 1 otherwise.
+    """
+    import json as _json
+
+    cfg, store = _get_store(profile=_profile_from_ctx(ctx))
+    with store:
+        results = store.integrity_check()
+        repairs = store.integrity_repair() if repair else []
+
+    if json_output:
+        payload = {
+            "checks": [r.model_dump() for r in results],
+            "repairs": [r.model_dump() for r in repairs],
+        }
+        print(_json.dumps(payload, indent=2))
+    else:
+        table = Table(title="vstash integrity check", show_lines=False)
+        table.add_column("Check", style="cyan", no_wrap=True)
+        table.add_column("Status")
+        table.add_column("Affected", justify="right")
+        table.add_column("Detail", overflow="fold")
+        for r in results:
+            status = "[green]PASS[/green]" if r.passed else "[red]FAIL[/red]"
+            table.add_row(
+                r.name,
+                status,
+                str(r.affected_count) if r.affected_count else "—",
+                r.detail or r.description,
+            )
+        console.print(table)
+        if repairs:
+            rtable = Table(title="repairs", show_lines=False)
+            rtable.add_column("Check", style="cyan", no_wrap=True)
+            rtable.add_column("Status")
+            rtable.add_column("Affected", justify="right")
+            rtable.add_column("Detail", overflow="fold")
+            for rp in repairs:
+                rstatus = "[green]OK[/green]" if rp.success else "[red]FAIL[/red]"
+                rtable.add_row(
+                    rp.name,
+                    rstatus,
+                    str(rp.affected_count) if rp.affected_count else "—",
+                    rp.detail,
+                )
+            console.print(rtable)
+
+    failed = [r for r in results if not r.passed]
+    if failed and not repair:
+        console.print(
+            f"[yellow]{len(failed)} check(s) failed.[/yellow] "
+            f"Run [bold]vstash check --repair[/bold] to apply safe fixes."
+        )
+        raise typer.Exit(code=1)
+    if failed and repair:
+        # Re-check after repair to determine final exit code.
+        with _get_store(profile=_profile_from_ctx(ctx))[1] as store2:
+            still_failing = [c for c in store2.integrity_check() if not c.passed]
+        if still_failing:
+            raise typer.Exit(code=1)
 
 
 # ------------------------------------------------------------------ #
