@@ -371,10 +371,113 @@ def search(
     explain: bool = typer.Option(
         False, "--explain", "-E", help="Show why each chunk ranked where it did"
     ),
+    miss: str | None = typer.Option(
+        None,
+        "--miss",
+        help="Diagnose why this expected document path did not appear in results",
+    ),
+    miss_chunk: int | None = typer.Option(
+        None,
+        "--miss-chunk",
+        help="Diagnose why this expected chunk id did not appear in results",
+    ),
 ) -> None:
     """Semantic search without LLM (free, local)."""
     cfg, store = _get_store(warm=True, profile=_profile_from_ctx(ctx))
     _search_tagged: list[tuple[str, object]] | None = None
+
+    # Miss analysis branch — short-circuits the normal search flow.
+    # Exit code conventions for scripting:
+    #   0 — expected document IS in top-k (no miss)
+    #   1 — argument error (missing args, invalid path, etc.)
+    #   2 — expected document did NOT appear (analysis completed successfully,
+    #       but the miss is real — lets CI / monitoring scripts alert)
+    if miss is not None or miss_chunk is not None:
+        import json as _json
+
+        def _miss_error(msg: str, exit_code: int = 1) -> typer.Exit:
+            """Emit an error consistently for both JSON and pretty output modes.
+
+            Returns the Exit exception so the caller can ``raise`` it,
+            which keeps ``raise ... from None`` chaining clean.
+            """
+            if json_output:
+                print(_json.dumps({"error": msg}))
+            else:
+                console.print(f"[red]✗ {msg}[/red]")
+            return typer.Exit(exit_code)
+
+        if all_profiles:
+            raise _miss_error("Miss analysis is not supported with --all-profiles.")
+        with store:
+            k = top_k or cfg.chunking.top_k
+            # Normalize the path the same way add() does
+            path_arg: str | None = None
+            if miss is not None:
+                if miss.startswith(("http://", "https://", "text://")):
+                    path_arg = miss
+                else:
+                    path_arg = str(Path(miss).resolve(strict=False))
+            try:
+                with console.status("[dim]Analyzing miss...[/dim]", spinner="dots"):
+                    q_embedding = embed_query(query, cfg.embeddings.model)
+                    analysis = store.miss_analysis(
+                        q_embedding,
+                        query,
+                        expected_path=path_arg,
+                        expected_chunk_id=miss_chunk,
+                        top_k=k,
+                        collection=collection,
+                        project=project,
+                        layer=layer,
+                    )
+            except ValueError as exc:
+                raise _miss_error(str(exc)) from None
+
+        # JSON output path (honored for both the no-miss and real-miss cases)
+        if json_output:
+            print(_json.dumps(analysis.model_dump(), indent=2))
+            raise typer.Exit(0 if analysis.appeared_in_results else 2)
+
+        # Pretty print (Rich-styled)
+        console.print()
+        console.print(f"[bold]Query:[/bold] {query}")
+        expected_label = analysis.expected_path or f"chunk #{analysis.expected_chunk_id}"
+        console.print(f"[bold]Expected:[/bold] {expected_label}")
+        if analysis.target_resolution == "best_of_n":
+            console.print(
+                f"[dim]  → tracing best-matching chunk of "
+                f"{analysis.total_chunks_in_doc} in the document (bias warning: "
+                f"other chunks may fail differently)[/dim]"
+            )
+        console.print(f"[bold]top_k:[/bold] {analysis.top_k_requested}")
+        console.print()
+        if analysis.appeared_in_results:
+            console.print(
+                f"[green]✓ Expected document IS in results at rank "
+                f"{(analysis.final_rank or 0) + 1}. No miss to analyze.[/green]"
+            )
+            raise typer.Exit(0)
+        console.print(
+            f"[red]✗ Expected document did NOT appear. Dropped at: "
+            f"[bold]{analysis.dropped_at}[/bold][/red]\n"
+        )
+        console.print("[bold cyan]Pipeline trace:[/bold cyan]")
+        for v in analysis.stage_verdicts:
+            mark = "[green]✓[/green]" if v.passed else "[red]✗[/red]"
+            console.print(f"  {mark} [bold]{v.stage}[/bold]: {v.detail}")
+            if v.counterfactual:
+                console.print(f"     [dim]→ {v.counterfactual}[/dim]")
+        console.print()
+        console.print("[bold cyan]Suggestions:[/bold cyan]")
+        for s in analysis.suggestions:
+            console.print(f"  • {s}")
+        console.print()
+        if analysis.actual_top_k:
+            console.print("[bold cyan]Actual top results (for comparison):[/bold cyan]")
+            for r in analysis.actual_top_k:
+                console.print(f"  {r.rank + 1}. {r.title} ({r.path}) — score {r.score:.4f}")
+        raise typer.Exit(2)
 
     with store:
         k = top_k or cfg.chunking.top_k
