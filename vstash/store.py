@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import math
+import operator
 import sqlite3
 import struct
 import time
@@ -166,9 +167,9 @@ def _deserialize(data: bytes) -> list[float]:
 
 def _cosine_sim(a: list[float], b: list[float]) -> float:
     """Cosine similarity between two vectors. Returns value in [-1, 1]."""
-    dot = sum(x * y for x, y in zip(a, b))
-    norm_a = math.sqrt(sum(x * x for x in a))
-    norm_b = math.sqrt(sum(x * x for x in b))
+    dot = sum(map(operator.mul, a, b))
+    norm_a = math.hypot(*a)
+    norm_b = math.hypot(*b)
     if norm_a < 1e-9 or norm_b < 1e-9:
         return 0.0
     return dot / (norm_a * norm_b)
