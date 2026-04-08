@@ -379,6 +379,28 @@ class TestMemorySearch:
             )
 
     @requires_sqlite_vec
+    def test_search_fts_only_overrides_explicit_weights(self, tmp_path: Path) -> None:
+        """fts_only must strip explicit vec_weight/fts_weight before validation.
+
+        Passing ``fts_only=True, vec_weight=1.5`` is semantically
+        ``fts_only=True`` — the weights are ignored. It must NOT raise
+        ``RRFWeightOutOfRangeError`` because of a stale value the
+        caller did not intend to validate.
+        """
+        (tmp_path / "doc.md").write_text("Some searchable text here.")
+        with Memory(db=tmp_path / "test.db") as mem:
+            mem.add(tmp_path / "doc.md")
+            # Would raise RRFWeightOutOfRangeError without the
+            # Memory.search override.
+            results = mem.search(
+                "text",
+                fts_only=True,
+                vec_weight=1.5,  # out of range — would normally raise
+                fts_weight=-0.2,  # ditto
+            )
+            assert isinstance(results, list)
+
+    @requires_sqlite_vec
     def test_ask_forwards_fts_only(self, tmp_path: Path) -> None:
         """Memory.ask() must forward fts_only to its internal search call (#152)."""
         captured: dict[str, object] = {}

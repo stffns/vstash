@@ -316,14 +316,29 @@ class Memory:
                 MMR dedup still runs on the FTS-only result set. The
                 vector embedding is still computed (it costs ~1ms and
                 upstream code may need it), but it is never queried.
-                Mutually exclusive with ``vec_weight`` / ``fts_weight``
-                in spirit — passing both is allowed but the explicit
-                weights are ignored when ``fts_only=True``.
+                Mutually exclusive with ``vec_weight`` / ``fts_weight``:
+                when ``fts_only=True`` is set, any explicit weight
+                arguments are dropped *before* reaching
+                ``VstashStore.search`` — the validator will not see
+                them, so a nonsensical pair like
+                ``fts_only=True, vec_weight=1.5`` does not raise.
+                This is deliberate: ``fts_only`` is a stronger
+                statement of intent than pinned weights and should
+                not be rejected by a stale weight value.
 
         Returns:
             Ranked list of SearchResult ordered by relevance.
         """
         q_embedding = embed_query(query, self._cfg.embeddings.model)
+        # When fts_only is set, drop any caller-supplied weight
+        # arguments before they reach the store's validator. The store
+        # will force (vec_weight=0.0, fts_weight=1.0) internally on
+        # the fts_only branch, so forwarding caller weights would
+        # either no-op or raise `RRFWeightOutOfRangeError` for a
+        # nonsensical value the caller did not intend us to validate.
+        if fts_only:
+            vec_weight = None
+            fts_weight = None
         return self._store.search(
             query_embedding=q_embedding,
             query_text=query,

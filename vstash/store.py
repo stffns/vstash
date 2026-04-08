@@ -1031,13 +1031,17 @@ class VstashStore:
             project: If set, restrict search to documents with this project tag.
             layer: If set, restrict search to documents with this layer tag.
             fts_only: If True, short-circuit the pipeline to FTS5 only (#152):
-                no vector ANN scan, no distance cutoff, no adaptive RRF —
-                results are ranked purely by FTS5 BM25 / porter-stem
-                matching. Useful for debugging ranking, for queries
-                where vector embeddings are known to be diffuse (cross-
-                lingual, highly technical), or as a deliberate fallback
-                when the vector pool is expected to be empty. MMR dedup
-                still runs on the FTS results.
+                no vector ANN scan, no distance cutoff, no adaptive
+                RRF weight computation. FTS5 hits are still fed
+                through the RRF scoring formula (with ``vec_weight=0.0``
+                and ``fts_weight=1.0``, so each hit scores
+                ``1/(60 + fts_rank)``), through MMR dedup, through the
+                optional recency boost, and through context expansion
+                — it is not a raw BM25 score dump.  Useful for
+                debugging ranking, for queries where vector embeddings
+                are known to be diffuse (cross-lingual, highly
+                technical), or as a deliberate fallback when the
+                vector pool is expected to be empty.
 
         Returns:
             Ranked list of SearchResult ordered by descending score.
@@ -1133,10 +1137,17 @@ class VstashStore:
                 # caller opted out of the vector signal.
                 self.last_best_distance = 2.0
                 if track_target is not None and _tracer is not None:
+                    # Record vector_search as *passed* (not failed) so
+                    # the downstream "both generators missed → invisible
+                    # to RRF" logic in miss_analysis does not
+                    # misattribute the drop to rrf_fusion.  The detail
+                    # string makes the intent explicit: the stage was
+                    # intentionally skipped by the caller, not that it
+                    # ran and found nothing.
                     _tracer.record(
                         "vector_search",
-                        passed=False,
-                        detail="fts_only=True: vector search skipped",
+                        passed=True,
+                        detail="fts_only=True: vector search intentionally skipped by caller",
                     )
                     _tracer.record(
                         "distance_cutoff",
@@ -1389,7 +1400,18 @@ class VstashStore:
                 chunk_id = row["id"]
                 # Only include FTS results that also passed vector relevance filter,
                 # OR that are in the top FTS results (strong keyword match).
-                is_fts_top = rank < effective_k * 2
+                # is_fts_top is the gate that lets FTS-only hits into
+                # the score pool when they are not also in the vector
+                # candidate set.  Normally we cap at top_k*2 to stop
+                # weak keyword noise from polluting results when
+                # vector search has a strong opinion.  In fts_only
+                # mode there is no vector signal, so the cap becomes
+                # a counter-productive artificial truncation — let
+                # every FTS row through up to the candidate pool.
+                if fts_only:
+                    is_fts_top = True
+                else:
+                    is_fts_top = rank < effective_k * 2
                 fts_contribution = fts_weight * (1.0 / (RRF_K + rank))
                 if chunk_id in scores:
                     scores[chunk_id]["rrf"] = float(scores[chunk_id]["rrf"]) + fts_contribution
