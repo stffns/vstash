@@ -280,6 +280,7 @@ class Memory:
         mmr_lambda: float = 0.5,
         vec_weight: float | None = None,
         fts_weight: float | None = None,
+        fts_only: bool = False,
     ) -> list[SearchResult]:
         """Semantic search without LLM inference.
 
@@ -306,17 +307,45 @@ class Memory:
                 other to ``1.0 - provided`` so the pair sums to 1.0.
             fts_weight: Pin the RRF FTS weight for this single call.
                 Same semantics and range as ``vec_weight``.
+            fts_only: If True, run FTS5 keyword search only and skip the
+                vector ANN scan, distance cutoff, and adaptive RRF
+                entirely. Useful for debugging ranking, for queries
+                where vector embeddings are known to be diffuse
+                (cross-lingual, highly technical), or as a deliberate
+                fallback when the vector pool is expected to be empty.
+                MMR dedup still runs on the FTS-only result set. The
+                vector embedding is still computed (it costs ~1ms and
+                upstream code may need it), but it is never queried.
+                Mutually exclusive with ``vec_weight`` / ``fts_weight``:
+                when ``fts_only=True`` is set, any explicit weight
+                arguments are dropped *before* reaching
+                ``VstashStore.search`` — the validator will not see
+                them, so a nonsensical pair like
+                ``fts_only=True, vec_weight=1.5`` does not raise.
+                This is deliberate: ``fts_only`` is a stronger
+                statement of intent than pinned weights and should
+                not be rejected by a stale weight value.
 
         Returns:
             Ranked list of SearchResult ordered by relevance.
         """
         q_embedding = embed_query(query, self._cfg.embeddings.model)
+        # When fts_only is set, drop any caller-supplied weight
+        # arguments before they reach the store's validator. The store
+        # will force (vec_weight=0.0, fts_weight=1.0) internally on
+        # the fts_only branch, so forwarding caller weights would
+        # either no-op or raise `RRFWeightOutOfRangeError` for a
+        # nonsensical value the caller did not intend us to validate.
+        if fts_only:
+            vec_weight = None
+            fts_weight = None
         return self._store.search(
             query_embedding=q_embedding,
             query_text=query,
             top_k=top_k,
             vec_weight=vec_weight,
             fts_weight=fts_weight,
+            fts_only=fts_only,
             collection=self._resolve_collection(collection),
             project=self._resolve_project(project),
             layer=layer,
@@ -441,6 +470,7 @@ class Memory:
         history: list[dict[str, str]] | None = None,
         vec_weight: float | None = None,
         fts_weight: float | None = None,
+        fts_only: bool = False,
     ) -> str:
         """Search memory + generate an LLM answer.
 
@@ -458,6 +488,8 @@ class Memory:
             vec_weight: Pin the RRF vector weight on the retrieval
                 call. See :meth:`search` for full semantics.
             fts_weight: Pin the RRF FTS weight on the retrieval call.
+            fts_only: If True, retrieve LLM context using FTS5 only —
+                no vector ANN, no distance cutoff. See :meth:`search`.
 
         Returns:
             Model response text.
@@ -474,6 +506,7 @@ class Memory:
             layer=layer,
             vec_weight=vec_weight,
             fts_weight=fts_weight,
+            fts_only=fts_only,
         )
         return _chat_ask(query, chunks, self._cfg, history)
 
