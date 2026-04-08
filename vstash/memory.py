@@ -278,6 +278,8 @@ class Memory:
         added_after: str | None = None,
         added_before: str | None = None,
         mmr_lambda: float = 0.5,
+        vec_weight: float | None = None,
+        fts_weight: float | None = None,
     ) -> list[SearchResult]:
         """Semantic search without LLM inference.
 
@@ -296,6 +298,14 @@ class Memory:
                 from documents added on or after this date.
             added_before: ISO date (e.g. '2024-06-01') — only return results
                 from documents added before this date.
+            vec_weight: Pin the RRF vector weight for this single call,
+                overriding adaptive RRF. Valid range ``[0.0, 1.0]``.
+                Pass ``None`` (default) to keep adaptive per-query
+                weighting active. Passing only one of ``vec_weight`` /
+                ``fts_weight`` disables adaptive weighting and sets the
+                other to ``1.0 - provided`` so the pair sums to 1.0.
+            fts_weight: Pin the RRF FTS weight for this single call.
+                Same semantics and range as ``vec_weight``.
 
         Returns:
             Ranked list of SearchResult ordered by relevance.
@@ -305,6 +315,8 @@ class Memory:
             query_embedding=q_embedding,
             query_text=query,
             top_k=top_k,
+            vec_weight=vec_weight,
+            fts_weight=fts_weight,
             collection=self._resolve_collection(collection),
             project=self._resolve_project(project),
             layer=layer,
@@ -427,6 +439,8 @@ class Memory:
         project: object = _UNSET,
         layer: str | None = None,
         history: list[dict[str, str]] | None = None,
+        vec_weight: float | None = None,
+        fts_weight: float | None = None,
     ) -> str:
         """Search memory + generate an LLM answer.
 
@@ -441,6 +455,9 @@ class Memory:
             project: Override the default project filter.
             layer: Filter by layer tag.
             history: Previous conversation turns for multi-turn chat.
+            vec_weight: Pin the RRF vector weight on the retrieval
+                call. See :meth:`search` for full semantics.
+            fts_weight: Pin the RRF FTS weight on the retrieval call.
 
         Returns:
             Model response text.
@@ -455,6 +472,8 @@ class Memory:
             collection=collection,
             project=project,
             layer=layer,
+            vec_weight=vec_weight,
+            fts_weight=fts_weight,
         )
         return _chat_ask(query, chunks, self._cfg, history)
 
