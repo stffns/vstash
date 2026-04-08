@@ -278,6 +278,8 @@ class Memory:
         added_after: str | None = None,
         added_before: str | None = None,
         mmr_lambda: float = 0.5,
+        vec_weight: float | None = None,
+        fts_weight: float | None = None,
     ) -> list[SearchResult]:
         """Semantic search without LLM inference.
 
@@ -296,6 +298,13 @@ class Memory:
                 from documents added on or after this date.
             added_before: ISO date (e.g. '2024-06-01') — only return results
                 from documents added before this date.
+            vec_weight: Pin the RRF vector weight for this single call,
+                overriding adaptive RRF. Pass ``None`` (default) to keep
+                adaptive per-query weighting active. Usually passed together
+                with ``fts_weight``; passing only one disables adaptive
+                weighting and defaults the other to the fixed baseline.
+            fts_weight: Pin the RRF FTS weight for this single call. See
+                ``vec_weight`` for semantics.
 
         Returns:
             Ranked list of SearchResult ordered by relevance.
@@ -305,6 +314,8 @@ class Memory:
             query_embedding=q_embedding,
             query_text=query,
             top_k=top_k,
+            vec_weight=vec_weight,
+            fts_weight=fts_weight,
             collection=self._resolve_collection(collection),
             project=self._resolve_project(project),
             layer=layer,

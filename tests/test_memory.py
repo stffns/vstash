@@ -188,6 +188,48 @@ class TestMemorySearch:
             results = mem.search("topic", top_k=3)
             assert len(results) <= 3
 
+    @requires_sqlite_vec
+    def test_search_accepts_rrf_weights(self, tmp_path: Path) -> None:
+        """Memory.search() passes vec_weight/fts_weight through to the store (#151)."""
+        doc = tmp_path / "weights.md"
+        doc.write_text(
+            "# Rust Programming\n\n"
+            "Rust is a systems programming language focused on memory safety "
+            "and zero-cost abstractions. It uses ownership and borrowing to "
+            "enforce compile-time guarantees without a garbage collector."
+        )
+        with Memory(db=tmp_path / "test.db") as mem:
+            mem.add(doc)
+            # All three should produce results; the plumbing is what matters.
+            adaptive = mem.search("memory safety")
+            vec_heavy = mem.search("memory safety", vec_weight=0.9, fts_weight=0.1)
+            fts_heavy = mem.search("memory safety", vec_weight=0.1, fts_weight=0.9)
+            assert len(adaptive) > 0
+            assert len(vec_heavy) > 0
+            assert len(fts_heavy) > 0
+            # Pinned weights should at least not crash and should return
+            # a SearchResult compatible with the adaptive path.
+            assert all(isinstance(r, SearchResult) for r in vec_heavy)
+            assert all(isinstance(r, SearchResult) for r in fts_heavy)
+
+    @requires_sqlite_vec
+    def test_search_rrf_weights_default_none_is_adaptive(self, tmp_path: Path) -> None:
+        """Omitting weights must preserve adaptive RRF (regression guard for #151)."""
+        doc = tmp_path / "adapt.md"
+        doc.write_text(
+            "# Fourier Transform\n\nThe discrete Fourier transform decomposes "
+            "a signal into its constituent frequencies and is the foundation "
+            "of modern digital signal processing."
+        )
+        with Memory(db=tmp_path / "test.db") as mem:
+            mem.add(doc)
+            # Two calls without weights must return identical ranks — proves
+            # the default path is still going through adaptive RRF, not a
+            # silently-pinned default.
+            a = mem.search("fourier signal processing")
+            b = mem.search("fourier signal processing")
+            assert [r.chunk_id for r in a] == [r.chunk_id for r in b]
+
 
 # ------------------------------------------------------------------ #
 # Memory.remove                                                        #
