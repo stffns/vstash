@@ -63,6 +63,10 @@ class RecencyBoostOutOfRangeError(LimitError):
     """``recency_boost`` is negative or above the configured maximum."""
 
 
+class RRFWeightOutOfRangeError(LimitError):
+    """``vec_weight`` or ``fts_weight`` is outside the ``[0.0, 1.0]`` range."""
+
+
 class PathTooLongError(LimitError):
     """Document path exceeds the configured maximum length."""
 
@@ -129,6 +133,8 @@ def validate_search_input(
     distance_cutoff: float,
     recency_boost: float,
     limits: LimitsConfig,
+    vec_weight: float | None = None,
+    fts_weight: float | None = None,
 ) -> None:
     """Validate the public arguments to :meth:`VstashStore.search`.
 
@@ -136,6 +142,12 @@ def validate_search_input(
     range.  Empty queries are *allowed* (caller may have a legitimate
     reason — e.g. embedding-only retrieval) but ``None`` and non-string
     values are rejected.
+
+    ``vec_weight`` / ``fts_weight`` may be ``None`` (adaptive RRF, the
+    default) or a float in ``[0.0, 1.0]``.  Out-of-range floats raise
+    :class:`RRFWeightOutOfRangeError` — this is the first PR that exposes
+    these knobs to end users via ``Memory.search`` (#151), so the
+    boundary check lives here rather than silently clamping downstream.
     """
     if not isinstance(query_text, str):
         msg = f"query must be a string, got {type(query_text).__name__}"
@@ -164,6 +176,16 @@ def validate_search_input(
     if recency_boost < 0 or recency_boost > limits.max_recency_boost:
         msg = f"recency_boost {recency_boost} out of range [0, {limits.max_recency_boost}]"
         raise RecencyBoostOutOfRangeError(msg)
+
+    for name, value in (("vec_weight", vec_weight), ("fts_weight", fts_weight)):
+        if value is None:
+            continue
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            msg = f"{name} must be a float in [0.0, 1.0] or None, got {type(value).__name__}"
+            raise RRFWeightOutOfRangeError(msg)
+        if value < 0.0 or value > 1.0:
+            msg = f"{name} {value} out of range [0.0, 1.0]"
+            raise RRFWeightOutOfRangeError(msg)
 
 
 def validate_document_input(

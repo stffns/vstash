@@ -1044,6 +1044,8 @@ class VstashStore:
             distance_cutoff=distance_cutoff,
             recency_boost=recency_boost,
             limits=self._limits,
+            vec_weight=vec_weight,
+            fts_weight=fts_weight,
         )
 
         # Per-search miss-analysis tracker (#108).  The tracer is owned

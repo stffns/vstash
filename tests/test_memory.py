@@ -189,46 +189,92 @@ class TestMemorySearch:
             assert len(results) <= 3
 
     @requires_sqlite_vec
-    def test_search_accepts_rrf_weights(self, tmp_path: Path) -> None:
-        """Memory.search() passes vec_weight/fts_weight through to the store (#151)."""
-        doc = tmp_path / "weights.md"
-        doc.write_text(
-            "# Rust Programming\n\n"
-            "Rust is a systems programming language focused on memory safety "
-            "and zero-cost abstractions. It uses ownership and borrowing to "
-            "enforce compile-time guarantees without a garbage collector."
+    def test_search_forwards_rrf_weights_to_store(self, tmp_path: Path) -> None:
+        """Memory.search() must actually pass vec_weight/fts_weight to the store (#151).
+
+        The most direct assertion that the plumbing works is to spy on
+        `VstashStore.search` and verify the kwargs arrive with the
+        exact values that were passed to `Memory.search`. A ranking-
+        based test is flaky on small corpora because RRF tends to
+        converge to the same top-1 regardless of weights when there
+        is only one keyword-matching doc.
+        """
+        (tmp_path / "doc.md").write_text(
+            "Rust is a systems programming language focused on memory "
+            "safety and zero-cost abstractions."
         )
         with Memory(db=tmp_path / "test.db") as mem:
-            mem.add(doc)
-            # All three should produce results; the plumbing is what matters.
-            adaptive = mem.search("memory safety")
-            vec_heavy = mem.search("memory safety", vec_weight=0.9, fts_weight=0.1)
-            fts_heavy = mem.search("memory safety", vec_weight=0.1, fts_weight=0.9)
-            assert len(adaptive) > 0
-            assert len(vec_heavy) > 0
-            assert len(fts_heavy) > 0
-            # Pinned weights should at least not crash and should return
-            # a SearchResult compatible with the adaptive path.
-            assert all(isinstance(r, SearchResult) for r in vec_heavy)
-            assert all(isinstance(r, SearchResult) for r in fts_heavy)
+            mem.add(tmp_path / "doc.md")
+
+            captured: list[dict[str, object]] = []
+            original_search = mem._store.search
+
+            def spy_search(*args: object, **kwargs: object) -> list[SearchResult]:
+                captured.append(dict(kwargs))
+                return original_search(*args, **kwargs)
+
+            mem._store.search = spy_search  # type: ignore[method-assign]
+
+            mem.search("memory safety", vec_weight=0.9, fts_weight=0.1)
+            mem.search("memory safety", vec_weight=0.1, fts_weight=0.9)
+            mem.search("memory safety")  # adaptive default
+
+            assert len(captured) == 3
+            assert captured[0]["vec_weight"] == 0.9
+            assert captured[0]["fts_weight"] == 0.1
+            assert captured[1]["vec_weight"] == 0.1
+            assert captured[1]["fts_weight"] == 0.9
+            # Default path passes None for both so the store can run
+            # adaptive RRF — this is the load-bearing assertion that
+            # Memory.search does NOT silently pin a default.
+            assert captured[2]["vec_weight"] is None
+            assert captured[2]["fts_weight"] is None
 
     @requires_sqlite_vec
-    def test_search_rrf_weights_default_none_is_adaptive(self, tmp_path: Path) -> None:
-        """Omitting weights must preserve adaptive RRF (regression guard for #151)."""
-        doc = tmp_path / "adapt.md"
-        doc.write_text(
-            "# Fourier Transform\n\nThe discrete Fourier transform decomposes "
-            "a signal into its constituent frequencies and is the foundation "
-            "of modern digital signal processing."
-        )
+    def test_search_weights_rejects_out_of_range(self, tmp_path: Path) -> None:
+        """Out-of-range RRF weights raise a typed error (#151)."""
+        import pytest
+
+        from vstash.validation import RRFWeightOutOfRangeError
+
+        (tmp_path / "doc.md").write_text("Some content for the store so search can run at all.")
         with Memory(db=tmp_path / "test.db") as mem:
-            mem.add(doc)
-            # Two calls without weights must return identical ranks — proves
-            # the default path is still going through adaptive RRF, not a
-            # silently-pinned default.
-            a = mem.search("fourier signal processing")
-            b = mem.search("fourier signal processing")
-            assert [r.chunk_id for r in a] == [r.chunk_id for r in b]
+            mem.add(tmp_path / "doc.md")
+            with pytest.raises(RRFWeightOutOfRangeError):
+                mem.search("content", vec_weight=1.5)
+            with pytest.raises(RRFWeightOutOfRangeError):
+                mem.search("content", fts_weight=-0.1)
+            with pytest.raises(RRFWeightOutOfRangeError):
+                mem.search("content", vec_weight=0.7, fts_weight=2.0)
+
+    @requires_sqlite_vec
+    def test_ask_forwards_rrf_weights(self, tmp_path: Path) -> None:
+        """Memory.ask() must forward vec_weight/fts_weight to the retrieval call."""
+        import inspect
+
+        sig = inspect.signature(Memory.ask)
+        assert "vec_weight" in sig.parameters
+        assert "fts_weight" in sig.parameters
+        # Spy on the search call path via a subclass override.
+        captured: dict[str, object] = {}
+
+        class _SpyMemory(Memory):
+            def search(self, query: str, **kwargs: object) -> list[SearchResult]:
+                captured.update(kwargs)
+                return []
+
+        (tmp_path / "a.md").write_text("content for the spy test.")
+        with _SpyMemory(db=tmp_path / "test.db") as mem:
+            mem.add(tmp_path / "a.md")
+            try:
+                mem.ask("anything", vec_weight=0.3, fts_weight=0.7)
+            except Exception:
+                # Inference backend may not be configured in CI — that
+                # is fine; we only care that search() was called with
+                # the forwarded kwargs before the LLM step.
+                pass
+        assert captured.get("vec_weight") == 0.3
+        assert captured.get("fts_weight") == 0.7
 
 
 # ------------------------------------------------------------------ #
