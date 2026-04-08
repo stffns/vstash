@@ -169,6 +169,68 @@ class TestStoreDeduplication:
         assert "Small Document" in titles
 
 
+class TestCosineSim:
+    """Unit tests for the pure-Python _cosine_sim helper.
+
+    Freezes the contract so that future micro-optimizations (e.g. the
+    v0.26 jump to math.sumprod + math.hypot on Python 3.12+) cannot
+    silently regress the numerical behavior or the edge-case handling.
+    """
+
+    def test_identical_vectors_return_one(self) -> None:
+        from vstash.store import _cosine_sim
+
+        v = [1.0, 2.0, 3.0, 4.0]
+        assert abs(_cosine_sim(v, v) - 1.0) < 1e-12
+
+    def test_orthogonal_vectors_return_zero(self) -> None:
+        from vstash.store import _cosine_sim
+
+        assert abs(_cosine_sim([1.0, 0.0, 0.0], [0.0, 1.0, 0.0])) < 1e-12
+
+    def test_opposite_vectors_return_negative_one(self) -> None:
+        from vstash.store import _cosine_sim
+
+        assert abs(_cosine_sim([1.0, 2.0, 3.0], [-1.0, -2.0, -3.0]) + 1.0) < 1e-12
+
+    def test_empty_vectors_return_zero(self) -> None:
+        """Regression guard: PR review on #149 flagged a false empty-vector
+        TypeError concern. Verify the actual behavior is a clean 0.0."""
+        from vstash.store import _cosine_sim
+
+        assert _cosine_sim([], []) == 0.0
+
+    def test_zero_vector_returns_zero(self) -> None:
+        from vstash.store import _cosine_sim
+
+        assert _cosine_sim([0.0, 0.0, 0.0], [1.0, 2.0, 3.0]) == 0.0
+        assert _cosine_sim([1.0, 2.0, 3.0], [0.0, 0.0, 0.0]) == 0.0
+        assert _cosine_sim([0.0, 0.0], [0.0, 0.0]) == 0.0
+
+    def test_matches_reference_formula_on_random_384d(self) -> None:
+        """Sanity check: compare against a naive reference implementation
+        on a random 384-dim vector pair (the bge-small embedding dim)."""
+        import math
+        import random
+
+        from vstash.store import _cosine_sim
+
+        random.seed(42)
+        a = [random.gauss(0, 1) for _ in range(384)]
+        b = [random.gauss(0, 1) for _ in range(384)]
+
+        # Naive reference
+        dot = sum(x * y for x, y in zip(a, b))
+        norm_a = math.sqrt(sum(x * x for x in a))
+        norm_b = math.sqrt(sum(x * x for x in b))
+        expected = dot / (norm_a * norm_b)
+
+        actual = _cosine_sim(a, b)
+        assert abs(actual - expected) < 1e-12, (
+            f"_cosine_sim disagrees with reference formula: actual={actual}, expected={expected}"
+        )
+
+
 class TestMMRDedup:
     """Test intra-document MMR diversity deduplication."""
 
