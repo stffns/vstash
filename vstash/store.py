@@ -1376,6 +1376,54 @@ class VstashStore:
                         counterfactual="Would need a query containing words from the chunk's vocabulary",
                     )
 
+            # --- Adaptive fallback: vector pool empty (#156) ---
+            # If the vector pool is empty — either the initial ANN scan
+            # returned nothing, the metadata filter eliminated everything,
+            # or the distance cutoff was so tight that no chunk survived
+            # — the pipeline would otherwise fuse an empty vec list with
+            # the FTS list using the default or adaptive RRF weights
+            # (e.g. 0.6/0.4). The FTS rows would then be scored with
+            # only ``fts_weight * 1/(k+rank)``, which degrades the
+            # absolute RRF score unnecessarily — a literal-match FTS
+            # hit at rank 0 gets ~0.0067 instead of the 0.0167 it would
+            # earn under pure FTS weighting.  Detect the condition and
+            # collapse to FTS-only scoring explicitly, so downstream
+            # consumers of ``SearchResult.score`` see a meaningful value
+            # and the relevance-tier signal correctly reports "low"
+            # instead of carrying a stale high-confidence distance.
+            #
+            # Note: when #160 (explicit ``fts_only``) lands, the vector
+            # path is bypassed upstream and ``vec_rows`` starts empty;
+            # this fallback block then becomes a no-op counter bump
+            # for that mode, which is accurate — the caller asked for
+            # FTS-only and got FTS-only.  Re-add an ``and not fts_only``
+            # guard at rebase time if the double-record becomes noisy.
+            # First, always reset ``last_best_distance`` when vec_rows
+            # is empty — whether or not there are FTS results. Without
+            # this, a query where both pools are empty (e.g. corpus
+            # doesn't contain the query at all) would report whatever
+            # ``last_best_distance`` held from a previous query,
+            # lying about the current query's confidence.  Flagged by
+            # Gemini review on #156.
+            if not vec_rows:
+                self.last_best_distance = 2.0
+
+            # Then, if there are FTS results to boost, actually apply
+            # the weight override and fire the observability signal.
+            if not vec_rows and fts_rows:
+                registry.counter_inc("adaptive_rrf_vector_empty_fallback_total")
+                vec_weight = 0.0
+                fts_weight = 1.0
+                if track_target is not None and _tracer is not None:
+                    _tracer.record(
+                        "adaptive_fallback",
+                        passed=True,
+                        detail=(
+                            "vector pool empty after distance cutoff: collapsed "
+                            "to FTS-only scoring (vec_weight=0.0, fts_weight=1.0)"
+                        ),
+                    )
+
             # --- Reciprocal Rank Fusion ---
             scores: dict[int, dict[str, str | int | float]] = {}
             _explain_rrf_vec: dict[int, float] = {}  # chunk_id -> vec RRF contribution
