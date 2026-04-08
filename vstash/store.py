@@ -1007,6 +1007,7 @@ class VstashStore:
         added_after: str | None = None,
         added_before: str | None = None,
         mmr_lambda: float = 0.5,
+        fts_only: bool = False,
         _tracer: _PipelineTracer | None = None,
     ) -> list[SearchResult]:
         """Hybrid search: vector (semantic) + FTS5 (keyword) combined with RRF.
@@ -1029,6 +1030,18 @@ class VstashStore:
             collection: If set, restrict search to documents in this collection.
             project: If set, restrict search to documents with this project tag.
             layer: If set, restrict search to documents with this layer tag.
+            fts_only: If True, short-circuit the pipeline to FTS5 only (#152):
+                no vector ANN scan, no distance cutoff, no adaptive
+                RRF weight computation. FTS5 hits are still fed
+                through the RRF scoring formula (with ``vec_weight=0.0``
+                and ``fts_weight=1.0``, so each hit scores
+                ``1/(60 + fts_rank)``), through MMR dedup, through the
+                optional recency boost, and through context expansion
+                — it is not a raw BM25 score dump.  Useful for
+                debugging ranking, for queries where vector embeddings
+                are known to be diffuse (cross-lingual, highly
+                technical), or as a deliberate fallback when the
+                vector pool is expected to be empty.
 
         Returns:
             Ranked list of SearchResult ordered by descending score.
@@ -1044,6 +1057,8 @@ class VstashStore:
             distance_cutoff=distance_cutoff,
             recency_boost=recency_boost,
             limits=self._limits,
+            vec_weight=vec_weight,
+            fts_weight=fts_weight,
         )
 
         # Per-search miss-analysis tracker (#108).  The tracer is owned
@@ -1073,6 +1088,18 @@ class VstashStore:
         _fts_weight_observed: float = 0.0
         registry.counter_inc("searches_total")
         try:
+            # FTS-only short-circuit (#152): bypass vector search entirely.
+            # This forces the weights to (0.0, 1.0) and disables adaptive
+            # RRF so the pipeline cannot silently re-enable the vector
+            # path.  The vector search, distance cutoff, and relevance
+            # filter blocks below are all guarded on `not fts_only` or
+            # on `vec_rows` being non-empty, so the downstream MMR /
+            # scoring path runs unchanged on FTS-only input.
+            if fts_only:
+                vec_weight = 0.0
+                fts_weight = 1.0
+                adaptive_rrf = False
+
             # Adaptive RRF: compute weights from query characteristics (IDF + length)
             # Skip if caller provided explicit weights
             if adaptive_rrf and vec_weight is None and fts_weight is None:
@@ -1101,7 +1128,33 @@ class VstashStore:
             )
 
             # --- Vector search ---
-            if self._snap is not None and len(self._snap) > 0:
+            vec_rows: list = []
+            if fts_only:
+                # #152: skip vector ANN entirely. No candidates, no
+                # distances, no distance-cutoff work downstream. Set
+                # last_best_distance to the worst possible so the
+                # distance-based relevance tier renders "low" — the
+                # caller opted out of the vector signal.
+                self.last_best_distance = 2.0
+                if track_target is not None and _tracer is not None:
+                    # Record vector_search as *passed* (not failed) so
+                    # the downstream "both generators missed → invisible
+                    # to RRF" logic in miss_analysis does not
+                    # misattribute the drop to rrf_fusion.  The detail
+                    # string makes the intent explicit: the stage was
+                    # intentionally skipped by the caller, not that it
+                    # ran and found nothing.
+                    _tracer.record(
+                        "vector_search",
+                        passed=True,
+                        detail="fts_only=True: vector search intentionally skipped by caller",
+                    )
+                    _tracer.record(
+                        "distance_cutoff",
+                        passed=True,
+                        detail="fts_only=True: no distance cutoff applied",
+                    )
+            elif self._snap is not None and len(self._snap) > 0:
                 # SnapVec ANN search — returns list[(id, distance)]
                 snap_results = self._snap.search(
                     np.array(query_embedding, dtype=np.float32), k=candidate_pool
@@ -1149,7 +1202,10 @@ class VstashStore:
                 ).fetchall()
 
             # --- Track: vector search stage ---
-            if track_target is not None:
+            # In fts_only mode the "vector_search" and "distance_cutoff"
+            # stages were already recorded as skipped above; don't
+            # overwrite them with a generic "not found" verdict.
+            if track_target is not None and not fts_only:
                 target_vec_rank: int | None = None
                 target_vec_distance: float | None = None
                 for i, row in enumerate(vec_rows):
@@ -1320,6 +1376,54 @@ class VstashStore:
                         counterfactual="Would need a query containing words from the chunk's vocabulary",
                     )
 
+            # --- Adaptive fallback: vector pool empty (#156) ---
+            # If the vector pool is empty — either the initial ANN scan
+            # returned nothing, the metadata filter eliminated everything,
+            # or the distance cutoff was so tight that no chunk survived
+            # — the pipeline would otherwise fuse an empty vec list with
+            # the FTS list using the default or adaptive RRF weights
+            # (e.g. 0.6/0.4). The FTS rows would then be scored with
+            # only ``fts_weight * 1/(k+rank)``, which degrades the
+            # absolute RRF score unnecessarily — a literal-match FTS
+            # hit at rank 0 gets ~0.0067 instead of the 0.0167 it would
+            # earn under pure FTS weighting.  Detect the condition and
+            # collapse to FTS-only scoring explicitly, so downstream
+            # consumers of ``SearchResult.score`` see a meaningful value
+            # and the relevance-tier signal correctly reports "low"
+            # instead of carrying a stale high-confidence distance.
+            #
+            # Note: when #160 (explicit ``fts_only``) lands, the vector
+            # path is bypassed upstream and ``vec_rows`` starts empty;
+            # this fallback block then becomes a no-op counter bump
+            # for that mode, which is accurate — the caller asked for
+            # FTS-only and got FTS-only.  Re-add an ``and not fts_only``
+            # guard at rebase time if the double-record becomes noisy.
+            # First, always reset ``last_best_distance`` when vec_rows
+            # is empty — whether or not there are FTS results. Without
+            # this, a query where both pools are empty (e.g. corpus
+            # doesn't contain the query at all) would report whatever
+            # ``last_best_distance`` held from a previous query,
+            # lying about the current query's confidence.  Flagged by
+            # Gemini review on #156.
+            if not vec_rows:
+                self.last_best_distance = 2.0
+
+            # Then, if there are FTS results to boost, actually apply
+            # the weight override and fire the observability signal.
+            if not vec_rows and fts_rows:
+                registry.counter_inc("adaptive_rrf_vector_empty_fallback_total")
+                vec_weight = 0.0
+                fts_weight = 1.0
+                if track_target is not None and _tracer is not None:
+                    _tracer.record(
+                        "adaptive_fallback",
+                        passed=True,
+                        detail=(
+                            "vector pool empty after distance cutoff: collapsed "
+                            "to FTS-only scoring (vec_weight=0.0, fts_weight=1.0)"
+                        ),
+                    )
+
             # --- Reciprocal Rank Fusion ---
             scores: dict[int, dict[str, str | int | float]] = {}
             _explain_rrf_vec: dict[int, float] = {}  # chunk_id -> vec RRF contribution
@@ -1344,7 +1448,18 @@ class VstashStore:
                 chunk_id = row["id"]
                 # Only include FTS results that also passed vector relevance filter,
                 # OR that are in the top FTS results (strong keyword match).
-                is_fts_top = rank < effective_k * 2
+                # is_fts_top is the gate that lets FTS-only hits into
+                # the score pool when they are not also in the vector
+                # candidate set.  Normally we cap at top_k*2 to stop
+                # weak keyword noise from polluting results when
+                # vector search has a strong opinion.  In fts_only
+                # mode there is no vector signal, so the cap becomes
+                # a counter-productive artificial truncation — let
+                # every FTS row through up to the candidate pool.
+                if fts_only:
+                    is_fts_top = True
+                else:
+                    is_fts_top = rank < effective_k * 2
                 fts_contribution = fts_weight * (1.0 / (RRF_K + rank))
                 if chunk_id in scores:
                     scores[chunk_id]["rrf"] = float(scores[chunk_id]["rrf"]) + fts_contribution

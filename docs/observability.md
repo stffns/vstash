@@ -18,6 +18,7 @@ Running vstash in production (`vstash serve`, MCP server, long-lived agent loops
 | `slow_queries_total` | Total queries that exceeded `[observability] slow_query_ms` |
 | `idf_cache_hits` | Adaptive RRF IDF cache hits (good — means the cache is warm) |
 | `idf_cache_misses` | IDF cache rebuilds (happens after document mutations) |
+| `adaptive_rrf_vector_empty_fallback_total` | Queries where the vector candidate pool was empty after the distance cutoff and the pipeline collapsed to FTS-only scoring (see below). A sustained rate > 0 suggests the embedding model is a bad fit for your corpus — see `docs/embedding-models.md` for mitigations. |
 
 ### Gauges
 
@@ -185,3 +186,38 @@ def scrape():
 ### Slow query alerting
 
 Parse stderr with any log aggregator (Loki, Elastic, etc.) filtering on `"slow query:"`. No structured logging yet — the current format is pragmatic.
+
+### Vector-empty fallback (`adaptive_rrf_vector_empty_fallback_total`)
+
+*Added in v0.26.0 — [issue #156](https://github.com/stffns/vstash/issues/156).*
+
+A sustained non-zero rate on this counter means the vector candidate pool is consistently being eliminated by the distance cutoff before RRF fusion can combine it with FTS5 results. The pipeline automatically collapses to FTS-only scoring when this happens — search does not fail, but the system is telling you that the vector signal is not contributing to your ranking.
+
+**Common causes:**
+
+1. **Embedding model mismatch** — the model cannot discriminate your domain vocabulary. The most frequent culprit is `paraphrase-multilingual-MiniLM-L12-v2` on clinical / legal / heavily-jargoned corpora. See `docs/embedding-models.md` for the mitigation ladder.
+2. **Distance cutoff too tight** — `distance_cutoff` (default 1.15) is rejecting too many candidates. Try relaxing to 1.5 or 2.0.
+3. **Long queries** — `paragraph_embedding` style queries of >50 words produce diffuse embeddings. Adaptive RRF already relaxes the cutoff for these, but the signal may still degrade.
+4. **Sparse metadata filter** — a `collection` / `project` / `layer` filter eliminates all candidates in the local neighborhood. Rare but possible.
+
+**Diagnostic drill-down:**
+
+```bash
+# How often has this fired since process start?
+vstash stats --detailed --json | jq '.metrics.counters.adaptive_rrf_vector_empty_fallback_total'
+
+# For a specific query, run miss_analysis() from the SDK and look for
+# the "adaptive_fallback" stage in the trace — if present, the query
+# hit the fallback path.
+```
+
+**Prometheus alerting suggestion:**
+
+```yaml
+- alert: VstashVectorEmptyFallbackElevated
+  expr: rate(vstash_adaptive_rrf_vector_empty_fallback_total[5m]) > 0.1
+  for: 10m
+  annotations:
+    summary: "vstash vector-empty fallback firing > 10% of queries"
+    description: "Embedding model may be mismatched to corpus; see docs/embedding-models.md"
+```

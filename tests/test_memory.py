@@ -188,6 +188,237 @@ class TestMemorySearch:
             results = mem.search("topic", top_k=3)
             assert len(results) <= 3
 
+    @requires_sqlite_vec
+    def test_search_forwards_rrf_weights_to_store(self, tmp_path: Path) -> None:
+        """Memory.search() must actually pass vec_weight/fts_weight to the store (#151).
+
+        The most direct assertion that the plumbing works is to spy on
+        `VstashStore.search` and verify the kwargs arrive with the
+        exact values that were passed to `Memory.search`. A ranking-
+        based test is flaky on small corpora because RRF tends to
+        converge to the same top-1 regardless of weights when there
+        is only one keyword-matching doc.
+        """
+        (tmp_path / "doc.md").write_text(
+            "Rust is a systems programming language focused on memory "
+            "safety and zero-cost abstractions."
+        )
+        with Memory(db=tmp_path / "test.db") as mem:
+            mem.add(tmp_path / "doc.md")
+
+            captured: list[dict[str, object]] = []
+            original_search = mem._store.search
+
+            def spy_search(*args: object, **kwargs: object) -> list[SearchResult]:
+                captured.append(dict(kwargs))
+                return original_search(*args, **kwargs)
+
+            mem._store.search = spy_search  # type: ignore[method-assign]
+
+            mem.search("memory safety", vec_weight=0.9, fts_weight=0.1)
+            mem.search("memory safety", vec_weight=0.1, fts_weight=0.9)
+            mem.search("memory safety")  # adaptive default
+
+            assert len(captured) == 3
+            assert captured[0]["vec_weight"] == 0.9
+            assert captured[0]["fts_weight"] == 0.1
+            assert captured[1]["vec_weight"] == 0.1
+            assert captured[1]["fts_weight"] == 0.9
+            # Default path passes None for both so the store can run
+            # adaptive RRF — this is the load-bearing assertion that
+            # Memory.search does NOT silently pin a default.
+            assert captured[2]["vec_weight"] is None
+            assert captured[2]["fts_weight"] is None
+
+    @requires_sqlite_vec
+    def test_search_weights_rejects_out_of_range(self, tmp_path: Path) -> None:
+        """Out-of-range RRF weights raise a typed error (#151)."""
+        import pytest
+
+        from vstash.validation import RRFWeightOutOfRangeError
+
+        (tmp_path / "doc.md").write_text("Some content for the store so search can run at all.")
+        with Memory(db=tmp_path / "test.db") as mem:
+            mem.add(tmp_path / "doc.md")
+            with pytest.raises(RRFWeightOutOfRangeError):
+                mem.search("content", vec_weight=1.5)
+            with pytest.raises(RRFWeightOutOfRangeError):
+                mem.search("content", fts_weight=-0.1)
+            with pytest.raises(RRFWeightOutOfRangeError):
+                mem.search("content", vec_weight=0.7, fts_weight=2.0)
+
+    @requires_sqlite_vec
+    def test_ask_forwards_rrf_weights(self, tmp_path: Path) -> None:
+        """Memory.ask() must forward vec_weight/fts_weight to the retrieval call."""
+        import inspect
+
+        sig = inspect.signature(Memory.ask)
+        assert "vec_weight" in sig.parameters
+        assert "fts_weight" in sig.parameters
+        # Spy on the search call path via a subclass override.
+        captured: dict[str, object] = {}
+
+        class _SpyMemory(Memory):
+            def search(self, query: str, **kwargs: object) -> list[SearchResult]:
+                captured.update(kwargs)
+                return []
+
+        (tmp_path / "a.md").write_text("content for the spy test.")
+        with _SpyMemory(db=tmp_path / "test.db") as mem:
+            mem.add(tmp_path / "a.md")
+            try:
+                mem.ask("anything", vec_weight=0.3, fts_weight=0.7)
+            except Exception:
+                # Inference backend may not be configured in CI — that
+                # is fine; we only care that search() was called with
+                # the forwarded kwargs before the LLM step.
+                pass
+        assert captured.get("vec_weight") == 0.3
+        assert captured.get("fts_weight") == 0.7
+
+    @requires_sqlite_vec
+    def test_search_fts_only_skips_vector_path(self, tmp_path: Path) -> None:
+        """fts_only=True must bypass the vector ANN entirely (#152).
+
+        The direct observable signal: a chunk that is keyword-matchable
+        via FTS5 but whose embedding is orthogonal to the query MUST
+        still surface under fts_only=True even with the strictest
+        vector distance cutoff, because the vector path is not run.
+        """
+        # Doc A: contains the literal query term "kubernetes" once but
+        # otherwise talks about something unrelated.
+        (tmp_path / "infra.md").write_text(
+            "# Personal Notes\n\n"
+            "Bought a new kettle. Also read an old forum post about "
+            "kubernetes, which I never use but the word stuck in my head."
+        )
+        # Doc B: vector-aligned distractor with no keyword overlap.
+        (tmp_path / "distractor.md").write_text(
+            "# Cooking Journal\n\n"
+            "Made pasta today with fresh tomatoes and garlic. Recipe "
+            "came out well. Planning to try a risotto tomorrow."
+        )
+        with Memory(db=tmp_path / "test.db") as mem:
+            mem.add(tmp_path / "infra.md")
+            mem.add(tmp_path / "distractor.md")
+
+            # fts_only MUST find the kubernetes-bearing doc regardless
+            # of vector distance, because the vector path is skipped.
+            # Assert on the chunk text, not the auto-generated title —
+            # vstash derives titles from filenames when no frontmatter
+            # is present, which is not what this test is about.
+            results = mem.search("kubernetes", fts_only=True)
+            assert len(results) > 0
+            assert any("kubernetes" in r.text.lower() for r in results), (
+                f"fts_only=True failed to surface the FTS-matching doc; "
+                f"got {[(r.title, r.text[:60]) for r in results]}"
+            )
+            # The distractor doc has no keyword match, so only one doc
+            # should appear in the FTS-only result set.
+            assert all("kubernetes" in r.text.lower() for r in results), (
+                "fts_only=True leaked a non-matching chunk into results"
+            )
+
+    @requires_sqlite_vec
+    def test_search_fts_only_forwards_kwarg_to_store(self, tmp_path: Path) -> None:
+        """Memory.search must forward fts_only to VstashStore.search (#152)."""
+        (tmp_path / "doc.md").write_text("Spy test content.")
+        with Memory(db=tmp_path / "test.db") as mem:
+            mem.add(tmp_path / "doc.md")
+
+            captured: list[dict[str, object]] = []
+            original_search = mem._store.search
+
+            def spy_search(*args: object, **kwargs: object) -> list[SearchResult]:
+                captured.append(dict(kwargs))
+                return original_search(*args, **kwargs)
+
+            mem._store.search = spy_search  # type: ignore[method-assign]
+
+            mem.search("content", fts_only=True)
+            mem.search("content", fts_only=False)
+            mem.search("content")  # default must be False
+
+            assert len(captured) == 3
+            assert captured[0]["fts_only"] is True
+            assert captured[1]["fts_only"] is False
+            assert captured[2]["fts_only"] is False
+
+    @requires_sqlite_vec
+    def test_search_fts_only_skips_distance_signal(self, tmp_path: Path) -> None:
+        """fts_only=True must set last_best_distance to the worst value.
+
+        The vector-search branch normally records the best cosine
+        distance into ``self._store.last_best_distance`` so the
+        relevance-tier signal can render "high / medium / low". In
+        fts_only mode that signal is meaningless, so the store
+        explicitly sets ``last_best_distance = 2.0`` (the worst
+        possible cosine distance). This is an observable contract
+        that proves the vector block was skipped without relying on
+        monkey-patching the read-only sqlite3 execute method.
+        """
+        (tmp_path / "doc.md").write_text("Content that mentions rust once for fts matching.")
+        with Memory(db=tmp_path / "test.db") as mem:
+            mem.add(tmp_path / "doc.md")
+
+            # Hybrid first: last_best_distance should be < 2.0 after
+            # a query that actually finds something.
+            mem.search("rust", top_k=3)
+            hybrid_distance = mem._store.last_best_distance
+            assert hybrid_distance < 2.0, (
+                f"hybrid search should populate last_best_distance < 2.0, got {hybrid_distance}"
+            )
+
+            # FTS-only on the same query: last_best_distance must
+            # be exactly 2.0 (worst case), proving the vector path
+            # was bypassed.
+            mem.search("rust", top_k=3, fts_only=True)
+            fts_distance = mem._store.last_best_distance
+            assert fts_distance == 2.0, (
+                f"fts_only=True should leave last_best_distance == 2.0, got {fts_distance}"
+            )
+
+    @requires_sqlite_vec
+    def test_search_fts_only_overrides_explicit_weights(self, tmp_path: Path) -> None:
+        """fts_only must strip explicit vec_weight/fts_weight before validation.
+
+        Passing ``fts_only=True, vec_weight=1.5`` is semantically
+        ``fts_only=True`` — the weights are ignored. It must NOT raise
+        ``RRFWeightOutOfRangeError`` because of a stale value the
+        caller did not intend to validate.
+        """
+        (tmp_path / "doc.md").write_text("Some searchable text here.")
+        with Memory(db=tmp_path / "test.db") as mem:
+            mem.add(tmp_path / "doc.md")
+            # Would raise RRFWeightOutOfRangeError without the
+            # Memory.search override.
+            results = mem.search(
+                "text",
+                fts_only=True,
+                vec_weight=1.5,  # out of range — would normally raise
+                fts_weight=-0.2,  # ditto
+            )
+            assert isinstance(results, list)
+
+    @requires_sqlite_vec
+    def test_ask_forwards_fts_only(self, tmp_path: Path) -> None:
+        """Memory.ask() must forward fts_only to its internal search call (#152)."""
+        captured: dict[str, object] = {}
+
+        class _SpyMemory(Memory):
+            def search(self, query: str, **kwargs: object) -> list[SearchResult]:
+                captured.update(kwargs)
+                return []
+
+        (tmp_path / "a.md").write_text("content for spy.")
+        with _SpyMemory(db=tmp_path / "test.db") as mem:
+            mem.add(tmp_path / "a.md")
+            try:
+                mem.ask("anything", fts_only=True)
+            except Exception:
+                pass  # inference backend optional
+        assert captured.get("fts_only") is True
+
 
 # ------------------------------------------------------------------ #
 # Memory.remove                                                        #

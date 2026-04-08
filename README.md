@@ -50,12 +50,45 @@ Evaluated on the [BEIR benchmark](https://github.com/beir-cellar/beir) — the s
 
 **Zero cloud required for search. Inference is optional.**
 
+### What's new in v0.26
+
+- **Per-call RRF weight overrides** — `Memory.search()` and `Memory.ask()` now accept `vec_weight` and `fts_weight` for single-query overrides of the hybrid-search mixing weights. `None` (default) keeps adaptive per-query RRF active. Typed `RRFWeightOutOfRangeError` rejects out-of-range values at the API boundary.
+- **First-class `fts_only` mode** — `Memory.search(..., fts_only=True)` short-circuits the pipeline to FTS5 only: no vector ANN scan, no distance cutoff, no adaptive RRF. Useful for debugging, cross-lingual queries, and deliberate fallback when embeddings are known to be diffuse. MMR, recency boost, and context expansion still apply.
+- **Adaptive vector-empty fallback** — when the vector candidate pool is empty after the distance cutoff and FTS5 has results, the pipeline automatically collapses to FTS-only scoring (`vec_weight=0.0, fts_weight=1.0`). Prevents the silent score degradation where literal-match FTS hits scored 0.0067 instead of the 0.0167 they should earn under pure FTS weighting. New `adaptive_rrf_vector_empty_fallback_total` metric surfaces the event to dashboards.
+- **Clinical-domain embedding weakness documented** — `docs/embedding-models.md` now has a dedicated section on `paraphrase-multilingual-MiniLM-L12-v2` failure on specialized vocabularies (clinical, legal), with five mitigations ordered by effort and a diagnostic signal via `miss_analysis()`.
+
+### What's new in v0.25
+
+- **Explicit contracts + schema versioning** — `SCHEMA_VERSION` stamped in every database, `SchemaVersionError` on unknown on-disk versions, concurrent-safe `INSERT OR IGNORE` stamping, and forward-compatible top-level config keys (warn-on-unknown instead of hard-fail). `SearchResult.score` comparability semantics now documented explicitly.
+- **CLI hardening (v0.25.1)** — rich-escaped exception messages, dedicated `vstash[serve]` extra, clearer install docs.
+
+### What's new in v0.24
+
+- **Integrity and recovery** — `vstash check [--repair] [--json]` runs five invariants (chunk_count parity, vec/snapvec parity, FTS5 `integrity-check`, orphan chunks, SQLite `PRAGMA integrity_check`) and rebuilds FTS5 / recomputes chunk counts / deletes orphans on repair. Returns a `list[IntegrityCheck]` (one per invariant). Repair itself is profile-scoped; the **partial-ingest recovery path** is collection-scoped via `delete_document(path, collection=...)` so repairing a partial ingest in one collection cannot wipe a sibling collection's complete copy (v0.24.1 hotfix).
+- **Idempotent re-ingest** — `doc_completeness(path, collection="default")` classifies paths as missing/partial/complete; `ingest()` skips complete docs, drops and re-ingests partial ones, and ingests missing ones fresh. Re-running `vstash add <path>` is now a safe no-op on unchanged files. `collection` is load-bearing: the same path can live in multiple collections and each is tracked independently.
+
+### What's new in v0.23
+
+- **Explicit limits at API boundaries** — new `vstash/validation.py` and `[limits]` config section with seven knobs (`max_query_chars`, `max_top_k`, `max_distance_cutoff`, `max_recency_boost`, `max_path_chars`, `max_chunks_per_document`, `max_chunk_chars`) and a `LimitError(ValueError)` hierarchy. Malformed inputs raise typed Python exceptions at the `VstashStore`/`Memory` boundary instead of opaque SQLite/ONNX failures deep in the stack.
+
+### What's new in v0.22
+
+- **Operational observability** — in-process metrics registry with per-stage latency histograms and a slow query log capturing query text, stage breakdown, and result counts. Accessible via the Python SDK and MCP tools.
+
+### What's new in v0.21
+
+- **Ranking miss analysis** — `VstashStore.miss_analysis(query, expected_doc)` diagnoses *why* an expected document did not appear in a result set, returning a structured trace (vector cutoff, FTS5 stem mismatch, RRF dropout, MMR penalty, distance cutoff) and rule-based suggestions. Available via SDK, CLI, and MCP.
+
+### What's new in v0.20
+
+- **Threading hardening** — `sqlite3.threadsafety > 0` is now asserted at module import time (loud failure on exotic single-threaded builds instead of silent corruption). STEM (FTS5 Porter stemming) connections can be closed from any thread, fixing an asyncio/threading deadlock in the MCP server path where connections whose owner thread had exited could not be released.
+- **726 tests** across 30+ test modules (up from 591 in v0.19).
+
 ### What's new in v0.19
 
 - **Recency boost** — `recency_boost` parameter on `search()` applies temporal decay favoring recent chunks. Designed for agentic memory. Off by default so pure retrieval is unaffected.
 - **Temporal filters** — `added_after`/`added_before` ISO date parameters for hard time boundaries on all search surfaces.
 - **`RecencyConfig`** — new `[recency]` section in `vstash.toml`.
-- **591 tests** across 26 test modules.
 
 ### What's new in v0.18
 

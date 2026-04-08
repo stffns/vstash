@@ -2,6 +2,126 @@
 
 All notable changes to vstash are documented here.
 
+## [0.26.0] — 2026-04-08
+
+### Added
+- **Per-call RRF weight overrides on `Memory.search()`** (#151, PR #158) — `vec_weight` and `fts_weight` parameters let callers pin the hybrid-search weights for a single query without reaching into `Memory._store.search`. `None` (default) preserves adaptive per-query RRF; explicit values override it. New `RRFWeightOutOfRangeError` validates the `[0.0, 1.0]` range at the API boundary. `Memory.ask()` forwards the kwargs too.
+- **First-class `fts_only` mode on `Memory.search()` / `.ask()`** (#152, PR #163) — `fts_only=True` short-circuits the pipeline to FTS5 keyword matching only: no vector ANN scan, no distance cutoff, no adaptive RRF. Useful for debugging ranking, cross-lingual / highly technical queries with diffuse embeddings, and as a deliberate fallback when the vector pool is expected to be empty. The FTS hits still flow through MMR dedup, recency boost, and context expansion. `is_fts_top` cap is bypassed in `fts_only` mode so all FTS candidates can compete.
+- **Adaptive vector-empty fallback** (#156, PR #162) — when the vector candidate pool is empty after the distance cutoff (embedding mismatch, tight cutoff, sparse metadata filter) and FTS5 has results, the pipeline now automatically collapses to FTS-only scoring with `vec_weight=0.0, fts_weight=1.0`. A literal-match FTS hit at rank 0 now scores ~0.0167 (full FTS weight) instead of the degraded ~0.0067 it would have earned under the previous fused-with-empty-vec behavior. Increments a new `adaptive_rrf_vector_empty_fallback_total` metric and records an `adaptive_fallback` stage in the `miss_analysis` tracer.
+- **`adaptive_rrf_vector_empty_fallback_total` counter** in the metrics registry, with documentation in `docs/observability.md` covering common causes, diagnostic drill-down, and a Prometheus alerting recipe.
+
+### Fixed
+- **`last_best_distance` always resets when vector pool is empty** — even when both `vec_rows` AND `fts_rows` are empty (a query that matches nothing). Previously the pipeline would carry the stale distance from a prior query, lying about the current query's confidence. Flagged in PR #162 review.
+- **`miss_analysis` tracer no longer misattributes `fts_only` skips** — the `vector_search` stage in `fts_only` mode is now recorded with `passed=True` and an explicit "intentionally skipped by caller" detail, so the downstream "both generators missed → invisible to RRF" heuristic does not flag an intentional skip as a modality failure.
+- **`fts_only` strips conflicting weight arguments before validation** — passing `fts_only=True` together with out-of-range `vec_weight=1.5` no longer raises `RRFWeightOutOfRangeError`, since the weights are dropped before reaching the validator.
+
+### Documentation
+- **`paraphrase-multilingual-MiniLM-L12-v2` clinical-domain weakness** (#155, PR #161) — new section in `docs/embedding-models.md` documenting the failure mode observed in production on a medical-document corpus, with five mitigations ordered by effort (`fts_only=True`, relax distance cutoff, pin RRF weights toward FTS, switch model, reindex), diagnostic signal via `miss_analysis()`, and the auto-detection that #156 now provides. Also flagged in `paper/vstash-paper.md` §8.8.
+
+### Internal
+- Silenced 3 pre-existing `sentencepiece` SWIG `DeprecationWarning` in `pyproject.toml [tool.pytest.ini_options].filterwarnings`. Cannot be fixed upstream; filter is narrow (matched by exact message text).
+
+---
+
+## [0.25.1] — 2026-04-07
+
+### Fixed
+- **CLI hardening** — `rich`-escape exception messages so broken paths or user-supplied strings can no longer break CLI rendering.
+- **Clearer install docs** — dedicated `vstash[serve]` extra for the web interface; install-path guidance rewritten for PyPI users.
+- **E2E from PyPI install** — hotfix caught by end-to-end verification against a fresh PyPI install (#148).
+
+---
+
+## [0.25.0] — 2026-04-07
+
+### Added
+- **Explicit contracts and schema versioning** (#135, #144) — a good substrate makes its contracts explicit.
+  - `SCHEMA_VERSION` constant and `KNOWN_SCHEMA_VERSIONS` set in `vstash/store.py`.
+  - `SchemaVersionError` raised on `open()` when the database declares a version this build does not recognize.
+  - Fresh databases are stamped with the current version; legacy unstamped databases are re-stamped as `v1`; the recorded vstash version is refreshed on every open.
+  - `VstashConfig` now allows **unknown top-level keys** with a one-time WARNING (forward-compatible config); nested sections keep strict validation.
+  - `SearchResult.score` docstring documents typical range, comparability **within** a query, and the explicit rule that scores are **NOT comparable across queries**.
+
+### Fixed
+- **Concurrent fresh-open race** (#145) — schema version stamping now uses `INSERT OR IGNORE`, surviving concurrent first-open across threads and processes.
+
+---
+
+## [0.24.1] — 2026-04-07
+
+### Fixed
+- **`doc_completeness` now takes `collection`** (#134, #142) — the classification ignored collection in v0.24, so a partial copy of a path in collection A could mask collection B's complete copy and the recovery delete could wipe B too. Now collection-scoped.
+- **`delete_document` gains optional `collection` kwarg** — default unchanged (delete every copy of the path) so existing callers in `watch.py` / `mcp.py` / `cli.py` / `journal.py` keep working; `ingest()`'s partial-recovery path passes the current collection explicitly.
+- **FTS5 parity invariant** — `fts_index_parity` used `COUNT(*) FROM fts_chunks` on a `content=chunks` virtual table, which reads from the underlying `chunks` table and could never detect FTS5 index drift. Replaced with the canonical FTS5 `integrity-check` command, which actually scans the index.
+- **Implicit transaction** — the FTS5 `integrity-check` is DML, so the stdlib `sqlite3` driver opens an implicit transaction for it; `integrity_repair()` now commits the pending state before `BEGIN IMMEDIATE` so the explicit transaction isn't preempted.
+- **CLI cleanup** — `vstash check --repair` now reads the post-repair state from the same connection instead of re-opening the store.
+
+---
+
+## [0.24.0] — 2026-04-07
+
+### Added
+- **Integrity & recovery** (#134, #140) — a good substrate is honest about what survived a crash.
+  - `VstashStore.doc_completeness(path)` classifies a path as **missing / partial / complete** (chunk_count parity + vec_chunks parity).
+  - `ingest()` is now **idempotent**: complete docs are skipped, partial docs are dropped and re-ingested fresh, missing docs ingest from scratch.
+  - `VstashStore.integrity_check()` runs five invariants: chunk_count parity, vec/snapvec parity, fts_chunks parity, orphan chunks, and SQLite `PRAGMA integrity_check`.
+  - `VstashStore.integrity_repair()` recomputes chunk_count, rebuilds `fts_chunks` via FTS5 `rebuild`, and deletes orphan chunks (with their `vec_chunks` companions).
+  - New `IntegrityCheck` and `IntegrityRepair` Pydantic models in `vstash/models.py`.
+  - New `vstash check [--repair] [--json]` CLI command with rich table output.
+
+---
+
+## [0.23.0] — 2026-04-07
+
+### Added
+- **Explicit limits at public API boundaries** (#133, #138) — new `vstash/validation.py` module that rejects pathological inputs at the `VstashStore` and `Memory` boundaries before they reach SQLite, sqlite-vec, or the embedding model.
+  - `LimitsConfig` (new `[limits]` section in `vstash.toml`) with seven knobs: `max_query_chars`, `max_top_k`, `max_distance_cutoff`, `max_recency_boost`, `max_path_chars`, `max_chunks_per_document`, `max_chunk_chars`.
+  - `LimitError(ValueError)` hierarchy with one subclass per category so callers can catch a single bucket or the whole family.
+  - Malformed inputs now produce typed Python exceptions at the API boundary instead of opaque SQLite / ONNX failures deep in the stack.
+
+---
+
+## [0.22.0] — 2026-04-07
+
+### Added
+- **Operational observability** (#132, #136) — transparent internal state that upper-layer memory frameworks (Mem0, Zep, LangChain memory) cannot expose.
+  - In-process **metrics registry** with per-stage latency histograms across ingest and search pipelines.
+  - **Slow query log** capturing query text, stage breakdown (vector ANN, FTS5, RRF fusion, MMR, context expansion), and result count for any search exceeding a configurable threshold.
+  - Accessible via the Python SDK and MCP tools — operators running `vstash serve` or the MCP server are no longer flying blind.
+
+---
+
+## [0.21.0] — 2026-04-07
+
+### Added
+- **Ranking miss analysis** (#108, #130) — `VstashStore.miss_analysis(query, expected_doc)` diagnoses *why* an expected document did not appear in a result set. Returns a structured trace identifying where the chunk was eliminated in the pipeline (vector ANN cutoff, FTS5 Porter-stem mismatch, RRF rank dropout, MMR redundancy penalty, post-fusion distance cutoff) plus rule-based suggestions. Exposed via SDK, CLI, and MCP — transparent retrieval debugging without LLM dependencies.
+
+---
+
+## [0.20.2] — 2026-04-06
+
+### Changed
+- **Threading hardening** (#128) — `vstash/store.py` now asserts `sqlite3.threadsafety > 0` at **module import time**, surfacing the requirement loudly on exotic single-threaded libsqlite builds instead of letting it manifest as sporadic corruption at runtime. Most Python builds use `sqlite3.threadsafety = 3` (fully serialized) and pass this check transparently.
+
+---
+
+## [0.20.1] — 2026-04-06
+
+### Fixed
+- **Close STEM (stemming) connections from any thread** (#125, #127) — fixes an asyncio/threading deadlock in the MCP server path. The per-thread FTS5 Porter stemming connections in `VstashStore._stem_conns` could previously only be `close()`d from the thread that opened them; after that thread exited, the connection leaked file descriptors and hung process shutdown. Connections are still only *used* from their owning thread (guaranteed by dict-by-tid lookup), but `check_same_thread=False` now lets the main thread release them at shutdown.
+
+---
+
+## [0.20.0] — 2026-04-06
+
+### Added
+- **`vstash serve`** (#121) — pocket memory agent web interface, a lightweight HTTP/SSE server that exposes search, ask, and journal over HTTP for local agents and browser-based tools.
+
+### Fixed
+- **SQLite resource leaks + parent-child negative result evidence** (#124).
+
+---
+
 ## [0.19.0] — 2026-04-06
 
 ### Added

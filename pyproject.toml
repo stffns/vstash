@@ -105,3 +105,14 @@ testpaths = ["tests"]
 pythonpath = ["."]
 markers = ["benchmark: BEIR benchmark regression tests (slow, requires cached data)"]
 addopts = "-m 'not benchmark'"
+# Silence deprecation warnings emitted by the sentencepiece C extension
+# (pulled in transitively by fastembed for multilingual tokenization).
+# sentencepiece ships SWIG-generated types that do not set __module__,
+# which Python 3.12 now flags as a DeprecationWarning. We cannot fix
+# this upstream; filtering here keeps the test output clean so real
+# warnings are not buried. Remove once sentencepiece ships a fix.
+filterwarnings = [
+    "ignore:builtin type SwigPyPacked has no __module__ attribute:DeprecationWarning",
+    "ignore:builtin type SwigPyObject has no __module__ attribute:DeprecationWarning",
+    "ignore:builtin type swigvarlink has no __module__ attribute:DeprecationWarning",
+]
