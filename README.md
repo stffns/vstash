@@ -50,6 +50,13 @@ Evaluated on the [BEIR benchmark](https://github.com/beir-cellar/beir) — the s
 
 **Zero cloud required for search. Inference is optional.**
 
+### What's new in v0.26
+
+- **Per-call RRF weight overrides** — `Memory.search()` and `Memory.ask()` now accept `vec_weight` and `fts_weight` for single-query overrides of the hybrid-search mixing weights. `None` (default) keeps adaptive per-query RRF active. Typed `RRFWeightOutOfRangeError` rejects out-of-range values at the API boundary.
+- **First-class `fts_only` mode** — `Memory.search(..., fts_only=True)` short-circuits the pipeline to FTS5 only: no vector ANN scan, no distance cutoff, no adaptive RRF. Useful for debugging, cross-lingual queries, and deliberate fallback when embeddings are known to be diffuse. MMR, recency boost, and context expansion still apply.
+- **Adaptive vector-empty fallback** — when the vector candidate pool is empty after the distance cutoff and FTS5 has results, the pipeline automatically collapses to FTS-only scoring (`vec_weight=0.0, fts_weight=1.0`). Prevents the silent score degradation where literal-match FTS hits scored 0.0067 instead of the 0.0167 they should earn under pure FTS weighting. New `adaptive_rrf_vector_empty_fallback_total` metric surfaces the event to dashboards.
+- **Clinical-domain embedding weakness documented** — `docs/embedding-models.md` now has a dedicated section on `paraphrase-multilingual-MiniLM-L12-v2` failure on specialized vocabularies (clinical, legal), with five mitigations ordered by effort and a diagnostic signal via `miss_analysis()`.
+
 ### What's new in v0.25
 
 - **Explicit contracts + schema versioning** — `SCHEMA_VERSION` stamped in every database, `SchemaVersionError` on unknown on-disk versions, concurrent-safe `INSERT OR IGNORE` stamping, and forward-compatible top-level config keys (warn-on-unknown instead of hard-fail). `SearchResult.score` comparability semantics now documented explicitly.

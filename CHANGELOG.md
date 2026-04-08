@@ -2,6 +2,27 @@
 
 All notable changes to vstash are documented here.
 
+## [0.26.0] — 2026-04-08
+
+### Added
+- **Per-call RRF weight overrides on `Memory.search()`** (#151, PR #158) — `vec_weight` and `fts_weight` parameters let callers pin the hybrid-search weights for a single query without reaching into `Memory._store.search`. `None` (default) preserves adaptive per-query RRF; explicit values override it. New `RRFWeightOutOfRangeError` validates the `[0.0, 1.0]` range at the API boundary. `Memory.ask()` forwards the kwargs too.
+- **First-class `fts_only` mode on `Memory.search()` / `.ask()`** (#152, PR #163) — `fts_only=True` short-circuits the pipeline to FTS5 keyword matching only: no vector ANN scan, no distance cutoff, no adaptive RRF. Useful for debugging ranking, cross-lingual / highly technical queries with diffuse embeddings, and as a deliberate fallback when the vector pool is expected to be empty. The FTS hits still flow through MMR dedup, recency boost, and context expansion. `is_fts_top` cap is bypassed in `fts_only` mode so all FTS candidates can compete.
+- **Adaptive vector-empty fallback** (#156, PR #162) — when the vector candidate pool is empty after the distance cutoff (embedding mismatch, tight cutoff, sparse metadata filter) and FTS5 has results, the pipeline now automatically collapses to FTS-only scoring with `vec_weight=0.0, fts_weight=1.0`. A literal-match FTS hit at rank 0 now scores ~0.0167 (full FTS weight) instead of the degraded ~0.0067 it would have earned under the previous fused-with-empty-vec behavior. Increments a new `adaptive_rrf_vector_empty_fallback_total` metric and records an `adaptive_fallback` stage in the `miss_analysis` tracer.
+- **`adaptive_rrf_vector_empty_fallback_total` counter** in the metrics registry, with documentation in `docs/observability.md` covering common causes, diagnostic drill-down, and a Prometheus alerting recipe.
+
+### Fixed
+- **`last_best_distance` always resets when vector pool is empty** — even when both `vec_rows` AND `fts_rows` are empty (a query that matches nothing). Previously the pipeline would carry the stale distance from a prior query, lying about the current query's confidence. Flagged in PR #162 review.
+- **`miss_analysis` tracer no longer misattributes `fts_only` skips** — the `vector_search` stage in `fts_only` mode is now recorded with `passed=True` and an explicit "intentionally skipped by caller" detail, so the downstream "both generators missed → invisible to RRF" heuristic does not flag an intentional skip as a modality failure.
+- **`fts_only` strips conflicting weight arguments before validation** — passing `fts_only=True` together with out-of-range `vec_weight=1.5` no longer raises `RRFWeightOutOfRangeError`, since the weights are dropped before reaching the validator.
+
+### Documentation
+- **`paraphrase-multilingual-MiniLM-L12-v2` clinical-domain weakness** (#155, PR #161) — new section in `docs/embedding-models.md` documenting the failure mode observed in production on a medical-document corpus, with five mitigations ordered by effort (`fts_only=True`, relax distance cutoff, pin RRF weights toward FTS, switch model, reindex), diagnostic signal via `miss_analysis()`, and the auto-detection that #156 now provides. Also flagged in `paper/vstash-paper.md` §8.8.
+
+### Internal
+- Silenced 3 pre-existing `sentencepiece` SWIG `DeprecationWarning` in `pyproject.toml [tool.pytest.ini_options].filterwarnings`. Cannot be fixed upstream; filter is narrow (matched by exact message text).
+
+---
+
 ## [0.25.1] — 2026-04-07
 
 ### Fixed
