@@ -44,9 +44,9 @@ Observed in production use on a medical-document corpus (msdlocal). This model h
 4. **Switch models.** `paraphrase-multilingual-mpnet-base-v2` (768 dims) handles specialized vocabularies noticeably better at ~2× the embedding cost. `intfloat/multilingual-e5-large` is the strongest multilingual option we have tested.
 5. **Run `vstash reindex --model <better-model>`** to re-embed the whole corpus with a stronger model. One-time cost, permanent fix.
 
-**What does not help.** Increasing `top_k` does not help because the cutoff runs before top_k. Boosting recency (`recency_boost`) also does not help because it multiplies a score that was already too low to rank.
+**What does not reliably help.** Increasing `top_k` expands the candidate pool (it scales as `top_k × 10`), which can marginally help when distances are *borderline* — a few more chunks survive the cutoff and compete in RRF. But in the pathological diffuse-embedding case (cosine ~0.85–1.00), every candidate exceeds the cutoff ratio and a larger `top_k` changes nothing. Boosting recency (`recency_boost`) is strictly post-RRF — it multiplies a score that was already too low to rank, so it cannot rescue chunks the vector path eliminated.
 
-**Current state.** vstash does not auto-detect this failure mode. Tracking auto-detection under [#156](https://github.com/stffns/vstash/issues/156) — adaptive RRF with vector-empty fallback.
+**Current state.** Since v0.26, vstash **does** auto-detect this failure mode at runtime: when the vector pool is empty after the distance cutoff and FTS5 has results, the pipeline transparently collapses to FTS-only scoring with `vec_weight=0.0, fts_weight=1.0` and increments the `adaptive_rrf_vector_empty_fallback_total` metric. See `docs/observability.md` for the alerting recipe and [#156](https://github.com/stffns/vstash/issues/156) for the design discussion.
 
 ---
 
