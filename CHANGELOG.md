@@ -2,6 +2,105 @@
 
 All notable changes to vstash are documented here.
 
+## [0.25.1] — 2026-04-07
+
+### Fixed
+- **CLI hardening** — `rich`-escape exception messages so broken paths or user-supplied strings can no longer break CLI rendering.
+- **Clearer install docs** — dedicated `vstash[serve]` extra for the web interface; install-path guidance rewritten for PyPI users.
+- **E2E from PyPI install** — hotfix caught by end-to-end verification against a fresh PyPI install (#148).
+
+---
+
+## [0.25.0] — 2026-04-07
+
+### Added
+- **Explicit contracts and schema versioning** (#135, #144) — a good substrate makes its contracts explicit.
+  - `SCHEMA_VERSION` constant and `KNOWN_SCHEMA_VERSIONS` set in `vstash/store.py`.
+  - `SchemaVersionError` raised on `open()` when the database declares a version this build does not recognize.
+  - Fresh databases are stamped with the current version; legacy unstamped databases are re-stamped as `v1`; the recorded vstash version is refreshed on every open.
+  - `VstashConfig` now allows **unknown top-level keys** with a one-time WARNING (forward-compatible config); nested sections keep strict validation.
+  - `SearchResult.score` docstring documents typical range, comparability **within** a query, and the explicit rule that scores are **NOT comparable across queries**.
+
+### Fixed
+- **Concurrent fresh-open race** (#145) — schema version stamping now uses `INSERT OR IGNORE`, surviving concurrent first-open across threads and processes.
+
+---
+
+## [0.24.1] — 2026-04-07
+
+### Fixed
+- **`doc_completeness` now takes `collection`** (#134, #142) — the classification ignored collection in v0.24, so a partial copy of a path in collection A could mask collection B's complete copy and the recovery delete could wipe B too. Now collection-scoped.
+- **`delete_document` gains optional `collection` kwarg** — default unchanged (delete every copy of the path) so existing callers in `watch.py` / `mcp.py` / `cli.py` / `journal.py` keep working; `ingest()`'s partial-recovery path passes the current collection explicitly.
+- **FTS5 parity invariant** — `fts_index_parity` used `COUNT(*) FROM fts_chunks` on a `content=chunks` virtual table, which reads from the underlying `chunks` table and could never detect FTS5 index drift. Replaced with the canonical FTS5 `integrity-check` command, which actually scans the index.
+- **Implicit transaction** — the FTS5 `integrity-check` is DML, so the stdlib `sqlite3` driver opens an implicit transaction for it; `integrity_repair()` now commits the pending state before `BEGIN IMMEDIATE` so the explicit transaction isn't preempted.
+- **CLI cleanup** — `vstash check --repair` now reads the post-repair state from the same connection instead of re-opening the store.
+
+---
+
+## [0.24.0] — 2026-04-07
+
+### Added
+- **Integrity & recovery** (#134, #140) — a good substrate is honest about what survived a crash.
+  - `VstashStore.doc_completeness(path)` classifies a path as **missing / partial / complete** (chunk_count parity + vec_chunks parity).
+  - `ingest()` is now **idempotent**: complete docs are skipped, partial docs are dropped and re-ingested fresh, missing docs ingest from scratch.
+  - `VstashStore.integrity_check()` runs five invariants: chunk_count parity, vec/snapvec parity, fts_chunks parity, orphan chunks, and SQLite `PRAGMA integrity_check`.
+  - `VstashStore.integrity_repair()` recomputes chunk_count, rebuilds `fts_chunks` via FTS5 `rebuild`, and deletes orphan chunks (with their `vec_chunks` companions).
+  - New `IntegrityCheck` and `IntegrityRepair` Pydantic models in `vstash/models.py`.
+  - New `vstash check [--repair] [--json]` CLI command with rich table output.
+
+---
+
+## [0.23.0] — 2026-04-07
+
+### Added
+- **Explicit limits at public API boundaries** (#133, #138) — new `vstash/validation.py` module that rejects pathological inputs at the `VstashStore` and `Memory` boundaries before they reach SQLite, sqlite-vec, or the embedding model.
+  - `LimitsConfig` (new `[limits]` section in `vstash.toml`) with seven knobs: `max_query_chars`, `max_top_k`, `max_distance_cutoff`, `max_recency_boost`, `max_path_chars`, `max_chunks_per_document`, `max_chunk_chars`.
+  - `LimitError(ValueError)` hierarchy with one subclass per category so callers can catch a single bucket or the whole family.
+  - Malformed inputs now produce typed Python exceptions at the API boundary instead of opaque SQLite / ONNX failures deep in the stack.
+
+---
+
+## [0.22.0] — 2026-04-07
+
+### Added
+- **Operational observability** (#132, #136) — transparent internal state that upper-layer memory frameworks (Mem0, Zep, LangChain memory) cannot expose.
+  - In-process **metrics registry** with per-stage latency histograms across ingest and search pipelines.
+  - **Slow query log** capturing query text, stage breakdown (vector ANN, FTS5, RRF fusion, MMR, context expansion), and result count for any search exceeding a configurable threshold.
+  - Accessible via the Python SDK and MCP tools — operators running `vstash serve` or the MCP server are no longer flying blind.
+
+---
+
+## [0.21.0] — 2026-04-07
+
+### Added
+- **Ranking miss analysis** (#108, #130) — `VstashStore.miss_analysis(query, expected_doc)` diagnoses *why* an expected document did not appear in a result set. Returns a structured trace identifying where the chunk was eliminated in the pipeline (vector ANN cutoff, FTS5 Porter-stem mismatch, RRF rank dropout, MMR redundancy penalty, post-fusion distance cutoff) plus rule-based suggestions. Exposed via SDK, CLI, and MCP — transparent retrieval debugging without LLM dependencies.
+
+---
+
+## [0.20.2] — 2026-04-06
+
+### Changed
+- **Threading hardening** (#128) — `vstash/store.py` now asserts `sqlite3.threadsafety > 0` at **module import time**, surfacing the requirement loudly on exotic single-threaded libsqlite builds instead of letting it manifest as sporadic corruption at runtime. Most Python builds use `sqlite3.threadsafety = 3` (fully serialized) and pass this check transparently.
+
+---
+
+## [0.20.1] — 2026-04-06
+
+### Fixed
+- **Close STEM (stemming) connections from any thread** (#125, #127) — fixes an asyncio/threading deadlock in the MCP server path. The per-thread FTS5 Porter stemming connections in `VstashStore._stem_conns` could previously only be `close()`d from the thread that opened them; after that thread exited, the connection leaked file descriptors and hung process shutdown. Connections are still only *used* from their owning thread (guaranteed by dict-by-tid lookup), but `check_same_thread=False` now lets the main thread release them at shutdown.
+
+---
+
+## [0.20.0] — 2026-04-06
+
+### Added
+- **`vstash serve`** (#121) — pocket memory agent web interface, a lightweight HTTP/SSE server that exposes search, ask, and journal over HTTP for local agents and browser-based tools.
+
+### Fixed
+- **SQLite resource leaks + parent-child negative result evidence** (#124).
+
+---
+
 ## [0.19.0] — 2026-04-06
 
 ### Added
