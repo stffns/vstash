@@ -1398,11 +1398,22 @@ class VstashStore:
             # for that mode, which is accurate — the caller asked for
             # FTS-only and got FTS-only.  Re-add an ``and not fts_only``
             # guard at rebase time if the double-record becomes noisy.
+            # First, always reset ``last_best_distance`` when vec_rows
+            # is empty — whether or not there are FTS results. Without
+            # this, a query where both pools are empty (e.g. corpus
+            # doesn't contain the query at all) would report whatever
+            # ``last_best_distance`` held from a previous query,
+            # lying about the current query's confidence.  Flagged by
+            # Gemini review on #156.
+            if not vec_rows:
+                self.last_best_distance = 2.0
+
+            # Then, if there are FTS results to boost, actually apply
+            # the weight override and fire the observability signal.
             if not vec_rows and fts_rows:
                 registry.counter_inc("adaptive_rrf_vector_empty_fallback_total")
                 vec_weight = 0.0
                 fts_weight = 1.0
-                self.last_best_distance = 2.0
                 if track_target is not None and _tracer is not None:
                     _tracer.record(
                         "adaptive_fallback",

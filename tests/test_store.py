@@ -843,6 +843,42 @@ class TestAdaptiveRRF:
         after = snap_after.get("counters", {}).get("adaptive_rrf_vector_empty_fallback_total", 0)
         assert after == before + 1, f"counter did not increment: before={before}, after={after}"
 
+    def test_vector_empty_both_pools_empty_resets_distance(self, sample_store: VstashStore) -> None:
+        """When BOTH vec and FTS pools are empty, last_best_distance still resets.
+
+        Regression guard for the review finding on PR #162: the
+        original fallback block only reset ``last_best_distance``
+        when ``fts_rows`` was non-empty. A query with no vector AND
+        no FTS match would then report whatever distance the previous
+        query left behind — lying about the current query's
+        confidence. The reset now happens unconditionally whenever
+        ``vec_rows`` is empty.
+        """
+        dim = sample_store.embedding_dim
+        emb = [1.0] + [0.0] * (dim - 1)
+        sample_store.add_document(
+            path="/test/both_empty.md",
+            title="Both Empty Doc",
+            chunks=["some random text about cats and their habits"],
+            embeddings=[emb],
+        )
+
+        # First: a hybrid query that primes last_best_distance < 2.0.
+        sample_store.search([1.0] + [0.0] * (dim - 1), "cats", top_k=3)
+        assert sample_store.last_best_distance < 2.0
+
+        # Now: an orthogonal query with a keyword that is NOT in the
+        # corpus. Vec pool empty under the tight cutoff, FTS pool
+        # empty (no match for "quarkgluon").
+        orthogonal = [0.0] * dim
+        orthogonal[200] = 1.0
+        results = sample_store.search(orthogonal, "quarkgluon", top_k=3, distance_cutoff=0.0)
+        assert results == [], "expected zero results for unmatched query"
+        assert sample_store.last_best_distance == 2.0, (
+            f"both-pools-empty query did not reset last_best_distance; "
+            f"got {sample_store.last_best_distance}"
+        )
+
     def test_hybrid_path_does_not_trigger_fallback(self, sample_store: VstashStore) -> None:
         """Regression guard: normal hybrid search must NOT touch the fallback.
 
