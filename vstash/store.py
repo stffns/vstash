@@ -1007,6 +1007,7 @@ class VstashStore:
         added_after: str | None = None,
         added_before: str | None = None,
         mmr_lambda: float = 0.5,
+        fts_only: bool = False,
         _tracer: _PipelineTracer | None = None,
     ) -> list[SearchResult]:
         """Hybrid search: vector (semantic) + FTS5 (keyword) combined with RRF.
@@ -1029,6 +1030,14 @@ class VstashStore:
             collection: If set, restrict search to documents in this collection.
             project: If set, restrict search to documents with this project tag.
             layer: If set, restrict search to documents with this layer tag.
+            fts_only: If True, short-circuit the pipeline to FTS5 only (#152):
+                no vector ANN scan, no distance cutoff, no adaptive RRF —
+                results are ranked purely by FTS5 BM25 / porter-stem
+                matching. Useful for debugging ranking, for queries
+                where vector embeddings are known to be diffuse (cross-
+                lingual, highly technical), or as a deliberate fallback
+                when the vector pool is expected to be empty. MMR dedup
+                still runs on the FTS results.
 
         Returns:
             Ranked list of SearchResult ordered by descending score.
@@ -1075,6 +1084,18 @@ class VstashStore:
         _fts_weight_observed: float = 0.0
         registry.counter_inc("searches_total")
         try:
+            # FTS-only short-circuit (#152): bypass vector search entirely.
+            # This forces the weights to (0.0, 1.0) and disables adaptive
+            # RRF so the pipeline cannot silently re-enable the vector
+            # path.  The vector search, distance cutoff, and relevance
+            # filter blocks below are all guarded on `not fts_only` or
+            # on `vec_rows` being non-empty, so the downstream MMR /
+            # scoring path runs unchanged on FTS-only input.
+            if fts_only:
+                vec_weight = 0.0
+                fts_weight = 1.0
+                adaptive_rrf = False
+
             # Adaptive RRF: compute weights from query characteristics (IDF + length)
             # Skip if caller provided explicit weights
             if adaptive_rrf and vec_weight is None and fts_weight is None:
@@ -1103,7 +1124,26 @@ class VstashStore:
             )
 
             # --- Vector search ---
-            if self._snap is not None and len(self._snap) > 0:
+            vec_rows: list = []
+            if fts_only:
+                # #152: skip vector ANN entirely. No candidates, no
+                # distances, no distance-cutoff work downstream. Set
+                # last_best_distance to the worst possible so the
+                # distance-based relevance tier renders "low" — the
+                # caller opted out of the vector signal.
+                self.last_best_distance = 2.0
+                if track_target is not None and _tracer is not None:
+                    _tracer.record(
+                        "vector_search",
+                        passed=False,
+                        detail="fts_only=True: vector search skipped",
+                    )
+                    _tracer.record(
+                        "distance_cutoff",
+                        passed=True,
+                        detail="fts_only=True: no distance cutoff applied",
+                    )
+            elif self._snap is not None and len(self._snap) > 0:
                 # SnapVec ANN search — returns list[(id, distance)]
                 snap_results = self._snap.search(
                     np.array(query_embedding, dtype=np.float32), k=candidate_pool
@@ -1151,7 +1191,10 @@ class VstashStore:
                 ).fetchall()
 
             # --- Track: vector search stage ---
-            if track_target is not None:
+            # In fts_only mode the "vector_search" and "distance_cutoff"
+            # stages were already recorded as skipped above; don't
+            # overwrite them with a generic "not found" verdict.
+            if track_target is not None and not fts_only:
                 target_vec_rank: int | None = None
                 target_vec_distance: float | None = None
                 for i, row in enumerate(vec_rows):
