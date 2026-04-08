@@ -739,6 +739,142 @@ class TestAdaptiveRRF:
             assert ex.rrf_vec_weight == 0.6
             assert ex.rrf_fts_weight == 0.4
 
+    def test_vector_empty_fallback_boosts_fts_score(self, sample_store: VstashStore) -> None:
+        """When vec pool is empty post-cutoff, FTS gets full weight (#156).
+
+        Observable contract: a literal FTS match at rank 0 scores
+        ``1.0 * 1/(60 + 0) ≈ 0.01667`` after the fallback, vs
+        ``0.4 * 1/60 ≈ 0.00667`` without it. The 2.5x score increase
+        reflects the corrected weighting, not a corpus change.
+        """
+        dim = sample_store.embedding_dim
+        # Three docs with orthogonal embeddings — distance cutoff will
+        # eliminate all of them. FTS will still find the one that
+        # contains the query term.
+        for i in range(3):
+            emb = [0.0] * dim
+            emb[i] = 1.0
+            sample_store.add_document(
+                path=f"/test/fallback_doc_{i}.md",
+                title=f"Fallback Doc {i}",
+                chunks=[f"zebrafish xyzzy_{i} is a known literal term"],
+                embeddings=[emb],
+            )
+
+        # Query embedding is orthogonal to every doc → distance_cutoff=0
+        # drops all vec candidates. FTS5 still finds "xyzzy_1".
+        query_emb = [0.0] * dim
+        query_emb[200] = 1.0
+
+        results = sample_store.search(
+            query_emb,
+            "xyzzy_1",
+            top_k=5,
+            distance_cutoff=0.0,
+        )
+
+        # Exactly one doc should surface via FTS.
+        assert len(results) == 1
+        assert "xyzzy_1" in results[0].text
+
+        # And its score should reflect fts_weight=1.0 at rank 0:
+        # 1.0 * 1/(60 + 0) = 0.016666..., NOT 0.4 * 1/60 = 0.00666...
+        # Tolerate tiny float noise.
+        assert abs(results[0].score - (1.0 / 60.0)) < 1e-4, (
+            f"expected ~0.01667 (fts_weight=1.0 at rank 0), got {results[0].score}"
+        )
+
+    def test_vector_empty_fallback_sets_worst_distance(self, sample_store: VstashStore) -> None:
+        """The fallback must reset last_best_distance to the worst value.
+
+        Without the reset, the relevance-tier signal would report
+        "high" confidence even though every vector candidate was
+        eliminated — a lie.
+        """
+        dim = sample_store.embedding_dim
+        for i in range(2):
+            emb = [0.0] * dim
+            emb[i] = 1.0
+            sample_store.add_document(
+                path=f"/test/tier_doc_{i}.md",
+                title=f"Tier Doc {i}",
+                chunks=[f"literalmark_{i} appears here"],
+                embeddings=[emb],
+            )
+
+        query_emb = [0.0] * dim
+        query_emb[300] = 1.0
+
+        # First a hybrid call to prime last_best_distance to a non-
+        # worst value, so we can assert the fallback actually resets it.
+        sample_store.search(query_emb, "literalmark_0", top_k=3)
+        assert sample_store.last_best_distance < 2.0
+
+        # Now trigger the fallback.
+        sample_store.search(query_emb, "literalmark_0", top_k=3, distance_cutoff=0.0)
+        assert sample_store.last_best_distance == 2.0, (
+            f"fallback did not reset last_best_distance to 2.0, "
+            f"got {sample_store.last_best_distance}"
+        )
+
+    def test_vector_empty_fallback_increments_counter(self, sample_store: VstashStore) -> None:
+        """The fallback must increment adaptive_rrf_vector_empty_fallback_total."""
+        from vstash.metrics import registry
+
+        dim = sample_store.embedding_dim
+        emb = [0.0] * dim
+        emb[0] = 1.0
+        sample_store.add_document(
+            path="/test/ctr_doc.md",
+            title="Counter Doc",
+            chunks=["countkeyword lives here"],
+            embeddings=[emb],
+        )
+
+        snap_before = registry.snapshot()
+        before = snap_before.get("counters", {}).get("adaptive_rrf_vector_empty_fallback_total", 0)
+
+        # Orthogonal query embedding → impossible cutoff → vec empty.
+        query_emb = [0.0] * dim
+        query_emb[300] = 1.0
+        sample_store.search(query_emb, "countkeyword", top_k=3, distance_cutoff=0.0)
+
+        snap_after = registry.snapshot()
+        after = snap_after.get("counters", {}).get("adaptive_rrf_vector_empty_fallback_total", 0)
+        assert after == before + 1, f"counter did not increment: before={before}, after={after}"
+
+    def test_hybrid_path_does_not_trigger_fallback(self, sample_store: VstashStore) -> None:
+        """Regression guard: normal hybrid search must NOT touch the fallback.
+
+        The fallback is only for the degenerate vec-empty case. A
+        healthy hybrid query with surviving vec candidates must leave
+        the counter alone and keep the adaptive-RRF weights in play.
+        """
+        from vstash.metrics import registry
+
+        dim = sample_store.embedding_dim
+        emb = [1.0] + [0.0] * (dim - 1)
+        sample_store.add_document(
+            path="/test/healthy.md",
+            title="Healthy Doc",
+            chunks=["healthy hybrid content for a normal search"],
+            embeddings=[emb],
+        )
+
+        snap_before = registry.snapshot()
+        before = snap_before.get("counters", {}).get("adaptive_rrf_vector_empty_fallback_total", 0)
+
+        # Query is nearly aligned — vec_rows will have the doc, the
+        # default distance cutoff keeps it, and no fallback fires.
+        results = sample_store.search([1.0] + [0.0] * (dim - 1), "healthy", top_k=3)
+        assert len(results) >= 1
+
+        snap_after = registry.snapshot()
+        after = snap_after.get("counters", {}).get("adaptive_rrf_vector_empty_fallback_total", 0)
+        assert after == before, (
+            f"hybrid search triggered the vector-empty fallback: before={before}, after={after}"
+        )
+
     def test_idf_cache_built_once(self, populated_store: VstashStore) -> None:
         """IDF cache should be built on first call and reused."""
         # First call builds cache
