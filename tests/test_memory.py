@@ -536,6 +536,151 @@ class TestMemoryProjectScoping:
             # but the key is that project=None doesn't raise
             assert len(unscoped) >= len(scoped)
 
+    @requires_sqlite_vec
+    def test_search_auto_scopes_to_default_collection(self, tmp_path: Path) -> None:
+        """Regression guard for #165: instance collection='default' must be
+        honored on search(), not silently dropped.
+
+        Prior to the fix, `_resolve_collection` returned None whenever
+        the instance collection was the literal string "default",
+        treating it as a sentinel for "no filter". This created a
+        read/write asymmetry where writes scoped to "default" but
+        reads leaked across every collection. Downstream consumers
+        (engram's audit log) hit this as a silent data-leak bug.
+        """
+        db = tmp_path / "test.db"
+        with Memory(db=db, collection="default") as mem:
+            mem.remember("fact in default collection about wombats", title="t1")
+            mem.remember(
+                "audit row mentioning wombats elsewhere",
+                title="t2",
+                collection="other_coll",
+                layer="audit",
+            )
+
+            # search() with no arg must honor the instance default.
+            results = mem.search("wombats", top_k=5)
+            titles = sorted(r.title or "" for r in results)
+            assert titles == ["t1"], (
+                f"Memory(collection='default').search() leaked cross-collection "
+                f"rows: got titles={titles}, expected ['t1']. "
+                f"This is #165 — _resolve_collection no longer shortcuts 'default' to None."
+            )
+
+            # Explicit collection=None still gives cross-collection search.
+            unscoped = mem.search("wombats", top_k=5, collection=None)
+            unscoped_titles = sorted(r.title or "" for r in unscoped)
+            assert unscoped_titles == ["t1", "t2"], (
+                f"collection=None should return both rows; got {unscoped_titles}"
+            )
+
+            # Explicit collection='other_coll' scopes to just the audit row.
+            other = mem.search("wombats", top_k=5, collection="other_coll")
+            other_titles = sorted(r.title or "" for r in other)
+            assert other_titles == ["t2"], (
+                f"collection='other_coll' should return only t2; got {other_titles}"
+            )
+
+    @requires_sqlite_vec
+    def test_search_auto_scopes_to_custom_collection(self, tmp_path: Path) -> None:
+        """Memory(collection='my_coll').search() scopes to my_coll (#165).
+
+        This case worked before the #165 fix — the bug only triggered
+        when the instance collection was the literal 'default'. This
+        test documents the full symmetry so any future refactor of
+        _resolve_collection keeps both cases consistent.
+        """
+        db = tmp_path / "test.db"
+        with Memory(db=db, collection="my_coll") as mem:
+            mem.remember("fact in my_coll about cats", title="c1")
+            mem.remember("fact in other", title="c2", collection="other")
+
+            results = mem.search("cats", top_k=5)
+            titles = sorted(r.title or "" for r in results)
+            assert titles == ["c1"], (
+                f"Memory(collection='my_coll').search() scope failed; got {titles}"
+            )
+
+    @requires_sqlite_vec
+    def test_remember_and_search_use_same_collection_resolution(self, tmp_path: Path) -> None:
+        """Symmetry guard for #165: whatever collection remember() writes
+        to, search() without an explicit arg must read from the same one.
+
+        This is the deeper invariant that #165 exposed. Before the fix
+        it held for custom collections but broke for 'default'. Now it
+        holds for both.
+        """
+        for coll in ("default", "my_coll", "audit", "episodic"):
+            db = tmp_path / f"sym_{coll}.db"
+            with Memory(db=db, collection=coll) as mem:
+                # Use longer text — vstash drops sub-chunk-size fragments
+                # as "empty", which would mask the collection assertion.
+                mem.remember(
+                    f"distinctive marker text about kiwifruit biology "
+                    f"written in the {coll} collection for symmetry testing",
+                    title=f"m_{coll}",
+                )
+                # Also write to a sibling collection to rule out false positives.
+                mem.remember(
+                    f"unrelated sibling row about mountain hiking gear "
+                    f"written to other_{coll} as a cross-collection distractor",
+                    title=f"s_{coll}",
+                    collection=f"other_{coll}",
+                )
+
+                results = mem.search("kiwifruit biology", top_k=3)
+                titles = [r.title for r in results]
+                assert titles == [f"m_{coll}"], (
+                    f"Symmetry broken for collection={coll!r}: remember() "
+                    f"wrote to {coll!r} but search() returned {titles}."
+                )
+
+    @requires_sqlite_vec
+    def test_list_auto_scopes_to_default_collection(self, tmp_path: Path) -> None:
+        """#166 review follow-up: the #165 fix touches every method that
+        calls ``_resolve_collection``, not only ``search()``. ``list()``
+        must also honor ``self._collection`` when it is the literal
+        ``"default"``.
+
+        Without this regression test, a future refactor that re-
+        introduces a ``!= "default"`` shortcut in ``_resolve_collection``
+        could silently break ``list()`` / ``get_document_chunks()`` /
+        ``miss_analysis()`` without any existing test catching it —
+        because all the search-centric tests go through ``search()``.
+        """
+        db = tmp_path / "test.db"
+        with Memory(db=db, collection="default") as mem:
+            mem.remember(
+                "fact stored in the default collection about kiwifruit biology",
+                title="default_row",
+            )
+            mem.remember(
+                "audit row stored in a separate collection about kiwifruit",
+                title="audit_row",
+                collection="audit",
+                layer="audit",
+            )
+
+            # list() without collection override must only return the
+            # document in the instance's default collection. Before the
+            # #165 fix, it would have leaked the audit row.
+            docs = mem.list()
+            titles = sorted(d.title or "" for d in docs)
+            assert titles == ["default_row"], (
+                f"Memory(collection='default').list() leaked cross-collection "
+                f"rows: got {titles}, expected ['default_row']. The #165 fix "
+                f"must apply to list() and all other _resolve_collection "
+                f"callers, not just search()."
+            )
+
+            # Explicit collection=None still returns everything — regression
+            # guard that the escape hatch is preserved for list() too.
+            all_docs = mem.list(collection=None)
+            all_titles = sorted(d.title or "" for d in all_docs)
+            assert all_titles == ["audit_row", "default_row"], (
+                f"list(collection=None) should return both rows; got {all_titles}"
+            )
+
 
 # ------------------------------------------------------------------ #
 # Memory.ask                                                           #
