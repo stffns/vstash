@@ -1677,7 +1677,7 @@ class VstashStore:
                     title=str(r["title"]),
                     path=str(r["path"]),
                     chunk=int(r["chunk"]),
-                    score=round(float(r.get("final_score", r["rrf"])), 6),
+                    score=round(float(r["rrf"]), 6),
                     explain=_explain_map.get(int(r["id"])) if explain else None,
                 )
                 for r in ranked
@@ -2161,8 +2161,13 @@ class VstashStore:
 
         # --- Greedy MMR selection ---
         # Normalise scores to [0, 1] for MMR balancing.
-        score_key = "final_score" if "final_score" in ranked[0] else "rrf"
-        scores = [float(r[score_key]) for r in ranked]
+        #
+        # All current RRF / fusion paths store the score under the
+        # "rrf" key. The old scoring pipeline used "final_score" and
+        # was removed in v0.18.0 (#109); the dead fallback it left
+        # behind here was a maintenance liability that made this loop
+        # harder to reason about during the #153 audit. Removed.
+        scores = [float(r["rrf"]) for r in ranked]
         s_min, s_max = min(scores), max(scores)
         s_range = s_max - s_min if s_max > s_min else 1.0
 
@@ -2178,7 +2183,7 @@ class VstashStore:
 
             for idx in remaining:
                 r = ranked[idx]
-                norm_score = (float(r[score_key]) - s_min) / s_range
+                norm_score = (float(r["rrf"]) - s_min) / s_range
                 doc_key = str(r["path"])
 
                 # Diversity penalty: only against same-document selections.
