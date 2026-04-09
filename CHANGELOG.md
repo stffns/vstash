@@ -2,6 +2,45 @@
 
 All notable changes to vstash are documented here.
 
+## [0.27.0] — 2026-04-09
+
+### ⚠️ Breaking change
+
+- **`Memory.search()` now honors the instance collection when it is the literal string `"default"`** (#165, PR #166). Prior to v0.27, `Memory(collection="default").search("x")` silently searched **every collection** in the database because `_resolve_collection` had a `!= "default"` shortcut that treated `"default"` as a sentinel for "no filter". This created a read/write asymmetry — writes were scoped to `"default"` while reads leaked across collections. The shortcut is removed. Callers who relied on the old "search everywhere" behavior must now pass `collection=None` explicitly:
+
+    ```python
+    # old (implicit):
+    mem = Memory(db=...)
+    mem.search("x")
+
+    # new (explicit, preserves old behavior):
+    mem = Memory(db=...)
+    mem.search("x", collection=None)
+    ```
+
+    The fix also applies to `list()`, `get_document_chunks()`, and `miss_analysis()` — every method that calls `_resolve_collection`. Downstream consumers that maintain a second collection in the same store (engram's audit log, medlocal-style multi-profile setups) will now get correct isolation without needing the explicit-collection workaround.
+
+### Added
+
+- **MCP RRF passthrough** (#159, PR #168) — the MCP server tools `vstash_search` and `vstash_ask` now expose `vec_weight`, `fts_weight`, and `fts_only` parameters, mirroring the SDK surface added in v0.26.0. Claude Desktop and any other MCP client can now pin RRF weights or force FTS-only retrieval on a per-call basis, making the paraphrase-multilingual clinical-domain mitigation (documented in `docs/embedding-models.md`) reachable from outside Python.
+- **Defensive type coercion** for MCP-supplied RRF parameters — MCP clients inconsistently send JSON strings where floats/bools are expected (e.g. `"0.5"` or `"true"`). New `_coerce_optional_float` and `_coerce_bool` helpers in `vstash/mcp.py` handle this permissively, rejecting NaN and ±Inf explicitly so non-finite weights cannot propagate into RRF scoring. Unparseable values surface as structured MCP errors naming the offending field, not server crashes.
+- **`fts_only` precedence rule** for MCP tools — when `fts_only=true`, `vec_weight` and `fts_weight` are dropped before coercion and validation. A caller can safely pass `fts_only=true` with an invalid or out-of-range weight and still get a successful FTS-only query.
+
+### Performance
+
+- **Pure-Python `_cosine_sim` is 5–11× faster** (#149, PR #149). Version-gated dispatch: `math.sumprod` on Python 3.12+ (3× faster than `sum(map(operator.mul, ...))`) with a fallback to the map-based path for 3.10/3.11. `math.hypot(*vec)` replaces the generator-expression norm on all versions. Real-world impact: `_cosine_sim` is called inside the triple-nested loop of `_mmr_dedup`, saving ~20–25 ms per search on corpora where MMR dedup fires with multi-chunk documents. Zero impact on single-chunk-per-doc corpora (the MMR path short-circuits). Credit to @google-labs-jules for surfacing the opportunity; the `math.sumprod` refinement was added on top.
+
+### Fixed
+
+- **`_resolve_collection` review follow-ups** (#166 review): trimmed verbose docstring (historical bug context moved to commit message), and added a regression tripwire test covering `list()` to catch any future refactor that accidentally re-introduces the `"default"` shortcut — the fix applies to four methods, not just `search()`.
+- **#168 review feedback** (7 items, all applied): NaN/Inf float rejection, `fts_only` precedence short-circuit, `ValueError` split from broad except (no stack traces for user-input errors), `"none"`/`"null"` recognized as `_coerce_bool` false values, docs correction on weight alone-or-together semantics, two new regression tests.
+
+### Documentation
+
+- **`docs/mcp-server.md`** — new "Per-call RRF controls" section documenting the three new parameters, when to use each, type coercion behavior, and the precedence rule.
+
+---
+
 ## [0.26.0] — 2026-04-08
 
 ### Added
