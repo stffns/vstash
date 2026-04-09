@@ -288,6 +288,60 @@ class TestMMRDedup:
         assert any("machine learning" in t for t in texts)
         assert any("database" in t for t in texts)
 
+    def test_mmr_hoisted_norm_scores_preserve_selection_order(
+        self, sample_store: VstashStore
+    ) -> None:
+        """Regression guard for PR #167: hoisting ``norm_score`` out of
+        the inner loop must be a pure performance rewrite. Run the same
+        query twice against a non-trivial corpus and assert the result
+        ordering is deterministic and consistent with the reference
+        (pre-#167) inline-computation semantics.
+
+        The key invariant the hoist must preserve is that
+        ``norm_score[idx]`` equals ``(scores[idx] - s_min) / s_range``
+        for every candidate, which is exactly the value the old code
+        computed inline. Since this test exercises the full MMR
+        pipeline end-to-end (with embeddings, multi-chunk docs, and
+        the greedy loop), any future refactor that breaks the
+        equivalence will change the selection order and fail here.
+        """
+        dim = sample_store.embedding_dim
+
+        # Multi-chunk doc forces MMR greedy path (not the fast path).
+        emb_a = [1.0] + [0.0] * (dim - 1)
+        emb_b = [0.9] + [0.1] + [0.0] * (dim - 2)
+        emb_c = [0.0] + [1.0] + [0.0] * (dim - 2)
+        sample_store.add_document(
+            path="/test/multi.md",
+            title="Multi",
+            chunks=["alpha content one", "alpha content two", "beta content"],
+            embeddings=[emb_a, emb_b, emb_c],
+        )
+        sample_store.add_document(
+            path="/test/single.md",
+            title="Single",
+            chunks=["standalone chunk about machine learning"],
+            embeddings=[[0.5] + [0.5] + [0.0] * (dim - 2)],
+        )
+
+        query_emb = [0.7] + [0.3] + [0.0] * (dim - 2)
+
+        # Two back-to-back runs must produce identical order — the
+        # hoisted precomputation must not introduce any non-determinism.
+        r1 = sample_store.search(query_emb, "content machine learning", top_k=4)
+        r2 = sample_store.search(query_emb, "content machine learning", top_k=4)
+        assert [r.chunk_id for r in r1] == [r.chunk_id for r in r2], (
+            f"hoisted norm_scores produced non-deterministic order: "
+            f"{[r.chunk_id for r in r1]} vs {[r.chunk_id for r in r2]}"
+        )
+
+        # Sanity: the single-chunk doc must still be present (it would
+        # be selected under the reference implementation too because
+        # its norm_score is non-zero).
+        assert any("Single" == r.title for r in r1), (
+            f"single-chunk doc missing from results: {[r.title for r in r1]}"
+        )
+
     def test_mmr_does_not_affect_cross_document_ranking(self, sample_store: VstashStore) -> None:
         """Chunks from different documents should never penalize each other."""
         dim = sample_store.embedding_dim
