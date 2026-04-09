@@ -3303,37 +3303,63 @@ class VstashStore:
             return results
 
         expanded = []
-        for r in results:
-            # Resolve doc_id via chunk text match to avoid cross-collection
-            # leakage when the same path exists in multiple collections.
-            doc_row = self._conn.execute(
-                "SELECT c.doc_id FROM chunks c JOIN documents d ON d.id = c.doc_id "
-                "WHERE d.path = ? AND c.seq = ? AND c.text = ? LIMIT 1",
-                [r.path, r.chunk, r.text],
-            ).fetchone()
-            if not doc_row:
-                expanded.append(r)
-                continue
+        BATCH_SIZE = 100
 
-            row = self._conn.execute(
-                "SELECT text FROM chunks WHERE doc_id = ? AND seq BETWEEN ? AND ? ORDER BY seq",
-                [doc_row["doc_id"], r.chunk - window, r.chunk + window],
-            ).fetchall()
+        for i in range(0, len(results), BATCH_SIZE):
+            batch = results[i : i + BATCH_SIZE]
 
-            if row:
-                combined_text = "\n".join(chunk["text"] for chunk in row)
-                expanded.append(
-                    SearchResult(
-                        chunk_id=r.chunk_id,
-                        text=combined_text,
-                        title=r.title,
-                        path=r.path,
-                        chunk=r.chunk,
-                        score=r.score,
+            values_list = []
+            params = []
+            for idx, r in enumerate(batch):
+                values_list.append("(?, ?, ?, ?)")
+                params.extend([idx, r.path, r.chunk, r.text])
+
+            values_str = ", ".join(values_list)
+
+            query = f"""
+            WITH targets(r_idx, path, tgt_seq, tgt_text) AS (
+                VALUES {values_str}
+            ),
+            matched_docs AS (
+                SELECT t.r_idx, c.doc_id, t.tgt_seq
+                FROM targets t
+                JOIN documents d ON d.path = t.path
+                JOIN chunks c ON c.doc_id = d.id AND c.seq = t.tgt_seq AND c.text = t.tgt_text
+                GROUP BY t.r_idx
+            )
+            SELECT m.r_idx, c.seq, c.text
+            FROM matched_docs m
+            JOIN chunks c ON c.doc_id = m.doc_id AND c.seq BETWEEN m.tgt_seq - ? AND m.tgt_seq + ?
+            ORDER BY m.r_idx, c.seq
+            """
+
+            params.extend([window, window])
+
+            rows = self._conn.execute(query, params).fetchall()
+
+            chunks_by_idx = {}
+            for row in rows:
+                r_idx = row["r_idx"]
+                if r_idx not in chunks_by_idx:
+                    chunks_by_idx[r_idx] = []
+                chunks_by_idx[r_idx].append(row)
+
+            for idx, r in enumerate(batch):
+                doc_chunks = chunks_by_idx.get(idx, [])
+                if doc_chunks:
+                    combined_text = "\n".join(c["text"] for c in doc_chunks)
+                    expanded.append(
+                        SearchResult(
+                            chunk_id=r.chunk_id,
+                            text=combined_text,
+                            title=r.title,
+                            path=r.path,
+                            chunk=r.chunk,
+                            score=r.score,
+                        )
                     )
-                )
-            else:
-                expanded.append(r)
+                else:
+                    expanded.append(r)
 
         return expanded
 
