@@ -704,13 +704,20 @@ class Memory:
     def _resolve_collection(self, override: object) -> str | None:
         """Resolve collection filter: explicit override > constructor default.
 
-        Uses the _UNSET sentinel to distinguish "not provided" from explicit None.
-        Passing None explicitly clears the filter (cross-collection search).
+        Uses the ``_UNSET`` sentinel to distinguish "not provided" from
+        explicit ``None``.  Passing ``None`` explicitly clears the
+        filter and searches across every collection in the database.
+        Omitting the argument honors ``self._collection`` — the same
+        behavior writes get.
+
+        See #165 for the bug history: prior to v0.27 this method had
+        a ``!= "default"`` shortcut that silently converted the
+        instance collection to ``None`` for reads, breaking symmetry
+        with writes.  That shortcut is removed.
         """
         if override is not _UNSET:
             return override  # type: ignore[return-value]
-        # Return None (no filter) if default is "default" — search everywhere
-        return self._collection if self._collection != "default" else None
+        return self._collection
 
     def _resolve_project(self, override: object) -> str | None:
         """Resolve project filter: explicit override > constructor default.

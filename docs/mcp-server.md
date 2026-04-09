@@ -79,6 +79,37 @@ The relevance signal uses the best vector distance to estimate confidence:
 
 This works from the first search — no usage history or warm-up required.
 
+### Per-call RRF controls *(added in v0.27.0, issue #159)*
+
+Both `vstash_search` and `vstash_ask` expose three parameters for overriding the default hybrid-retrieval behavior on a per-call basis. All three default to `None` / `False` — if you omit them, adaptive RRF (the default pipeline) runs unchanged.
+
+| Parameter | Type | Meaning |
+|---|---|---|
+| `vec_weight` | `float \| None` | Pin the RRF vector weight for this query (valid range `[0.0, 1.0]`). Overrides adaptive RRF. May be passed alone — the store derives `fts_weight = 1.0 - vec_weight` when only one is provided. |
+| `fts_weight` | `float \| None` | Pin the RRF FTS weight. Same range and same alone-or-together behavior as `vec_weight`. |
+| `fts_only` | `bool` | If `true`, skip the vector ANN scan entirely — no distance cutoff, no adaptive RRF, just FTS5 keyword matching. MMR dedup and context expansion still apply. Takes precedence: when `fts_only=true`, any supplied `vec_weight` / `fts_weight` values are dropped before validation, so an invalid weight paired with `fts_only=true` will not cause the call to fail. |
+
+**When to use them:**
+
+- **`fts_only=true`** — for debugging ranking (answers "is this a vector problem or an FTS problem?") and for queries containing literal terms that must match exactly (drug names, diagnostic codes, error strings, SKUs). Particularly useful with the clinical-domain weakness documented in `docs/embedding-models.md` for `paraphrase-multilingual-MiniLM-L12-v2`.
+- **`vec_weight=0.1, fts_weight=0.9`** — to bias a specific query toward keyword matching without disabling the vector path entirely. Adaptive RRF resumes on the next query with defaults.
+- **`vec_weight=0.9, fts_weight=0.1`** — inverse: bias toward semantic paraphrase when you know the exact term may not be in the corpus.
+
+**Type coercion note.** The MCP server accepts string values for these parameters (`"0.5"`, `"true"`, `"false"`, `"1"`, `"0"`) and coerces them internally, so clients that serialize JSON numbers or booleans as strings do not get a 422 at the tool boundary. An unparseable value surfaces as a structured `{"error": "..."}` response naming the offending field. If a caller supplies both `fts_only=true` and explicit weights, the weights are ignored and a pure FTS5 query runs.
+
+Example MCP call:
+
+```json
+{
+  "tool": "vstash_search",
+  "arguments": {
+    "query": "morphine contraindications",
+    "top_k": 5,
+    "fts_only": true
+  }
+}
+```
+
 ---
 
 ## API Key Configuration
