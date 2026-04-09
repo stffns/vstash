@@ -2176,6 +2176,17 @@ class VstashStore:
         selected_embs_by_doc: dict[str, list[list[float]]] = {}
         remaining = list(range(len(ranked)))
 
+        # Pre-compute normalized scores once (#167).  The value of
+        # ``(score - s_min) / s_range`` is invariant across the outer
+        # top_k loop — it depends only on each candidate's static score
+        # — so recomputing it inside the inner ``for idx in remaining``
+        # loop costs O(N * top_k) pure-Python ops for no benefit.
+        # Hoisting it cuts the inner loop complexity to O(N) and
+        # reuses the ``scores`` list already computed above, avoiding
+        # the extra dict lookup and float conversion that a naive
+        # hoist would do (flagged in the #167 review).
+        norm_scores = [(s - s_min) / s_range for s in scores]
+
         for _ in range(min(top_k, len(ranked))):
             best_idx = -1
             best_mmr = -float("inf")
@@ -2183,7 +2194,7 @@ class VstashStore:
 
             for idx in remaining:
                 r = ranked[idx]
-                norm_score = (float(r["rrf"]) - s_min) / s_range
+                norm_score = norm_scores[idx]
                 doc_key = str(r["path"])
 
                 # Diversity penalty: only against same-document selections.
