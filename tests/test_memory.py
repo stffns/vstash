@@ -635,6 +635,52 @@ class TestMemoryProjectScoping:
                     f"wrote to {coll!r} but search() returned {titles}."
                 )
 
+    @requires_sqlite_vec
+    def test_list_auto_scopes_to_default_collection(self, tmp_path: Path) -> None:
+        """#166 review follow-up: the #165 fix touches every method that
+        calls ``_resolve_collection``, not only ``search()``. ``list()``
+        must also honor ``self._collection`` when it is the literal
+        ``"default"``.
+
+        Without this regression test, a future refactor that re-
+        introduces a ``!= "default"`` shortcut in ``_resolve_collection``
+        could silently break ``list()`` / ``get_document_chunks()`` /
+        ``miss_analysis()`` without any existing test catching it —
+        because all the search-centric tests go through ``search()``.
+        """
+        db = tmp_path / "test.db"
+        with Memory(db=db, collection="default") as mem:
+            mem.remember(
+                "fact stored in the default collection about kiwifruit biology",
+                title="default_row",
+            )
+            mem.remember(
+                "audit row stored in a separate collection about kiwifruit",
+                title="audit_row",
+                collection="audit",
+                layer="audit",
+            )
+
+            # list() without collection override must only return the
+            # document in the instance's default collection. Before the
+            # #165 fix, it would have leaked the audit row.
+            docs = mem.list()
+            titles = sorted(d.title or "" for d in docs)
+            assert titles == ["default_row"], (
+                f"Memory(collection='default').list() leaked cross-collection "
+                f"rows: got {titles}, expected ['default_row']. The #165 fix "
+                f"must apply to list() and all other _resolve_collection "
+                f"callers, not just search()."
+            )
+
+            # Explicit collection=None still returns everything — regression
+            # guard that the escape hatch is preserved for list() too.
+            all_docs = mem.list(collection=None)
+            all_titles = sorted(d.title or "" for d in all_docs)
+            assert all_titles == ["audit_row", "default_row"], (
+                f"list(collection=None) should return both rows; got {all_titles}"
+            )
+
 
 # ------------------------------------------------------------------ #
 # Memory.ask                                                           #
