@@ -50,6 +50,12 @@ Evaluated on the [BEIR benchmark](https://github.com/beir-cellar/beir) — the s
 
 **Zero cloud required for search. Inference is optional.**
 
+### What's new in v0.27
+
+- **⚠️ Breaking: `Memory.search()` honors the instance collection even when it is `"default"`** — prior to v0.27, constructing `Memory(collection="default")` (explicit or implicit) and calling `search()` silently leaked across every collection in the database because of an internal shortcut. Writes always honored `"default"`, reads did not — a read/write asymmetry. The shortcut is gone. Callers relying on the old "search everywhere" behavior must now pass `collection=None` explicitly. Affects `search()`, `list()`, `get_document_chunks()`, and `miss_analysis()`. See CHANGELOG for migration.
+- **MCP tools accept RRF overrides** — `vstash_search` and `vstash_ask` now expose `vec_weight`, `fts_weight`, and `fts_only` parameters, mirroring the SDK surface added in v0.26. Claude Desktop and any MCP client can now pin RRF weights or force FTS-only retrieval on a per-call basis. Defensive type coercion handles JSON strings, rejects NaN/Inf, and short-circuits weights when `fts_only=true`.
+- **Cosine similarity 5–11× faster** — `math.sumprod` on Python 3.12+ with a fallback to `sum(map(operator.mul, ...))` on 3.10/3.11. `math.hypot(*vec)` replaces the generator-expression norm on all versions. `_cosine_sim` sits inside the MMR dedup hot path; searches with multi-chunk documents save ~20–25 ms per call.
+
 ### What's new in v0.26
 
 - **Per-call RRF weight overrides** — `Memory.search()` and `Memory.ask()` now accept `vec_weight` and `fts_weight` for single-query overrides of the hybrid-search mixing weights. `None` (default) keeps adaptive per-query RRF active. Typed `RRFWeightOutOfRangeError` rejects out-of-range values at the API boundary.
