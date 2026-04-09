@@ -85,9 +85,9 @@ Both `vstash_search` and `vstash_ask` expose three parameters for overriding the
 
 | Parameter | Type | Meaning |
 |---|---|---|
-| `vec_weight` | `float \| None` | Pin the RRF vector weight for this query (valid range `[0.0, 1.0]`). Overrides adaptive RRF. Pass together with `fts_weight`. |
-| `fts_weight` | `float \| None` | Pin the RRF FTS weight for this query. Same range. |
-| `fts_only` | `bool` | If `true`, skip the vector ANN scan entirely — no distance cutoff, no adaptive RRF, just FTS5 keyword matching. MMR dedup and context expansion still apply. |
+| `vec_weight` | `float \| None` | Pin the RRF vector weight for this query (valid range `[0.0, 1.0]`). Overrides adaptive RRF. May be passed alone — the store derives `fts_weight = 1.0 - vec_weight` when only one is provided. |
+| `fts_weight` | `float \| None` | Pin the RRF FTS weight. Same range and same alone-or-together behavior as `vec_weight`. |
+| `fts_only` | `bool` | If `true`, skip the vector ANN scan entirely — no distance cutoff, no adaptive RRF, just FTS5 keyword matching. MMR dedup and context expansion still apply. Takes precedence: when `fts_only=true`, any supplied `vec_weight` / `fts_weight` values are dropped before validation, so an invalid weight paired with `fts_only=true` will not cause the call to fail. |
 
 **When to use them:**
 

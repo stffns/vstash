@@ -15,6 +15,7 @@ from __future__ import annotations
 import atexit
 import json
 import logging
+import math
 import threading
 from pathlib import Path
 from typing import Any
@@ -179,8 +180,13 @@ def _error(message: str) -> str:
 def _coerce_optional_float(value: Any, field: str) -> float | None:
     """Coerce an MCP-supplied value to ``float | None``.
 
-    ``None`` (omitted) and Python ``float``/``int`` pass through. Strings
-    like ``"0.5"`` are parsed. Anything else raises ``ValueError``.
+    ``None`` (omitted) and Python ``float``/``int`` pass through.  Strings
+    like ``"0.5"`` are parsed.  ``NaN`` and ``±Inf`` are rejected after
+    parsing because ``validate_search_input`` downstream uses ``< 0.0``
+    / ``> 1.0`` bounds which do not catch non-finite floats — without
+    this check a NaN weight would propagate all the way into RRF
+    scoring and yield NaN result scores.  Anything else raises
+    ``ValueError``.
     """
     if value is None:
         return None
@@ -191,26 +197,33 @@ def _coerce_optional_float(value: Any, field: str) -> float | None:
         msg = f"{field}: expected a float or None, got bool"
         raise ValueError(msg)
     if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
+        parsed = float(value)
+    elif isinstance(value, str):
         stripped = value.strip()
         if not stripped or stripped.lower() in ("null", "none"):
             return None
         try:
-            return float(stripped)
+            parsed = float(stripped)
         except ValueError as exc:
             msg = f"{field}: could not parse {value!r} as float"
             raise ValueError(msg) from exc
-    msg = f"{field}: expected a float, None, or numeric string, got {type(value).__name__}"
-    raise ValueError(msg)
+    else:
+        msg = f"{field}: expected a float, None, or numeric string, got {type(value).__name__}"
+        raise ValueError(msg)
+    if not math.isfinite(parsed):
+        msg = f"{field}: non-finite float value {parsed!r} is not allowed"
+        raise ValueError(msg)
+    return parsed
 
 
 def _coerce_bool(value: Any, field: str) -> bool:
     """Coerce an MCP-supplied value to ``bool``.
 
     Accepts Python bool, JSON strings ``"true"``/``"false"`` (case-insensitive),
-    and string aliases ``"1"``/``"0"``/``"yes"``/``"no"``. ``None`` becomes
-    ``False`` (the parameter default). Anything else raises ``ValueError``.
+    and string aliases ``"1"``/``"0"``/``"yes"``/``"no"``/``"on"``/``"off"``,
+    plus ``"none"``/``"null"`` (consistent with ``_coerce_optional_float``).
+    ``None`` becomes ``False`` (the parameter default).  Anything else
+    raises ``ValueError``.
     """
     if value is None:
         return False
@@ -224,7 +237,7 @@ def _coerce_bool(value: Any, field: str) -> bool:
         lowered = value.strip().lower()
         if lowered in ("true", "1", "yes", "on"):
             return True
-        if lowered in ("false", "0", "no", "off", ""):
+        if lowered in ("false", "0", "no", "off", "", "null", "none"):
             return False
         msg = f"{field}: could not parse {value!r} as bool"
         raise ValueError(msg)
@@ -531,10 +544,16 @@ def vstash_ask(
         store = _get_store()
 
         # Defensive type coercion (MCP clients may send strings where
-        # floats/bools are expected).
-        vec_weight_coerced = _coerce_optional_float(vec_weight, "vec_weight")
-        fts_weight_coerced = _coerce_optional_float(fts_weight, "fts_weight")
+        # floats/bools are expected). Resolve fts_only first so that
+        # fts_only=True short-circuits weight coercion — see
+        # vstash_search for the same precedence rule.
         fts_only_coerced = _coerce_bool(fts_only, "fts_only")
+        if fts_only_coerced:
+            vec_weight_coerced = None
+            fts_weight_coerced = None
+        else:
+            vec_weight_coerced = _coerce_optional_float(vec_weight, "vec_weight")
+            fts_weight_coerced = _coerce_optional_float(fts_weight, "fts_weight")
 
         # Embed query and search
         query_embedding = embed_query(query, cfg.embeddings.model)
@@ -592,6 +611,12 @@ def vstash_ask(
         return _error("vstash database not found. Ingest documents first with vstash_add.")
     except ConnectionError as exc:
         return _error(f"LLM backend error: {exc}")
+    except ValueError as exc:
+        # Input-validation errors (coercion failures, out-of-range
+        # weights, bad dates) are user mistakes, not server bugs —
+        # return a structured error without a stack trace. Same
+        # pattern as vstash_add / vstash_remember.
+        return _error(str(exc))
     except Exception as exc:
         logger.exception("vstash_ask failed")
         return _error(f"Query failed: {exc}")
@@ -656,9 +681,21 @@ def vstash_search(
         # Defensive type coercion — MCP clients can be inconsistent and may
         # send JSON strings where booleans or floats are expected. Mirror the
         # existing pattern used for top_k / recency_boost / mmr_lambda.
-        vec_weight_coerced = _coerce_optional_float(vec_weight, "vec_weight")
-        fts_weight_coerced = _coerce_optional_float(fts_weight, "fts_weight")
+        #
+        # Precedence (documented in docs/mcp-server.md): if fts_only is
+        # True, vec_weight and fts_weight are ignored. Resolve fts_only
+        # FIRST and short-circuit the weight coercion when it's on — that
+        # way a caller who sends an out-of-range or unparseable weight
+        # together with fts_only=True still gets a successful FTS-only
+        # query instead of a coercion-error bailout for an argument that
+        # was semantically meant to be ignored.
         fts_only_coerced = _coerce_bool(fts_only, "fts_only")
+        if fts_only_coerced:
+            vec_weight_coerced = None
+            fts_weight_coerced = None
+        else:
+            vec_weight_coerced = _coerce_optional_float(vec_weight, "vec_weight")
+            fts_weight_coerced = _coerce_optional_float(fts_weight, "fts_weight")
 
         query_embedding = embed_query(query, cfg.embeddings.model)
         chunks: list[SearchResult] = store.search(
@@ -713,6 +750,11 @@ def vstash_search(
 
     except FileNotFoundError:
         return _error("vstash database not found. Ingest documents first with vstash_add.")
+    except ValueError as exc:
+        # Input-validation errors (coercion failures, out-of-range
+        # weights, bad dates) are user mistakes, not server bugs —
+        # return a structured error without a stack trace.
+        return _error(str(exc))
     except Exception as exc:
         logger.exception("vstash_search failed")
         return _error(f"Search failed: {exc}")
