@@ -13,6 +13,7 @@ Resolution order (highest priority first):
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
@@ -351,9 +352,12 @@ def federated_search(
         # Results are already ranked by score within each profile
         for rank, (pname, result) in enumerate(group_list):
             # Key excludes profile — identical chunks get fused across profiles.
-            # Include text prefix to distinguish different content at same path+seq
-            # (e.g., same path ingested into different collections with different content).
-            key = (result.path, result.chunk, result.text[:64])
+            # A full-content blake2b digest discriminates different chunks that
+            # share (path, seq) (e.g., same path ingested into different
+            # collections with different content). A prefix-only discriminator
+            # would collide when chunks diverge after the prefix window.
+            content_digest = hashlib.blake2b(result.text.encode("utf-8"), digest_size=16).digest()
+            key = (result.path, result.chunk, content_digest)
             rrf_scores[key] = rrf_scores.get(key, 0) + 1.0 / (k + rank)
             if key not in result_map:
                 result_map[key] = (pname, result)
