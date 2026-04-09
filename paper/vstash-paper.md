@@ -771,6 +771,36 @@ The system ships with 16 MCP tools, a Python SDK, CLI, and Claude Code hook inte
 
 ---
 
+## Acknowledgments
+
+vstash is built on the work of several open-source projects whose
+quality directly enables this system: **sqlite-vec** (Alex Garcia)
+for the ANN index, **FastEmbed** (Qdrant) for the ONNX embedding
+runtime, **sentence-transformers** and **BAAI** for the embedding
+models evaluated, **tree-sitter** and **parso** for the code-aware
+chunking backends, and **SQLite/FTS5** for the keyword retrieval
+substrate. The BEIR evaluation suite (Thakur et al., 2021) provided
+the primary external benchmark against which the retrieval pipeline
+was tuned.
+
+Development of the vstash codebase was assisted by **Claude**
+(Anthropic) for code generation, refactoring, documentation, and
+responding to automated code review. All design decisions, algorithm
+choices, benchmark methodology, statistical caveats (§5.2, §8.4), and
+the negative results documented in §4 and §8.10 were authored and
+verified by the human contributor. The decision to publish the
+frequency+decay negative result rather than quietly remove it was
+made by the author in line with the scientific norm of reporting
+approaches that did not work.
+
+All experiments in this paper are reproducible from scripts in the
+project's `experiments/` directory. Benchmark numbers and figures
+were re-run against HEAD prior to each release, and the regression
+suite in `tests/test_beir_regression.py` prevents silent drift on
+the BEIR baselines.
+
+---
+
 ## References
 
 1. Cormack, G. V., Clarke, C. L. A., & Buttcher, S. (2009). Reciprocal rank fusion outperforms condorcet and individual rank learning methods. *SIGIR*.

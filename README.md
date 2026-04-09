@@ -401,6 +401,27 @@ Run all experiments: `python -m experiments.run_all`
 
 ---
 
+## Development transparency
+
+vstash is developed by [Jayson Steffens](https://github.com/stffns) as
+the sole human contributor. Code generation, refactoring, and
+documentation were assisted by [Claude](https://www.anthropic.com/)
+(Anthropic). Automated optimization passes on performance hot paths
+are occasionally surfaced by Google's [Jules](https://jules.google/)
+code agent, and PR review is cross-checked by GitHub Copilot and
+Gemini Code Assist.
+
+All design decisions, algorithm choices, benchmark methodology, and
+release gatekeeping are authored and verified by the human
+contributor. Every performance claim in this repository is
+reproducible from the scripts in `experiments/`. The fastest way to
+evaluate the work is to run them.
+
+See [`CONTRIBUTORS.md`](CONTRIBUTORS.md) for a detailed breakdown of
+how each AI tool is used and what it is not used for.
+
+---
+
 ## License
 
 MIT
