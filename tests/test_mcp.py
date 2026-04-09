@@ -206,6 +206,122 @@ class TestVstashSearch:
         result = json.loads(vstash_search("test"))
         assert "error" in result
 
+    @patch("vstash.mcp.embed_query", return_value=[0.1] * 384)
+    @patch("vstash.mcp._get_store")
+    @patch("vstash.mcp._get_config")
+    def test_search_forwards_rrf_weights_to_store(
+        self,
+        mock_config: MagicMock,
+        mock_store: MagicMock,
+        mock_embed: MagicMock,
+    ) -> None:
+        """vstash_search MCP tool must forward vec_weight/fts_weight/fts_only
+        kwargs all the way to VstashStore.search (#159).
+
+        Spy on the store.search call and assert the exact kwargs arrive
+        with the coerced values. Mirrors the SDK spy test pattern from
+        test_search_forwards_rrf_weights_to_store in test_memory.py so
+        the two surfaces stay symmetric.
+        """
+        chunks = [_make_search_result("hit", "Doc1")]
+        mock_store.return_value.search.return_value = chunks
+        mock_store.return_value.expand_context.return_value = chunks
+        mock_store.return_value.last_best_distance = 0.5
+        mock_store.return_value.record_search_event.return_value = 1
+        mock_config.return_value.embeddings.model = "BAAI/bge-small-en-v1.5"
+
+        vstash_search("test query", vec_weight=0.9, fts_weight=0.1, fts_only=False)
+
+        _, kwargs = mock_store.return_value.search.call_args
+        assert kwargs["vec_weight"] == 0.9
+        assert kwargs["fts_weight"] == 0.1
+        assert kwargs["fts_only"] is False
+
+    @patch("vstash.mcp.embed_query", return_value=[0.1] * 384)
+    @patch("vstash.mcp._get_store")
+    @patch("vstash.mcp._get_config")
+    def test_search_default_rrf_kwargs_are_none_and_false(
+        self,
+        mock_config: MagicMock,
+        mock_store: MagicMock,
+        mock_embed: MagicMock,
+    ) -> None:
+        """Regression guard: omitting the new kwargs must forward None /
+        False to the store, NOT silently pinned defaults."""
+        chunks = [_make_search_result("hit", "Doc1")]
+        mock_store.return_value.search.return_value = chunks
+        mock_store.return_value.expand_context.return_value = chunks
+        mock_store.return_value.last_best_distance = 0.5
+        mock_store.return_value.record_search_event.return_value = 1
+        mock_config.return_value.embeddings.model = "BAAI/bge-small-en-v1.5"
+
+        vstash_search("test query")
+
+        _, kwargs = mock_store.return_value.search.call_args
+        assert kwargs["vec_weight"] is None
+        assert kwargs["fts_weight"] is None
+        assert kwargs["fts_only"] is False
+
+    @patch("vstash.mcp.embed_query", return_value=[0.1] * 384)
+    @patch("vstash.mcp._get_store")
+    @patch("vstash.mcp._get_config")
+    def test_search_coerces_string_kwargs_from_mcp_client(
+        self,
+        mock_config: MagicMock,
+        mock_store: MagicMock,
+        mock_embed: MagicMock,
+    ) -> None:
+        """MCP clients can send strings where floats/bools are expected.
+        vstash_search must coerce them defensively instead of 422'ing.
+
+        This is the defensive pattern documented in
+        _coerce_optional_float / _coerce_bool — mirrors the existing
+        ``top_k = int(top_k)`` / ``recency_boost = float(recency_boost)``
+        coercions elsewhere in this module.
+        """
+        chunks = [_make_search_result("hit", "Doc1")]
+        mock_store.return_value.search.return_value = chunks
+        mock_store.return_value.expand_context.return_value = chunks
+        mock_store.return_value.last_best_distance = 0.5
+        mock_store.return_value.record_search_event.return_value = 1
+        mock_config.return_value.embeddings.model = "BAAI/bge-small-en-v1.5"
+
+        # Strings arriving through JSON-RPC boundaries.
+        vstash_search(
+            "test",
+            vec_weight="0.8",  # type: ignore[arg-type]
+            fts_weight="0.2",  # type: ignore[arg-type]
+            fts_only="true",  # type: ignore[arg-type]
+        )
+
+        _, kwargs = mock_store.return_value.search.call_args
+        assert kwargs["vec_weight"] == 0.8
+        assert kwargs["fts_weight"] == 0.2
+        assert kwargs["fts_only"] is True
+
+    @patch("vstash.mcp.embed_query", return_value=[0.1] * 384)
+    @patch("vstash.mcp._get_store")
+    @patch("vstash.mcp._get_config")
+    def test_search_rejects_unparseable_string_kwargs(
+        self,
+        mock_config: MagicMock,
+        mock_store: MagicMock,
+        mock_embed: MagicMock,
+    ) -> None:
+        """Unparseable strings must surface as a structured MCP error,
+        not a 500 — the tool wraps the ValueError into _error()."""
+        mock_config.return_value.embeddings.model = "BAAI/bge-small-en-v1.5"
+
+        result = json.loads(
+            vstash_search("test", vec_weight="not_a_number")  # type: ignore[arg-type]
+        )
+        assert "error" in result
+        assert "vec_weight" in result["error"]
+
+        result2 = json.loads(vstash_search("test", fts_only="maybe"))  # type: ignore[arg-type]
+        assert "error" in result2
+        assert "fts_only" in result2["error"]
+
 
 # ------------------------------------------------------------------ #
 # vstash_forget                                                        #
@@ -306,6 +422,70 @@ class TestVstashAsk:
         result = json.loads(vstash_ask("test"))
         assert "error" in result
         assert "not found" in result["error"]
+
+    @patch("vstash.mcp.embed_query", return_value=[0.1] * 384)
+    @patch("vstash.mcp._get_store")
+    @patch("vstash.mcp._get_config")
+    def test_ask_forwards_rrf_weights_and_fts_only(
+        self,
+        mock_config: MagicMock,
+        mock_store: MagicMock,
+        mock_embed: MagicMock,
+    ) -> None:
+        """vstash_ask must forward vec_weight/fts_weight/fts_only to the
+        retrieval step (#159). Symmetric with the SDK ``Memory.ask()``
+        forwarding test.
+        """
+        chunks = [_make_search_result("context", "Doc1")]
+        store_inst = mock_store.return_value
+        store_inst.search.return_value = chunks
+        store_inst.last_best_distance = 0.5
+        store_inst.expand_context.return_value = chunks
+        mock_config.return_value.embeddings.model = "BAAI/bge-small-en-v1.5"
+
+        with patch("vstash.chat.ask", return_value="answer"):
+            vstash_ask(
+                "query",
+                vec_weight=0.3,
+                fts_weight=0.7,
+                fts_only=False,
+            )
+
+        _, kwargs = store_inst.search.call_args
+        assert kwargs["vec_weight"] == 0.3
+        assert kwargs["fts_weight"] == 0.7
+        assert kwargs["fts_only"] is False
+
+    @patch("vstash.mcp.embed_query", return_value=[0.1] * 384)
+    @patch("vstash.mcp._get_store")
+    @patch("vstash.mcp._get_config")
+    def test_ask_coerces_string_kwargs(
+        self,
+        mock_config: MagicMock,
+        mock_store: MagicMock,
+        mock_embed: MagicMock,
+    ) -> None:
+        """vstash_ask must defensively coerce string kwargs from MCP
+        clients the same way vstash_search does (#159)."""
+        chunks = [_make_search_result("context", "Doc1")]
+        store_inst = mock_store.return_value
+        store_inst.search.return_value = chunks
+        store_inst.last_best_distance = 0.5
+        store_inst.expand_context.return_value = chunks
+        mock_config.return_value.embeddings.model = "BAAI/bge-small-en-v1.5"
+
+        with patch("vstash.chat.ask", return_value="answer"):
+            vstash_ask(
+                "query",
+                vec_weight="0.1",  # type: ignore[arg-type]
+                fts_weight="0.9",  # type: ignore[arg-type]
+                fts_only="TRUE",  # type: ignore[arg-type]
+            )
+
+        _, kwargs = store_inst.search.call_args
+        assert kwargs["vec_weight"] == 0.1
+        assert kwargs["fts_weight"] == 0.9
+        assert kwargs["fts_only"] is True
 
 
 # ------------------------------------------------------------------ #

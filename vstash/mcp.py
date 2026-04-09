@@ -157,6 +157,82 @@ def _error(message: str) -> str:
 
 
 # ------------------------------------------------------------------ #
+# MCP type coercion helpers                                            #
+# ------------------------------------------------------------------ #
+#
+# MCP clients (Claude Desktop, some OpenAI-tool-calling wrappers, custom
+# JSON-RPC callers) are inconsistent about JSON types: a parameter declared
+# as ``bool`` may arrive as the string ``"true"``, a ``float | None``
+# parameter may arrive as the string ``"0.5"``.  Pydantic v2 in strict
+# mode rejects these, which would turn an otherwise-valid query into a
+# ``422 Unprocessable Entity`` at the MCP boundary and frustrate the user.
+#
+# The coercion helpers below mirror the existing defensive pattern used
+# elsewhere in this module (``top_k = int(top_k)``,
+# ``recency_boost=float(recency_boost)``) for the new RRF weight /
+# fts-only arguments added in #159.  They are permissive on input and
+# strict on output — if coercion fails, they raise ``ValueError`` with a
+# clear message naming the offending field, which ``vstash_search`` and
+# ``vstash_ask`` surface through ``_error``.
+
+
+def _coerce_optional_float(value: Any, field: str) -> float | None:
+    """Coerce an MCP-supplied value to ``float | None``.
+
+    ``None`` (omitted) and Python ``float``/``int`` pass through. Strings
+    like ``"0.5"`` are parsed. Anything else raises ``ValueError``.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        # bool is a subclass of int — reject explicitly so "True"/"False"
+        # sent as a bool doesn't silently become 1.0/0.0 as an RRF weight,
+        # which is almost certainly not what the caller meant.
+        msg = f"{field}: expected a float or None, got bool"
+        raise ValueError(msg)
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped or stripped.lower() in ("null", "none"):
+            return None
+        try:
+            return float(stripped)
+        except ValueError as exc:
+            msg = f"{field}: could not parse {value!r} as float"
+            raise ValueError(msg) from exc
+    msg = f"{field}: expected a float, None, or numeric string, got {type(value).__name__}"
+    raise ValueError(msg)
+
+
+def _coerce_bool(value: Any, field: str) -> bool:
+    """Coerce an MCP-supplied value to ``bool``.
+
+    Accepts Python bool, JSON strings ``"true"``/``"false"`` (case-insensitive),
+    and string aliases ``"1"``/``"0"``/``"yes"``/``"no"``. ``None`` becomes
+    ``False`` (the parameter default). Anything else raises ``ValueError``.
+    """
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        # Plain int from JSON — 0 = False, anything else = True.  Keeps
+        # parity with Python truthiness without silently accepting floats.
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ("true", "1", "yes", "on"):
+            return True
+        if lowered in ("false", "0", "no", "off", ""):
+            return False
+        msg = f"{field}: could not parse {value!r} as bool"
+        raise ValueError(msg)
+    msg = f"{field}: expected a bool or 'true'/'false' string, got {type(value).__name__}"
+    raise ValueError(msg)
+
+
+# ------------------------------------------------------------------ #
 # Tools                                                                #
 # ------------------------------------------------------------------ #
 
@@ -419,6 +495,9 @@ def vstash_ask(
     layer: str | None = None,
     added_after: str | None = None,
     added_before: str | None = None,
+    vec_weight: float | None = None,
+    fts_weight: float | None = None,
+    fts_only: bool = False,
 ) -> str:
     """Query vstash memory and get an LLM-generated answer with sources.
 
@@ -433,6 +512,13 @@ def vstash_ask(
         layer: If set, restrict search to documents with this layer tag.
         added_after: ISO date (e.g. '2024-01-15') — only documents added on or after.
         added_before: ISO date (e.g. '2024-06-01') — only documents added before.
+        vec_weight: Pin the RRF vector weight on the retrieval step. See
+            ``vstash_search`` for full semantics. ``None`` (default) uses
+            adaptive per-query RRF.
+        fts_weight: Pin the RRF FTS weight on the retrieval step. See
+            ``vstash_search``.
+        fts_only: If true, retrieve context using FTS5 only. See
+            ``vstash_search``.
 
     Returns:
         JSON string with answer text and source documents.
@@ -443,6 +529,12 @@ def vstash_ask(
         top_k = int(top_k)
         cfg = _get_config()
         store = _get_store()
+
+        # Defensive type coercion (MCP clients may send strings where
+        # floats/bools are expected).
+        vec_weight_coerced = _coerce_optional_float(vec_weight, "vec_weight")
+        fts_weight_coerced = _coerce_optional_float(fts_weight, "fts_weight")
+        fts_only_coerced = _coerce_bool(fts_only, "fts_only")
 
         # Embed query and search
         query_embedding = embed_query(query, cfg.embeddings.model)
@@ -455,6 +547,9 @@ def vstash_ask(
             layer=layer,
             added_after=added_after,
             added_before=added_before,
+            vec_weight=vec_weight_coerced,
+            fts_weight=fts_weight_coerced,
+            fts_only=fts_only_coerced,
         )
 
         if not chunks:
@@ -513,6 +608,9 @@ def vstash_search(
     added_after: str | None = None,
     added_before: str | None = None,
     mmr_lambda: float = 0.5,
+    vec_weight: float | None = None,
+    fts_weight: float | None = None,
+    fts_only: bool = False,
 ) -> str:
     """Search vstash memory without LLM — returns raw chunks with scores.
 
@@ -532,6 +630,20 @@ def vstash_search(
             recent chunks score higher. Use 0.5 for mild bias, 1.0 for strong.
         added_after: ISO date (e.g. '2024-01-15') — only documents added on or after.
         added_before: ISO date (e.g. '2024-06-01') — only documents added before.
+        mmr_lambda: Intra-document MMR diversity parameter (0.0=max diversity,
+            1.0=hard dedup). Default 0.5.
+        vec_weight: Pin the RRF vector weight for this query (overrides adaptive
+            RRF). Valid range [0.0, 1.0]. Pass None (default) for adaptive
+            per-query weighting. See vstash docs/embedding-models.md for the
+            use case (e.g. specialized-domain corpora where the vector
+            embedding is known to be diffuse).
+        fts_weight: Pin the RRF FTS weight. Same semantics and range as
+            vec_weight.
+        fts_only: If true, run FTS5 keyword search only — skip the vector ANN
+            scan, the distance cutoff, and adaptive RRF entirely. Useful for
+            debugging whether a retrieval miss is a vector problem or an FTS
+            problem, and for queries where the vector signal is known to be
+            unreliable. When true, vec_weight/fts_weight are ignored.
 
     Returns:
         JSON object with chunks array and relevance hint.
@@ -540,6 +652,13 @@ def vstash_search(
         top_k = int(top_k)
         cfg = _get_config()
         store = _get_store()
+
+        # Defensive type coercion — MCP clients can be inconsistent and may
+        # send JSON strings where booleans or floats are expected. Mirror the
+        # existing pattern used for top_k / recency_boost / mmr_lambda.
+        vec_weight_coerced = _coerce_optional_float(vec_weight, "vec_weight")
+        fts_weight_coerced = _coerce_optional_float(fts_weight, "fts_weight")
+        fts_only_coerced = _coerce_bool(fts_only, "fts_only")
 
         query_embedding = embed_query(query, cfg.embeddings.model)
         chunks: list[SearchResult] = store.search(
@@ -553,6 +672,9 @@ def vstash_search(
             added_after=added_after,
             added_before=added_before,
             mmr_lambda=float(mmr_lambda),
+            vec_weight=vec_weight_coerced,
+            fts_weight=fts_weight_coerced,
+            fts_only=fts_only_coerced,
         )
 
         if not chunks:
