@@ -2172,8 +2172,6 @@ class VstashStore:
         s_range = s_max - s_min if s_max > s_min else 1.0
 
         selected: list[dict[str, str | int | float]] = []
-        # Track selected embeddings per document for similarity comparison.
-        selected_embs_by_doc: dict[str, list[list[float]]] = {}
         remaining = list(range(len(ranked)))
 
         # Pre-compute normalized scores once (#167).  The value of
@@ -2187,33 +2185,27 @@ class VstashStore:
         # hoist would do (flagged in the #167 review).
         norm_scores = [(s - s_min) / s_range for s in scores]
 
+        # Extract values into fast lists for index-based access
+        doc_keys = [str(r["path"]) for r in ranked]
+        chunk_embs = [embeddings.get(int(r["id"])) for r in ranked]
+        # Track the maximum similarity to any selected chunk from the *same document*.
+        # Replaces O(N * S) recomputation with O(1) lookup + O(N) update.
+        max_sims = [0.0] * len(ranked)
+
         for _ in range(min(top_k, len(ranked))):
             best_idx = -1
             best_mmr = -float("inf")
-            best_max_sim = 0.0
 
             for idx in remaining:
-                r = ranked[idx]
                 norm_score = norm_scores[idx]
-                doc_key = str(r["path"])
 
                 # Diversity penalty: only against same-document selections.
-                max_sim = 0.0
-                if doc_key in selected_embs_by_doc:
-                    chunk_id = int(r["id"])
-                    emb = embeddings.get(chunk_id)
-                    if emb is not None:
-                        for sel_emb in selected_embs_by_doc[doc_key]:
-                            sim = _cosine_sim(emb, sel_emb)
-                            if sim > max_sim:
-                                max_sim = sim
+                max_sim = max_sims[idx]
 
                 mmr_score = mmr_lambda * norm_score - (1 - mmr_lambda) * max_sim
                 if mmr_score > best_mmr:
                     best_mmr = mmr_score
                     best_idx = idx
-                    if _explain:
-                        best_max_sim = max_sim
 
             if best_idx < 0 or best_mmr < 0:
                 # Stop when the best remaining candidate has negative MMR,
@@ -2222,16 +2214,22 @@ class VstashStore:
 
             chosen = ranked[best_idx]
             if _explain:
-                chosen["_mmr_penalty"] = (1 - mmr_lambda) * best_max_sim
+                chosen["_mmr_penalty"] = (1 - mmr_lambda) * max_sims[best_idx]
             selected.append(chosen)
             remaining.remove(best_idx)
 
-            # Track embedding for future similarity checks.
-            doc_key = str(chosen["path"])
-            chunk_id = int(chosen["id"])
-            emb = embeddings.get(chunk_id)
-            if emb is not None:
-                selected_embs_by_doc.setdefault(doc_key, []).append(emb)
+            # Update max_sims for remaining chunks from the same document
+            # by comparing against the newly selected embedding.
+            new_doc_key = doc_keys[best_idx]
+            new_emb = chunk_embs[best_idx]
+            if new_emb is not None:
+                for idx in remaining:
+                    if doc_keys[idx] == new_doc_key:
+                        idx_emb = chunk_embs[idx]
+                        if idx_emb is not None:
+                            sim = _cosine_sim(idx_emb, new_emb)
+                            if sim > max_sims[idx]:
+                                max_sims[idx] = sim
 
         return selected
 
