@@ -139,6 +139,38 @@ if sqlite3.threadsafety == 0:  # pragma: no cover
 try:
     from snapvec import SnapIndex
 
+    if not hasattr(SnapIndex, "delete_batch"):
+
+        def _delete_batch(self: SnapIndex, ids: list[str | int]) -> int:
+            import numpy as np
+
+            to_delete_pos = []
+            for i in ids:
+                if i in self._id_to_pos:
+                    to_delete_pos.append(self._id_to_pos.pop(i))
+
+            if not to_delete_pos:
+                return 0
+
+            pos_set = set(to_delete_pos)
+
+            self._ids = [i for p, i in enumerate(self._ids) if p not in pos_set]
+            keep_mask = np.ones(len(self._indices), dtype=bool)
+            keep_mask[to_delete_pos] = False
+
+            self._indices = self._indices[keep_mask]
+            self._norms = self._norms[keep_mask]
+            if getattr(self, "_qjl", None) is not None:
+                self._qjl = self._qjl[keep_mask]
+                self._rnorms = self._rnorms[keep_mask]
+
+            self._id_to_pos = {id_val: i for i, id_val in enumerate(self._ids)}
+
+            self._cache = None
+            return len(to_delete_pos)
+
+        SnapIndex.delete_batch = _delete_batch  # type: ignore[attr-defined]
+
     _HAS_SNAPVEC = True
 except ImportError:
     _HAS_SNAPVEC = False
@@ -1150,8 +1182,11 @@ class VstashStore:
 
                     # Delete from snapvec index (in-memory, persisted after commit)
                     if self._snap is not None:
-                        for cid in batch_chunk_ids:
-                            self._snap.delete(cid)
+                        if hasattr(self._snap, "delete_batch"):
+                            self._snap.delete_batch(batch_chunk_ids)  # type: ignore[attr-defined]
+                        else:
+                            for cid in batch_chunk_ids:
+                                self._snap.delete(cid)
                         self._snap_dirty = True
 
                 # Delete chunks — trg_chunks_delete trigger auto-syncs FTS5
