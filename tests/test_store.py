@@ -756,6 +756,21 @@ class TestAddDocumentsBatch:
         assert sample_store.stats().documents == initial_count
 
 
+class TestSearchResultAddedAt:
+    """Tests for added_at field on SearchResult."""
+
+    def test_search_result_has_added_at(self, populated_store: VstashStore) -> None:
+        """Search results should include the document's added_at timestamp."""
+        dim = populated_store.embedding_dim
+        emb = [0.1] * dim
+        results = populated_store.search(query_embedding=emb, query_text="Python", top_k=3)
+        assert len(results) > 0
+        for r in results:
+            assert r.added_at is not None
+            # Should be an ISO timestamp string
+            assert "T" in r.added_at or "-" in r.added_at
+
+
 class TestSearchTelemetry:
     """Tests for search event telemetry (discard tracking)."""
 

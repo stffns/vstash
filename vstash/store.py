@@ -1348,7 +1348,7 @@ class VstashStore:
                     snap_filter = vec_clause.replace("v.rowid", "c.id") if vec_clause else ""
                     rows = self._conn.execute(
                         f"""
-                        SELECT c.id, c.text, d.title, d.path, c.seq
+                        SELECT c.id, c.text, d.title, d.path, c.seq, d.added_at
                         FROM chunks c
                         JOIN documents d ON d.id = c.doc_id
                         WHERE c.id IN ({placeholders})
@@ -1369,7 +1369,7 @@ class VstashStore:
             else:
                 vec_rows = self._conn.execute(
                     f"""
-                    SELECT c.id, c.text, d.title, d.path, c.seq, v.distance
+                    SELECT c.id, c.text, d.title, d.path, c.seq, v.distance, d.added_at
                     FROM vec_chunks v
                     JOIN chunks c ON c.id = v.rowid
                     JOIN documents d ON d.id = c.doc_id
@@ -1511,7 +1511,7 @@ class VstashStore:
                 fts_rows = self._conn.execute(
                     f"""
                     SELECT c.id, c.text, d.title, d.path, c.seq,
-                           rank as fts_rank
+                           rank as fts_rank, d.added_at
                     FROM fts_chunks f
                     JOIN chunks c ON c.id = f.rowid
                     JOIN documents d ON d.id = c.doc_id
@@ -1614,6 +1614,7 @@ class VstashStore:
                     "path": row["path"],
                     "chunk": row["seq"],
                     "rrf": vec_contrib,
+                    "added_at": row["added_at"],
                 }
                 if explain:
                     _explain_rrf_vec[chunk_id] = vec_contrib
@@ -1648,6 +1649,7 @@ class VstashStore:
                         "path": row["path"],
                         "chunk": row["seq"],
                         "rrf": fts_contribution,
+                        "added_at": row["added_at"],
                     }
                     if explain:
                         _explain_rrf_fts[chunk_id] = fts_contribution
@@ -1825,6 +1827,7 @@ class VstashStore:
                     chunk=int(r["chunk"]),
                     score=round(float(r["rrf"]), 6),
                     explain=_explain_map.get(int(r["id"])) if explain else None,
+                    added_at=r.get("added_at"),
                 )
                 for r in ranked
             ]

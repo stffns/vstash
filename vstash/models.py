@@ -87,6 +87,7 @@ class SearchResult(BaseModel):
     explain: ExplainInfo | None = Field(
         default=None, description="Diagnostic breakdown (when explain=True)"
     )
+    added_at: str | None = Field(default=None, description="ISO timestamp of document ingestion")
 
 
 class DocumentInfo(BaseModel):
