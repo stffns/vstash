@@ -291,13 +291,15 @@ def _init_hf_onnx(model_name: str) -> tuple:
                 from tokenizers import Tokenizer
 
                 # Try onnx/ subfolder first, then root (varies by repo layout)
+                from huggingface_hub.errors import EntryNotFoundError
+
                 try:
                     model_path = hf_hub_download(model_name, "onnx/model.onnx")
-                except Exception:
+                except (EntryNotFoundError, OSError):
                     model_path = hf_hub_download(model_name, "model.onnx")
                 try:
                     tokenizer_path = hf_hub_download(model_name, "onnx/tokenizer.json")
-                except Exception:
+                except (EntryNotFoundError, OSError):
                     tokenizer_path = hf_hub_download(model_name, "tokenizer.json")
                 session = ort.InferenceSession(model_path)
                 tokenizer = Tokenizer.from_file(tokenizer_path)

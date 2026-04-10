@@ -701,6 +701,61 @@ class TestStoreCollections:
         assert docs[0].collection == "default"
 
 
+class TestAddDocumentsBatch:
+    """Tests for batch document ingestion."""
+
+    def test_batch_ingest_and_search(self, sample_store: VstashStore) -> None:
+        """Batch-ingested documents should be searchable."""
+        dim = sample_store.embedding_dim
+        docs = [
+            {
+                "path": f"/batch/doc{i}",
+                "title": f"Doc {i}",
+                "chunks": [f"Content of document {i} about topic {i}"],
+                "embeddings": [[0.1 * (i + 1)] * dim],
+                "source_type": "text",
+            }
+            for i in range(5)
+        ]
+        ids = sample_store.add_documents_batch(docs)
+        assert len(ids) == 5
+        assert len(set(ids)) == 5  # all unique
+
+        stats = sample_store.stats()
+        assert stats.documents >= 5
+
+    def test_batch_empty_returns_empty(self, sample_store: VstashStore) -> None:
+        assert sample_store.add_documents_batch([]) == []
+
+    def test_batch_rollback_on_validation_error(self, sample_store: VstashStore) -> None:
+        """If any doc fails validation, the entire batch rolls back."""
+        dim = sample_store.embedding_dim
+        initial_count = sample_store.stats().documents
+        docs = [
+            {
+                "path": "/batch/good",
+                "title": "Good",
+                "chunks": ["valid content"],
+                "embeddings": [[0.1] * dim],
+                "source_type": "text",
+            },
+            {
+                "path": "/batch/bad",
+                "title": "Bad",
+                "chunks": [],  # invalid: empty chunks
+                "embeddings": [],
+                "source_type": "text",
+            },
+        ]
+        try:
+            sample_store.add_documents_batch(docs)
+            assert False, "Should have raised"
+        except Exception:
+            pass
+        # Both docs should have been rolled back
+        assert sample_store.stats().documents == initial_count
+
+
 class TestSearchTelemetry:
     """Tests for search event telemetry (discard tracking)."""
 
