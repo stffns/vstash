@@ -263,6 +263,107 @@ def _warmup_gemma(model_name: str) -> None:
 
 
 # ------------------------------------------------------------------ #
+# Custom HuggingFace ONNX backend (for models not in FastEmbed)        #
+# ------------------------------------------------------------------ #
+
+# Models that ship an onnx/ folder on HuggingFace but are not in
+# FastEmbed's whitelist. Loaded via onnxruntime + tokenizers directly.
+_HF_ONNX_MODELS: set[str] = {
+    "stffens/bge-small-rrf-v1",
+}
+
+_hf_onnx_cache: dict[str, tuple] = {}  # model_name -> (session, tokenizer, max_len)
+_hf_onnx_lock = threading.Lock()
+
+
+def _is_hf_onnx_model(model_name: str) -> bool:
+    """Check if this model should use the custom HF ONNX backend."""
+    return model_name in _HF_ONNX_MODELS
+
+
+def _init_hf_onnx(model_name: str) -> tuple:
+    """Lazily initialize a custom HF ONNX model."""
+    if model_name not in _hf_onnx_cache:
+        with _hf_onnx_lock:
+            if model_name not in _hf_onnx_cache:
+                import onnxruntime as ort
+                from huggingface_hub import hf_hub_download
+                from tokenizers import Tokenizer
+
+                # Try onnx/ subfolder first, then root (varies by repo layout)
+                try:
+                    model_path = hf_hub_download(model_name, "onnx/model.onnx")
+                except Exception:
+                    model_path = hf_hub_download(model_name, "model.onnx")
+                try:
+                    tokenizer_path = hf_hub_download(model_name, "onnx/tokenizer.json")
+                except Exception:
+                    tokenizer_path = hf_hub_download(model_name, "tokenizer.json")
+                session = ort.InferenceSession(model_path)
+                tokenizer = Tokenizer.from_file(tokenizer_path)
+                tokenizer.enable_truncation(max_length=512)
+                _hf_onnx_cache[model_name] = (session, tokenizer, 512)
+    return _hf_onnx_cache[model_name]
+
+
+def _embed_hf_onnx(texts: list[str], model_name: str) -> list[list[float]]:
+    """Embed texts using a custom HF ONNX model with mean pooling."""
+    import numpy as np
+
+    if not texts:
+        return []
+
+    session, tokenizer, max_len = _init_hf_onnx(model_name)
+    all_embeddings: list[list[float]] = []
+    batch_size = 32
+
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i : i + batch_size]
+        encodings = tokenizer.encode_batch(batch)
+        seq_len = min(max(len(e.ids) for e in encodings), max_len)
+        input_ids = np.array(
+            [e.ids[:seq_len] + [0] * (seq_len - min(len(e.ids), seq_len)) for e in encodings],
+            dtype=np.int64,
+        )
+        attention_mask = np.array(
+            [
+                e.attention_mask[:seq_len] + [0] * (seq_len - min(len(e.attention_mask), seq_len))
+                for e in encodings
+            ],
+            dtype=np.int64,
+        )
+        feed = {"input_ids": input_ids, "attention_mask": attention_mask}
+        # Some ONNX exports include token_type_ids, others don't
+        input_names = {inp.name for inp in session.get_inputs()}
+        if "token_type_ids" in input_names:
+            feed["token_type_ids"] = np.zeros_like(input_ids, dtype=np.int64)
+
+        outputs = session.run(None, feed)
+        # Mean pooling over token embeddings (output 0 is last_hidden_state)
+        hidden = outputs[0]  # (batch, seq_len, dim)
+        mask_expanded = attention_mask[:, :, np.newaxis].astype(np.float32)
+        summed = (hidden * mask_expanded).sum(axis=1)
+        counts = mask_expanded.sum(axis=1).clip(min=1e-9)
+        embs = summed / counts
+        # L2 normalize
+        norms = np.linalg.norm(embs, axis=1, keepdims=True).clip(min=1e-9)
+        embs = embs / norms
+        all_embeddings.extend(embs.tolist())
+
+    return all_embeddings
+
+
+def _query_hf_onnx(text: str, model_name: str) -> list[float]:
+    """Embed a single query with a custom HF ONNX model."""
+    return _embed_hf_onnx([text], model_name)[0]
+
+
+def _warmup_hf_onnx(model_name: str) -> None:
+    """Pre-load a custom HF ONNX model."""
+    _embed_hf_onnx(["warmup"], model_name)
+
+
+# ------------------------------------------------------------------ #
 # MLX backend (Apple Silicon GPU)                                      #
 # ------------------------------------------------------------------ #
 
@@ -366,6 +467,9 @@ def warmup(model_name: str, backend: BackendType = "auto") -> None:
     if _is_gemma_model(model_name):
         _warmup_gemma(model_name)
         return
+    if _is_hf_onnx_model(model_name):
+        _warmup_hf_onnx(model_name)
+        return
     resolved = _resolve(backend)
     if resolved == "mlx":
         _warmup_mlx(model_name)
@@ -390,6 +494,8 @@ def embed_texts(
     """
     if _is_gemma_model(model_name):
         return _embed_gemma(texts, model_name)
+    if _is_hf_onnx_model(model_name):
+        return _embed_hf_onnx(texts, model_name)
     resolved = _resolve(backend)
     if resolved == "mlx":
         return _embed_mlx(texts, model_name)
@@ -413,6 +519,8 @@ def embed_query(
     """
     if _is_gemma_model(model_name):
         return _query_gemma(text, model_name)
+    if _is_hf_onnx_model(model_name):
+        return _query_hf_onnx(text, model_name)
     resolved = _resolve(backend)
     if resolved == "mlx":
         return _query_mlx(text, model_name)
