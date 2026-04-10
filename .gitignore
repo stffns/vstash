@@ -43,3 +43,5 @@ experiments/data/wikipedia_corpus.json
 
 # Large test files
 experiments/*.pdf
+experiments/results/rrf_training_pairs.jsonl
+experiments/results/rrf_training_pairs.stats.json
