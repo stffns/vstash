@@ -32,6 +32,10 @@ KNOWN_DIMS: dict[str, int] = {
     "BAAI/bge-base-en-v1.5": 768,
     "BAAI/bge-large-en-v1.5": 1024,
     "nomic-ai/nomic-embed-text-v1.5": 768,
+    # RRF-tuned: BGE-small fine-tuned with hybrid retrieval disagreement signal.
+    # +5% NDCG on SciFact, +18% on NFCorpus vs base BGE-small.
+    # Requires sentence-transformers (not FastEmbed). Use via vstash reindex.
+    "stffens/bge-small-rrf-v1": 384,
     # Multilingual models (FastEmbed-supported)
     "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2": 384,
     "sentence-transformers/paraphrase-multilingual-mpnet-base-v2": 768,
