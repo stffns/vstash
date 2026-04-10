@@ -788,41 +788,43 @@ class VstashStore:
                 )
 
                 now_iso = datetime.now(timezone.utc).isoformat()
-                for seq, (text, embedding) in enumerate(zip(chunks, embeddings)):
-                    # Insert chunk — get rowid for linking vec + fts tables
-                    # last_accessed_at is NULL until the chunk is actually accessed
-                    # via search, so the decay formula doesn't treat new chunks as
-                    # "recently accessed".
-                    cursor = self._conn.execute(
-                        "INSERT INTO chunks (doc_id, seq, text, access_count, created_at, last_accessed_at)"
-                        " VALUES (?, ?, ?, 0, ?, NULL)",
-                        [doc_id, seq, text, now_iso],
-                    )
-                    rowid = cursor.lastrowid
 
-                    # Vector index entry
-                    self._conn.execute(
-                        "INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)",
-                        [rowid, _serialize(embedding)],
-                    )
+                # Insert chunk — last_accessed_at is NULL until the chunk is actually accessed
+                # via search, so the decay formula doesn't treat new chunks as "recently accessed".
+                chunk_data = [(doc_id, seq, text, now_iso) for seq, text in enumerate(chunks)]
+                self._conn.executemany(
+                    "INSERT INTO chunks (doc_id, seq, text, access_count, created_at, last_accessed_at)"
+                    " VALUES (?, ?, ?, 0, ?, NULL)",
+                    chunk_data,
+                )
 
-                    # FTS5 entry (rowid must match chunks.id)
-                    self._conn.execute(
-                        "INSERT INTO fts_chunks (rowid, text) VALUES (?, ?)",
-                        [rowid, text],
-                    )
+                # Get rowids for linking vec + fts tables
+                rowids = [
+                    row[0]
+                    for row in self._conn.execute(
+                        "SELECT id FROM chunks WHERE doc_id = ? ORDER BY seq",
+                        [doc_id],
+                    ).fetchall()
+                ]
+
+                # Vector index entries
+                vec_data = [(rowid, _serialize(emb)) for rowid, emb in zip(rowids, embeddings)]
+                self._conn.executemany(
+                    "INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)",
+                    vec_data,
+                )
+
+                # FTS5 entries (rowid must match chunks.id)
+                fts_data = [(rowid, text) for rowid, text in zip(rowids, chunks)]
+                self._conn.executemany(
+                    "INSERT INTO fts_chunks (rowid, text) VALUES (?, ?)",
+                    fts_data,
+                )
 
                 # Add to snapvec in-memory (persisted after successful commit)
                 if self._snap is not None:
-                    snap_ids = [
-                        row[0]
-                        for row in self._conn.execute(
-                            "SELECT id FROM chunks WHERE doc_id = ? ORDER BY seq",
-                            [doc_id],
-                        ).fetchall()
-                    ]
                     snap_vecs = np.array(embeddings, dtype=np.float32)
-                    self._snap.add_batch(snap_ids, snap_vecs)
+                    self._snap.add_batch(rowids, snap_vecs)
                     self._snap_dirty = True
 
                 self._conn.commit()
