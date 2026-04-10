@@ -22,7 +22,7 @@ _HAS_TREE_SITTER = False
 _HAS_PARSO = False
 
 try:
-    from tree_sitter_language_pack import get_language, get_parser  # noqa: F401
+    from tree_sitter_language_pack import get_parser  # noqa: F401
 
     _HAS_TREE_SITTER = True
 except ImportError:
