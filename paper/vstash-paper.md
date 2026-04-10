@@ -728,7 +728,19 @@ The tuned model improves NDCG on 4/5 datasets with zero significant regression. 
 
 3. **The improvement is free.** No human labeling, no external LLM calls, no additional data. The signal comes from running the existing hybrid pipeline on existing BEIR data. Any vstash user can generate these triples from their own corpus.
 
-The fine-tuned model is published as `stffens/bge-small-rrf-v1` on HuggingFace. Full-pipeline NDCG results (with adaptive RRF, FTS5, and MMR dedup) are reported in Table 10b.
+The fine-tuned model is published as `stffens/bge-small-rrf-v1` on HuggingFace.
+
+### Table 10b: Full-pipeline NDCG@10 with RRF-tuned embedding (adaptive RRF + FTS5 + MMR dedup)
+
+| Dataset | Docs | BM25 | ColBERTv2 | vstash (base) | vstash (tuned) | vs base | vs ColBERTv2 |
+|---------|:----:|:---:|:---:|:---:|:---:|:---:|:---:|
+| SciFact | 5,183 | 0.665 | 0.693 | 0.7263 | **0.7526** | **+3.6%** | **+8.6%** |
+| NFCorpus | 3,633 | 0.325 | 0.344 | 0.3590 | **0.4124** | **+14.9%** | **+19.9%** |
+| FiQA | 57,638 | 0.236 | 0.356 | 0.3917 | **0.3863** | -1.4% | **+8.5%** |
+| SciDocs | 25,657 | 0.158 | 0.154 | 0.1943 | **0.1953** | **+0.5%** | **+26.8%** |
+| ArguAna | 8,674 | 0.315 | 0.463 | 0.4370 | 0.4329 | -0.9% | -6.5% |
+
+The RRF-tuned model improves or maintains NDCG on 3/5 datasets and surpasses ColBERTv2 (110M params) on 4/5 datasets, despite being a 33M parameter model fine-tuned with zero human labels. The largest gain (+14.9% vs base, +19.9% vs ColBERTv2 on NFCorpus) occurs on the dataset with the highest signal disagreement rate during training. FiQA shows a minor regression vs base (-1.4%) but still surpasses ColBERTv2 by +8.5%. ArguAna is the only dataset where both base and tuned vstash underperform ColBERTv2, consistent with the known limitation on long argumentative queries (avg 194 words).
 
 ### 8.11 Adaptive RRF Weights
 
