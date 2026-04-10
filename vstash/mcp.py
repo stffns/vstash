@@ -17,6 +17,7 @@ import json
 import logging
 import math
 import threading
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +69,7 @@ _lock = threading.RLock()
 # ------------------------------------------------------------------ #
 
 _jobs: dict[str, dict[str, Any]] = {}
+_completed_jobs: deque[str] = deque()
 _jobs_lock = threading.Lock()
 
 
@@ -258,13 +260,14 @@ def _cleanup_jobs() -> None:
     with _jobs_lock:
         if len(_jobs) <= _MAX_JOBS:
             return
-        # Remove completed/errored jobs first (oldest first by insertion order)
-        to_remove = []
-        for jid, job in _jobs.items():
-            if job["status"] in ("completed", "error"):
-                to_remove.append(jid)
-        for jid in to_remove[: len(_jobs) - _MAX_JOBS]:
-            del _jobs[jid]
+
+        num_to_remove = len(_jobs) - _MAX_JOBS
+
+        while num_to_remove > 0 and _completed_jobs:
+            jid = _completed_jobs.popleft()
+            if jid in _jobs:
+                del _jobs[jid]
+                num_to_remove -= 1
 
 
 def _run_directory_job(
@@ -313,11 +316,13 @@ def _run_directory_job(
                     "results": [r.model_dump() for r in results],
                 }
             )
+            _completed_jobs.append(job_id)
         _cleanup_jobs()
     except Exception as exc:
         logger.exception("Background ingestion failed for job %s", job_id)
         with _jobs_lock:
             _jobs[job_id].update({"status": "error", "error": str(exc)})
+            _completed_jobs.append(job_id)
 
 
 @mcp_server.tool()
