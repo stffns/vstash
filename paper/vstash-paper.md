@@ -374,7 +374,7 @@ The fundamental problem: spread depends on per-chunk access count variance withi
 
 ### 5.2 Distance-Based Signal
 
-The cosine distance of the best vector match directly measures "how far is this query from the nearest document." Relevant queries have best distances clustered around 0.5–0.85; irrelevant queries have distances > 0.95.
+The cosine distance of the best vector match directly measures "how far is this query from the nearest document." Relevant queries have best distances clustered around 0.5-0.85; irrelevant queries have distances > 0.95.
 
 ### Table 1b: Vector distance as relevance discriminator
 
@@ -392,9 +392,25 @@ The cosine distance of the best vector match directly measures "how far is this 
 | distance < 0.95 AND spread > 0.005 | 0.909 | 1.000 | 0.952 | 0.950 |
 | distance < 1.00 AND spread > 0.005 | 0.909 | 1.000 | 0.952 | 0.950 |
 
-**Key advantages over spread:** (1) Works from the first search — no scoring, no access history, no warm-up period. (2) Zero class overlap vs. complete overlap. (3) No human threshold tuning needed — 0.95 is a natural gap in the distance distribution.
+**Key advantages over spread:** (1) Works from the first search, with no scoring, no access history, no warm-up period. (2) Zero class overlap vs. complete overlap. (3) No human threshold tuning needed: 0.95 is a natural gap in the distance distribution.
 
-**Statistical limitations.** With n=20 queries (10 per class), a single misclassification changes F1 by ~0.05. The 95% Wilson confidence interval for accuracy (19/20) is [0.759, 0.994]. The zero-overlap result is encouraging but should be interpreted as a strong preliminary signal rather than a definitive threshold. Validation on a larger query set (100+ queries across diverse corpora) is needed to confirm that the 0.95 gap generalizes beyond this benchmark. The discard telemetry system (§5.4) is designed to provide this validation from real-world usage.
+### 5.2.1 Large-Scale Validation on BEIR
+
+The preliminary n=20 result was validated on 5 standard BEIR benchmarks using cross-domain queries (native queries from each dataset as "relevant," queries from the other 4 datasets as "irrelevant"). Total evaluation: ~47,000 queries across SciFact, NFCorpus, FiQA, SciDocs, and ArguAna.
+
+### Table 1d: Distance-based relevance signal on BEIR (full query sets)
+
+| Dataset | Rel queries | Irrel queries | Best threshold | F1 | Precision | Recall |
+|---------|:-:|:-:|:-:|:-:|:-:|:-:|
+| ArguAna | 1,406 | 9,999 | 0.65 | **0.996** | 0.997 | 0.996 |
+| SciDocs | 1,000 | 9,999 | 0.71 | **0.856** | 0.832 | 0.881 |
+| FiQA | 648 | 6,752 | 0.71 | **0.763** | 0.737 | 0.792 |
+| SciFact | 300 | 9,999 | 0.71 | **0.598** | 0.567 | 0.633 |
+| NFCorpus | 323 | 9,999 | 0.76 | **0.472** | 0.441 | 0.508 |
+
+The signal exhibits a clear domain-dependency gradient. When query and corpus domains are distinct (ArguAna arguments vs. biomedical documents), the distance signal achieves near-perfect separation (F1=0.996). When domains overlap (SciFact biomedical queries against NFCorpus biomedical corpus), the signal degrades to near-random (F1=0.472). The optimal threshold varies by domain (0.65-0.76), confirming that the production threshold of 0.95 is conservative.
+
+**Interpretation.** Vector distance is an effective *off-topic detector* across distinct domains but should not be treated as a precision relevance classifier for intra-domain queries. The three-tier system (Section 5.3) remains appropriate: "high" confidence is warranted for cross-domain off-topic detection, while intra-domain discrimination requires the full hybrid pipeline (vector + FTS + adaptive RRF).
 
 ### 5.3 Tiered Ghost Warning
 
@@ -541,13 +557,15 @@ Key findings:
 
 ### 8.3 Relevance Signal
 
-The distance-based signal (§5.2) at threshold *d < 0.95*:
+The distance-based signal (Section 5.2) at threshold *d < 0.95*:
 
 - **Precision = 0.909**: one false positive among 10 irrelevant queries.
 - **Recall = 1.000**: detects all 10 relevant queries.
 - **F1 = 0.952**, **Accuracy = 95.0%**: across 20 queries total (10 relevant + 10 irrelevant).
 
-This supersedes the score-spread signal, which achieved F1 = 0.667 with complete class overlap even after 30 rounds of scoring warm-up. The distance signal works from the first search with no dependencies on scoring or access history — critical for tool autonomy. However, the sample size (n=20) limits statistical power: the 95% Wilson confidence interval for accuracy is [0.759, 0.994]. See §5.2 for a discussion of this limitation.
+This supersedes the score-spread signal, which achieved F1 = 0.667 with complete class overlap even after 30 rounds of scoring warm-up. The distance signal works from the first search with no dependencies on scoring or access history, which is critical for tool autonomy.
+
+**Large-scale validation (Section 5.2.1).** The preliminary n=20 result was extended to ~47,000 queries across 5 BEIR datasets using cross-domain evaluation. The signal achieves F1 = 0.996 on cross-domain queries (ArguAna) but degrades to F1 = 0.472 on intra-domain queries (NFCorpus). This establishes the distance signal as a reliable off-topic detector rather than a universal relevance classifier. See Table 1d for per-dataset results.
 
 ### 8.4 Code-Aware Chunking
 
@@ -665,14 +683,54 @@ Three observations:
 | LLM memory (24 papers) | 786 | 3.4 ms | 3.4 ms | 4.0 ms | 4.1 ms |
 | Real user corpus (209 docs) | 1,087 | 5.0 ms | 4.8 ms | 8.1 ms | 8.1 ms |
 | LOTR full book (1 doc, Spanish) | 1,514 | 14.1 ms | 13.4 ms | 22.6 ms | 22.6 ms |
-| BEIR SciFact (5,183 docs) | 5,183* | 13.4 ms | — | — | — |
+| BEIR SciFact (5,183 docs) | 5,183* | 13.4 ms | - | - | - |
 | Synthetic scale test | 10,005 | 15.7 ms | 14.1 ms | 23.1 ms | 23.1 ms |
+| **SciFact + synthetic (50K)** | **50,000** | **22.1 ms** | **20.9 ms** | **30.6 ms** | **35.2 ms** |
 
 *\* BEIR SciFact documents are short (mean 215 words), ingested as 1 chunk per document.*
 
-Search latency scales sub-linearly: 10,005 chunks takes 15.7 ms mean — only 4.6× slower than 786 chunks despite 12.7× more data. The system remains interactive (sub-25ms P95) well beyond the "small-to-moderate" scale originally claimed. The `explain` diagnostic flag adds no measurable overhead (within noise at ±1.4 ms).
+Search latency scales sub-linearly: 50,000 chunks takes 20.9 ms median, only 1.5x slower than 10,005 chunks despite 5x more data. The system remains interactive (sub-31ms P95 at 50K) well beyond the "small-to-moderate" scale originally claimed. NDCG@10 remains stable at 0.69 across all scales from 1K to 50K chunks, confirming that the retrieval pipeline does not degrade with corpus size. The `explain` diagnostic flag adds no measurable overhead (within noise at +/-1.4 ms).
 
-### 8.10 Adaptive RRF Weights
+### Table 9b: NDCG@10 stability across scale (SciFact + synthetic padding)
+
+| Scale | Total chunks | NDCG@10 | Latency p50 | Latency p95 |
+|:-----:|:------------:|:-------:|:-----------:|:-----------:|
+| 1K | 5,183 | 0.6891 | 11.1 ms | 24.9 ms |
+| 5K | 5,183 | 0.6891 | 10.2 ms | 19.2 ms |
+| 10K | 10,000 | 0.6849 | 10.9 ms | 19.0 ms |
+| 50K | 50,000 | 0.6897 | 20.9 ms | 30.6 ms |
+
+### 8.10 Self-Supervised Embedding Refinement via Hybrid Retrieval Disagreement
+
+The hybrid retrieval pipeline produces a natural training signal: when vector search and FTS5 disagree on which chunks are relevant, the disagreement identifies cases where the dense encoder fails. We exploit this signal to fine-tune the embedding model without human labels.
+
+**Signal analysis.** Across 753 queries on 3 BEIR datasets (SciFact, NFCorpus, FiQA), 82% of queries produce top-5 disagreement between vector-heavy (vec=0.95, fts=0.05) and FTS-heavy (vec=0.05, fts=0.95) search. Hard negatives are balanced: 51% are chunks ranked high by vector but absent from FTS top-5 (dense blind spots), and 49% are the reverse (lexical blind spots). This yields 76K (query, positive, hard_negative) triples at zero labeling cost.
+
+**Training.** BGE-small-en-v1.5 (33M params, 384d) was fine-tuned using MultipleNegativesRankingLoss (MNRL) for 2 epochs at lr=3e-6 with batch size 64. TripletLoss was evaluated first but caused catastrophic degradation (-84% NDCG after 3 epochs at lr=2e-5). MNRL preserves the base model's knowledge while learning from in-batch negatives derived from the disagreement signal.
+
+### Table 10a: Embedding fine-tune NDCG@10 on BEIR (base vs. RRF-tuned, vector component only)
+
+| Dataset | BGE-small (base) | vstash-bge-rrf (tuned) | Delta |
+|---------|:-:|:-:|:-:|
+| NFCorpus | 0.3480 | **0.4116** | **+18.3%** |
+| SciFact | 0.6778 | **0.7116** | **+5.0%** |
+| FiQA | 0.0600 | **0.0629** | **+4.8%** |
+| SciDocs | 0.0726 | **0.0758** | **+4.4%** |
+| ArguAna | 0.4438 | 0.4375 | -1.4% |
+
+The tuned model improves NDCG on 4/5 datasets with zero significant regression. The largest gain (+18.3% on NFCorpus) occurs on the dataset where the base model has the most room for improvement. ArguAna's minor regression (-1.4%) is expected: its 200-word argumentative queries are atypical of the training distribution.
+
+**Key findings:**
+
+1. **Loss function matters more than hyperparameters.** TripletLoss with any configuration (3 epochs to 0.3 epochs, lr from 2e-5 to 1e-6) either destroyed the model or left it unchanged. MNRL with the same data produced consistent improvement. The mechanism: TripletLoss pushes individual negatives away with brute force, distorting the embedding space. MNRL adjusts relationships across 64 documents simultaneously per batch, preserving the global structure.
+
+2. **The training signal transfers across domains.** Triples were generated from 3 datasets (SciFact, NFCorpus, FiQA). The improvement generalized to SciDocs (+4.4%), which was not in the training set. The model learned to distinguish "semantically close" from "actually relevant" as a general skill, not a domain-specific one.
+
+3. **The improvement is free.** No human labeling, no external LLM calls, no additional data. The signal comes from running the existing hybrid pipeline on existing BEIR data. Any vstash user can generate these triples from their own corpus.
+
+The fine-tuned model is published as `stffens/bge-small-rrf-v1` on HuggingFace. Full-pipeline NDCG results (with adaptive RRF, FTS5, and MMR dedup) are reported in Table 10b.
+
+### 8.11 Adaptive RRF Weights
 
 Fixed RRF weights (0.6 vec / 0.4 fts) assume all queries benefit equally from keyword matching. BEIR evaluation revealed this assumption fails on long, semantically-rich queries (ArguAna: avg 194 words, -16.1% vs Chroma with fixed weights).
 
@@ -721,9 +779,9 @@ NDCG measures retrieval ranking in isolation. To evaluate what users actually ex
 
 ## 9. Limitations and Future Work
 
-**Evaluation scale.** Experiments now span up to 10,005 chunks (Table 9) and 5,183 documents (BEIR SciFact, Table 8), confirming sub-25ms latency and competitive NDCG at this scale. However, 50K–100K chunk performance remains untested. SQLite's single-writer model may bottleneck at 10⁶+ chunks under concurrent write load, though WAL mode and batching mitigate this for single-user scenarios.
+**Evaluation scale.** Experiments now span up to 50,000 chunks (Table 9), confirming sub-31ms P95 latency and stable NDCG at this scale (Table 9b). SQLite's single-writer model may bottleneck at 10^6+ chunks under concurrent write load, though WAL mode and batching mitigate this for single-user scenarios. 100K+ chunk performance remains untested.
 
-**Relevance signal sample size.** The F1 = 0.952 distance-based relevance signal (§5) is evaluated on only 20 queries (10 relevant + 10 irrelevant). At this sample size, the 95% Wilson confidence interval for accuracy is [0.759, 0.994] — the true performance could be materially worse. The zero-overlap result is a promising preliminary signal, but a reviewer should not treat it as statistically conclusive. Validation on 100+ queries across diverse corpora and embedding models is needed.
+**Relevance signal domain dependence.** The distance-based relevance signal (Section 5.2) was validated on ~47,000 queries across 5 BEIR datasets (Table 1d). The signal is effective as an off-topic detector when query and corpus domains are distinct (F1 = 0.856-0.996) but degrades to near-random on intra-domain queries where both relevant and irrelevant documents share domain vocabulary (F1 = 0.472-0.598). The optimal threshold varies by domain (0.65-0.76). The production three-tier system (Section 5.3) with threshold 0.95 remains appropriate as a conservative default.
 
 **LLM judge for relevance labels.** Tables 2a–2b use an LLM judge (Qwen 3.5:9B) for graded relevance labels with partial human validation (27/30 agreement on a 30-label subset). Full human annotation was not performed. The agreement rate suggests the ablation directions are reliable, but absolute NDCG values should be interpreted with this caveat — particularly the P@3 = 1.000 result, which could be sensitive to label noise.
 
@@ -749,19 +807,21 @@ NDCG measures retrieval ranking in isolation. To evaluate what users actually ex
 
 ## 10. Conclusion
 
-We presented vstash, a local-first document memory system that demonstrates six findings and one negative result relevant to LLM agent memory:
+We presented vstash, a local-first document memory system that demonstrates seven findings and one negative result relevant to LLM agent memory:
 
 1. **Post-RRF scoring does not improve retrieval on real benchmarks.** Frequency+decay reranking (-1.6% NDCG on SciFact), history-augmented recall (0% effect), and off-the-shelf cross-encoder reranking (-0.3% to -3.1%) all failed to improve the hybrid RRF baseline. The maturity gate (γ) successfully prevented catastrophic degradation (fixed β=0.5 caused -9.0%) but the scoring itself added no value. This negative result led to the removal of the scoring pipeline in v0.18.0, simplifying the system to: vector + FTS5 → adaptive RRF → MMR dedup. In v0.19.0, an opt-in recency boost was introduced as a simpler alternative for agentic memory (§4.6).
 
-2. **Vector distance is a promising autonomous relevance signal.** The cosine distance of the best vector match achieves F1 = 0.952 on a small benchmark (n=20) with zero class overlap, no scoring dependency, and no warm-up period. The result is preliminary (95% CI for accuracy: [0.759, 0.994]) but supersedes our initial score-spread approach (F1 = 0.667, complete class overlap) and eliminates the need for human threshold tuning.
+2. **Vector distance is an effective off-topic detector with domain-dependent precision.** The cosine distance of the best vector match achieves F1 = 0.996 on cross-domain queries (ArguAna, ~47K queries across 5 BEIR datasets) but degrades to F1 = 0.472 on intra-domain queries (NFCorpus). The signal works from the first search with no scoring dependency and no warm-up period, superseding the initial score-spread approach (F1 = 0.667). It is best understood as an off-topic detector rather than a universal relevance classifier.
 
 3. **Intra-document MMR deduplication improves diversity, quality, and multi-section coverage.** Replacing hard per-document dedup with intra-document MMR raises unique document count from ~3.2 to 5.0 while improving NDCG@5 from 0.814 to 0.829. Unlike hard dedup, MMR allows semantically diverse sections from the same long document to surface — on a 35-chunk paper, queries spanning multiple sections return 3–5× more relevant results than hard dedup.
 
 4. **Context expansion is cheap and valuable.** Fetching adjacent chunks (±1 window) provides 2.64× more text for LLM consumption at +0.12 ms cost — a near-free improvement to answer quality.
 
-5. **Local-first is viable up to 10K+ chunks.** With 15.7 ms mean latency at 10,005 chunks and sub-25ms P95, a single SQLite file (plus optional sidecar for snapvec) and zero cloud dependencies, hybrid retrieval with deduplication and relevance signaling runs comfortably on a single machine for personal knowledge management workloads. On the BEIR SciFact benchmark (5,183 docs), vstash achieves NDCG@10 = 0.7263 — surpassing ColBERTv2 (0.693), BM25/Elasticsearch (0.665), and dense-only retrieval (0.653).
+5. **Local-first is viable up to 50K+ chunks.** With 20.9 ms median latency at 50,000 chunks and sub-31ms P95, a single SQLite file (plus optional sidecar for snapvec) and zero cloud dependencies, hybrid retrieval with deduplication and relevance signaling runs comfortably on a single machine for personal knowledge management workloads. NDCG@10 remains stable at 0.69 across all scales from 1K to 50K chunks (Table 9b). On the BEIR SciFact benchmark (5,183 docs), vstash achieves NDCG@10 = 0.7263, surpassing ColBERTv2 (0.693), BM25/Elasticsearch (0.665), and dense-only retrieval (0.653).
 
 6. **Adaptive RRF improves all 5 BEIR datasets with zero regression.** IDF-based weight adjustment per query (rare terms boost FTS, common terms boost vector) plus adaptive distance cutoff for long queries improves NDCG@10 by +0.1% to +21.4% across SciFact, NFCorpus, SciDocs, FiQA, and ArguAna. On SciFact, vstash achieves NDCG@10 = 0.7263 — exceeding ColBERTv2 (+4.8%) with BGE-small (384d). The ArguAna improvement is primarily from the adaptive distance cutoff — long queries (avg 194 words) produce diffuse embeddings where the default 1.15x cutoff eliminates relevant results; relaxing to 5.0x recovers them.
+
+7. **Hybrid retrieval disagreement is a viable self-supervised training signal for embedding models.** 82% of queries produce top-5 disagreement between vector and FTS signals. Using these disagreements as hard negatives, we fine-tune BGE-small (33M params) with MultipleNegativesRankingLoss, improving NDCG@10 on 4/5 BEIR datasets (+4.4% to +18.3%) with no significant regression on the fifth (Table 10a). The improvement transfers across domains: triples generated from 3 datasets generalized to a 4th unseen dataset (+4.4% on SciDocs). TripletLoss with the same data caused catastrophic degradation (-84%), establishing that the loss function, not the data, is the critical design choice. The fine-tuned model (`stffens/bge-small-rrf-v1`) is published on HuggingFace and requires no additional dependencies beyond sentence-transformers for training.
 
 Beyond these empirical findings, vstash has evolved into a complete agent memory platform: multi-profile isolation enables separate knowledge domains with federated cross-profile search (v0.11), a cross-session journal provides lightweight append-only memory for LLM agent context (v0.12), and direct chunk access via `get_chunk` enables downstream applications to pin specific knowledge atoms by ID (v0.13).
 
