@@ -3302,34 +3302,87 @@ class VstashStore:
         if not results or window < 1:
             return results
 
-        expanded = []
+        # -- Step 1: batch-resolve chunk_id → doc_id via PK lookup -------
+        chunk_ids = [r.chunk_id for r in results]
+        doc_id_map: dict[int, str] = {}
+        for i in range(0, len(chunk_ids), _SQLITE_PARAM_BATCH):
+            batch = chunk_ids[i : i + _SQLITE_PARAM_BATCH]
+            placeholders = ",".join("?" * len(batch))
+            rows = self._conn.execute(
+                f"SELECT id, doc_id FROM chunks WHERE id IN ({placeholders})",
+                batch,
+            ).fetchall()
+            for row in rows:
+                doc_id_map[row["id"]] = row["doc_id"]
+
+        # Fallback for results whose chunk_id didn't resolve (stale IDs
+        # from cached results or synthetic SearchResult objects in tests).
         for r in results:
-            # Resolve doc_id via chunk text match to avoid cross-collection
-            # leakage when the same path exists in multiple collections.
-            doc_row = self._conn.execute(
-                "SELECT c.doc_id FROM chunks c JOIN documents d ON d.id = c.doc_id "
-                "WHERE d.path = ? AND c.seq = ? AND c.text = ? LIMIT 1",
-                [r.path, r.chunk, r.text],
-            ).fetchone()
-            if not doc_row:
+            if r.chunk_id not in doc_id_map:
+                row = self._conn.execute(
+                    "SELECT c.doc_id FROM chunks c JOIN documents d ON d.id = c.doc_id "
+                    "WHERE d.path = ? AND c.seq = ? AND c.text = ? LIMIT 1",
+                    [r.path, r.chunk, r.text],
+                ).fetchone()
+                if row:
+                    doc_id_map[r.chunk_id] = row["doc_id"]
+
+        # -- Step 2: batch-fetch adjacent chunks grouped by doc_id --------
+        # Build (doc_id, seq_lo, seq_hi) ranges and group by doc_id to
+        # minimise queries.  Each doc_id gets one range query that covers
+        # the union of all windows for results in that document.
+        from collections import defaultdict
+
+        doc_ranges: dict[str, tuple[int, int]] = {}
+        doc_result_indices: dict[str, list[int]] = defaultdict(list)
+        for idx, r in enumerate(results):
+            did = doc_id_map.get(r.chunk_id)
+            if did is None:
+                continue
+            lo, hi = r.chunk - window, r.chunk + window
+            if did in doc_ranges:
+                old_lo, old_hi = doc_ranges[did]
+                doc_ranges[did] = (min(old_lo, lo), max(old_hi, hi))
+            else:
+                doc_ranges[did] = (lo, hi)
+            doc_result_indices[did].append(idx)
+
+        # Fetch all needed chunks per doc_id in one query each.
+        # Key: (doc_id, seq) → text
+        chunk_text_map: dict[tuple[str, int], str] = {}
+        for did, (lo, hi) in doc_ranges.items():
+            rows = self._conn.execute(
+                "SELECT seq, text FROM chunks WHERE doc_id = ? "
+                "AND seq BETWEEN ? AND ? ORDER BY seq",
+                [did, lo, hi],
+            ).fetchall()
+            for row in rows:
+                chunk_text_map[(did, row["seq"])] = row["text"]
+
+        # -- Step 3: assemble expanded results, preserving explain --------
+        expanded = []
+        for idx, r in enumerate(results):
+            did = doc_id_map.get(r.chunk_id)
+            if did is None:
                 expanded.append(r)
                 continue
 
-            row = self._conn.execute(
-                "SELECT text FROM chunks WHERE doc_id = ? AND seq BETWEEN ? AND ? ORDER BY seq",
-                [doc_row["doc_id"], r.chunk - window, r.chunk + window],
-            ).fetchall()
+            parts = []
+            for seq in range(r.chunk - window, r.chunk + window + 1):
+                text = chunk_text_map.get((did, seq))
+                if text is not None:
+                    parts.append(text)
 
-            if row:
-                combined_text = "\n".join(chunk["text"] for chunk in row)
+            if parts:
                 expanded.append(
                     SearchResult(
                         chunk_id=r.chunk_id,
-                        text=combined_text,
+                        text="\n".join(parts),
                         title=r.title,
                         path=r.path,
                         chunk=r.chunk,
                         score=r.score,
+                        explain=r.explain,
                     )
                 )
             else:
