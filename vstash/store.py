@@ -838,6 +838,123 @@ class VstashStore:
                 raise
         return doc_id
 
+    def add_documents_batch(
+        self,
+        documents: list[dict],
+    ) -> list[str]:
+        """Ingest multiple documents in a single transaction.
+
+        Significantly faster than calling add_document() in a loop when
+        ingesting many documents, because it amortises the transaction
+        overhead (BEGIN/COMMIT) across all documents.
+
+        Args:
+            documents: List of dicts, each with keys:
+                path, title, chunks, embeddings, source_type,
+                and optionally: collection, project, layer, tags.
+
+        Returns:
+            List of generated document IDs (same order as input).
+        """
+        if not documents:
+            return []
+
+        from .validation import validate_document_input
+
+        doc_ids: list[str] = []
+
+        with self._write_lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                now_iso = datetime.now(timezone.utc).isoformat()
+
+                for doc in documents:
+                    path = doc["path"]
+                    title = doc["title"]
+                    chunks = doc["chunks"]
+                    embeddings = doc["embeddings"]
+                    source_type = doc["source_type"]
+                    collection = doc.get("collection", "default")
+                    project = doc.get("project")
+                    layer = doc.get("layer")
+                    tags = doc.get("tags")
+
+                    validate_document_input(
+                        path=path,
+                        chunks=chunks,
+                        embeddings=embeddings,
+                        limits=self._limits,
+                    )
+
+                    doc_id = hashlib.sha256(f"{collection}:{path}".encode("utf-8")).hexdigest()[:32]
+                    doc_ids.append(doc_id)
+
+                    self._delete_by_doc_id(doc_id)
+
+                    self._conn.execute(
+                        """INSERT INTO documents
+                           (id, path, title, source_type, collection,
+                            project, layer, tags,
+                            char_count, chunk_count, added_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        [
+                            doc_id,
+                            path,
+                            title,
+                            source_type,
+                            collection,
+                            project,
+                            layer,
+                            tags,
+                            sum(len(c) for c in chunks),
+                            len(chunks),
+                            now_iso,
+                        ],
+                    )
+
+                    chunk_data = [(doc_id, seq, text, now_iso) for seq, text in enumerate(chunks)]
+                    self._conn.executemany(
+                        "INSERT INTO chunks (doc_id, seq, text, access_count, "
+                        "created_at, last_accessed_at) VALUES (?, ?, ?, 0, ?, NULL)",
+                        chunk_data,
+                    )
+
+                    rowids = [
+                        row[0]
+                        for row in self._conn.execute(
+                            "SELECT id FROM chunks WHERE doc_id = ? ORDER BY seq",
+                            [doc_id],
+                        ).fetchall()
+                    ]
+
+                    vec_data = [(rowid, _serialize(emb)) for rowid, emb in zip(rowids, embeddings)]
+                    self._conn.executemany(
+                        "INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)",
+                        vec_data,
+                    )
+
+                    fts_data = list(zip(rowids, chunks))
+                    self._conn.executemany(
+                        "INSERT INTO fts_chunks (rowid, text) VALUES (?, ?)",
+                        fts_data,
+                    )
+
+                    if self._snap is not None:
+                        snap_vecs = np.array(embeddings, dtype=np.float32)
+                        self._snap.add_batch(rowids, snap_vecs)
+                        self._snap_dirty = True
+
+                self._conn.commit()
+                self._invalidate_idf_cache()
+                if self._snap_dirty:
+                    self._save_snapvec()
+            except Exception:
+                self._conn.rollback()
+                self._reload_snapvec()
+                raise
+
+        return doc_ids
+
     def delete_by_path_prefix(self, prefix: str) -> int:
         """Remove all documents whose path starts with *prefix*.
 

@@ -278,21 +278,29 @@ def main() -> None:
                 print(f"    {min(bs + 64, len(doc_texts))}/{len(doc_texts)}...")
         print(f"  Embeddings done ({len(all_embeddings)} vectors)")
 
-        # vstash
+        # vstash — batch ingest for speed
         db_path = tempfile.mktemp(suffix=".db")
         store = VstashStore(db_path, embedding_dim=dim)
         t0 = time.perf_counter()
         vstash_id_map: dict[str, str] = {}
+        batch: list[dict] = []
         for doc_id, text, emb in zip(doc_ids, doc_texts, all_embeddings):
             path = f"/beir/{doc_id}"
-            store.add_document(
-                path=path,
-                title=corpus[doc_id].get("title", ""),
-                chunks=[text],
-                embeddings=[emb],
-                source_type="text",
-            )
             vstash_id_map[path] = doc_id
+            batch.append(
+                {
+                    "path": path,
+                    "title": corpus[doc_id].get("title", ""),
+                    "chunks": [text],
+                    "embeddings": [emb],
+                    "source_type": "text",
+                }
+            )
+            if len(batch) >= 500:
+                store.add_documents_batch(batch)
+                batch = []
+        if batch:
+            store.add_documents_batch(batch)
         v_ingest = time.perf_counter() - t0
         print(f"  [vstash] Ingested in {v_ingest:.1f}s")
 
