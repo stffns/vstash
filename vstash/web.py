@@ -16,6 +16,7 @@ import json
 import logging
 import tempfile
 import threading
+from contextlib import asynccontextmanager
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -343,11 +344,32 @@ async def api_metrics(request: Request) -> JSONResponse:
 # ------------------------------------------------------------------ #
 
 
+@asynccontextmanager
+async def _lifespan(app: Starlette):  # noqa: ARG001
+    """Close the store on shutdown.
+
+    Without an explicit close(), the sqlite3 connection and the
+    sqlite-vec C extension tear down in unpredictable order during
+    interpreter shutdown, producing a malloc double-free crash on
+    Ctrl+C. Closing deterministically while the event loop is still
+    alive avoids that race.
+    """
+    yield
+    global _store  # noqa: PLW0603
+    if _store is not None:
+        try:
+            _store.close()
+        except Exception:  # noqa: BLE001
+            logger.warning("store.close() failed during shutdown", exc_info=True)
+        _store = None
+
+
 def create_app() -> Starlette:
     """Create the Starlette app with all routes."""
     # Eagerly initialize store to avoid lazy-init deadlocks with asyncio
     _get_store()
     return Starlette(
+        lifespan=_lifespan,
         routes=[
             Route("/", index),
             Route("/api/search", api_search, methods=["POST"]),
@@ -387,7 +409,7 @@ body {
 }
 .sidebar {
   width: 280px; background: var(--surface); border-right: 1px solid var(--border);
-  display: flex; flex-direction: column; flex-shrink: 0;
+  display: flex; flex-direction: column; flex-shrink: 0; min-height: 0;
 }
 .sidebar-header { padding: 20px; border-bottom: 1px solid var(--border); }
 .sidebar-header h1 { font-size: 18px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
@@ -409,15 +431,15 @@ body {
   cursor: pointer; transition: border-color 0.2s;
 }
 .upload-zone:hover, .upload-zone.dragover { border-color: var(--accent); color: var(--accent); }
-.main { flex: 1; display: flex; flex-direction: column; }
-.tabs { display: flex; border-bottom: 1px solid var(--border); background: var(--surface); }
+.main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.tabs { display: flex; border-bottom: 1px solid var(--border); background: var(--surface); flex-shrink: 0; }
 .tab {
   padding: 10px 20px; font-size: 13px; color: var(--text-dim);
   cursor: pointer; border-bottom: 2px solid transparent;
   background: none; border-top: none; border-left: none; border-right: none;
 }
 .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
-.tab-content { display: none; flex: 1; flex-direction: column; }
+.tab-content { display: none; flex: 1; flex-direction: column; min-height: 0; }
 .tab-content.active { display: flex; }
 .messages { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; }
 .msg {
@@ -431,7 +453,7 @@ body {
   font-size: 12px; color: var(--text-dim);
 }
 .msg .sources a { color: var(--accent); text-decoration: none; }
-.input-bar { padding: 16px 20px; border-top: 1px solid var(--border); display: flex; gap: 8px; }
+.input-bar { padding: 16px 20px; border-top: 1px solid var(--border); display: flex; gap: 8px; flex-shrink: 0; }
 .input-bar input {
   flex: 1; background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--radius); padding: 10px 14px; color: var(--text); font-size: 14px; outline: none;
@@ -443,8 +465,7 @@ body {
 }
 .input-bar button:hover { background: var(--accent); }
 .input-bar button:disabled { opacity: 0.5; cursor: not-allowed; }
-.search-container { flex: 1; display: flex; flex-direction: column; }
-.search-bar { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; gap: 8px; }
+.search-bar { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; gap: 8px; flex-shrink: 0; }
 .search-bar input {
   flex: 1; background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--radius); padding: 10px 14px; color: var(--text); font-size: 14px; outline: none;
@@ -492,11 +513,9 @@ body {
     </div>
   </div>
   <div class="tab-content" id="tab-search">
-    <div class="search-container">
-      <div class="search-bar"><input type="text" id="search-input" placeholder="Search your documents..."></div>
-      <div class="search-results" id="search-results">
-        <div class="welcome"><h2>Hybrid search</h2><p>Vector similarity + keyword matching. No LLM needed.</p></div>
-      </div>
+    <div class="search-bar"><input type="text" id="search-input" placeholder="Search your documents..."></div>
+    <div class="search-results" id="search-results">
+      <div class="welcome"><h2>Hybrid search</h2><p>Vector similarity + keyword matching. No LLM needed.</p></div>
     </div>
   </div>
 </div>
