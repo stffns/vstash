@@ -1009,9 +1009,8 @@ class VstashStore:
             return False
 
         total_deleted = 0
-        # Process in chunks of 100 to stay well under SQLite's default 999 parameter limit
-        for i in range(0, len(doc_ids), 100):
-            batch_doc_ids = doc_ids[i : i + 100]
+        for i in range(0, len(doc_ids), _SQLITE_PARAM_BATCH):
+            batch_doc_ids = doc_ids[i : i + _SQLITE_PARAM_BATCH]
             doc_placeholders = ",".join("?" * len(batch_doc_ids))
 
             chunk_ids = [
@@ -1022,9 +1021,8 @@ class VstashStore:
             ]
 
             if chunk_ids:
-                # Process chunks in sub-batches of 900
-                for j in range(0, len(chunk_ids), 900):
-                    batch_chunk_ids = chunk_ids[j : j + 900]
+                for j in range(0, len(chunk_ids), _SQLITE_PARAM_BATCH):
+                    batch_chunk_ids = chunk_ids[j : j + _SQLITE_PARAM_BATCH]
                     chunk_placeholders = ",".join("?" * len(batch_chunk_ids))
 
                     # Delete vec_chunks first (no trigger involved)
