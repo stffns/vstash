@@ -864,8 +864,7 @@ class VstashStore:
                 return 0
             try:
                 self._conn.execute("BEGIN IMMEDIATE")
-                for row in rows:
-                    self._delete_by_doc_id(row[0])
+                self._delete_by_doc_ids([row[0] for row in rows])
                 self._conn.commit()
                 self._invalidate_idf_cache()
                 if self._snap_dirty:
@@ -974,8 +973,7 @@ class VstashStore:
                 return False
             try:
                 self._conn.execute("BEGIN IMMEDIATE")
-                for doc_id in doc_ids:
-                    self._delete_by_doc_id(doc_id)
+                self._delete_by_doc_ids(doc_ids)
                 self._conn.commit()
                 self._invalidate_idf_cache()
                 # Persist snapvec AFTER successful SQLite commit
@@ -996,25 +994,60 @@ class VstashStore:
         Returns:
             True if the document existed and was deleted.
         """
-        chunk_ids = [
-            row[0]
-            for row in self._conn.execute(
-                "SELECT id FROM chunks WHERE doc_id = ?", [doc_id]
-            ).fetchall()
-        ]
-        if chunk_ids:
-            placeholders = ",".join("?" * len(chunk_ids))
-            # Delete vec_chunks first (no trigger involved)
-            self._conn.execute(f"DELETE FROM vec_chunks WHERE rowid IN ({placeholders})", chunk_ids)
-            # Delete from snapvec index (in-memory, persisted after commit)
-            if self._snap is not None:
-                for cid in chunk_ids:
-                    self._snap.delete(cid)
-                self._snap_dirty = True
-            # Delete chunks — trg_chunks_delete trigger auto-syncs FTS5
-            self._conn.execute("DELETE FROM chunks WHERE doc_id = ?", [doc_id])
-        cursor = self._conn.execute("DELETE FROM documents WHERE id = ?", [doc_id])
-        return cursor.rowcount > 0
+        return self._delete_by_doc_ids([doc_id])
+
+    def _delete_by_doc_ids(self, doc_ids: list[str]) -> bool:
+        """Delete documents by their internal hash IDs.
+
+        Args:
+            doc_ids: List of 32-char hex document hashes.
+
+        Returns:
+            True if at least one document existed and was deleted.
+        """
+        if not doc_ids:
+            return False
+
+        total_deleted = 0
+        for i in range(0, len(doc_ids), _SQLITE_PARAM_BATCH):
+            batch_doc_ids = doc_ids[i : i + _SQLITE_PARAM_BATCH]
+            doc_placeholders = ",".join("?" * len(batch_doc_ids))
+
+            chunk_ids = [
+                row[0]
+                for row in self._conn.execute(
+                    f"SELECT id FROM chunks WHERE doc_id IN ({doc_placeholders})", batch_doc_ids
+                ).fetchall()
+            ]
+
+            if chunk_ids:
+                for j in range(0, len(chunk_ids), _SQLITE_PARAM_BATCH):
+                    batch_chunk_ids = chunk_ids[j : j + _SQLITE_PARAM_BATCH]
+                    chunk_placeholders = ",".join("?" * len(batch_chunk_ids))
+
+                    # Delete vec_chunks first (no trigger involved)
+                    self._conn.execute(
+                        f"DELETE FROM vec_chunks WHERE rowid IN ({chunk_placeholders})",
+                        batch_chunk_ids,
+                    )
+
+                    # Delete from snapvec index (in-memory, persisted after commit)
+                    if self._snap is not None:
+                        for cid in batch_chunk_ids:
+                            self._snap.delete(cid)
+                        self._snap_dirty = True
+
+                # Delete chunks — trg_chunks_delete trigger auto-syncs FTS5
+                self._conn.execute(
+                    f"DELETE FROM chunks WHERE doc_id IN ({doc_placeholders})", batch_doc_ids
+                )
+
+            cursor = self._conn.execute(
+                f"DELETE FROM documents WHERE id IN ({doc_placeholders})", batch_doc_ids
+            )
+            total_deleted += cursor.rowcount
+
+        return total_deleted > 0
 
     # ------------------------------------------------------------------ #
     # Search — Hybrid RRF                                                  #
