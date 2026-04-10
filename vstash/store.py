@@ -1422,12 +1422,6 @@ class VstashStore:
             # and the relevance-tier signal correctly reports "low"
             # instead of carrying a stale high-confidence distance.
             #
-            # Note: when #160 (explicit ``fts_only``) lands, the vector
-            # path is bypassed upstream and ``vec_rows`` starts empty;
-            # this fallback block then becomes a no-op counter bump
-            # for that mode, which is accurate — the caller asked for
-            # FTS-only and got FTS-only.  Re-add an ``and not fts_only``
-            # guard at rebase time if the double-record becomes noisy.
             # First, always reset ``last_best_distance`` when vec_rows
             # is empty — whether or not there are FTS results. Without
             # this, a query where both pools are empty (e.g. corpus
