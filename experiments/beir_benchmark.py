@@ -265,44 +265,68 @@ def main() -> None:
             )
             continue
 
-        # Pre-compute embeddings (shared between vstash and Chroma)
-        print("  Embedding corpus...")
+        # Pipelined embed + ingest: embed batch N while ingesting batch N-1
+        from concurrent.futures import ThreadPoolExecutor, Future
+
+        EMBED_BATCH = 256
+        INGEST_BATCH = 500
+
         doc_ids = list(corpus.keys())
         doc_texts = [
             (corpus[d].get("title", "") + "\n" + corpus[d].get("text", "")).strip() for d in doc_ids
         ]
-        all_embeddings: list[list[float]] = []
-        for bs in range(0, len(doc_texts), 64):
-            all_embeddings.extend(embed_texts(doc_texts[bs : bs + 64], model_id))
-            if (bs + 64) % 2000 < 64:
-                print(f"    {min(bs + 64, len(doc_texts))}/{len(doc_texts)}...")
-        print(f"  Embeddings done ({len(all_embeddings)} vectors)")
 
-        # vstash — batch ingest for speed
         db_path = tempfile.mktemp(suffix=".db")
         store = VstashStore(db_path, embedding_dim=dim)
-        t0 = time.perf_counter()
         vstash_id_map: dict[str, str] = {}
-        batch: list[dict] = []
-        for doc_id, text, emb in zip(doc_ids, doc_texts, all_embeddings):
-            path = f"/beir/{doc_id}"
-            vstash_id_map[path] = doc_id
-            batch.append(
-                {
-                    "path": path,
-                    "title": corpus[doc_id].get("title", ""),
-                    "chunks": [text],
-                    "embeddings": [emb],
-                    "source_type": "text",
-                }
-            )
-            if len(batch) >= 500:
-                store.add_documents_batch(batch)
-                batch = []
-        if batch:
+        all_embeddings: list[list[float]] = []
+        t0 = time.perf_counter()
+
+        pending_ingest: Future | None = None
+        ingest_batch: list[dict] = []
+        embedded_count = 0
+
+        def _do_ingest(batch: list[dict]) -> None:
             store.add_documents_batch(batch)
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            for bs in range(0, len(doc_texts), EMBED_BATCH):
+                batch_texts = doc_texts[bs : bs + EMBED_BATCH]
+                batch_ids = doc_ids[bs : bs + EMBED_BATCH]
+                batch_embs = embed_texts(batch_texts, model_id)
+                all_embeddings.extend(batch_embs)
+                embedded_count += len(batch_texts)
+
+                for doc_id, text, emb in zip(batch_ids, batch_texts, batch_embs):
+                    path = f"/beir/{doc_id}"
+                    vstash_id_map[path] = doc_id
+                    ingest_batch.append(
+                        {
+                            "path": path,
+                            "title": corpus[doc_id].get("title", ""),
+                            "chunks": [text],
+                            "embeddings": [emb],
+                            "source_type": "text",
+                        }
+                    )
+
+                    if len(ingest_batch) >= INGEST_BATCH:
+                        if pending_ingest is not None:
+                            pending_ingest.result()
+                        pending_ingest = executor.submit(_do_ingest, ingest_batch)
+                        ingest_batch = []
+
+                if embedded_count % 2000 < EMBED_BATCH:
+                    print(f"    {embedded_count}/{len(doc_texts)}...")
+
+            # Flush remaining
+            if pending_ingest is not None:
+                pending_ingest.result()
+            if ingest_batch:
+                _do_ingest(ingest_batch)
+
         v_ingest = time.perf_counter() - t0
-        print(f"  [vstash] Ingested in {v_ingest:.1f}s")
+        print(f"  [vstash] Embed + ingest in {v_ingest:.1f}s ({len(doc_ids)} docs)")
 
         embed_query("warmup", model_id)
         v_metrics = evaluate_vstash(store, vstash_id_map, queries, qrels, model_id)
