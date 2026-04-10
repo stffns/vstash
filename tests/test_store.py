@@ -72,6 +72,20 @@ class TestStoreCRUD:
         assert len(docs) == 1
         assert docs[0].title == "ML Introduction"
 
+    def test_delete_documents(self, populated_store: VstashStore) -> None:
+        deleted_count = populated_store.delete_documents(
+            ["/test/python_guide.md", "/test/ml_intro.md", "/nonexistent.md"]
+        )
+        assert deleted_count == 2
+        docs = populated_store.list_documents()
+        assert len(docs) == 0
+
+    def test_delete_documents_empty(self, populated_store: VstashStore) -> None:
+        deleted_count = populated_store.delete_documents([])
+        assert deleted_count == 0
+        docs = populated_store.list_documents()
+        assert len(docs) == 2
+
     def test_delete_nonexistent_returns_false(self, sample_store: VstashStore) -> None:
         deleted = sample_store.delete_document("/nonexistent/file.md")
         assert deleted is False

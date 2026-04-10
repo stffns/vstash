@@ -937,6 +937,68 @@ class VstashStore:
 
         return "complete"
 
+    def delete_documents(self, paths: list[str], collection: str | None = None) -> int:
+        """Remove multiple documents and all their chunks from the store.
+
+        Like ``delete_document``, but operates on a batch of paths to avoid
+        N+1 queries.
+
+        Args:
+            paths: List of file paths or URLs to remove.
+            collection: If set, restrict deletion to this collection.
+
+        Returns:
+            Number of documents deleted.
+        """
+        if not paths:
+            return 0
+
+        with self._write_lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                deleted_count = 0
+                _BATCH = _SQLITE_PARAM_BATCH
+
+                for i in range(0, len(paths), _BATCH):
+                    batch = paths[i : i + _BATCH]
+                    # Create the VALUES clause: (?,), (?,), ...
+                    values_clause = ",".join(["(?)"] * len(batch))
+
+                    if collection is None:
+                        query = f"""
+                            WITH targets(path) AS (VALUES {values_clause})
+                            SELECT documents.id FROM documents
+                            JOIN targets ON documents.path = targets.path
+                        """
+                        params = batch
+                    else:
+                        query = f"""
+                            WITH targets(path) AS (VALUES {values_clause})
+                            SELECT documents.id FROM documents
+                            JOIN targets ON documents.path = targets.path
+                            WHERE documents.collection = ?
+                        """
+                        # Unpack batch and append collection at the end
+                        params = list(batch) + [collection]
+
+                    doc_ids = [row[0] for row in self._conn.execute(query, params).fetchall()]
+
+                    for doc_id in doc_ids:
+                        if self._delete_by_doc_id(doc_id):
+                            deleted_count += 1
+
+                self._conn.commit()
+                if deleted_count > 0:
+                    self._invalidate_idf_cache()
+                    # Persist snapvec AFTER successful SQLite commit
+                    if self._snap_dirty:
+                        self._save_snapvec()
+                return deleted_count
+            except Exception:
+                self._conn.rollback()
+                self._reload_snapvec()
+                raise
+
     def delete_document(self, path: str, collection: str | None = None) -> bool:
         """Remove a document and all its chunks from the store.
 

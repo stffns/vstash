@@ -397,10 +397,8 @@ def journal_prune(
                 "cutoff": cutoff.isoformat(),
             }
 
-        deleted = 0
-        for doc in to_delete:
-            if store.delete_document(doc.path):
-                deleted += 1
+        paths = [doc.path for doc in to_delete]
+        deleted = store.delete_documents(paths)
 
         return {
             "status": "ok",
