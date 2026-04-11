@@ -1,0 +1,3 @@
+## 2025-04-11 - [Hoist Invariant Operations in Greedy Loops]
+**Learning:** In greedy selection algorithms like MMR deduplication, expensive per-item operations like calculating vector L2 norms using `math.hypot()` can become bottlenecks when evaluated dynamically inside nested loops. While `math.hypot()` is efficient, performing it redundantly inside O(K * N) operations degrades performance.
+**Action:** When implementing greedy diversity algorithms or inner loops calculating similarities, precompute invariant properties (like vector norms) outside the loop and update the similarity utility functions to accept precomputed values.
