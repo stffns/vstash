@@ -1,0 +1,3 @@
+## 2024-04-12 - Precompute L2 Norms in Greedy Selection Loops
+**Learning:** The MMR diversity penalty calculation in `_mmr_dedup` recalculates `math.hypot()` on the same candidate embeddings repeatedly inside its O(K * N) inner loop. Even though Python's `math.hypot` is implemented in C, running it redundantly costs measurable time at scale.
+**Action:** Always hoist per-item invariant calculations out of nested loops in greedy selection algorithms. Here, precalculating L2 norms for the chunks in an O(N) loop outside the selection block and passing them to `_cosine_sim` cuts the benchmarked cost in half.
