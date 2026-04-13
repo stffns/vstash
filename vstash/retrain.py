@@ -71,14 +71,28 @@ def generate_triples(
 
         emb = embed_query(query_text, model_name)
 
+        # Adaptive weights based on query length: short queries have
+        # more FTS value (exact term matching matters), long queries
+        # lean harder on vector (semantic matching dominates).
+        word_count = len(query_text.split())
+        if word_count <= 10:
+            vec_hi, fts_hi = 0.70, 0.30
+            vec_lo, fts_lo = 0.30, 0.70
+        elif word_count <= 50:
+            vec_hi, fts_hi = 0.85, 0.15
+            vec_lo, fts_lo = 0.15, 0.85
+        else:
+            vec_hi, fts_hi = 0.95, 0.05
+            vec_lo, fts_lo = 0.50, 0.50
+
         # Vector-heavy search
         try:
             vec_results = store.search(
                 query_embedding=emb,
                 query_text=query_text,
                 top_k=TOP_K,
-                vec_weight=0.95,
-                fts_weight=0.05,
+                vec_weight=vec_hi,
+                fts_weight=fts_hi,
                 adaptive_rrf=False,
             )
         except Exception:
@@ -90,8 +104,8 @@ def generate_triples(
                 query_embedding=emb,
                 query_text=query_text,
                 top_k=TOP_K,
-                vec_weight=0.05,
-                fts_weight=0.95,
+                vec_weight=vec_lo,
+                fts_weight=fts_lo,
                 adaptive_rrf=False,
             )
         except Exception:
