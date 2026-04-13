@@ -189,6 +189,14 @@ def _cosine_sim(
 ) -> float:
     """Cosine similarity between two vectors. Returns value in [-1, 1].
 
+    Args:
+        a: First vector.
+        b: Second vector.
+        norm_a: Precomputed L2 norm of *a* (``math.hypot(*a)``). If None,
+            computed on the fly.
+        norm_b: Precomputed L2 norm of *b* (``math.hypot(*b)``). If None,
+            computed on the fly.
+
     Uses ``math.sumprod`` on Python 3.12+ and ``sum(map(operator.mul,
     ...))`` as a fallback, combined with ``math.hypot(*vec)`` for the
     L2 norm.  Both branches route through C-level stdlib loops and
@@ -196,8 +204,7 @@ def _cosine_sim(
 
     Returns 0.0 when either input is an empty vector or a zero
     vector (the existing guard catches these via the ``norm < 1e-9``
-    check — ``math.hypot()`` with no arguments returns 0.0 in
-    Python 3.8+, and ``math.sumprod([], [])`` returns 0).
+    check).
     """
     dot = _dot_product(a, b)
     if norm_a is None:
