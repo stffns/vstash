@@ -1,17 +1,17 @@
 {
-  "timestamp": "2026-04-10T20:02:21+0200",
+  "timestamp": "2026-04-10T21:17:25+0200",
   "model": "stffens/bge-small-rrf-v1",
   "results": [
     {
-      "dataset": "arguana",
-      "docs": 8674,
-      "queries": 1406,
+      "dataset": "fiqa",
+      "docs": 57638,
+      "queries": 648,
       "model": "stffens/bge-small-rrf-v1",
       "vstash": {
-        "ndcg_10": 0.4329,
-        "mrr": 0.2992,
-        "recall_10": 0.8471,
-        "latency_ms": 705.9
+        "ndcg_10": 0.3863,
+        "mrr": 0.4756,
+        "recall_10": 0.4416,
+        "latency_ms": 78.0
       }
     }
   ]

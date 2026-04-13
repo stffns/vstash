@@ -181,8 +181,21 @@ except AttributeError:
         return sum(map(operator.mul, a, b))
 
 
-def _cosine_sim(a: list[float], b: list[float]) -> float:
+def _cosine_sim(
+    a: list[float],
+    b: list[float],
+    norm_a: float | None = None,
+    norm_b: float | None = None,
+) -> float:
     """Cosine similarity between two vectors. Returns value in [-1, 1].
+
+    Args:
+        a: First vector.
+        b: Second vector.
+        norm_a: Precomputed L2 norm of *a* (``math.hypot(*a)``). If None,
+            computed on the fly.
+        norm_b: Precomputed L2 norm of *b* (``math.hypot(*b)``). If None,
+            computed on the fly.
 
     Uses ``math.sumprod`` on Python 3.12+ and ``sum(map(operator.mul,
     ...))`` as a fallback, combined with ``math.hypot(*vec)`` for the
@@ -191,12 +204,13 @@ def _cosine_sim(a: list[float], b: list[float]) -> float:
 
     Returns 0.0 when either input is an empty vector or a zero
     vector (the existing guard catches these via the ``norm < 1e-9``
-    check — ``math.hypot()`` with no arguments returns 0.0 in
-    Python 3.8+, and ``math.sumprod([], [])`` returns 0).
+    check).
     """
     dot = _dot_product(a, b)
-    norm_a = math.hypot(*a)
-    norm_b = math.hypot(*b)
+    if norm_a is None:
+        norm_a = math.hypot(*a)
+    if norm_b is None:
+        norm_b = math.hypot(*b)
     if norm_a < 1e-9 or norm_b < 1e-9:
         return 0.0
     return dot / (norm_a * norm_b)
@@ -2337,6 +2351,10 @@ class VstashStore:
         # Extract values into fast lists for index-based access
         doc_keys = [str(r["path"]) for r in ranked]
         chunk_embs = [embeddings.get(int(r["id"])) for r in ranked]
+
+        # Precompute L2 norms for cosine similarity to avoid O(K * N) recomputation.
+        chunk_norms = [math.hypot(*emb) if emb is not None else 0.0 for emb in chunk_embs]
+
         # Track the maximum similarity to any selected chunk from the *same document*.
         # Replaces O(N * S) recomputation with O(1) lookup + O(N) update.
         max_sims = [0.0] * len(ranked)
@@ -2371,12 +2389,15 @@ class VstashStore:
             # by comparing against the newly selected embedding.
             new_doc_key = doc_keys[best_idx]
             new_emb = chunk_embs[best_idx]
+            new_norm = chunk_norms[best_idx]
             if new_emb is not None:
                 for idx in remaining:
                     if doc_keys[idx] == new_doc_key:
                         idx_emb = chunk_embs[idx]
                         if idx_emb is not None:
-                            sim = _cosine_sim(idx_emb, new_emb)
+                            sim = _cosine_sim(
+                                idx_emb, new_emb, norm_a=chunk_norms[idx], norm_b=new_norm
+                            )
                             if sim > max_sims[idx]:
                                 max_sims[idx] = sim
 
