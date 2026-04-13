@@ -1414,6 +1414,103 @@ def profile_list() -> None:
     console.print(table)
 
 
+@app.command()
+def retrain(
+    ctx: typer.Context,
+    output: str = typer.Option(
+        "~/.vstash/models/retrained",
+        "--output",
+        "-o",
+        help="Where to save the fine-tuned model",
+    ),
+    quick: bool = typer.Option(
+        False, "--quick", help="Quick mode: 1 epoch, 1000 queries, higher LR"
+    ),
+    max_queries: int = typer.Option(
+        5000, "--max-queries", help="Maximum pseudo-queries to generate"
+    ),
+    epochs: int = typer.Option(2, "--epochs", help="Training epochs"),
+    lr: float = typer.Option(3e-6, "--lr", help="Learning rate"),
+    batch_size: int = typer.Option(64, "--batch-size", help="Training batch size"),
+    base_model: str | None = typer.Option(
+        None, "--base-model", help="Base model to fine-tune (default: current config model)"
+    ),
+) -> None:
+    """Fine-tune the embedding model using your own data.
+
+    Analyzes where vector and keyword search disagree on your corpus,
+    generates training pairs from those disagreements, and fine-tunes
+    the embedding model to better understand your data. No human labels
+    needed.
+
+    Requires: pip install sentence-transformers torch
+
+    After training, use the model with:
+        vstash reindex --model <output-path>
+    """
+    try:
+        from .retrain import generate_triples, train_mnrl
+    except ImportError as exc:
+        console.print(
+            "[red]x[/red] vstash retrain requires sentence-transformers and torch. "
+            "Install with: [bold]pip install sentence-transformers torch[/bold]"
+        )
+        raise typer.Exit(code=1) from exc
+
+    cfg, store = _get_store(profile=_profile_from_ctx(ctx))
+    model_name = base_model or cfg.embeddings.model
+
+    if quick:
+        max_queries = min(max_queries, 1000)
+        epochs = 1
+        lr = 5e-6
+
+    stats = store.stats()
+    if stats.chunks < 10:
+        console.print(
+            "[yellow]! Your store has fewer than 10 chunks. "
+            "Add more documents before retraining.[/yellow]"
+        )
+        raise typer.Exit(code=1)
+
+    console.print("[bold cyan]vstash retrain[/bold cyan]")
+    console.print(f"  Store: {stats.documents} docs, {stats.chunks} chunks")
+    console.print(f"  Base model: {model_name}")
+    console.print(f"  Max queries: {max_queries}")
+    console.print()
+
+    # Step 1: Generate triples
+    console.print("[bold]Step 1/2:[/bold] Generating training pairs from signal disagreement...")
+    pairs = generate_triples(store, model_name, max_queries=max_queries)
+
+    if len(pairs) < 10:
+        console.print(
+            "[yellow]! Not enough disagreement pairs generated. "
+            "Your corpus may be too small or too homogeneous.[/yellow]"
+        )
+        raise typer.Exit(code=1)
+
+    console.print(f"  Generated {len(pairs)} training pairs")
+    console.print()
+
+    # Step 2: Train
+    console.print("[bold]Step 2/2:[/bold] Fine-tuning with MNRL...")
+    saved_path = train_mnrl(
+        pairs,
+        base_model=model_name,
+        output_path=output,
+        epochs=epochs,
+        lr=lr,
+        batch_size=batch_size,
+    )
+
+    console.print()
+    console.print(f"[green]Model saved to:[/green] {saved_path}")
+    console.print()
+    console.print("To use the retrained model:")
+    console.print(f"  [bold]vstash reindex --model {saved_path}[/bold]")
+
+
 @profile_app.command(name="create")
 def profile_create(
     name: str = typer.Argument(..., help="Profile name"),
