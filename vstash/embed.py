@@ -33,9 +33,10 @@ KNOWN_DIMS: dict[str, int] = {
     "BAAI/bge-large-en-v1.5": 1024,
     "nomic-ai/nomic-embed-text-v1.5": 768,
     # RRF-tuned: BGE-small fine-tuned with hybrid retrieval disagreement signal.
-    # +5% NDCG on SciFact, +18% on NFCorpus vs base BGE-small.
-    # Requires sentence-transformers (not FastEmbed). Use via vstash reindex.
-    "stffens/bge-small-rrf-v1": 384,
+    # v2: MNRL + explicit hard negatives. +7.4% SciFact, +19.5% NFCorpus vs base.
+    # Loaded via custom HF ONNX backend (not FastEmbed). Use via vstash reindex.
+    "Stffens/bge-small-rrf-v2": 384,
+    "stffens/bge-small-rrf-v1": 384,  # legacy v1
     # Multilingual models (FastEmbed-supported)
     "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2": 384,
     "sentence-transformers/paraphrase-multilingual-mpnet-base-v2": 768,
@@ -270,6 +271,7 @@ def _warmup_gemma(model_name: str) -> None:
 # FastEmbed's whitelist. Loaded via onnxruntime + tokenizers directly.
 _HF_ONNX_MODELS: set[str] = {
     "stffens/bge-small-rrf-v1",
+    "Stffens/bge-small-rrf-v2",
 }
 
 _hf_onnx_cache: dict[str, tuple] = {}  # model_name -> (session, tokenizer, max_len)
