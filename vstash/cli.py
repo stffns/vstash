@@ -1423,6 +1423,9 @@ def retrain(
         "-o",
         help="Where to save the fine-tuned model",
     ),
+    quick: bool = typer.Option(
+        False, "--quick", help="Quick mode: 1 epoch, 1000 queries, higher LR"
+    ),
     max_queries: int = typer.Option(
         5000, "--max-queries", help="Maximum pseudo-queries to generate"
     ),
@@ -1456,6 +1459,11 @@ def retrain(
 
     cfg, store = _get_store(profile=_profile_from_ctx(ctx))
     model_name = base_model or cfg.embeddings.model
+
+    if quick:
+        max_queries = min(max_queries, 1000)
+        epochs = 1
+        lr = 5e-6
 
     stats = store.stats()
     if stats.chunks < 10:
