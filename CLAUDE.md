@@ -25,8 +25,9 @@ vstash stats
 
 ```
 vstash/
-  __init__.py       # version (__version__ = "0.27.0")
-  cli.py            # typer CLI — add, search, ask, chat, list, stats, forget, reindex, watch, config, export, remember, profile, journal
+  __init__.py       # version (__version__ = "0.28.0")
+  cli.py            # typer CLI — add, search, ask, chat, list, stats, forget, reindex, watch, config, export, remember, profile, journal, retrain
+  retrain.py        # Self-supervised embedding fine-tuning from hybrid retrieval disagreement
   profile.py        # Multi-profile management: resolution chain, CRUD, federated search
   journal.py        # Cross-session memory: save, recall, log, prune, transcript parsing
   store.py          # VstashStore — SQLite + sqlite-vec + FTS5, RRF, scoring, MMR dedup, reindex
@@ -88,7 +89,7 @@ docs/               # User-facing documentation
 - **Pydantic v2** for all config and data models (frozen=True)
 - **Type hints** on all public functions
 - **ruff** for linting and formatting (enforced in CI)
-- **pytest** for testing (~750 tests + 6 benchmark regression tests as of v0.27.0)
+- **pytest** for testing (~750 tests + 6 benchmark regression tests as of v0.28.0)
 - **Conventional commits** with emoji prefixes (feat, fix, docs, chore, perf)
 - **No AI co-author lines** — do NOT add `Co-Authored-By` or any AI attribution to commit messages
 

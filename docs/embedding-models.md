@@ -8,11 +8,14 @@ vstash uses [FastEmbed](https://github.com/qdrant/fastembed) for local embedding
 
 ### English-only
 
-| Model | Dimensions | Speed | Quality |
-|-------|-----------|-------|---------|
-| `BAAI/bge-small-en-v1.5` (default) | 384 | ~700 chunks/s | Great |
-| `BAAI/bge-base-en-v1.5` | 768 | ~300 chunks/s | Excellent |
-| `nomic-ai/nomic-embed-text-v1.5` | 768 | ~300 chunks/s | Excellent |
+| Model | Dimensions | Speed | Quality | Notes |
+|-------|-----------|-------|---------|-------|
+| `BAAI/bge-small-en-v1.5` (default) | 384 | ~700 ch/s | Great | Best speed/quality ratio |
+| `Stffens/bge-small-rrf-v2` | 384 | ~700 ch/s | **Best** | Self-tuned, +7-19% NDCG vs base, beats ColBERTv2 on 3/5 BEIR |
+| `BAAI/bge-base-en-v1.5` | 768 | ~300 ch/s | Excellent | |
+| `nomic-ai/nomic-embed-text-v1.5` | 768 | ~300 ch/s | Excellent | |
+
+> **New in v0.28:** `Stffens/bge-small-rrf-v2` is a BGE-small model fine-tuned with vstash's own hybrid retrieval disagreement signal. Same dimensions, same speed, better quality. Use `vstash reindex --model Stffens/bge-small-rrf-v2` to switch, or run `vstash retrain` to fine-tune on your own data.
 
 ### Multilingual
 
