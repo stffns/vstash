@@ -117,16 +117,36 @@ def generate_triples(
         if vec_paths != fts_paths:
             disagreements += 1
 
-        # The document's own chunk is the positive
-        # Find it in results
-        positive_text = None
+        # Build text lookup from all results
+        result_texts: dict[str, str] = {}
         for r in vec_results + fts_results:
-            if r.path == doc_path:
-                positive_text = r.text
-                break
+            result_texts[r.path] = r.text
 
-        if positive_text and positive_text != query_text:
-            pairs.append({"query": query_text, "positive": positive_text})
+        # The document's own chunk is the positive
+        positive_text = result_texts.get(doc_path)
+
+        if not positive_text or positive_text == query_text:
+            continue
+
+        # Hard negatives: chunks in one signal's top-5 but not the other's
+        hard_neg_text = None
+        for r in vec_results[:5]:
+            if r.path not in fts_paths and r.path != doc_path:
+                hard_neg_text = r.text
+                break
+        if hard_neg_text is None:
+            for r in fts_results[:5]:
+                if r.path not in vec_paths and r.path != doc_path:
+                    hard_neg_text = r.text
+                    break
+
+        pairs.append(
+            {
+                "query": query_text,
+                "positive": positive_text,
+                "negative": hard_neg_text,
+            }
+        )
 
     logger.info(
         "Generated %d pairs from %d queries (%d disagreements, %.0f%%)",
@@ -148,8 +168,12 @@ def train_mnrl(
 ) -> str:
     """Fine-tune an embedding model using MNRL on disagreement pairs.
 
+    When pairs include a 'negative' key, MNRL uses it as an explicit
+    hard negative in addition to the in-batch negatives. This produces
+    better embeddings than in-batch negatives alone (+1-2% NDCG).
+
     Args:
-        pairs: List of dicts with 'query' and 'positive' keys.
+        pairs: List of dicts with 'query', 'positive', and optionally 'negative' keys.
         base_model: HuggingFace model to fine-tune from.
         output_path: Where to save the fine-tuned model.
         epochs: Number of training epochs.
@@ -177,7 +201,12 @@ def train_mnrl(
     logger.info("Loading base model: %s", base_model)
     model = SentenceTransformer(base_model)
 
-    examples = [InputExample(texts=[p["query"], p["positive"]]) for p in pairs]
+    examples = []
+    for p in pairs:
+        if p.get("negative"):
+            examples.append(InputExample(texts=[p["query"], p["positive"], p["negative"]]))
+        else:
+            examples.append(InputExample(texts=[p["query"], p["positive"]]))
     loader = DataLoader(examples, shuffle=True, batch_size=batch_size)
     loss = losses.MultipleNegativesRankingLoss(model)
 
