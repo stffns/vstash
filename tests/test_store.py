@@ -770,6 +770,35 @@ class TestSearchResultAddedAt:
             # Should be an ISO timestamp string
             assert "T" in r.added_at or "-" in r.added_at
 
+    def test_search_result_has_collection(self, populated_store: VstashStore) -> None:
+        """Search results should include the document's collection."""
+        dim = populated_store.embedding_dim
+        emb = [0.1] * dim
+        results = populated_store.search(query_embedding=emb, query_text="Python", top_k=3)
+        assert len(results) > 0
+        for r in results:
+            assert r.collection is not None
+
+    def test_search_result_metadata_with_tags(self, sample_store: VstashStore) -> None:
+        """Search results should expose tags and layer when set."""
+        dim = sample_store.embedding_dim
+        sample_store.add_document(
+            path="/test/tagged.md",
+            title="Tagged Doc",
+            chunks=["Document with tags and layer metadata"],
+            embeddings=[[0.5] * dim],
+            source_type="markdown",
+            tags="topic:test,category:demo",
+            layer="semantic",
+        )
+        emb = [0.5] * dim
+        results = sample_store.search(query_embedding=emb, query_text="tags layer", top_k=3)
+        tagged = [r for r in results if r.path == "/test/tagged.md"]
+        assert len(tagged) == 1
+        assert tagged[0].tags == "topic:test,category:demo"
+        assert tagged[0].layer == "semantic"
+        assert tagged[0].collection == "default"
+
 
 class TestSearchTelemetry:
     """Tests for search event telemetry (discard tracking)."""
