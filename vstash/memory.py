@@ -109,16 +109,16 @@ class Memory:
         )
         # Silent killer defense: warn if the DB was built with a
         # different embedding model or a fastembed version that changed
-        # pooling semantics (#132 follow-up).  Only warn for non-empty
-        # stores — an empty DB has nothing to mismatch.  Wrapped in
-        # try/except so mocked stores in tests (MagicMock) don't trip.
+        # pooling semantics (#132 follow-up).  Always run — on fresh
+        # stores this stamps embedding_model into store_meta so future
+        # opens can detect drift.  Wrapped in try/except so mocked
+        # stores in tests (MagicMock) don't trip.
         import logging as _logging
 
         try:
-            if self._store.stats().chunks > 0:
-                drift_msg = self._store.check_embedding_drift(self._cfg.embeddings.model)
-                if drift_msg:
-                    _logging.getLogger("vstash").warning(drift_msg)
+            drift_msg = self._store.check_embedding_drift(self._cfg.embeddings.model)
+            if drift_msg:
+                _logging.getLogger("vstash").warning(drift_msg)
         except (TypeError, AttributeError):
             # Mocked store or unusual state — skip the check.
             pass
