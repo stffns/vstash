@@ -476,6 +476,62 @@ Lightweight, append-only memory for LLM agents. Unlike document ingestion, journ
 
 ---
 
+## Appendix E: Additional Evaluation Data
+
+### E.1  Embedding Model Comparison
+
+EmbeddingGemma-300m (768d, Google) was evaluated as an alternative to BGE-small (384d).
+
+**Table E1: Embedding model comparison on BEIR (NDCG@10)**
+
+| Model | Params | Dim | SciFact | SciDocs | FiQA | ArguAna |
+|-------|:---:|:---:|:---:|:---:|:---:|:---:|
+| BGE-small-en-v1.5 | 33M | 384 | 0.7263 | 0.1943 | 0.3917 | 0.4370 |
+| **EmbeddingGemma-300m** | 300M | 768 | **0.7801** | 0.1706 | 0.3542 | 0.4282 |
+| Delta | | | **+7.4%** | -12.2% | -9.6% | -2.0% |
+
+EmbeddingGemma excels on biomedical text (SciFact) but underperforms on CS papers (SciDocs) and financial queries (FiQA). Model choice is domain-dependent: no single embedding model dominates across all benchmarks. BGE-small remains the recommended default for general-purpose use.
+
+### E.2  MMR Deduplication Effect
+
+**Table E2: Effect of MMR deduplication (24 papers, 786 chunks)**
+
+| Mode | NDCG@5 | Unique docs/top-5 | Multi-section hits |
+|------|:---:|:---:|:---:|
+| Hard per-doc dedup | 0.814 | 5.0 | 0 |
+| **MMR (lambda=0.5)** | **0.829** | **5.0** | **3-5 per long doc** |
+| No dedup | 0.791 | 3.2 | 0 |
+
+MMR achieves the same document diversity as hard dedup while allowing semantically diverse sections from the same long document to surface. On a 35-chunk paper, queries spanning multiple sections return 3-5x more relevant results than hard dedup.
+
+### E.3  Pipeline Latency Breakdown
+
+**Table E3: Search latency by pipeline stage (786 chunks)**
+
+| Configuration | Median | P95 | P99 | Overhead |
+|---------------|:---:|:---:|:---:|:---:|
+| RRF only | 0.54 ms | 0.60 ms | 0.69 ms | -- |
+| + Dedup | 1.43 ms | 1.57 ms | 1.70 ms | -- |
+| **Full pipeline** | **3.41 ms** | **3.97 ms** | **4.10 ms** | -- |
+
+### E.4  Relevance Signal Classification Strategies
+
+**Table E4: Classification strategies (10 relevant + 10 irrelevant queries)**
+
+| Strategy | Precision | Recall | F1 | Accuracy |
+|----------|:---:|:---:|:---:|:---:|
+| spread > 0.15 (best fixed) | 0.500 | 1.000 | 0.667 | 0.500 |
+| **distance < 0.95** | **0.909** | **1.000** | **0.952** | **0.950** |
+| distance < 0.95 AND spread > 0.005 | 0.909 | 1.000 | 0.952 | 0.950 |
+
+Combining distance and spread does not improve over distance alone. The spread signal adds no discriminative value once distance is used.
+
+### E.5  Discard Telemetry
+
+Every search records an event with query, best distance, relevance tier, and result count in a `search_events` table (pruned to 1,000 entries). In chat mode, events are marked as "dismissed" when the user exits after a non-high result. This provides a prospective validation path: once sufficient real-world usage accumulates, dismiss rates across relevance tiers will either confirm or refine the distance thresholds established on BEIR benchmarks.
+
+---
+
 ## Acknowledgments
 
 vstash is built on sqlite-vec (Alex Garcia), FastEmbed (Qdrant), sentence-transformers and BAAI for embedding models, tree-sitter and parso for code-aware chunking, and SQLite/FTS5 for keyword retrieval. The BEIR evaluation suite (Thakur et al., 2021) provided the primary external benchmark. Development was assisted by Claude (Anthropic) for code generation and refactoring. All design decisions, algorithm choices, benchmark methodology, and the negative results were authored and verified by the human contributor. All experiments are reproducible from scripts in the project's `experiments/` directory.
