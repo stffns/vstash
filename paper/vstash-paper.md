@@ -205,6 +205,8 @@ The complete comparison across all 5 BEIR datasets with published baselines is p
 
 **The training signal transfers across domains.** Triples were generated from 3 datasets (SciFact, NFCorpus, FiQA). Improvement generalized to SciDocs and ArguAna, which were not in the training set. The model learned to distinguish "semantically close" from "actually relevant" as a general skill.
 
+**Smart training data compensates for model size.** BGE-small tuned (33M params) surpasses untrained BGE-base (110M params) on 3 of 5 BEIR datasets (SciFact +0.7%, NFCorpus +14.1%, ArguAna +0.5%), while running 3x faster and using 3x less memory. The disagreement signal is model-specific: BGE-base produces only 1,371 triples (vs 76K for BGE-small), reflecting fewer blind spots. This suggests that targeted training data selection can outweigh raw model capacity for hybrid retrieval in the majority of benchmarked domains.
+
 **The improvement is free.** No human labeling, no external LLM calls, no additional data. Any vstash user can generate triples from their own corpus via `vstash retrain`, which automates the full pipeline: pseudo-query generation, disagreement detection, triple extraction, and MNRL fine-tuning. The model is published as [`Stffens/bge-small-rrf-v2`](https://huggingface.co/Stffens/bge-small-rrf-v2) on HuggingFace.
 
 ---
