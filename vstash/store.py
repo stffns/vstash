@@ -22,7 +22,7 @@ from pathlib import Path
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from types import TracebackType
-from typing import Literal
+from typing import Any, Literal
 
 import threading
 
@@ -135,7 +135,9 @@ if sqlite3.threadsafety == 0:  # pragma: no cover
         "Most Python builds use threadsafety=3 (serialized) by default."
     )
 
-# Probe for snapvec availability (optional dependency)
+# Probe for snapvec availability (optional dependency).
+# snapvec >= 0.6.0 ships delete O(1) via swap-with-last upstream — no
+# monkey-patch needed. The pin in pyproject.toml enforces the floor.
 try:
     from snapvec import SnapIndex
 
@@ -181,8 +183,21 @@ except AttributeError:
         return sum(map(operator.mul, a, b))
 
 
-def _cosine_sim(a: list[float], b: list[float]) -> float:
+def _cosine_sim(
+    a: list[float],
+    b: list[float],
+    norm_a: float | None = None,
+    norm_b: float | None = None,
+) -> float:
     """Cosine similarity between two vectors. Returns value in [-1, 1].
+
+    Args:
+        a: First vector.
+        b: Second vector.
+        norm_a: Precomputed L2 norm of *a* (``math.hypot(*a)``). If None,
+            computed on the fly.
+        norm_b: Precomputed L2 norm of *b* (``math.hypot(*b)``). If None,
+            computed on the fly.
 
     Uses ``math.sumprod`` on Python 3.12+ and ``sum(map(operator.mul,
     ...))`` as a fallback, combined with ``math.hypot(*vec)`` for the
@@ -191,12 +206,13 @@ def _cosine_sim(a: list[float], b: list[float]) -> float:
 
     Returns 0.0 when either input is an empty vector or a zero
     vector (the existing guard catches these via the ``norm < 1e-9``
-    check — ``math.hypot()`` with no arguments returns 0.0 in
-    Python 3.8+, and ``math.sumprod([], [])`` returns 0).
+    check).
     """
     dot = _dot_product(a, b)
-    norm_a = math.hypot(*a)
-    norm_b = math.hypot(*b)
+    if norm_a is None:
+        norm_a = math.hypot(*a)
+    if norm_b is None:
+        norm_b = math.hypot(*b)
     if norm_a < 1e-9 or norm_b < 1e-9:
         return 0.0
     return dot / (norm_a * norm_b)
@@ -245,6 +261,11 @@ class VstashStore:
         embedding_dim: int = 384,
         vector_backend: str = "sqlite-vec",
         snapvec_bits: int = 4,
+        ivfpq_nlist: int = 0,
+        ivfpq_M: int = 96,
+        ivfpq_K: int = 256,
+        ivfpq_rerank_candidates: int = 100,
+        ivfpq_nprobe: int = 0,
         observability: ObservabilityConfig | None = None,
         limits: LimitsConfig | None = None,
     ) -> None:
@@ -286,17 +307,154 @@ class VstashStore:
         self._limits: LimitsConfig = limits or LimitsConfig()
 
         # --- SnapVec backend (optional) ---
-        self._snap: SnapIndex | None = None  # type: ignore[name-defined]
+        self._snap: Any = None
         self._vector_backend = vector_backend
         self._snapvec_bits = snapvec_bits
+        self._ivfpq_nlist = ivfpq_nlist
+        self._ivfpq_M = ivfpq_M
+        self._ivfpq_K = ivfpq_K
+        self._ivfpq_rerank_candidates = ivfpq_rerank_candidates
+        self._ivfpq_nprobe = ivfpq_nprobe
         self._snap_dirty = False
         if vector_backend == "snapvec":
             self._init_snapvec()
+        elif vector_backend == "snapvec-ivfpq":
+            self._init_ivfpq()
 
     @property
     def _snapvec_path(self) -> Path:
-        """Path to the snapvec index file (next to the .db file)."""
+        """Path to the flat snapvec index file (next to the .db file)."""
         return self.db_path.with_suffix(".snpv")
+
+    @property
+    def _ivfpq_path(self) -> Path:
+        """Path to the IVFPQ snapvec index file (next to the .db file)."""
+        return self.db_path.with_suffix(".snpi")
+
+    def _init_ivfpq(self) -> None:
+        """Load or create the IVFPQ backend.
+
+        The backend starts unfit; sqlite-vec remains authoritative until
+        ``fit_ivfpq()`` trains on the corpus. After that, searches prefer
+        the IVFPQ path and new adds append directly.
+        """
+        if not _HAS_SNAPVEC:
+            logger.warning(
+                "snapvec-ivfpq backend requested but snapvec is not installed. "
+                "Install with: pip install vstash[snapvec]. Falling back to sqlite-vec."
+            )
+            self._vector_backend = "sqlite-vec"
+            return
+
+        from ._ivfpq_backend import IVFPQBackend
+
+        nlist = self._ivfpq_nlist or self._derive_nlist()
+        kwargs = dict(
+            dim=self.embedding_dim,
+            nlist=nlist,
+            M=self._ivfpq_M,
+            K=self._ivfpq_K,
+            keep_full_precision=True,
+            rerank_candidates=self._ivfpq_rerank_candidates,
+            nprobe=self._ivfpq_nprobe,
+        )
+        try:
+            self._snap = IVFPQBackend.load(str(self._ivfpq_path), **kwargs)
+        except ValueError:
+            # Config error (e.g. ivfpq_M does not divide embedding_dim).
+            # Surface directly so the user gets the real message instead of
+            # the generic "failed to load, run vstash snapvec fit".
+            raise
+        except Exception:
+            logger.warning(
+                "Failed to load IVFPQ index at %s — starting unfitted. "
+                "Run 'vstash snapvec fit' to train from current vec_chunks.",
+                self._ivfpq_path,
+                exc_info=True,
+            )
+            self._snap = IVFPQBackend(**kwargs)
+
+    @staticmethod
+    def _nlist_for(n: int) -> int:
+        """FAISS rule of thumb: 4 * sqrt(N), clamped to [8, 1024]."""
+        import math
+
+        if n <= 0:
+            return 256  # placeholder; real nlist is derived at fit() time
+        return max(8, min(1024, int(4 * math.sqrt(n))))
+
+    def _derive_nlist(self) -> int:
+        """Pick a default nlist from the current corpus size."""
+        n = self._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+        return self._nlist_for(n)
+
+    def fit_ivfpq(self, *, training_sample: int = 50_000) -> dict[str, Any]:
+        """Train the IVFPQ backend on current vec_chunks and index all rows.
+
+        Requires ``vector_backend='snapvec-ivfpq'``. Reads every
+        ``(rowid, embedding)`` out of vec_chunks, samples up to
+        ``training_sample`` for fit(), calls add_batch on the full set,
+        and persists the index.
+
+        Returns a dict with stats (n_indexed, nlist, training_sample,
+        build_seconds).
+        """
+        if self._vector_backend != "snapvec-ivfpq":
+            raise RuntimeError(
+                f"fit_ivfpq requires vector_backend='snapvec-ivfpq'; "
+                f"current backend is {self._vector_backend!r}"
+            )
+        import time as _time
+
+        import numpy as np
+
+        from ._ivfpq_backend import IVFPQBackend
+
+        # Stream vec_chunks into a pre-allocated float32 matrix so peak
+        # memory stays bounded at ~N * dim * 4 bytes (e.g. ~150 MB at
+        # 100K x 384) instead of exploding via fetchall + list-of-lists.
+        n_rows = self._conn.execute("SELECT COUNT(*) FROM vec_chunks").fetchone()[0]
+        if not n_rows:
+            raise RuntimeError("vec_chunks is empty; ingest data before fit_ivfpq")
+        ids = np.empty(n_rows, dtype=np.int64)
+        matrix = np.empty((n_rows, self.embedding_dim), dtype=np.float32)
+        cursor = self._conn.execute("SELECT rowid, embedding FROM vec_chunks")
+        for i, row in enumerate(cursor):
+            ids[i] = int(row["rowid"])
+            matrix[i] = np.frombuffer(row["embedding"], dtype=np.float32)
+        # IVFPQBackend normalizes internally, but the coarse k-means for
+        # training benefits from pre-normalized input too.
+        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+        matrix /= np.where(norms > 1e-9, norms, 1.0)
+
+        nlist = self._ivfpq_nlist or self._nlist_for(n_rows)
+        t0 = _time.perf_counter()
+        self._snap = IVFPQBackend(
+            dim=self.embedding_dim,
+            nlist=nlist,
+            M=self._ivfpq_M,
+            K=self._ivfpq_K,
+            keep_full_precision=True,
+            rerank_candidates=self._ivfpq_rerank_candidates,
+            nprobe=self._ivfpq_nprobe,
+        )
+        if n_rows <= training_sample:
+            sample = matrix
+        else:
+            rng = np.random.default_rng(0)
+            sel = rng.choice(n_rows, size=training_sample, replace=False)
+            sample = matrix[sel]
+        self._snap.fit(sample)
+        self._snap.add_batch(ids.tolist(), matrix)
+        self._snap.save(str(self._ivfpq_path))
+        build_s = _time.perf_counter() - t0
+        return {
+            "n_indexed": int(n_rows),
+            "nlist": nlist,
+            "training_sample": int(len(sample)),
+            "build_seconds": round(build_s, 2),
+            "path": str(self._ivfpq_path),
+        }
 
     def _init_snapvec(self) -> None:
         """Load or create the SnapIndex for the snapvec backend."""
@@ -334,18 +492,50 @@ class VstashStore:
             self._snap = SnapIndex(dim=self.embedding_dim, bits=self._snapvec_bits, seed=0)
 
     def _save_snapvec(self) -> None:
-        """Persist the SnapIndex to disk. Called after successful SQLite commit."""
-        if self._snap is not None:
-            self._snap.save(str(self._snapvec_path))
-            self._snap_dirty = False
+        """Persist the snapvec index to disk. Called after successful SQLite commit.
+
+        Flat SnapIndex is small and cheap to rewrite on every commit.
+        IVFPQ with keep_full_precision=True can be 80+ MB at 100K
+        vectors — rewriting on each add_document would thrash disk.
+        For IVFPQ we mark the index dirty in memory and flush on
+        ``close()`` (or on an explicit checkpoint). SQLite's vec_chunks
+        stays the source of truth, so a crash at worst loses the most
+        recent post-fit adds and the operator can re-run
+        ``vstash snapvec fit`` to rebuild.
+        """
+        if self._snap is None:
+            return
+        if self._vector_backend == "snapvec-ivfpq":
+            # Defer to close() / explicit checkpoint.
+            self._snap_dirty = True
+            return
+        self._snap.save(str(self._snapvec_path))
+        self._snap_dirty = False
+
+    def _checkpoint_snapvec(self) -> None:
+        """Flush the in-memory snapvec index to disk if dirty."""
+        if self._snap is None or not self._snap_dirty:
+            return
+        target = (
+            self._ivfpq_path
+            if self._vector_backend == "snapvec-ivfpq"
+            else self._snapvec_path
+        )
+        self._snap.save(str(target))
+        self._snap_dirty = False
 
     def _reload_snapvec(self) -> None:
-        """Reload SnapIndex from disk after a failed transaction.
+        """Reload the snapvec index from disk after a failed transaction.
 
         Restores the on-disk state so the in-memory index matches SQLite
         after a rollback.
         """
         if self._snap is None:
+            return
+        if self._vector_backend == "snapvec-ivfpq":
+            # Re-run the load path used at construction time.
+            self._init_ivfpq()
+            self._snap_dirty = False
             return
         path = self._snapvec_path
         if path.exists():
@@ -788,41 +978,43 @@ class VstashStore:
                 )
 
                 now_iso = datetime.now(timezone.utc).isoformat()
-                for seq, (text, embedding) in enumerate(zip(chunks, embeddings)):
-                    # Insert chunk — get rowid for linking vec + fts tables
-                    # last_accessed_at is NULL until the chunk is actually accessed
-                    # via search, so the decay formula doesn't treat new chunks as
-                    # "recently accessed".
-                    cursor = self._conn.execute(
-                        "INSERT INTO chunks (doc_id, seq, text, access_count, created_at, last_accessed_at)"
-                        " VALUES (?, ?, ?, 0, ?, NULL)",
-                        [doc_id, seq, text, now_iso],
-                    )
-                    rowid = cursor.lastrowid
 
-                    # Vector index entry
-                    self._conn.execute(
-                        "INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)",
-                        [rowid, _serialize(embedding)],
-                    )
+                # Insert chunk — last_accessed_at is NULL until the chunk is actually accessed
+                # via search, so the decay formula doesn't treat new chunks as "recently accessed".
+                chunk_data = [(doc_id, seq, text, now_iso) for seq, text in enumerate(chunks)]
+                self._conn.executemany(
+                    "INSERT INTO chunks (doc_id, seq, text, access_count, created_at, last_accessed_at)"
+                    " VALUES (?, ?, ?, 0, ?, NULL)",
+                    chunk_data,
+                )
 
-                    # FTS5 entry (rowid must match chunks.id)
-                    self._conn.execute(
-                        "INSERT INTO fts_chunks (rowid, text) VALUES (?, ?)",
-                        [rowid, text],
-                    )
+                # Get rowids for linking vec + fts tables
+                rowids = [
+                    row[0]
+                    for row in self._conn.execute(
+                        "SELECT id FROM chunks WHERE doc_id = ? ORDER BY seq",
+                        [doc_id],
+                    ).fetchall()
+                ]
+
+                # Vector index entries
+                vec_data = [(rowid, _serialize(emb)) for rowid, emb in zip(rowids, embeddings)]
+                self._conn.executemany(
+                    "INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)",
+                    vec_data,
+                )
+
+                # FTS5 entries (rowid must match chunks.id)
+                fts_data = [(rowid, text) for rowid, text in zip(rowids, chunks)]
+                self._conn.executemany(
+                    "INSERT INTO fts_chunks (rowid, text) VALUES (?, ?)",
+                    fts_data,
+                )
 
                 # Add to snapvec in-memory (persisted after successful commit)
                 if self._snap is not None:
-                    snap_ids = [
-                        row[0]
-                        for row in self._conn.execute(
-                            "SELECT id FROM chunks WHERE doc_id = ? ORDER BY seq",
-                            [doc_id],
-                        ).fetchall()
-                    ]
                     snap_vecs = np.array(embeddings, dtype=np.float32)
-                    self._snap.add_batch(snap_ids, snap_vecs)
+                    self._snap.add_batch(rowids, snap_vecs)
                     self._snap_dirty = True
 
                 self._conn.commit()
@@ -835,6 +1027,123 @@ class VstashStore:
                 self._reload_snapvec()
                 raise
         return doc_id
+
+    def add_documents_batch(
+        self,
+        documents: list[dict],
+    ) -> list[str]:
+        """Ingest multiple documents in a single transaction.
+
+        Significantly faster than calling add_document() in a loop when
+        ingesting many documents, because it amortises the transaction
+        overhead (BEGIN/COMMIT) across all documents.
+
+        Args:
+            documents: List of dicts, each with keys:
+                path, title, chunks, embeddings, source_type,
+                and optionally: collection, project, layer, tags.
+
+        Returns:
+            List of generated document IDs (same order as input).
+        """
+        if not documents:
+            return []
+
+        from .validation import validate_document_input
+
+        doc_ids: list[str] = []
+
+        with self._write_lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                now_iso = datetime.now(timezone.utc).isoformat()
+
+                for doc in documents:
+                    path = doc["path"]
+                    title = doc["title"]
+                    chunks = doc["chunks"]
+                    embeddings = doc["embeddings"]
+                    source_type = doc["source_type"]
+                    collection = doc.get("collection", "default")
+                    project = doc.get("project")
+                    layer = doc.get("layer")
+                    tags = doc.get("tags")
+
+                    validate_document_input(
+                        path=path,
+                        chunks=chunks,
+                        embeddings=embeddings,
+                        limits=self._limits,
+                    )
+
+                    doc_id = hashlib.sha256(f"{collection}:{path}".encode("utf-8")).hexdigest()[:32]
+                    doc_ids.append(doc_id)
+
+                    self._delete_by_doc_id(doc_id)
+
+                    self._conn.execute(
+                        """INSERT INTO documents
+                           (id, path, title, source_type, collection,
+                            project, layer, tags,
+                            char_count, chunk_count, added_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        [
+                            doc_id,
+                            path,
+                            title,
+                            source_type,
+                            collection,
+                            project,
+                            layer,
+                            tags,
+                            sum(len(c) for c in chunks),
+                            len(chunks),
+                            now_iso,
+                        ],
+                    )
+
+                    chunk_data = [(doc_id, seq, text, now_iso) for seq, text in enumerate(chunks)]
+                    self._conn.executemany(
+                        "INSERT INTO chunks (doc_id, seq, text, access_count, "
+                        "created_at, last_accessed_at) VALUES (?, ?, ?, 0, ?, NULL)",
+                        chunk_data,
+                    )
+
+                    rowids = [
+                        row[0]
+                        for row in self._conn.execute(
+                            "SELECT id FROM chunks WHERE doc_id = ? ORDER BY seq",
+                            [doc_id],
+                        ).fetchall()
+                    ]
+
+                    vec_data = [(rowid, _serialize(emb)) for rowid, emb in zip(rowids, embeddings)]
+                    self._conn.executemany(
+                        "INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)",
+                        vec_data,
+                    )
+
+                    fts_data = list(zip(rowids, chunks))
+                    self._conn.executemany(
+                        "INSERT INTO fts_chunks (rowid, text) VALUES (?, ?)",
+                        fts_data,
+                    )
+
+                    if self._snap is not None:
+                        snap_vecs = np.array(embeddings, dtype=np.float32)
+                        self._snap.add_batch(rowids, snap_vecs)
+                        self._snap_dirty = True
+
+                self._conn.commit()
+                self._invalidate_idf_cache()
+                if self._snap_dirty:
+                    self._save_snapvec()
+            except Exception:
+                self._conn.rollback()
+                self._reload_snapvec()
+                raise
+
+        return doc_ids
 
     def delete_by_path_prefix(self, prefix: str) -> int:
         """Remove all documents whose path starts with *prefix*.
@@ -862,8 +1171,7 @@ class VstashStore:
                 return 0
             try:
                 self._conn.execute("BEGIN IMMEDIATE")
-                for row in rows:
-                    self._delete_by_doc_id(row[0])
+                self._delete_by_doc_ids([row[0] for row in rows])
                 self._conn.commit()
                 self._invalidate_idf_cache()
                 if self._snap_dirty:
@@ -972,8 +1280,7 @@ class VstashStore:
                 return False
             try:
                 self._conn.execute("BEGIN IMMEDIATE")
-                for doc_id in doc_ids:
-                    self._delete_by_doc_id(doc_id)
+                self._delete_by_doc_ids(doc_ids)
                 self._conn.commit()
                 self._invalidate_idf_cache()
                 # Persist snapvec AFTER successful SQLite commit
@@ -994,25 +1301,62 @@ class VstashStore:
         Returns:
             True if the document existed and was deleted.
         """
-        chunk_ids = [
-            row[0]
-            for row in self._conn.execute(
-                "SELECT id FROM chunks WHERE doc_id = ?", [doc_id]
-            ).fetchall()
-        ]
-        if chunk_ids:
-            placeholders = ",".join("?" * len(chunk_ids))
-            # Delete vec_chunks first (no trigger involved)
-            self._conn.execute(f"DELETE FROM vec_chunks WHERE rowid IN ({placeholders})", chunk_ids)
-            # Delete from snapvec index (in-memory, persisted after commit)
-            if self._snap is not None:
-                for cid in chunk_ids:
-                    self._snap.delete(cid)
-                self._snap_dirty = True
-            # Delete chunks — trg_chunks_delete trigger auto-syncs FTS5
-            self._conn.execute("DELETE FROM chunks WHERE doc_id = ?", [doc_id])
-        cursor = self._conn.execute("DELETE FROM documents WHERE id = ?", [doc_id])
-        return cursor.rowcount > 0
+        return self._delete_by_doc_ids([doc_id])
+
+    def _delete_by_doc_ids(self, doc_ids: list[str]) -> bool:
+        """Delete documents by their internal hash IDs.
+
+        Args:
+            doc_ids: List of 32-char hex document hashes.
+
+        Returns:
+            True if at least one document existed and was deleted.
+        """
+        if not doc_ids:
+            return False
+
+        total_deleted = 0
+        for i in range(0, len(doc_ids), _SQLITE_PARAM_BATCH):
+            batch_doc_ids = doc_ids[i : i + _SQLITE_PARAM_BATCH]
+            doc_placeholders = ",".join("?" * len(batch_doc_ids))
+
+            chunk_ids = [
+                row[0]
+                for row in self._conn.execute(
+                    f"SELECT id FROM chunks WHERE doc_id IN ({doc_placeholders})", batch_doc_ids
+                ).fetchall()
+            ]
+
+            if chunk_ids:
+                for j in range(0, len(chunk_ids), _SQLITE_PARAM_BATCH):
+                    batch_chunk_ids = chunk_ids[j : j + _SQLITE_PARAM_BATCH]
+                    chunk_placeholders = ",".join("?" * len(batch_chunk_ids))
+
+                    # Delete vec_chunks first (no trigger involved)
+                    self._conn.execute(
+                        f"DELETE FROM vec_chunks WHERE rowid IN ({chunk_placeholders})",
+                        batch_chunk_ids,
+                    )
+
+                    # Delete from snapvec index (in-memory, persisted after commit).
+                    # snapvec >= 0.6 makes .delete() O(1) via swap-with-last, so a
+                    # per-id loop is the right API — no delete_batch needed.
+                    if self._snap is not None:
+                        for cid in batch_chunk_ids:
+                            self._snap.delete(cid)
+                        self._snap_dirty = True
+
+                # Delete chunks — trg_chunks_delete trigger auto-syncs FTS5
+                self._conn.execute(
+                    f"DELETE FROM chunks WHERE doc_id IN ({doc_placeholders})", batch_doc_ids
+                )
+
+            cursor = self._conn.execute(
+                f"DELETE FROM documents WHERE id IN ({doc_placeholders})", batch_doc_ids
+            )
+            total_deleted += cursor.rowcount
+
+        return total_deleted > 0
 
     # ------------------------------------------------------------------ #
     # Search — Hybrid RRF                                                  #
@@ -1196,7 +1540,7 @@ class VstashStore:
                     snap_filter = vec_clause.replace("v.rowid", "c.id") if vec_clause else ""
                     rows = self._conn.execute(
                         f"""
-                        SELECT c.id, c.text, d.title, d.path, c.seq
+                        SELECT c.id, c.text, d.title, d.path, c.seq, d.added_at, d.collection, d.tags, d.layer
                         FROM chunks c
                         JOIN documents d ON d.id = c.doc_id
                         WHERE c.id IN ({placeholders})
@@ -1217,7 +1561,7 @@ class VstashStore:
             else:
                 vec_rows = self._conn.execute(
                     f"""
-                    SELECT c.id, c.text, d.title, d.path, c.seq, v.distance
+                    SELECT c.id, c.text, d.title, d.path, c.seq, v.distance, d.added_at, d.collection, d.tags, d.layer
                     FROM vec_chunks v
                     JOIN chunks c ON c.id = v.rowid
                     JOIN documents d ON d.id = c.doc_id
@@ -1359,7 +1703,7 @@ class VstashStore:
                 fts_rows = self._conn.execute(
                     f"""
                     SELECT c.id, c.text, d.title, d.path, c.seq,
-                           rank as fts_rank
+                           rank as fts_rank, d.added_at, d.collection, d.tags, d.layer
                     FROM fts_chunks f
                     JOIN chunks c ON c.id = f.rowid
                     JOIN documents d ON d.id = c.doc_id
@@ -1420,12 +1764,6 @@ class VstashStore:
             # and the relevance-tier signal correctly reports "low"
             # instead of carrying a stale high-confidence distance.
             #
-            # Note: when #160 (explicit ``fts_only``) lands, the vector
-            # path is bypassed upstream and ``vec_rows`` starts empty;
-            # this fallback block then becomes a no-op counter bump
-            # for that mode, which is accurate — the caller asked for
-            # FTS-only and got FTS-only.  Re-add an ``and not fts_only``
-            # guard at rebase time if the double-record becomes noisy.
             # First, always reset ``last_best_distance`` when vec_rows
             # is empty — whether or not there are FTS results. Without
             # this, a query where both pools are empty (e.g. corpus
@@ -1468,6 +1806,10 @@ class VstashStore:
                     "path": row["path"],
                     "chunk": row["seq"],
                     "rrf": vec_contrib,
+                    "added_at": row["added_at"],
+                    "collection": row["collection"],
+                    "tags": row["tags"],
+                    "layer": row["layer"],
                 }
                 if explain:
                     _explain_rrf_vec[chunk_id] = vec_contrib
@@ -1502,6 +1844,10 @@ class VstashStore:
                         "path": row["path"],
                         "chunk": row["seq"],
                         "rrf": fts_contribution,
+                        "added_at": row["added_at"],
+                        "collection": row["collection"],
+                        "tags": row["tags"],
+                        "layer": row["layer"],
                     }
                     if explain:
                         _explain_rrf_fts[chunk_id] = fts_contribution
@@ -1677,8 +2023,12 @@ class VstashStore:
                     title=str(r["title"]),
                     path=str(r["path"]),
                     chunk=int(r["chunk"]),
-                    score=round(float(r.get("final_score", r["rrf"])), 6),
+                    score=round(float(r["rrf"]), 6),
                     explain=_explain_map.get(int(r["id"])) if explain else None,
+                    added_at=r.get("added_at"),
+                    collection=r.get("collection"),
+                    tags=r.get("tags"),
+                    layer=r.get("layer"),
                 )
                 for r in ranked
             ]
@@ -2161,43 +2511,55 @@ class VstashStore:
 
         # --- Greedy MMR selection ---
         # Normalise scores to [0, 1] for MMR balancing.
-        score_key = "final_score" if "final_score" in ranked[0] else "rrf"
-        scores = [float(r[score_key]) for r in ranked]
+        #
+        # All current RRF / fusion paths store the score under the
+        # "rrf" key. The old scoring pipeline used "final_score" and
+        # was removed in v0.18.0 (#109); the dead fallback it left
+        # behind here was a maintenance liability that made this loop
+        # harder to reason about during the #153 audit. Removed.
+        scores = [float(r["rrf"]) for r in ranked]
         s_min, s_max = min(scores), max(scores)
         s_range = s_max - s_min if s_max > s_min else 1.0
 
         selected: list[dict[str, str | int | float]] = []
-        # Track selected embeddings per document for similarity comparison.
-        selected_embs_by_doc: dict[str, list[list[float]]] = {}
         remaining = list(range(len(ranked)))
+
+        # Pre-compute normalized scores once (#167).  The value of
+        # ``(score - s_min) / s_range`` is invariant across the outer
+        # top_k loop — it depends only on each candidate's static score
+        # — so recomputing it inside the inner ``for idx in remaining``
+        # loop costs O(N * top_k) pure-Python ops for no benefit.
+        # Hoisting it cuts the inner loop complexity to O(N) and
+        # reuses the ``scores`` list already computed above, avoiding
+        # the extra dict lookup and float conversion that a naive
+        # hoist would do (flagged in the #167 review).
+        norm_scores = [(s - s_min) / s_range for s in scores]
+
+        # Extract values into fast lists for index-based access
+        doc_keys = [str(r["path"]) for r in ranked]
+        chunk_embs = [embeddings.get(int(r["id"])) for r in ranked]
+
+        # Precompute L2 norms for cosine similarity to avoid O(K * N) recomputation.
+        chunk_norms = [math.hypot(*emb) if emb is not None else 0.0 for emb in chunk_embs]
+
+        # Track the maximum similarity to any selected chunk from the *same document*.
+        # Replaces O(N * S) recomputation with O(1) lookup + O(N) update.
+        max_sims = [0.0] * len(ranked)
 
         for _ in range(min(top_k, len(ranked))):
             best_idx = -1
             best_mmr = -float("inf")
-            best_max_sim = 0.0
 
             for idx in remaining:
-                r = ranked[idx]
-                norm_score = (float(r[score_key]) - s_min) / s_range
-                doc_key = str(r["path"])
+                norm_score = norm_scores[idx]
 
                 # Diversity penalty: only against same-document selections.
-                max_sim = 0.0
-                if doc_key in selected_embs_by_doc:
-                    chunk_id = int(r["id"])
-                    emb = embeddings.get(chunk_id)
-                    if emb is not None:
-                        for sel_emb in selected_embs_by_doc[doc_key]:
-                            sim = _cosine_sim(emb, sel_emb)
-                            if sim > max_sim:
-                                max_sim = sim
+                max_sim = max_sims[idx]
 
                 mmr_score = mmr_lambda * norm_score - (1 - mmr_lambda) * max_sim
                 if mmr_score > best_mmr:
                     best_mmr = mmr_score
                     best_idx = idx
-                    if _explain:
-                        best_max_sim = max_sim
 
             if best_idx < 0 or best_mmr < 0:
                 # Stop when the best remaining candidate has negative MMR,
@@ -2206,16 +2568,25 @@ class VstashStore:
 
             chosen = ranked[best_idx]
             if _explain:
-                chosen["_mmr_penalty"] = (1 - mmr_lambda) * best_max_sim
+                chosen["_mmr_penalty"] = (1 - mmr_lambda) * max_sims[best_idx]
             selected.append(chosen)
             remaining.remove(best_idx)
 
-            # Track embedding for future similarity checks.
-            doc_key = str(chosen["path"])
-            chunk_id = int(chosen["id"])
-            emb = embeddings.get(chunk_id)
-            if emb is not None:
-                selected_embs_by_doc.setdefault(doc_key, []).append(emb)
+            # Update max_sims for remaining chunks from the same document
+            # by comparing against the newly selected embedding.
+            new_doc_key = doc_keys[best_idx]
+            new_emb = chunk_embs[best_idx]
+            new_norm = chunk_norms[best_idx]
+            if new_emb is not None:
+                for idx in remaining:
+                    if doc_keys[idx] == new_doc_key:
+                        idx_emb = chunk_embs[idx]
+                        if idx_emb is not None:
+                            sim = _cosine_sim(
+                                idx_emb, new_emb, norm_a=chunk_norms[idx], norm_b=new_norm
+                            )
+                            if sim > max_sims[idx]:
+                                max_sims[idx] = sim
 
         return selected
 
@@ -3286,34 +3657,87 @@ class VstashStore:
         if not results or window < 1:
             return results
 
-        expanded = []
+        # -- Step 1: batch-resolve chunk_id → doc_id via PK lookup -------
+        chunk_ids = [r.chunk_id for r in results]
+        doc_id_map: dict[int, str] = {}
+        for i in range(0, len(chunk_ids), _SQLITE_PARAM_BATCH):
+            batch = chunk_ids[i : i + _SQLITE_PARAM_BATCH]
+            placeholders = ",".join("?" * len(batch))
+            rows = self._conn.execute(
+                f"SELECT id, doc_id FROM chunks WHERE id IN ({placeholders})",
+                batch,
+            ).fetchall()
+            for row in rows:
+                doc_id_map[row["id"]] = row["doc_id"]
+
+        # Fallback for results whose chunk_id didn't resolve (stale IDs
+        # from cached results or synthetic SearchResult objects in tests).
         for r in results:
-            # Resolve doc_id via chunk text match to avoid cross-collection
-            # leakage when the same path exists in multiple collections.
-            doc_row = self._conn.execute(
-                "SELECT c.doc_id FROM chunks c JOIN documents d ON d.id = c.doc_id "
-                "WHERE d.path = ? AND c.seq = ? AND c.text = ? LIMIT 1",
-                [r.path, r.chunk, r.text],
-            ).fetchone()
-            if not doc_row:
+            if r.chunk_id not in doc_id_map:
+                row = self._conn.execute(
+                    "SELECT c.doc_id FROM chunks c JOIN documents d ON d.id = c.doc_id "
+                    "WHERE d.path = ? AND c.seq = ? AND c.text = ? LIMIT 1",
+                    [r.path, r.chunk, r.text],
+                ).fetchone()
+                if row:
+                    doc_id_map[r.chunk_id] = row["doc_id"]
+
+        # -- Step 2: batch-fetch adjacent chunks grouped by doc_id --------
+        # Build (doc_id, seq_lo, seq_hi) ranges and group by doc_id to
+        # minimise queries.  Each doc_id gets one range query that covers
+        # the union of all windows for results in that document.
+        from collections import defaultdict
+
+        doc_ranges: dict[str, tuple[int, int]] = {}
+        doc_result_indices: dict[str, list[int]] = defaultdict(list)
+        for idx, r in enumerate(results):
+            did = doc_id_map.get(r.chunk_id)
+            if did is None:
+                continue
+            lo, hi = r.chunk - window, r.chunk + window
+            if did in doc_ranges:
+                old_lo, old_hi = doc_ranges[did]
+                doc_ranges[did] = (min(old_lo, lo), max(old_hi, hi))
+            else:
+                doc_ranges[did] = (lo, hi)
+            doc_result_indices[did].append(idx)
+
+        # Fetch all needed chunks per doc_id in one query each.
+        # Key: (doc_id, seq) → text
+        chunk_text_map: dict[tuple[str, int], str] = {}
+        for did, (lo, hi) in doc_ranges.items():
+            rows = self._conn.execute(
+                "SELECT seq, text FROM chunks WHERE doc_id = ? "
+                "AND seq BETWEEN ? AND ? ORDER BY seq",
+                [did, lo, hi],
+            ).fetchall()
+            for row in rows:
+                chunk_text_map[(did, row["seq"])] = row["text"]
+
+        # -- Step 3: assemble expanded results, preserving explain --------
+        expanded = []
+        for idx, r in enumerate(results):
+            did = doc_id_map.get(r.chunk_id)
+            if did is None:
                 expanded.append(r)
                 continue
 
-            row = self._conn.execute(
-                "SELECT text FROM chunks WHERE doc_id = ? AND seq BETWEEN ? AND ? ORDER BY seq",
-                [doc_row["doc_id"], r.chunk - window, r.chunk + window],
-            ).fetchall()
+            parts = []
+            for seq in range(r.chunk - window, r.chunk + window + 1):
+                text = chunk_text_map.get((did, seq))
+                if text is not None:
+                    parts.append(text)
 
-            if row:
-                combined_text = "\n".join(chunk["text"] for chunk in row)
+            if parts:
                 expanded.append(
                     SearchResult(
                         chunk_id=r.chunk_id,
-                        text=combined_text,
+                        text="\n".join(parts),
                         title=r.title,
                         path=r.path,
                         chunk=r.chunk,
                         score=r.score,
+                        explain=r.explain,
                     )
                 )
             else:
@@ -3429,6 +3853,13 @@ class VstashStore:
         multi-threaded server like ``vstash serve`` or the MCP server.
         """
         import contextlib
+
+        # Flush any pending snapvec writes before tearing down.  For the
+        # flat backend this is usually a no-op (_save_snapvec already ran
+        # on every commit); for snapvec-ivfpq it is the primary save
+        # point, so the IVFPQ file only hits disk once per session.
+        with contextlib.suppress(Exception):
+            self._checkpoint_snapvec()
 
         # Close all per-thread stem connections under the lock so we
         # don't race a worker thread that's just creating a new one.

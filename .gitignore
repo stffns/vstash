@@ -39,7 +39,10 @@ experiments/data/beir_*/
 experiments/data/beir_*_raw/
 experiments/data/arxiv_cache/
 experiments/data/hf_cache/
+experiments/data/snapvec_bench_cache/
 experiments/data/wikipedia_corpus.json
 
 # Large test files
 experiments/*.pdf
+experiments/results/rrf_training_pairs.jsonl
+experiments/results/rrf_training_pairs.stats.json

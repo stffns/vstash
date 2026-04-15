@@ -87,6 +87,10 @@ class SearchResult(BaseModel):
     explain: ExplainInfo | None = Field(
         default=None, description="Diagnostic breakdown (when explain=True)"
     )
+    added_at: str | None = Field(default=None, description="ISO timestamp of document ingestion")
+    collection: str | None = Field(default=None, description="Named collection")
+    tags: str | None = Field(default=None, description="Comma-separated tags from frontmatter")
+    layer: str | None = Field(default=None, description="Layer/category from frontmatter")
 
 
 class DocumentInfo(BaseModel):

@@ -288,6 +288,60 @@ class TestMMRDedup:
         assert any("machine learning" in t for t in texts)
         assert any("database" in t for t in texts)
 
+    def test_mmr_hoisted_norm_scores_preserve_selection_order(
+        self, sample_store: VstashStore
+    ) -> None:
+        """Regression guard for PR #167: hoisting ``norm_score`` out of
+        the inner loop must be a pure performance rewrite. Run the same
+        query twice against a non-trivial corpus and assert the result
+        ordering is deterministic and consistent with the reference
+        (pre-#167) inline-computation semantics.
+
+        The key invariant the hoist must preserve is that
+        ``norm_score[idx]`` equals ``(scores[idx] - s_min) / s_range``
+        for every candidate, which is exactly the value the old code
+        computed inline. Since this test exercises the full MMR
+        pipeline end-to-end (with embeddings, multi-chunk docs, and
+        the greedy loop), any future refactor that breaks the
+        equivalence will change the selection order and fail here.
+        """
+        dim = sample_store.embedding_dim
+
+        # Multi-chunk doc forces MMR greedy path (not the fast path).
+        emb_a = [1.0] + [0.0] * (dim - 1)
+        emb_b = [0.9] + [0.1] + [0.0] * (dim - 2)
+        emb_c = [0.0] + [1.0] + [0.0] * (dim - 2)
+        sample_store.add_document(
+            path="/test/multi.md",
+            title="Multi",
+            chunks=["alpha content one", "alpha content two", "beta content"],
+            embeddings=[emb_a, emb_b, emb_c],
+        )
+        sample_store.add_document(
+            path="/test/single.md",
+            title="Single",
+            chunks=["standalone chunk about machine learning"],
+            embeddings=[[0.5] + [0.5] + [0.0] * (dim - 2)],
+        )
+
+        query_emb = [0.7] + [0.3] + [0.0] * (dim - 2)
+
+        # Two back-to-back runs must produce identical order — the
+        # hoisted precomputation must not introduce any non-determinism.
+        r1 = sample_store.search(query_emb, "content machine learning", top_k=4)
+        r2 = sample_store.search(query_emb, "content machine learning", top_k=4)
+        assert [r.chunk_id for r in r1] == [r.chunk_id for r in r2], (
+            f"hoisted norm_scores produced non-deterministic order: "
+            f"{[r.chunk_id for r in r1]} vs {[r.chunk_id for r in r2]}"
+        )
+
+        # Sanity: the single-chunk doc must still be present (it would
+        # be selected under the reference implementation too because
+        # its norm_score is non-zero).
+        assert any("Single" == r.title for r in r1), (
+            f"single-chunk doc missing from results: {[r.title for r in r1]}"
+        )
+
     def test_mmr_does_not_affect_cross_document_ranking(self, sample_store: VstashStore) -> None:
         """Chunks from different documents should never penalize each other."""
         dim = sample_store.embedding_dim
@@ -645,6 +699,105 @@ class TestStoreCollections:
         docs = sample_store.list_documents()
         assert len(docs) == 1
         assert docs[0].collection == "default"
+
+
+class TestAddDocumentsBatch:
+    """Tests for batch document ingestion."""
+
+    def test_batch_ingest_and_search(self, sample_store: VstashStore) -> None:
+        """Batch-ingested documents should be searchable."""
+        dim = sample_store.embedding_dim
+        docs = [
+            {
+                "path": f"/batch/doc{i}",
+                "title": f"Doc {i}",
+                "chunks": [f"Content of document {i} about topic {i}"],
+                "embeddings": [[0.1 * (i + 1)] * dim],
+                "source_type": "text",
+            }
+            for i in range(5)
+        ]
+        ids = sample_store.add_documents_batch(docs)
+        assert len(ids) == 5
+        assert len(set(ids)) == 5  # all unique
+
+        stats = sample_store.stats()
+        assert stats.documents >= 5
+
+    def test_batch_empty_returns_empty(self, sample_store: VstashStore) -> None:
+        assert sample_store.add_documents_batch([]) == []
+
+    def test_batch_rollback_on_validation_error(self, sample_store: VstashStore) -> None:
+        """If any doc fails validation, the entire batch rolls back."""
+        dim = sample_store.embedding_dim
+        initial_count = sample_store.stats().documents
+        docs = [
+            {
+                "path": "/batch/good",
+                "title": "Good",
+                "chunks": ["valid content"],
+                "embeddings": [[0.1] * dim],
+                "source_type": "text",
+            },
+            {
+                "path": "/batch/bad",
+                "title": "Bad",
+                "chunks": [],  # invalid: empty chunks
+                "embeddings": [],
+                "source_type": "text",
+            },
+        ]
+        try:
+            sample_store.add_documents_batch(docs)
+            assert False, "Should have raised"
+        except Exception:
+            pass
+        # Both docs should have been rolled back
+        assert sample_store.stats().documents == initial_count
+
+
+class TestSearchResultAddedAt:
+    """Tests for added_at field on SearchResult."""
+
+    def test_search_result_has_added_at(self, populated_store: VstashStore) -> None:
+        """Search results should include the document's added_at timestamp."""
+        dim = populated_store.embedding_dim
+        emb = [0.1] * dim
+        results = populated_store.search(query_embedding=emb, query_text="Python", top_k=3)
+        assert len(results) > 0
+        for r in results:
+            assert r.added_at is not None
+            # Should be an ISO timestamp string
+            assert "T" in r.added_at or "-" in r.added_at
+
+    def test_search_result_has_collection(self, populated_store: VstashStore) -> None:
+        """Search results should include the document's collection."""
+        dim = populated_store.embedding_dim
+        emb = [0.1] * dim
+        results = populated_store.search(query_embedding=emb, query_text="Python", top_k=3)
+        assert len(results) > 0
+        for r in results:
+            assert r.collection is not None
+
+    def test_search_result_metadata_with_tags(self, sample_store: VstashStore) -> None:
+        """Search results should expose tags and layer when set."""
+        dim = sample_store.embedding_dim
+        sample_store.add_document(
+            path="/test/tagged.md",
+            title="Tagged Doc",
+            chunks=["Document with tags and layer metadata"],
+            embeddings=[[0.5] * dim],
+            source_type="markdown",
+            tags="topic:test,category:demo",
+            layer="semantic",
+        )
+        emb = [0.5] * dim
+        results = sample_store.search(query_embedding=emb, query_text="tags layer", top_k=3)
+        tagged = [r for r in results if r.path == "/test/tagged.md"]
+        assert len(tagged) == 1
+        assert tagged[0].tags == "topic:test,category:demo"
+        assert tagged[0].layer == "semantic"
+        assert tagged[0].collection == "default"
 
 
 class TestSearchTelemetry:

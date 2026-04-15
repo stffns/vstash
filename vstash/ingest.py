@@ -49,6 +49,11 @@ def _get_enc():
     return _enc
 
 
+def _token_count(text: str) -> int:
+    """Count tokens, treating special tokens (e.g. <|endoftext|>) as literal text."""
+    return len(_get_enc().encode(text, disallowed_special=()))
+
+
 # ------------------------------------------------------------------ #
 # Chunking                                                            #
 # ------------------------------------------------------------------ #
@@ -81,7 +86,7 @@ def chunk_text(text: str, chunk_size: int, overlap: int) -> list[str]:
     # --- Step 2 & 3: ensure each section fits in chunk_size ---
     sized_chunks: list[str] = []
     for section in sections:
-        token_count = len(_get_enc().encode(section))
+        token_count = _token_count(section)
         if token_count <= chunk_size:
             sized_chunks.append(section)
         else:
@@ -137,7 +142,7 @@ def chunk_code(text: str, chunk_size: int, overlap: int, language: str) -> list[
     # Step 2: ensure each block fits in chunk_size
     sized_chunks: list[str] = []
     for block in blocks:
-        token_count = len(_get_enc().encode(block))
+        token_count = _token_count(block)
         if token_count <= chunk_size:
             sized_chunks.append(block)
         else:
@@ -200,7 +205,7 @@ def _split_by_paragraphs(
         if not para:
             continue
 
-        para_tokens = len(_get_enc().encode(para))
+        para_tokens = _token_count(para)
 
         # If a single paragraph exceeds chunk_size, split it with fixed window
         if para_tokens > chunk_size:
@@ -245,7 +250,7 @@ def _fixed_window_chunks(
         List of non-empty text chunks.
     """
     enc = _get_enc()
-    tokens = enc.encode(text)
+    tokens = enc.encode(text, disallowed_special=())
     if not tokens:
         return []
 
@@ -280,10 +285,10 @@ def _merge_small_chunks(chunks: list[str], chunk_size: int) -> list[str]:
 
     merged: list[str] = []
     current = chunks[0]
-    current_tokens = len(_get_enc().encode(current))
+    current_tokens = _token_count(current)
 
     for chunk in chunks[1:]:
-        chunk_tokens = len(_get_enc().encode(chunk))
+        chunk_tokens = _token_count(chunk)
 
         can_merge = current_tokens + _SEPARATOR_TOKENS + chunk_tokens <= chunk_size
 

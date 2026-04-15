@@ -466,6 +466,60 @@ class TestFederatedSearch:
         expected = 1.0 / k  # rank 0, single profile
         assert abs(results[0][1].score - expected) < 1e-6
 
+    def test_rrf_does_not_fuse_divergent_long_chunks(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Two chunks sharing (path, seq) but with different content past the
+        first 64 characters must not be fused by the RRF key. Regression guard
+        for the PR #70 review comment on profile.federated_search: the prior
+        implementation used result.text[:64] as a content discriminator, which
+        collides when chunks diverge after the prefix window.
+        """
+        from vstash.store import VstashStore
+
+        profiles_dir = tmp_path / "profiles"
+        default_db = tmp_path / "memory.db"
+        monkeypatch.setattr("vstash.profile.PROFILES_DIR", profiles_dir)
+        monkeypatch.setattr("vstash.profile.DEFAULT_DB", default_db)
+        monkeypatch.setattr("vstash.profile._find_local_db", lambda: None)
+
+        dim = 384
+        embedding = [0.3] * dim
+        shared_prefix = "x" * 70 + " "  # 71 chars — identical in first 64
+        chunk_a = shared_prefix + "alpha tail content"
+        chunk_b = shared_prefix + "bravo tail content"
+
+        # Same path + seq 0 in two different profiles, with divergent content
+        # past the first 64 characters.
+        specs = [
+            (default_db, chunk_a),
+            (profiles_dir / "mirror" / "memory.db", chunk_b),
+        ]
+        for db_path_val, text in specs:
+            db_path_val.parent.mkdir(parents=True, exist_ok=True)
+            store = VstashStore(str(db_path_val), embedding_dim=dim)
+            store.add_document(
+                path="/clash.md",
+                title="Clash",
+                chunks=[text],
+                embeddings=[embedding],
+                source_type="markdown",
+            )
+            store.close()
+
+        results = federated_search(
+            query_embedding=embedding,
+            query_text="tail content",
+            embedding_dim=dim,
+            top_k=5,
+        )
+
+        # Both divergent chunks must survive the RRF merge as separate results.
+        texts = {r[1].text for r in results}
+        assert chunk_a in texts
+        assert chunk_b in texts
+        assert len([r for r in results if r[1].path == "/clash.md"]) == 2
+
 
 # ------------------------------------------------------------------ #
 # Active profile info — validation                                    #

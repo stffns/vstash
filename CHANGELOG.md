@@ -2,6 +2,20 @@
 
 All notable changes to vstash are documented here.
 
+## [0.30.0] - 2026-04-15
+
+### Added
+
+- **`snapvec-ivfpq` vector backend** (#209). New `vector_backend` option that routes searches through `snapvec.IVFPQSnapIndex` with `keep_full_precision=True` and `rerank_candidates=100`. Benchmark at N=100K (BGE-small, SciFact padded with FIQA): 23x faster than sqlite-vec (1.04 ms vs 23.8 ms p50) with -0.4% recall (0.994 vs 0.998) and 43% less disk (85 MB vs 149 MB). Pareto-dominant over sqlite-vec at N>=50K.
+- **`vstash snapvec fit` CLI command** (#209). Trains and persists the IVFPQ index from the current corpus: reads every embedding out of `vec_chunks`, samples up to `--training-sample` for codebook training, indexes all rows, and saves the `.snpi` next to the database. Until this runs, sqlite-vec stays authoritative.
+- **New IVFPQ tuning knobs under `[storage]`**: `ivfpq_nlist`, `ivfpq_M`, `ivfpq_K`, `ivfpq_rerank_candidates`, `ivfpq_nprobe`.
+- **`experiments/snapvec_backends_bench.py`** (#207). Standalone benchmark comparing sqlite-vec vs snapvec flat/pq/residual/ivfpq (+ rerank) at 10K/50K/100K on BGE-small embeddings, measuring recall@10 vs exact brute-force.
+
+### Changed
+
+- **Minimum `snapvec` version raised from `>=0.1.0` to `>=0.7.1`** (#207). Picks up upstream `delete()` O(1) via swap-with-last, the fp16 rerank cache that halved the `keep_full_precision` footprint, and CRC32 trailers on all four file formats.
+- Removed the `SnapIndex.delete_batch` monkey-patch in `vstash/store.py`; snapvec ships O(1) per-id delete upstream, and the loop over `.delete()` is the intended API.
+
 ## [0.27.0] — 2026-04-09
 
 ### ⚠️ Breaking change

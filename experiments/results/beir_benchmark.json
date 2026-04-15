@@ -1,29 +1,17 @@
 {
-  "timestamp": "2026-04-05T15:06:15+0200",
-  "model": "BAAI/bge-small-en-v1.5",
+  "timestamp": "2026-04-10T21:17:25+0200",
+  "model": "stffens/bge-small-rrf-v1",
   "results": [
     {
-      "dataset": "scifact",
-      "docs": 5183,
-      "queries": 300,
-      "model": "BAAI/bge-small-en-v1.5",
+      "dataset": "fiqa",
+      "docs": 57638,
+      "queries": 648,
+      "model": "stffens/bge-small-rrf-v1",
       "vstash": {
-        "ndcg_10": 0.7263,
-        "mrr": 0.6975,
-        "recall_10": 0.8406,
-        "latency_ms": 10.0
-      }
-    },
-    {
-      "dataset": "nfcorpus",
-      "docs": 3633,
-      "queries": 323,
-      "model": "BAAI/bge-small-en-v1.5",
-      "vstash": {
-        "ndcg_10": 0.359,
-        "mrr": 0.5752,
-        "recall_10": 0.1697,
-        "latency_ms": 3.2
+        "ndcg_10": 0.3863,
+        "mrr": 0.4756,
+        "recall_10": 0.4416,
+        "latency_ms": 78.0
       }
     }
   ]

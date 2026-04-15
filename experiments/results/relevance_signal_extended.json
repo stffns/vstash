@@ -1,0 +1,1384 @@
+{
+  "experiment": "relevance_signal_extended",
+  "signal": "best_distance",
+  "n_relevant": 61,
+  "n_irrelevant": 61,
+  "n_total": 122,
+  "top_k": 5,
+  "model": "BAAI/bge-small-en-v1.5",
+  "n_bootstrap": 5000,
+  "best_threshold": 0.8,
+  "best_metrics": {
+    "threshold": 0.8,
+    "true_positives": 61,
+    "false_positives": 0,
+    "true_negatives": 61,
+    "false_negatives": 0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1": 1.0,
+    "accuracy": 1.0
+  },
+  "bootstrap_ci_95": {
+    "f1": [
+      1.0,
+      1.0
+    ],
+    "precision": [
+      1.0,
+      1.0
+    ],
+    "recall": [
+      1.0,
+      1.0
+    ],
+    "accuracy": [
+      1.0,
+      1.0
+    ]
+  },
+  "class_overlap": "none",
+  "relevant_distance_summary": {
+    "mean": 0.6508248008665491,
+    "min": 0.484580934047699,
+    "max": 0.7869566679000854
+  },
+  "irrelevant_distance_summary": {
+    "mean": 0.965154016604189,
+    "min": 0.8343583345413208,
+    "max": 1.0966260433197021
+  },
+  "production_thresholds": {
+    "high_0.95": {
+      "threshold": 0.95,
+      "true_positives": 61,
+      "false_positives": 21,
+      "true_negatives": 40,
+      "false_negatives": 0,
+      "precision": 0.7439024390243902,
+      "recall": 1.0,
+      "f1": 0.8531468531468531,
+      "accuracy": 0.8278688524590164
+    },
+    "medium_0.98": {
+      "threshold": 0.98,
+      "true_positives": 61,
+      "false_positives": 34,
+      "true_negatives": 27,
+      "false_negatives": 0,
+      "precision": 0.6421052631578947,
+      "recall": 1.0,
+      "f1": 0.782051282051282,
+      "accuracy": 0.7213114754098361
+    }
+  },
+  "threshold_sweep": [
+    {
+      "threshold": 0.8,
+      "true_positives": 61,
+      "false_positives": 0,
+      "true_negatives": 61,
+      "false_negatives": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "accuracy": 1.0
+    },
+    {
+      "threshold": 0.805,
+      "true_positives": 61,
+      "false_positives": 0,
+      "true_negatives": 61,
+      "false_negatives": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "accuracy": 1.0
+    },
+    {
+      "threshold": 0.81,
+      "true_positives": 61,
+      "false_positives": 0,
+      "true_negatives": 61,
+      "false_negatives": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "accuracy": 1.0
+    },
+    {
+      "threshold": 0.8150000000000001,
+      "true_positives": 61,
+      "false_positives": 0,
+      "true_negatives": 61,
+      "false_negatives": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "accuracy": 1.0
+    },
+    {
+      "threshold": 0.8200000000000001,
+      "true_positives": 61,
+      "false_positives": 0,
+      "true_negatives": 61,
+      "false_negatives": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "accuracy": 1.0
+    },
+    {
+      "threshold": 0.8250000000000001,
+      "true_positives": 61,
+      "false_positives": 0,
+      "true_negatives": 61,
+      "false_negatives": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "accuracy": 1.0
+    },
+    {
+      "threshold": 0.8300000000000001,
+      "true_positives": 61,
+      "false_positives": 0,
+      "true_negatives": 61,
+      "false_negatives": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "accuracy": 1.0
+    },
+    {
+      "threshold": 0.8350000000000001,
+      "true_positives": 61,
+      "false_positives": 1,
+      "true_negatives": 60,
+      "false_negatives": 0,
+      "precision": 0.9838709677419355,
+      "recall": 1.0,
+      "f1": 0.991869918699187,
+      "accuracy": 0.9918032786885246
+    },
+    {
+      "threshold": 0.8400000000000001,
+      "true_positives": 61,
+      "false_positives": 1,
+      "true_negatives": 60,
+      "false_negatives": 0,
+      "precision": 0.9838709677419355,
+      "recall": 1.0,
+      "f1": 0.991869918699187,
+      "accuracy": 0.9918032786885246
+    },
+    {
+      "threshold": 0.8450000000000001,
+      "true_positives": 61,
+      "false_positives": 1,
+      "true_negatives": 60,
+      "false_negatives": 0,
+      "precision": 0.9838709677419355,
+      "recall": 1.0,
+      "f1": 0.991869918699187,
+      "accuracy": 0.9918032786885246
+    },
+    {
+      "threshold": 0.8500000000000001,
+      "true_positives": 61,
+      "false_positives": 1,
+      "true_negatives": 60,
+      "false_negatives": 0,
+      "precision": 0.9838709677419355,
+      "recall": 1.0,
+      "f1": 0.991869918699187,
+      "accuracy": 0.9918032786885246
+    },
+    {
+      "threshold": 0.8550000000000001,
+      "true_positives": 61,
+      "false_positives": 1,
+      "true_negatives": 60,
+      "false_negatives": 0,
+      "precision": 0.9838709677419355,
+      "recall": 1.0,
+      "f1": 0.991869918699187,
+      "accuracy": 0.9918032786885246
+    },
+    {
+      "threshold": 0.8600000000000001,
+      "true_positives": 61,
+      "false_positives": 1,
+      "true_negatives": 60,
+      "false_negatives": 0,
+      "precision": 0.9838709677419355,
+      "recall": 1.0,
+      "f1": 0.991869918699187,
+      "accuracy": 0.9918032786885246
+    },
+    {
+      "threshold": 0.865,
+      "true_positives": 61,
+      "false_positives": 1,
+      "true_negatives": 60,
+      "false_negatives": 0,
+      "precision": 0.9838709677419355,
+      "recall": 1.0,
+      "f1": 0.991869918699187,
+      "accuracy": 0.9918032786885246
+    },
+    {
+      "threshold": 0.8700000000000001,
+      "true_positives": 61,
+      "false_positives": 1,
+      "true_negatives": 60,
+      "false_negatives": 0,
+      "precision": 0.9838709677419355,
+      "recall": 1.0,
+      "f1": 0.991869918699187,
+      "accuracy": 0.9918032786885246
+    },
+    {
+      "threshold": 0.875,
+      "true_positives": 61,
+      "false_positives": 2,
+      "true_negatives": 59,
+      "false_negatives": 0,
+      "precision": 0.9682539682539683,
+      "recall": 1.0,
+      "f1": 0.9838709677419354,
+      "accuracy": 0.9836065573770492
+    },
+    {
+      "threshold": 0.88,
+      "true_positives": 61,
+      "false_positives": 3,
+      "true_negatives": 58,
+      "false_negatives": 0,
+      "precision": 0.953125,
+      "recall": 1.0,
+      "f1": 0.976,
+      "accuracy": 0.9754098360655737
+    },
+    {
+      "threshold": 0.885,
+      "true_positives": 61,
+      "false_positives": 6,
+      "true_negatives": 55,
+      "false_negatives": 0,
+      "precision": 0.9104477611940298,
+      "recall": 1.0,
+      "f1": 0.953125,
+      "accuracy": 0.9508196721311475
+    },
+    {
+      "threshold": 0.89,
+      "true_positives": 61,
+      "false_positives": 8,
+      "true_negatives": 53,
+      "false_negatives": 0,
+      "precision": 0.8840579710144928,
+      "recall": 1.0,
+      "f1": 0.9384615384615386,
+      "accuracy": 0.9344262295081968
+    },
+    {
+      "threshold": 0.895,
+      "true_positives": 61,
+      "false_positives": 8,
+      "true_negatives": 53,
+      "false_negatives": 0,
+      "precision": 0.8840579710144928,
+      "recall": 1.0,
+      "f1": 0.9384615384615386,
+      "accuracy": 0.9344262295081968
+    },
+    {
+      "threshold": 0.9,
+      "true_positives": 61,
+      "false_positives": 10,
+      "true_negatives": 51,
+      "false_negatives": 0,
+      "precision": 0.8591549295774648,
+      "recall": 1.0,
+      "f1": 0.9242424242424242,
+      "accuracy": 0.9180327868852459
+    },
+    {
+      "threshold": 0.905,
+      "true_positives": 61,
+      "false_positives": 10,
+      "true_negatives": 51,
+      "false_negatives": 0,
+      "precision": 0.8591549295774648,
+      "recall": 1.0,
+      "f1": 0.9242424242424242,
+      "accuracy": 0.9180327868852459
+    },
+    {
+      "threshold": 0.91,
+      "true_positives": 61,
+      "false_positives": 10,
+      "true_negatives": 51,
+      "false_negatives": 0,
+      "precision": 0.8591549295774648,
+      "recall": 1.0,
+      "f1": 0.9242424242424242,
+      "accuracy": 0.9180327868852459
+    },
+    {
+      "threshold": 0.915,
+      "true_positives": 61,
+      "false_positives": 12,
+      "true_negatives": 49,
+      "false_negatives": 0,
+      "precision": 0.8356164383561644,
+      "recall": 1.0,
+      "f1": 0.9104477611940298,
+      "accuracy": 0.9016393442622951
+    },
+    {
+      "threshold": 0.92,
+      "true_positives": 61,
+      "false_positives": 12,
+      "true_negatives": 49,
+      "false_negatives": 0,
+      "precision": 0.8356164383561644,
+      "recall": 1.0,
+      "f1": 0.9104477611940298,
+      "accuracy": 0.9016393442622951
+    },
+    {
+      "threshold": 0.925,
+      "true_positives": 61,
+      "false_positives": 12,
+      "true_negatives": 49,
+      "false_negatives": 0,
+      "precision": 0.8356164383561644,
+      "recall": 1.0,
+      "f1": 0.9104477611940298,
+      "accuracy": 0.9016393442622951
+    },
+    {
+      "threshold": 0.93,
+      "true_positives": 61,
+      "false_positives": 13,
+      "true_negatives": 48,
+      "false_negatives": 0,
+      "precision": 0.8243243243243243,
+      "recall": 1.0,
+      "f1": 0.9037037037037037,
+      "accuracy": 0.8934426229508197
+    },
+    {
+      "threshold": 0.935,
+      "true_positives": 61,
+      "false_positives": 13,
+      "true_negatives": 48,
+      "false_negatives": 0,
+      "precision": 0.8243243243243243,
+      "recall": 1.0,
+      "f1": 0.9037037037037037,
+      "accuracy": 0.8934426229508197
+    },
+    {
+      "threshold": 0.9400000000000001,
+      "true_positives": 61,
+      "false_positives": 18,
+      "true_negatives": 43,
+      "false_negatives": 0,
+      "precision": 0.7721518987341772,
+      "recall": 1.0,
+      "f1": 0.8714285714285713,
+      "accuracy": 0.8524590163934426
+    },
+    {
+      "threshold": 0.9450000000000001,
+      "true_positives": 61,
+      "false_positives": 19,
+      "true_negatives": 42,
+      "false_negatives": 0,
+      "precision": 0.7625,
+      "recall": 1.0,
+      "f1": 0.8652482269503545,
+      "accuracy": 0.8442622950819673
+    },
+    {
+      "threshold": 0.9500000000000001,
+      "true_positives": 61,
+      "false_positives": 21,
+      "true_negatives": 40,
+      "false_negatives": 0,
+      "precision": 0.7439024390243902,
+      "recall": 1.0,
+      "f1": 0.8531468531468531,
+      "accuracy": 0.8278688524590164
+    },
+    {
+      "threshold": 0.9550000000000001,
+      "true_positives": 61,
+      "false_positives": 24,
+      "true_negatives": 37,
+      "false_negatives": 0,
+      "precision": 0.7176470588235294,
+      "recall": 1.0,
+      "f1": 0.8356164383561643,
+      "accuracy": 0.8032786885245902
+    },
+    {
+      "threshold": 0.9600000000000001,
+      "true_positives": 61,
+      "false_positives": 25,
+      "true_negatives": 36,
+      "false_negatives": 0,
+      "precision": 0.7093023255813954,
+      "recall": 1.0,
+      "f1": 0.8299319727891157,
+      "accuracy": 0.7950819672131147
+    },
+    {
+      "threshold": 0.9650000000000001,
+      "true_positives": 61,
+      "false_positives": 28,
+      "true_negatives": 33,
+      "false_negatives": 0,
+      "precision": 0.6853932584269663,
+      "recall": 1.0,
+      "f1": 0.8133333333333332,
+      "accuracy": 0.7704918032786885
+    },
+    {
+      "threshold": 0.9700000000000001,
+      "true_positives": 61,
+      "false_positives": 30,
+      "true_negatives": 31,
+      "false_negatives": 0,
+      "precision": 0.6703296703296703,
+      "recall": 1.0,
+      "f1": 0.8026315789473685,
+      "accuracy": 0.7540983606557377
+    },
+    {
+      "threshold": 0.9750000000000001,
+      "true_positives": 61,
+      "false_positives": 34,
+      "true_negatives": 27,
+      "false_negatives": 0,
+      "precision": 0.6421052631578947,
+      "recall": 1.0,
+      "f1": 0.782051282051282,
+      "accuracy": 0.7213114754098361
+    },
+    {
+      "threshold": 0.98,
+      "true_positives": 61,
+      "false_positives": 34,
+      "true_negatives": 27,
+      "false_negatives": 0,
+      "precision": 0.6421052631578947,
+      "recall": 1.0,
+      "f1": 0.782051282051282,
+      "accuracy": 0.7213114754098361
+    },
+    {
+      "threshold": 0.9850000000000001,
+      "true_positives": 61,
+      "false_positives": 38,
+      "true_negatives": 23,
+      "false_negatives": 0,
+      "precision": 0.6161616161616161,
+      "recall": 1.0,
+      "f1": 0.7625,
+      "accuracy": 0.6885245901639344
+    },
+    {
+      "threshold": 0.99,
+      "true_positives": 61,
+      "false_positives": 40,
+      "true_negatives": 21,
+      "false_negatives": 0,
+      "precision": 0.6039603960396039,
+      "recall": 1.0,
+      "f1": 0.7530864197530863,
+      "accuracy": 0.6721311475409836
+    },
+    {
+      "threshold": 0.9950000000000001,
+      "true_positives": 61,
+      "false_positives": 42,
+      "true_negatives": 19,
+      "false_negatives": 0,
+      "precision": 0.5922330097087378,
+      "recall": 1.0,
+      "f1": 0.7439024390243902,
+      "accuracy": 0.6557377049180327
+    },
+    {
+      "threshold": 1.0,
+      "true_positives": 61,
+      "false_positives": 47,
+      "true_negatives": 14,
+      "false_negatives": 0,
+      "precision": 0.5648148148148148,
+      "recall": 1.0,
+      "f1": 0.7218934911242603,
+      "accuracy": 0.6147540983606558
+    }
+  ],
+  "per_query": [
+    {
+      "query": "long-term memory for conversational AI agents",
+      "is_relevant": true,
+      "best_distance": 0.484580934047699,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "temporal decay and forgetting in memory systems",
+      "is_relevant": true,
+      "best_distance": 0.6466516256332397,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "episodic memory architecture for LLMs",
+      "is_relevant": true,
+      "best_distance": 0.5835833549499512,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "benchmarks for evaluating agent memory",
+      "is_relevant": true,
+      "best_distance": 0.5847175121307373,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "knowledge graph approaches to memory",
+      "is_relevant": true,
+      "best_distance": 0.5806899666786194,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "memory compression and retrieval",
+      "is_relevant": true,
+      "best_distance": 0.6005922555923462,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "multi-agent memory sharing",
+      "is_relevant": true,
+      "best_distance": 0.6171140074729919,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "personalization through persistent memory",
+      "is_relevant": true,
+      "best_distance": 0.638032078742981,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "read-write memory interfaces for LLMs",
+      "is_relevant": true,
+      "best_distance": 0.6200950741767883,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "self-organizing memory structures",
+      "is_relevant": true,
+      "best_distance": 0.5660318732261658,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "agentic memory with tool use",
+      "is_relevant": true,
+      "best_distance": 0.610714852809906,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "conversational memory evaluation metrics",
+      "is_relevant": true,
+      "best_distance": 0.5880010724067688,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "memory-augmented generation for dialogue",
+      "is_relevant": true,
+      "best_distance": 0.6387051939964294,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "scalable long-term memory for AI",
+      "is_relevant": true,
+      "best_distance": 0.5879299640655518,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "cognitive science inspired memory for agents",
+      "is_relevant": true,
+      "best_distance": 0.5870339870452881,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "retrieval augmented generation for question answering",
+      "is_relevant": true,
+      "best_distance": 0.6364642977714539,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "vector database for semantic memory",
+      "is_relevant": true,
+      "best_distance": 0.6567925810813904,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "embedding similarity search for document retrieval",
+      "is_relevant": true,
+      "best_distance": 0.58431077003479,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "context window limitations in large language models",
+      "is_relevant": true,
+      "best_distance": 0.6434493660926819,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "working memory versus long-term memory in AI",
+      "is_relevant": true,
+      "best_distance": 0.5808089971542358,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "memory consolidation strategies for chatbots",
+      "is_relevant": true,
+      "best_distance": 0.5900945067405701,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "persistent state management in LLM agents",
+      "is_relevant": true,
+      "best_distance": 0.6688528656959534,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "attention mechanism and memory in transformers",
+      "is_relevant": true,
+      "best_distance": 0.7292556166648865,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "external memory banks for neural networks",
+      "is_relevant": true,
+      "best_distance": 0.6993736624717712,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "recursive summarization for memory compression",
+      "is_relevant": true,
+      "best_distance": 0.6703272461891174,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "memory-based reinforcement learning agents",
+      "is_relevant": true,
+      "best_distance": 0.6362166404724121,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "experience replay in language model training",
+      "is_relevant": true,
+      "best_distance": 0.7189190983772278,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "hierarchical memory organization for AI",
+      "is_relevant": true,
+      "best_distance": 0.6345073580741882,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "associative memory models in neural computation",
+      "is_relevant": true,
+      "best_distance": 0.6907121539115906,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "memory retrieval latency optimization",
+      "is_relevant": true,
+      "best_distance": 0.5779827237129211,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "semantic search and approximate nearest neighbors",
+      "is_relevant": true,
+      "best_distance": 0.7170554995536804,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "BM25 versus dense retrieval for information retrieval",
+      "is_relevant": true,
+      "best_distance": 0.6205028891563416,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "hybrid search combining keyword and vector matching",
+      "is_relevant": true,
+      "best_distance": 0.7687005400657654,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "reciprocal rank fusion for multi-signal retrieval",
+      "is_relevant": true,
+      "best_distance": 0.7869566679000854,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "document chunking strategies for RAG systems",
+      "is_relevant": true,
+      "best_distance": 0.7274462580680847,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "embedding model selection for retrieval tasks",
+      "is_relevant": true,
+      "best_distance": 0.6595043540000916,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "fine-tuning embeddings for domain-specific retrieval",
+      "is_relevant": true,
+      "best_distance": 0.6922076344490051,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "knowledge distillation in retrieval systems",
+      "is_relevant": true,
+      "best_distance": 0.7057896256446838,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "cross-encoder reranking for document retrieval",
+      "is_relevant": true,
+      "best_distance": 0.7108216881752014,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "generative agents with persistent memory",
+      "is_relevant": true,
+      "best_distance": 0.5762754082679749,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "memory-augmented transformers architecture",
+      "is_relevant": true,
+      "best_distance": 0.750851571559906,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "sparse and dense retrieval comparison",
+      "is_relevant": true,
+      "best_distance": 0.6456078290939331,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "passage retrieval for open domain question answering",
+      "is_relevant": true,
+      "best_distance": 0.7205684781074524,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "neural information retrieval benchmarks",
+      "is_relevant": true,
+      "best_distance": 0.6002604961395264,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "query expansion techniques for better recall",
+      "is_relevant": true,
+      "best_distance": 0.6543587446212769,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "negative sampling strategies for embedding training",
+      "is_relevant": true,
+      "best_distance": 0.7677139043807983,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "contrastive learning for text embeddings",
+      "is_relevant": true,
+      "best_distance": 0.7626975774765015,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "bi-encoder versus cross-encoder for retrieval",
+      "is_relevant": true,
+      "best_distance": 0.6724357604980469,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "multi-hop reasoning over retrieved documents",
+      "is_relevant": true,
+      "best_distance": 0.7522130012512207,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "chain of thought with retrieved context",
+      "is_relevant": true,
+      "best_distance": 0.7150054574012756,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "prompt engineering with retrieval augmented context",
+      "is_relevant": true,
+      "best_distance": 0.6880877614021301,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "memory injection strategies for language models",
+      "is_relevant": true,
+      "best_distance": 0.6702336668968201,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "session-based memory for conversational AI",
+      "is_relevant": true,
+      "best_distance": 0.5295580625534058,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "forgetting mechanism in lifelong learning agents",
+      "is_relevant": true,
+      "best_distance": 0.6195248365402222,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "continual learning and catastrophic forgetting",
+      "is_relevant": true,
+      "best_distance": 0.6455305218696594,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "memory priority and importance scoring",
+      "is_relevant": true,
+      "best_distance": 0.6261104941368103,
+      "relevance_tier": "high",
+      "n_results": 3
+    },
+    {
+      "query": "reflection and self-evaluation in AI agents",
+      "is_relevant": true,
+      "best_distance": 0.7053071856498718,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "planning with memory retrieval in autonomous agents",
+      "is_relevant": true,
+      "best_distance": 0.6367968916893005,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "entity extraction for knowledge graph construction",
+      "is_relevant": true,
+      "best_distance": 0.5882627367973328,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "temporal reasoning in memory-augmented models",
+      "is_relevant": true,
+      "best_distance": 0.6355714797973633,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "memory-efficient inference in large models",
+      "is_relevant": true,
+      "best_distance": 0.6958141922950745,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "best pizza restaurants in downtown Chicago",
+      "is_relevant": false,
+      "best_distance": 1.0966260433197021,
+      "relevance_tier": "low",
+      "n_results": 5
+    },
+    {
+      "query": "how to train a dog to sit and shake",
+      "is_relevant": false,
+      "best_distance": 1.000162959098816,
+      "relevance_tier": "low",
+      "n_results": 5
+    },
+    {
+      "query": "history of the Roman Empire and Julius Caesar",
+      "is_relevant": false,
+      "best_distance": 0.9803219437599182,
+      "relevance_tier": "low",
+      "n_results": 5
+    },
+    {
+      "query": "photosynthesis process in C4 plants",
+      "is_relevant": false,
+      "best_distance": 0.899844229221344,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "quantum computing error correction codes",
+      "is_relevant": false,
+      "best_distance": 0.9133874773979187,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "Taylor Swift album discography and awards",
+      "is_relevant": false,
+      "best_distance": 1.0056275129318237,
+      "relevance_tier": "low",
+      "n_results": 5
+    },
+    {
+      "query": "recipe for homemade sourdough bread",
+      "is_relevant": false,
+      "best_distance": 0.9818411469459534,
+      "relevance_tier": "low",
+      "n_results": 5
+    },
+    {
+      "query": "FIFA World Cup 2022 final highlights",
+      "is_relevant": false,
+      "best_distance": 0.8841918706893921,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "stock market technical analysis patterns",
+      "is_relevant": false,
+      "best_distance": 0.8709753751754761,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "how to change a car tire in winter",
+      "is_relevant": false,
+      "best_distance": 1.0060981512069702,
+      "relevance_tier": "low",
+      "n_results": 5
+    },
+    {
+      "query": "deep sea fishing techniques for tuna",
+      "is_relevant": false,
+      "best_distance": 0.8997886180877686,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "yoga poses for lower back pain",
+      "is_relevant": false,
+      "best_distance": 0.9552375674247742,
+      "relevance_tier": "medium",
+      "n_results": 5
+    },
+    {
+      "query": "history of impressionist painting in France",
+      "is_relevant": false,
+      "best_distance": 0.9703032970428467,
+      "relevance_tier": "medium",
+      "n_results": 5
+    },
+    {
+      "query": "beginner guide to rock climbing",
+      "is_relevant": false,
+      "best_distance": 0.9376462697982788,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "how to set up a saltwater aquarium",
+      "is_relevant": false,
+      "best_distance": 1.03150475025177,
+      "relevance_tier": "low",
+      "n_results": 5
+    },
+    {
+      "query": "plumbing repair for leaky kitchen faucet",
+      "is_relevant": false,
+      "best_distance": 1.027044653892517,
+      "relevance_tier": "low",
+      "n_results": 5
+    },
+    {
+      "query": "best hiking trails in Patagonia Argentina",
+      "is_relevant": false,
+      "best_distance": 1.0431060791015625,
+      "relevance_tier": "low",
+      "n_results": 5
+    },
+    {
+      "query": "how to bake a chocolate lava cake",
+      "is_relevant": false,
+      "best_distance": 1.0364130735397339,
+      "relevance_tier": "low",
+      "n_results": 5
+    },
+    {
+      "query": "rules of cricket test match format",
+      "is_relevant": false,
+      "best_distance": 0.8848934769630432,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "growing tomatoes in a greenhouse",
+      "is_relevant": false,
+      "best_distance": 0.9963691830635071,
+      "relevance_tier": "low",
+      "n_results": 5
+    },
+    {
+      "query": "history of the Ottoman Empire expansion",
+      "is_relevant": false,
+      "best_distance": 0.9645084738731384,
+      "relevance_tier": "medium",
+      "n_results": 5
+    },
+    {
+      "query": "beginner guitar chords and strumming patterns",
+      "is_relevant": false,
+      "best_distance": 0.9535447955131531,
+      "relevance_tier": "medium",
+      "n_results": 5
+    },
+    {
+      "query": "how to knit a scarf for beginners",
+      "is_relevant": false,
+      "best_distance": 0.9744914770126343,
+      "relevance_tier": "medium",
+      "n_results": 5
+    },
+    {
+      "query": "vintage car restoration tips for 1960s Mustang",
+      "is_relevant": false,
+      "best_distance": 1.024217128753662,
+      "relevance_tier": "low",
+      "n_results": 5
+    },
+    {
+      "query": "scuba diving certification requirements",
+      "is_relevant": false,
+      "best_distance": 0.9675348997116089,
+      "relevance_tier": "medium",
+      "n_results": 5
+    },
+    {
+      "query": "home brewing craft beer IPA recipe",
+      "is_relevant": false,
+      "best_distance": 1.0358684062957764,
+      "relevance_tier": "low",
+      "n_results": 5
+    },
+    {
+      "query": "training for a marathon in twelve weeks",
+      "is_relevant": false,
+      "best_distance": 0.8343583345413208,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "woodworking joints for beginner projects",
+      "is_relevant": false,
+      "best_distance": 0.9974328279495239,
+      "relevance_tier": "low",
+      "n_results": 5
+    },
+    {
+      "query": "Mediterranean diet meal plan for weight loss",
+      "is_relevant": false,
+      "best_distance": 0.9406964778900146,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "how to build a raised garden bed",
+      "is_relevant": false,
+      "best_distance": 1.003023386001587,
+      "relevance_tier": "low",
+      "n_results": 5
+    },
+    {
+      "query": "basics of watercolor painting technique",
+      "is_relevant": false,
+      "best_distance": 0.9858395457267761,
+      "relevance_tier": "low",
+      "n_results": 5
+    },
+    {
+      "query": "motorcycle road trip across Route 66",
+      "is_relevant": false,
+      "best_distance": 0.991436243057251,
+      "relevance_tier": "low",
+      "n_results": 5
+    },
+    {
+      "query": "origami crane folding step by step",
+      "is_relevant": false,
+      "best_distance": 0.94856858253479,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "astrophotography camera settings for Milky Way",
+      "is_relevant": false,
+      "best_distance": 0.9369342923164368,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "history of jazz music in New Orleans",
+      "is_relevant": false,
+      "best_distance": 1.0182008743286133,
+      "relevance_tier": "low",
+      "n_results": 5
+    },
+    {
+      "query": "building a model railroad layout HO scale",
+      "is_relevant": false,
+      "best_distance": 0.8870836496353149,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "essential oils for aromatherapy diffuser",
+      "is_relevant": false,
+      "best_distance": 0.9899156093597412,
+      "relevance_tier": "low",
+      "n_results": 5
+    },
+    {
+      "query": "fly fishing techniques for trout in streams",
+      "is_relevant": false,
+      "best_distance": 0.9523063898086548,
+      "relevance_tier": "medium",
+      "n_results": 5
+    },
+    {
+      "query": "how to install hardwood flooring",
+      "is_relevant": false,
+      "best_distance": 1.0191125869750977,
+      "relevance_tier": "low",
+      "n_results": 5
+    },
+    {
+      "query": "caring for houseplants in low light conditions",
+      "is_relevant": false,
+      "best_distance": 0.9733471274375916,
+      "relevance_tier": "medium",
+      "n_results": 5
+    },
+    {
+      "query": "basics of celestial navigation at sea",
+      "is_relevant": false,
+      "best_distance": 0.9125986099243164,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "how to make pottery on a wheel",
+      "is_relevant": false,
+      "best_distance": 0.9974231719970703,
+      "relevance_tier": "low",
+      "n_results": 5
+    },
+    {
+      "query": "salsa dancing steps for beginners",
+      "is_relevant": false,
+      "best_distance": 0.9643765687942505,
+      "relevance_tier": "medium",
+      "n_results": 5
+    },
+    {
+      "query": "beekeeping for beginners getting started",
+      "is_relevant": false,
+      "best_distance": 0.9695641398429871,
+      "relevance_tier": "medium",
+      "n_results": 5
+    },
+    {
+      "query": "history of samurai warriors in feudal Japan",
+      "is_relevant": false,
+      "best_distance": 0.9389380812644958,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "how to grill the perfect steak",
+      "is_relevant": false,
+      "best_distance": 0.9958730340003967,
+      "relevance_tier": "low",
+      "n_results": 5
+    },
+    {
+      "query": "candle making with essential oils at home",
+      "is_relevant": false,
+      "best_distance": 1.0300428867340088,
+      "relevance_tier": "low",
+      "n_results": 5
+    },
+    {
+      "query": "bird watching guide for eastern United States",
+      "is_relevant": false,
+      "best_distance": 0.9355745911598206,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "how to play chess openings for beginners",
+      "is_relevant": false,
+      "best_distance": 0.950558602809906,
+      "relevance_tier": "medium",
+      "n_results": 5
+    },
+    {
+      "query": "snowboarding technique for carving turns",
+      "is_relevant": false,
+      "best_distance": 0.9812566041946411,
+      "relevance_tier": "low",
+      "n_results": 5
+    },
+    {
+      "query": "landscape photography composition rules",
+      "is_relevant": false,
+      "best_distance": 0.8796070218086243,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "history of ancient Egyptian pyramids",
+      "is_relevant": false,
+      "best_distance": 0.9746407866477966,
+      "relevance_tier": "medium",
+      "n_results": 5
+    },
+    {
+      "query": "how to tune a piano by ear",
+      "is_relevant": false,
+      "best_distance": 0.9971411824226379,
+      "relevance_tier": "low",
+      "n_results": 5
+    },
+    {
+      "query": "organic composting methods for garden soil",
+      "is_relevant": false,
+      "best_distance": 0.9914355874061584,
+      "relevance_tier": "low",
+      "n_results": 5
+    },
+    {
+      "query": "basics of calligraphy with brush pen",
+      "is_relevant": false,
+      "best_distance": 0.9647064208984375,
+      "relevance_tier": "medium",
+      "n_results": 5
+    },
+    {
+      "query": "surfing wave selection and paddle technique",
+      "is_relevant": false,
+      "best_distance": 0.9388222098350525,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "bookbinding by hand Japanese stab stitch",
+      "is_relevant": false,
+      "best_distance": 0.8824059963226318,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "fermentation basics for kimchi and sauerkraut",
+      "is_relevant": false,
+      "best_distance": 0.9837924242019653,
+      "relevance_tier": "low",
+      "n_results": 5
+    },
+    {
+      "query": "how to plan a backpacking trip through Europe",
+      "is_relevant": false,
+      "best_distance": 0.9298034310340881,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "leather working tools and techniques for wallets",
+      "is_relevant": false,
+      "best_distance": 0.9471741914749146,
+      "relevance_tier": "high",
+      "n_results": 5
+    },
+    {
+      "query": "basics of bread scoring patterns for artisan loaves",
+      "is_relevant": false,
+      "best_distance": 0.8888546824455261,
+      "relevance_tier": "high",
+      "n_results": 5
+    }
+  ]
+}
