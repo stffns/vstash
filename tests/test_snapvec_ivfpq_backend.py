@@ -71,6 +71,30 @@ class TestIVFPQBackendWrapper:
         assert not be.fitted
         assert len(be) == 0
 
+    def test_load_treats_file_existence_as_authoritative(self, tmp_path):
+        """A fitted .snpi survives a missing sidecar (crash resilience)."""
+        from pathlib import Path as _P
+
+        rng = np.random.default_rng(5)
+        vecs = _unit_vectors(rng, N, DIM)
+        path = str(tmp_path / "idx.snpi")
+        be = IVFPQBackend(dim=DIM, nlist=16, M=24, K=32, rerank_candidates=32)
+        be.fit(vecs)
+        be.add_batch(list(range(N)), vecs)
+        be.save(path)
+        # Previously the loader required a .fitted sidecar; deleting it
+        # must not downgrade load() to the unfit path.
+        sidecar = _P(path + ".fitted")
+        if sidecar.exists():
+            sidecar.unlink()
+        loaded = IVFPQBackend.load(path, dim=DIM, nlist=16, M=24, K=32)
+        assert loaded.fitted
+        assert len(loaded) == N
+
+    def test_constructor_rejects_invalid_dim_M_combo(self):
+        with pytest.raises(ValueError, match="must divide embedding_dim"):
+            IVFPQBackend(dim=384, nlist=16, M=10, K=32)  # 384 % 10 != 0
+
 
 class TestVstashStoreIVFPQIntegration:
     def test_backend_initialization(self, tmp_path):

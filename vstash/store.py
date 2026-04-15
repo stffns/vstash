@@ -349,17 +349,22 @@ class VstashStore:
         from ._ivfpq_backend import IVFPQBackend
 
         nlist = self._ivfpq_nlist or self._derive_nlist()
+        kwargs = dict(
+            dim=self.embedding_dim,
+            nlist=nlist,
+            M=self._ivfpq_M,
+            K=self._ivfpq_K,
+            keep_full_precision=True,
+            rerank_candidates=self._ivfpq_rerank_candidates,
+            nprobe=self._ivfpq_nprobe,
+        )
         try:
-            self._snap = IVFPQBackend.load(
-                str(self._ivfpq_path),
-                dim=self.embedding_dim,
-                nlist=nlist,
-                M=self._ivfpq_M,
-                K=self._ivfpq_K,
-                keep_full_precision=True,
-                rerank_candidates=self._ivfpq_rerank_candidates,
-                nprobe=self._ivfpq_nprobe,
-            )
+            self._snap = IVFPQBackend.load(str(self._ivfpq_path), **kwargs)
+        except ValueError:
+            # Config error (e.g. ivfpq_M does not divide embedding_dim).
+            # Surface directly so the user gets the real message instead of
+            # the generic "failed to load, run vstash snapvec fit".
+            raise
         except Exception:
             logger.warning(
                 "Failed to load IVFPQ index at %s — starting unfitted. "
@@ -367,28 +372,21 @@ class VstashStore:
                 self._ivfpq_path,
                 exc_info=True,
             )
-            self._snap = IVFPQBackend(
-                dim=self.embedding_dim,
-                nlist=nlist,
-                M=self._ivfpq_M,
-                K=self._ivfpq_K,
-                keep_full_precision=True,
-                rerank_candidates=self._ivfpq_rerank_candidates,
-                nprobe=self._ivfpq_nprobe,
-            )
+            self._snap = IVFPQBackend(**kwargs)
 
-    def _derive_nlist(self) -> int:
-        """Pick a default nlist from current corpus size.
-
-        FAISS rule of thumb: 4 * sqrt(N) coarse clusters, minimum 8.
-        Clamped to 1024 to keep search LUT builds quick.
-        """
+    @staticmethod
+    def _nlist_for(n: int) -> int:
+        """FAISS rule of thumb: 4 * sqrt(N), clamped to [8, 1024]."""
         import math
 
-        n = self._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
         if n <= 0:
             return 256  # placeholder; real nlist is derived at fit() time
         return max(8, min(1024, int(4 * math.sqrt(n))))
+
+    def _derive_nlist(self) -> int:
+        """Pick a default nlist from the current corpus size."""
+        n = self._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+        return self._nlist_for(n)
 
     def fit_ivfpq(self, *, training_sample: int = 50_000) -> dict[str, Any]:
         """Train the IVFPQ backend on current vec_chunks and index all rows.
@@ -406,26 +404,30 @@ class VstashStore:
                 f"fit_ivfpq requires vector_backend='snapvec-ivfpq'; "
                 f"current backend is {self._vector_backend!r}"
             )
-        from ._ivfpq_backend import IVFPQBackend
-
-        import numpy as np
         import time as _time
 
-        rows = self._conn.execute(
-            "SELECT rowid, embedding FROM vec_chunks"
-        ).fetchall()
-        if not rows:
-            raise RuntimeError("vec_chunks is empty; ingest data before fit_ivfpq")
-        ids: list[int] = []
-        vecs: list[list[float]] = []
-        for r in rows:
-            ids.append(int(r["rowid"]))
-            vecs.append(_deserialize(bytes(r["embedding"])))
-        matrix = np.asarray(vecs, dtype=np.float32)
-        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
-        matrix = matrix / np.where(norms > 1e-9, norms, 1.0)
+        import numpy as np
 
-        nlist = self._ivfpq_nlist or max(8, min(1024, int(4 * np.sqrt(len(ids)))))
+        from ._ivfpq_backend import IVFPQBackend
+
+        # Stream vec_chunks into a pre-allocated float32 matrix so peak
+        # memory stays bounded at ~N * dim * 4 bytes (e.g. ~150 MB at
+        # 100K x 384) instead of exploding via fetchall + list-of-lists.
+        n_rows = self._conn.execute("SELECT COUNT(*) FROM vec_chunks").fetchone()[0]
+        if not n_rows:
+            raise RuntimeError("vec_chunks is empty; ingest data before fit_ivfpq")
+        ids = np.empty(n_rows, dtype=np.int64)
+        matrix = np.empty((n_rows, self.embedding_dim), dtype=np.float32)
+        cursor = self._conn.execute("SELECT rowid, embedding FROM vec_chunks")
+        for i, row in enumerate(cursor):
+            ids[i] = int(row["rowid"])
+            matrix[i] = np.frombuffer(row["embedding"], dtype=np.float32)
+        # IVFPQBackend normalizes internally, but the coarse k-means for
+        # training benefits from pre-normalized input too.
+        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+        matrix /= np.where(norms > 1e-9, norms, 1.0)
+
+        nlist = self._ivfpq_nlist or self._nlist_for(n_rows)
         t0 = _time.perf_counter()
         self._snap = IVFPQBackend(
             dim=self.embedding_dim,
@@ -436,20 +438,20 @@ class VstashStore:
             rerank_candidates=self._ivfpq_rerank_candidates,
             nprobe=self._ivfpq_nprobe,
         )
-        if len(matrix) <= training_sample:
+        if n_rows <= training_sample:
             sample = matrix
         else:
             rng = np.random.default_rng(0)
-            sel = rng.choice(len(matrix), size=training_sample, replace=False)
+            sel = rng.choice(n_rows, size=training_sample, replace=False)
             sample = matrix[sel]
         self._snap.fit(sample)
-        self._snap.add_batch(ids, matrix)
+        self._snap.add_batch(ids.tolist(), matrix)
         self._snap.save(str(self._ivfpq_path))
         build_s = _time.perf_counter() - t0
         return {
-            "n_indexed": len(ids),
+            "n_indexed": int(n_rows),
             "nlist": nlist,
-            "training_sample": len(sample),
+            "training_sample": int(len(sample)),
             "build_seconds": round(build_s, 2),
             "path": str(self._ivfpq_path),
         }
@@ -492,10 +494,27 @@ class VstashStore:
     def _save_snapvec(self) -> None:
         """Persist the snapvec index to disk. Called after successful SQLite commit.
 
-        IVFPQBackend.save is a no-op before fit, so pre-fit mutations stay
-        in sqlite-vec (the authoritative source until fit_ivfpq runs).
+        Flat SnapIndex is small and cheap to rewrite on every commit.
+        IVFPQ with keep_full_precision=True can be 80+ MB at 100K
+        vectors — rewriting on each add_document would thrash disk.
+        For IVFPQ we mark the index dirty in memory and flush on
+        ``close()`` (or on an explicit checkpoint). SQLite's vec_chunks
+        stays the source of truth, so a crash at worst loses the most
+        recent post-fit adds and the operator can re-run
+        ``vstash snapvec fit`` to rebuild.
         """
         if self._snap is None:
+            return
+        if self._vector_backend == "snapvec-ivfpq":
+            # Defer to close() / explicit checkpoint.
+            self._snap_dirty = True
+            return
+        self._snap.save(str(self._snapvec_path))
+        self._snap_dirty = False
+
+    def _checkpoint_snapvec(self) -> None:
+        """Flush the in-memory snapvec index to disk if dirty."""
+        if self._snap is None or not self._snap_dirty:
             return
         target = (
             self._ivfpq_path
@@ -3834,6 +3853,13 @@ class VstashStore:
         multi-threaded server like ``vstash serve`` or the MCP server.
         """
         import contextlib
+
+        # Flush any pending snapvec writes before tearing down.  For the
+        # flat backend this is usually a no-op (_save_snapvec already ran
+        # on every commit); for snapvec-ivfpq it is the primary save
+        # point, so the IVFPQ file only hits disk once per session.
+        with contextlib.suppress(Exception):
+            self._checkpoint_snapvec()
 
         # Close all per-thread stem connections under the lock so we
         # don't race a worker thread that's just creating a new one.
