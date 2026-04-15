@@ -60,7 +60,7 @@ serve = ["starlette>=0.37.0", "uvicorn>=0.30.0"]
 langchain = ["langchain-core>=0.2.0,<1"]
 watch = ["watchdog>=4.0.0"]
 treesitter = ["tree-sitter-language-pack>=0.7.0"]
-snapvec = ["snapvec>=0.1.0"]
+snapvec = ["snapvec>=0.7.1"]
 all = [
     "vstash[cerebras]",
     "vstash[ollama]",
