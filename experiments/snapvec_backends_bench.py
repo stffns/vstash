@@ -10,10 +10,11 @@ Measures, per backend per scale:
   - search latency (ms, median and p95 across BEIR SciFact test queries)
   - recall@10 (vs exact float32 brute-force top-10)
 
-The benchmark intentionally excludes sqlite-vec and the full vstash pipeline
-(FTS + RRF). Those numbers already live in experiments/beir_benchmark.py.
-Here we answer a narrower question: among snapvec backends, which wins at
-what scale?
+The benchmark includes a sqlite-vec baseline alongside the snapvec
+backends but excludes the full vstash pipeline (FTS + RRF). Those
+numbers already live in experiments/beir_benchmark.py. Here we answer
+a narrower question: among the ANN backends vstash can plug in, which
+wins at what scale?
 
 Usage:
     python -m experiments.snapvec_backends_bench
@@ -89,12 +90,15 @@ def embed_dataset(name: str) -> tuple[np.ndarray, list[str]]:
     return vecs, ids
 
 
-def assemble_corpus(target_n: int) -> tuple[np.ndarray, list[int], np.ndarray, list[str], dict]:
-    """Returns (vectors, int_ids, anchor_slice_vectors, anchor_slice_doc_ids, qrels).
+def assemble_corpus(
+    target_n: int,
+) -> tuple[np.ndarray, list[int], np.ndarray, list[int], dict]:
+    """Returns (vectors, int_ids, anchor_slice_vectors, anchor_slice_int_ids, meta).
 
     Uses SciFact as the anchor (queries + qrels live there). Padding to
-    target_n comes from FIQA. Anchor docs always occupy positions [0, N_scifact)
-    so qrels remain valid. Int ids are row indices 0..N-1.
+    target_n comes from FIQA. Anchor docs always occupy positions
+    [0, N_scifact) so qrels remain valid. Both ``int_ids`` and
+    ``anchor_slice_int_ids`` are row indices into the assembled corpus.
     """
     sci_vecs, sci_ids = embed_dataset("scifact")
     cache = download_beir("scifact")
@@ -161,12 +165,10 @@ class SqliteVecIndex:
 
     def __init__(self, dim: int, db_path: str) -> None:
         import sqlite3
-        import struct as _struct
 
         import sqlite_vec
 
         self.dim = dim
-        self._pack = _struct.Struct(f"{dim}f").pack
         self._conn = sqlite3.connect(db_path)
         self._conn.enable_load_extension(True)
         sqlite_vec.load(self._conn)
@@ -176,14 +178,15 @@ class SqliteVecIndex:
         )
 
     def add_batch(self, ids: list[int], vectors: np.ndarray) -> None:
-        rows = [(int(i), self._pack(*v.tolist())) for i, v in zip(ids, vectors)]
+        vectors = np.ascontiguousarray(vectors, dtype=np.float32)
+        rows = [(int(i), v.tobytes()) for i, v in zip(ids, vectors)]
         self._conn.executemany(
             "INSERT INTO vec_items (rowid, embedding) VALUES (?, ?)", rows
         )
         self._conn.commit()
 
     def search(self, query: np.ndarray, k: int = 10) -> list[tuple[int, float]]:
-        blob = self._pack(*query.astype(np.float32).tolist())
+        blob = np.ascontiguousarray(query, dtype=np.float32).tobytes()
         rows = self._conn.execute(
             "SELECT rowid, distance FROM vec_items "
             "WHERE embedding MATCH ? AND k = ? ORDER BY distance",
@@ -312,7 +315,9 @@ def run_backend(
         "disk_mb": round(disk_bytes / 1024 / 1024, 2),
         "bytes_per_vec": round(disk_bytes / len(vectors), 1),
         "latency_p50_ms": round(statistics.median(latencies_ms), 3),
-        "latency_p95_ms": round(statistics.quantiles(latencies_ms, n=20)[-1], 3),
+        "latency_p95_ms": round(
+            statistics.quantiles(latencies_ms, n=20, method="inclusive")[-1], 3
+        ),
         "recall_at_10": round(statistics.mean(recalls), 4),
         **extra,
     }
