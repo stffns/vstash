@@ -132,15 +132,54 @@ class StorageConfig(BaseModel):
         default_factory=lambda: os.getenv("VSTASH_DB_PATH") or "~/.vstash/memory.db",
         description="Path to SQLite database file",
     )
-    vector_backend: Literal["sqlite-vec", "snapvec"] = Field(
+    vector_backend: Literal["sqlite-vec", "snapvec", "snapvec-ivfpq"] = Field(
         default="sqlite-vec",
-        description="Vector search backend: 'sqlite-vec' (default) or 'snapvec' (compressed ANN)",
+        description=(
+            "Vector search backend: 'sqlite-vec' (default, exact), "
+            "'snapvec' (flat compressed ANN), "
+            "'snapvec-ivfpq' (IVF + residual PQ with fp16 rerank, >=50K chunks)"
+        ),
     )
     snapvec_bits: int = Field(
         default=4,
         ge=2,
         le=4,
-        description="Quantization bits for snapvec backend (2, 3, or 4)",
+        description="Quantization bits for snapvec flat backend (2, 3, or 4)",
+    )
+    ivfpq_nlist: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "IVF coarse clusters for snapvec-ivfpq. 0 = auto (4 * sqrt(N)). "
+            "FAISS rule: need at least 30 training vectors per cluster."
+        ),
+    )
+    ivfpq_M: int = Field(
+        default=96,
+        ge=1,
+        description="PQ subspaces for snapvec-ivfpq. Must divide embedding_dim.",
+    )
+    ivfpq_K: int = Field(
+        default=256,
+        ge=2,
+        le=256,
+        description="PQ centroids per subspace for snapvec-ivfpq.",
+    )
+    ivfpq_rerank_candidates: int = Field(
+        default=100,
+        ge=0,
+        description=(
+            "Candidates to rerank with fp16 full-precision cache for "
+            "snapvec-ivfpq. 0 disables rerank; 100 typically saturates recall."
+        ),
+    )
+    ivfpq_nprobe: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Clusters to visit per query. 0 = snapvec default (nlist // 16). "
+            "Higher = better recall at linear latency cost."
+        ),
     )
 
 
