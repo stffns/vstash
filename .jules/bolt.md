@@ -1,0 +1,4 @@
+
+## 2024-04-15 - Optimize O(N) context chunk expansion using SQLite CTE and VALUES clause
+**Learning:** For resolving exact matches against a compound key or list of sparse records (like expanding windowed chunks), Python range queries (e.g. `seq BETWEEN lo AND hi`) force unnecessary data transfer for chunks that are in the middle but unneeded. Attempting to filter `IN` a large set of values can exceed SQLite bounds.
+**Action:** Chunk inputs to safely stay within limits (like `_SQLITE_PARAM_BATCH`), and use a Common Table Expression (CTE) with a `VALUES` clause (`WITH targets(doc_id, seq) AS (VALUES (?, ?)...)`) to filter the target table in `JOIN`. This significantly reduces Python loop overhead, bounds parameters strictly, and performs fast cross-referencing within the database engine itself.

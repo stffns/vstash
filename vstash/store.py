@@ -3682,37 +3682,41 @@ class VstashStore:
                 if row:
                     doc_id_map[r.chunk_id] = row["doc_id"]
 
-        # -- Step 2: batch-fetch adjacent chunks grouped by doc_id --------
-        # Build (doc_id, seq_lo, seq_hi) ranges and group by doc_id to
-        # minimise queries.  Each doc_id gets one range query that covers
-        # the union of all windows for results in that document.
-        from collections import defaultdict
-
-        doc_ranges: dict[str, tuple[int, int]] = {}
-        doc_result_indices: dict[str, list[int]] = defaultdict(list)
-        for idx, r in enumerate(results):
+        # -- Step 2: batch-fetch adjacent chunks --------
+        # Gather all target sequences across all documents.
+        target_tuples: set[tuple[str, int]] = set()
+        for r in results:
             did = doc_id_map.get(r.chunk_id)
             if did is None:
                 continue
-            lo, hi = r.chunk - window, r.chunk + window
-            if did in doc_ranges:
-                old_lo, old_hi = doc_ranges[did]
-                doc_ranges[did] = (min(old_lo, lo), max(old_hi, hi))
-            else:
-                doc_ranges[did] = (lo, hi)
-            doc_result_indices[did].append(idx)
+            for seq in range(r.chunk - window, r.chunk + window + 1):
+                target_tuples.add((did, seq))
 
-        # Fetch all needed chunks per doc_id in one query each.
         # Key: (doc_id, seq) → text
         chunk_text_map: dict[tuple[str, int], str] = {}
-        for did, (lo, hi) in doc_ranges.items():
-            rows = self._conn.execute(
-                "SELECT seq, text FROM chunks WHERE doc_id = ? "
-                "AND seq BETWEEN ? AND ? ORDER BY seq",
-                [did, lo, hi],
-            ).fetchall()
+
+        # Batch tuples to safely stay under SQLite parameter limits.
+        # We need two parameters per tuple (doc_id, seq).
+        target_list = list(target_tuples)
+        batch_size = _SQLITE_PARAM_BATCH // 2
+
+        for i in range(0, len(target_list), batch_size):
+            batch = target_list[i : i + batch_size]
+            values_clause = ", ".join(["(?, ?)"] * len(batch))
+            # Flatten the list of tuples for query params
+            params = [item for t in batch for item in t]
+
+            sql = f"""
+                WITH targets(doc_id, seq) AS (
+                    VALUES {values_clause}
+                )
+                SELECT c.doc_id, c.seq, c.text
+                FROM chunks c
+                JOIN targets t ON c.doc_id = t.doc_id AND c.seq = t.seq
+            """
+            rows = self._conn.execute(sql, params).fetchall()
             for row in rows:
-                chunk_text_map[(did, row["seq"])] = row["text"]
+                chunk_text_map[(row["doc_id"], row["seq"])] = row["text"]
 
         # -- Step 3: assemble expanded results, preserving explain --------
         expanded = []
