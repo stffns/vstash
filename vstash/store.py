@@ -22,7 +22,7 @@ from pathlib import Path
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from types import TracebackType
-from typing import Literal
+from typing import Any, Literal
 
 import threading
 
@@ -261,6 +261,11 @@ class VstashStore:
         embedding_dim: int = 384,
         vector_backend: str = "sqlite-vec",
         snapvec_bits: int = 4,
+        ivfpq_nlist: int = 0,
+        ivfpq_M: int = 96,
+        ivfpq_K: int = 256,
+        ivfpq_rerank_candidates: int = 100,
+        ivfpq_nprobe: int = 0,
         observability: ObservabilityConfig | None = None,
         limits: LimitsConfig | None = None,
     ) -> None:
@@ -302,17 +307,152 @@ class VstashStore:
         self._limits: LimitsConfig = limits or LimitsConfig()
 
         # --- SnapVec backend (optional) ---
-        self._snap: SnapIndex | None = None  # type: ignore[name-defined]
+        self._snap: Any = None
         self._vector_backend = vector_backend
         self._snapvec_bits = snapvec_bits
+        self._ivfpq_nlist = ivfpq_nlist
+        self._ivfpq_M = ivfpq_M
+        self._ivfpq_K = ivfpq_K
+        self._ivfpq_rerank_candidates = ivfpq_rerank_candidates
+        self._ivfpq_nprobe = ivfpq_nprobe
         self._snap_dirty = False
         if vector_backend == "snapvec":
             self._init_snapvec()
+        elif vector_backend == "snapvec-ivfpq":
+            self._init_ivfpq()
 
     @property
     def _snapvec_path(self) -> Path:
-        """Path to the snapvec index file (next to the .db file)."""
+        """Path to the flat snapvec index file (next to the .db file)."""
         return self.db_path.with_suffix(".snpv")
+
+    @property
+    def _ivfpq_path(self) -> Path:
+        """Path to the IVFPQ snapvec index file (next to the .db file)."""
+        return self.db_path.with_suffix(".snpi")
+
+    def _init_ivfpq(self) -> None:
+        """Load or create the IVFPQ backend.
+
+        The backend starts unfit; sqlite-vec remains authoritative until
+        ``fit_ivfpq()`` trains on the corpus. After that, searches prefer
+        the IVFPQ path and new adds append directly.
+        """
+        if not _HAS_SNAPVEC:
+            logger.warning(
+                "snapvec-ivfpq backend requested but snapvec is not installed. "
+                "Install with: pip install vstash[snapvec]. Falling back to sqlite-vec."
+            )
+            self._vector_backend = "sqlite-vec"
+            return
+
+        from ._ivfpq_backend import IVFPQBackend
+
+        nlist = self._ivfpq_nlist or self._derive_nlist()
+        try:
+            self._snap = IVFPQBackend.load(
+                str(self._ivfpq_path),
+                dim=self.embedding_dim,
+                nlist=nlist,
+                M=self._ivfpq_M,
+                K=self._ivfpq_K,
+                keep_full_precision=True,
+                rerank_candidates=self._ivfpq_rerank_candidates,
+                nprobe=self._ivfpq_nprobe,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to load IVFPQ index at %s — starting unfitted. "
+                "Run 'vstash snapvec fit' to train from current vec_chunks.",
+                self._ivfpq_path,
+                exc_info=True,
+            )
+            self._snap = IVFPQBackend(
+                dim=self.embedding_dim,
+                nlist=nlist,
+                M=self._ivfpq_M,
+                K=self._ivfpq_K,
+                keep_full_precision=True,
+                rerank_candidates=self._ivfpq_rerank_candidates,
+                nprobe=self._ivfpq_nprobe,
+            )
+
+    def _derive_nlist(self) -> int:
+        """Pick a default nlist from current corpus size.
+
+        FAISS rule of thumb: 4 * sqrt(N) coarse clusters, minimum 8.
+        Clamped to 1024 to keep search LUT builds quick.
+        """
+        import math
+
+        n = self._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+        if n <= 0:
+            return 256  # placeholder; real nlist is derived at fit() time
+        return max(8, min(1024, int(4 * math.sqrt(n))))
+
+    def fit_ivfpq(self, *, training_sample: int = 50_000) -> dict[str, Any]:
+        """Train the IVFPQ backend on current vec_chunks and index all rows.
+
+        Requires ``vector_backend='snapvec-ivfpq'``. Reads every
+        ``(rowid, embedding)`` out of vec_chunks, samples up to
+        ``training_sample`` for fit(), calls add_batch on the full set,
+        and persists the index.
+
+        Returns a dict with stats (n_indexed, nlist, training_sample,
+        build_seconds).
+        """
+        if self._vector_backend != "snapvec-ivfpq":
+            raise RuntimeError(
+                f"fit_ivfpq requires vector_backend='snapvec-ivfpq'; "
+                f"current backend is {self._vector_backend!r}"
+            )
+        from ._ivfpq_backend import IVFPQBackend
+
+        import numpy as np
+        import time as _time
+
+        rows = self._conn.execute(
+            "SELECT rowid, embedding FROM vec_chunks"
+        ).fetchall()
+        if not rows:
+            raise RuntimeError("vec_chunks is empty; ingest data before fit_ivfpq")
+        ids: list[int] = []
+        vecs: list[list[float]] = []
+        for r in rows:
+            ids.append(int(r["rowid"]))
+            vecs.append(_deserialize(bytes(r["embedding"])))
+        matrix = np.asarray(vecs, dtype=np.float32)
+        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+        matrix = matrix / np.where(norms > 1e-9, norms, 1.0)
+
+        nlist = self._ivfpq_nlist or max(8, min(1024, int(4 * np.sqrt(len(ids)))))
+        t0 = _time.perf_counter()
+        self._snap = IVFPQBackend(
+            dim=self.embedding_dim,
+            nlist=nlist,
+            M=self._ivfpq_M,
+            K=self._ivfpq_K,
+            keep_full_precision=True,
+            rerank_candidates=self._ivfpq_rerank_candidates,
+            nprobe=self._ivfpq_nprobe,
+        )
+        if len(matrix) <= training_sample:
+            sample = matrix
+        else:
+            rng = np.random.default_rng(0)
+            sel = rng.choice(len(matrix), size=training_sample, replace=False)
+            sample = matrix[sel]
+        self._snap.fit(sample)
+        self._snap.add_batch(ids, matrix)
+        self._snap.save(str(self._ivfpq_path))
+        build_s = _time.perf_counter() - t0
+        return {
+            "n_indexed": len(ids),
+            "nlist": nlist,
+            "training_sample": len(sample),
+            "build_seconds": round(build_s, 2),
+            "path": str(self._ivfpq_path),
+        }
 
     def _init_snapvec(self) -> None:
         """Load or create the SnapIndex for the snapvec backend."""
@@ -350,18 +490,33 @@ class VstashStore:
             self._snap = SnapIndex(dim=self.embedding_dim, bits=self._snapvec_bits, seed=0)
 
     def _save_snapvec(self) -> None:
-        """Persist the SnapIndex to disk. Called after successful SQLite commit."""
-        if self._snap is not None:
-            self._snap.save(str(self._snapvec_path))
-            self._snap_dirty = False
+        """Persist the snapvec index to disk. Called after successful SQLite commit.
+
+        IVFPQBackend.save is a no-op before fit, so pre-fit mutations stay
+        in sqlite-vec (the authoritative source until fit_ivfpq runs).
+        """
+        if self._snap is None:
+            return
+        target = (
+            self._ivfpq_path
+            if self._vector_backend == "snapvec-ivfpq"
+            else self._snapvec_path
+        )
+        self._snap.save(str(target))
+        self._snap_dirty = False
 
     def _reload_snapvec(self) -> None:
-        """Reload SnapIndex from disk after a failed transaction.
+        """Reload the snapvec index from disk after a failed transaction.
 
         Restores the on-disk state so the in-memory index matches SQLite
         after a rollback.
         """
         if self._snap is None:
+            return
+        if self._vector_backend == "snapvec-ivfpq":
+            # Re-run the load path used at construction time.
+            self._init_ivfpq()
+            self._snap_dirty = False
             return
         path = self._snapvec_path
         if path.exists():
