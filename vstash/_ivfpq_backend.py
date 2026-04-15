@@ -15,9 +15,8 @@ Lifecycle:
     3. User runs `vstash snapvec fit`. The CLI reads all embeddings from
        vec_chunks, calls backend.fit(sample) + backend.add_batch(all),
        backend.save(path).
-    4. On next store open, IVFPQBackend.load() reads the .snpi, sets
-       fitted=True. len() returns the indexed count, so search now
-       prefers the IVFPQ path.
+    4. On next store open, IVFPQBackend.load() reads the .snpi and the
+       presence of the file is authoritative for fitted state.
     5. Post-fit add_document calls are forwarded to the fitted index.
     6. Deletes forward through in all states (no-op before fit).
 """
@@ -35,6 +34,10 @@ class IVFPQBackend:
 
     Attributes mirror SnapIndex where the search hot-path reads them,
     so VstashStore does not need a type switch on the snap object.
+
+    The underlying IVFPQSnapIndex is built with ``normalized=True``
+    (cosine scoring assumes unit-length inputs), so this adapter
+    L2-normalizes at every entry point — fit, add_batch, and search.
     """
 
     def __init__(
@@ -90,13 +93,26 @@ class IVFPQBackend:
         return len(self._index) if self._fitted else 0
 
     # ------------------------------------------------------------------ #
+    # normalization                                                       #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _normalize(x: np.ndarray) -> np.ndarray:
+        x = np.asarray(x, dtype=np.float32)
+        if x.ndim == 1:
+            norm = float(np.linalg.norm(x))
+            return x / norm if norm > 1e-9 else x
+        norms = np.linalg.norm(x, axis=1, keepdims=True)
+        return x / np.where(norms > 1e-9, norms, 1.0)
+
+    # ------------------------------------------------------------------ #
     # training and build                                                  #
     # ------------------------------------------------------------------ #
 
     def fit(self, training_vectors: np.ndarray) -> None:
         if self._fitted:
             raise RuntimeError("IVFPQBackend already fitted")
-        self._index.fit(np.asarray(training_vectors, dtype=np.float32))
+        self._index.fit(self._normalize(training_vectors))
         self._fitted = True
 
     def add_batch(self, ids: list[Any], vectors: np.ndarray) -> None:
@@ -104,7 +120,7 @@ class IVFPQBackend:
             # Silently drop pre-fit adds. sqlite-vec is the source of
             # truth until fit() runs and the CLI repopulates from there.
             return
-        self._index.add_batch(list(ids), np.asarray(vectors, dtype=np.float32))
+        self._index.add_batch(list(ids), self._normalize(vectors))
 
     def delete(self, id_: Any) -> bool:
         if not self._fitted:
@@ -123,7 +139,7 @@ class IVFPQBackend:
             kwargs["nprobe"] = self._nprobe
         if self._rerank_candidates > 0 and self._keep_full_precision:
             kwargs["rerank_candidates"] = max(self._rerank_candidates, k)
-        results = self._index.search(np.asarray(query, dtype=np.float32), k=k, **kwargs)
+        results = self._index.search(self._normalize(query), k=k, **kwargs)
         # IVFPQ returns similarity scores, not cosine distance. Convert
         # to a pseudo-distance in [0, 2] so downstream relevance_tier()
         # and ranking heuristics keep working. cosine_dist = 1 - cos_sim.
@@ -136,9 +152,6 @@ class IVFPQBackend:
     def save(self, path: str) -> None:
         if self._fitted:
             self._index.save(path)
-            # Touch a sidecar so load() can tell a pre-fit state apart
-            # from a fitted empty index.
-            Path(path + ".fitted").write_text("1")
 
     @classmethod
     def load(
@@ -154,29 +167,27 @@ class IVFPQBackend:
         rerank_candidates: int = 100,
         nprobe: int = 0,
     ) -> IVFPQBackend:
+        """Load a fitted index from disk, or return an unfit backend.
+
+        The presence of the index file is authoritative: if ``path``
+        exists it's treated as a fitted index. This avoids the split
+        between an index file and a sidecar flag getting out of sync
+        after a crash. Constructor validation (dim % M) still runs via
+        the normal ``__init__`` path.
+        """
         from snapvec import IVFPQSnapIndex
 
-        fitted_flag = Path(path + ".fitted").exists()
-        if not fitted_flag or not Path(path).exists():
-            return cls(
-                dim=dim,
-                nlist=nlist,
-                M=M,
-                K=K,
-                seed=seed,
-                keep_full_precision=keep_full_precision,
-                rerank_candidates=rerank_candidates,
-                nprobe=nprobe,
-            )
-        backend = cls.__new__(cls)
-        backend.dim = dim
-        backend._nlist = nlist
-        backend._M = M
-        backend._K = K
-        backend._seed = seed
-        backend._keep_full_precision = keep_full_precision
-        backend._rerank_candidates = rerank_candidates
-        backend._nprobe = nprobe
-        backend._index = IVFPQSnapIndex.load(path)
-        backend._fitted = True
+        backend = cls(
+            dim=dim,
+            nlist=nlist,
+            M=M,
+            K=K,
+            seed=seed,
+            keep_full_precision=keep_full_precision,
+            rerank_candidates=rerank_candidates,
+            nprobe=nprobe,
+        )
+        if Path(path).exists():
+            backend._index = IVFPQSnapIndex.load(path)
+            backend._fitted = True
         return backend

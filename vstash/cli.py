@@ -1606,7 +1606,7 @@ def snapvec_fit(
     try:
         stats = store.fit_ivfpq(training_sample=training_sample)
     except RuntimeError as exc:
-        console.print(f"[red]x[/red] {exc}")
+        console.print(f"[red]x[/red] {_safe_exc(exc)}")
         raise typer.Exit(code=1) from exc
 
     console.print(
