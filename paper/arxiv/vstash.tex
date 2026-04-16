@@ -240,7 +240,7 @@ The system includes integrity checking with five invariants and idempotent re-in
 
 \subsection{4 Adaptive RRF with IDF Weighting}\label{adaptive-rrf-with-idf-weighting}
 
-Fixed RRF weights (0.6 vector, 0.4 FTS) assume all queries benefit equally from keyword matching. Evaluation on BEIR revealed this assumption fails on long, semantically-rich queries: on ArguAna (average 194 words), fixed weights degraded NDCG@10 by -16.1\% versus a tuned dense-only baseline.
+Fixed RRF weights (0.6 vector, 0.4 FTS) assume all queries benefit equally from keyword matching. Evaluation on BEIR revealed this assumption fails on long, semantically-rich queries: on ArguAna (average 194 words), fixed weights score NDCG@10 = 0.3599 vs 0.4370 for adaptive IDF -- a 17.6\% relative shortfall (Table 3) and the largest gap of any of the 5 benchmarks, which is what motivates adaptive weighting.
 
 \subsubsection{4.1 Method}\label{method}
 
