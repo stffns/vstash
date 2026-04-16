@@ -9,7 +9,7 @@
 
 We present **vstash**, a local-first document memory system that combines vector similarity search with full-text keyword matching via Reciprocal Rank Fusion (RRF) and adaptive per-query IDF weighting. All data resides in a single SQLite file using sqlite-vec for approximate nearest neighbor search and FTS5 for keyword matching.
 
-We make four primary contributions. **(1)** Self-supervised embedding refinement via hybrid retrieval disagreement: across 753 BEIR queries on SciFact, NFCorpus, and FiQA, 74.5% produce top-10 disagreement between vector-heavy (vec=0.95, fts=0.05) and FTS-heavy (vec=0.05, fts=0.95) search (per-dataset: 63.4% / 73.4% / 86.7%; measurement script and full counts in `experiments/rrf_training_pairs.py` and `experiments/results/rrf_training_pairs.stats.json`), providing a free training signal without human labels. Fine-tuning BGE-small (33M params) with MultipleNegativesRankingLoss on 76K disagreement triples improves NDCG@10 on all 5 BEIR datasets (up to +19.5% on NFCorpus vs. BGE-small base RRF, Table 6). On 3 of 5 BEIR datasets, under different preprocessing conditions, the tuned 33M-parameter pipeline achieves NDCG comparable to or exceeding published ColBERTv2 results (110M params) (Section 7.3); on those same 3 datasets it also surpasses an untrained 110M BGE-base, demonstrating that targeted training data can compensate for 3x model size. On the remaining 2 datasets (FiQA, ArguAna) the tuned pipeline underperforms ColBERTv2, discussed in Section 5.5. **(2)** Adaptive RRF with per-query IDF weighting improves NDCG@10 on all 5 BEIR datasets versus fixed weights (up to +21.4% on ArguAna), achieving 0.7263 on SciFact with BGE-small (384d). **(3)** A negative result on post-RRF scoring: frequency+decay reranking, history-augmented recall, and cross-encoder reranking all failed to improve NDCG, leading to their removal. **(4)** A production-grade memory substrate with integrity checking, schema versioning, ranking diagnostics, and a distance-based relevance signal validated on 50,425 queries across the 5 BEIR datasets (Table 2 in Section 3.6).
+We make four primary contributions. **(1)** Self-supervised embedding refinement via hybrid retrieval disagreement: across 753 BEIR queries on SciFact, NFCorpus, and FiQA, 74.5% produce top-10 disagreement between vector-heavy (vec=0.95, fts=0.05) and FTS-heavy (vec=0.05, fts=0.95) search (mean of per-dataset rates; 71.8% when the three datasets are pooled; per-dataset: 63.4% / 73.4% / 86.7%; measurement script and full counts in `experiments/rrf_training_pairs.py` and `experiments/results/rrf_training_pairs.stats.json`), providing a free training signal without human labels. Fine-tuning BGE-small (33M params) with MultipleNegativesRankingLoss on 76K disagreement triples improves NDCG@10 on all 5 BEIR datasets (up to +19.5% on NFCorpus vs. BGE-small base RRF, Table 6). On 3 of 5 BEIR datasets, under different preprocessing conditions, the tuned 33M-parameter pipeline achieves NDCG comparable to or exceeding published ColBERTv2 results (110M params) (Section 7.3); on those same 3 datasets it also surpasses an untrained 110M BGE-base, demonstrating that targeted training data can compensate for 3x model size. On the remaining 2 datasets (FiQA, ArguAna) the tuned pipeline underperforms ColBERTv2, discussed in Section 5.5. **(2)** Adaptive RRF with per-query IDF weighting improves NDCG@10 on all 5 BEIR datasets versus fixed weights (up to +21.4% on ArguAna), achieving 0.7263 on SciFact with BGE-small (384d). **(3)** A negative result on post-RRF scoring: frequency+decay reranking, history-augmented recall, and cross-encoder reranking all failed to improve NDCG, leading to their removal. **(4)** A production-grade memory substrate with integrity checking, schema versioning, ranking diagnostics, and a distance-based relevance signal validated on 50,425 relevance-judged queries across the 5 BEIR datasets (3,677 relevant + 46,748 irrelevant; see Table 2 in Section 3.6).
 
 Search latency remains 20.9 ms median at 50K chunks with stable NDCG. The fine-tuned model is published as `Stffens/bge-small-rrf-v2` on HuggingFace. All code, data, and experiments are open-source.
 
@@ -39,7 +39,7 @@ Secondary contributions include intra-document MMR deduplication (+1.8% NDCG@5),
 
 ## 2  Related Work
 
-**Memory for LLM agents.** MemGPT (Packer et al., 2023) introduced virtual context management with explicit memory tiers. Mem0 (Chadha et al., 2025) and Memoria (2025) provide production-ready memory layers with cloud backends. A-MEM (2025) uses agentic self-organization. Unlike these systems, vstash operates entirely locally with zero cloud dependencies.
+**Memory for LLM agents.** MemGPT (Packer et al., 2023) introduced virtual context management with explicit memory tiers. Mem0 (Chhikara et al., 2025) and Memoria (Sarin et al., 2025) provide production-ready memory layers with cloud backends. A-MEM (Xu et al., 2025) uses agentic self-organization. Unlike these systems, vstash operates entirely locally with zero cloud dependencies.
 
 **Local-first agent memory.** Several concurrent projects share vstash's SQLite + hybrid search architecture: palinode (git-native markdown + sqlite-vec + RRF), cpersona (MCP server with 3-strategy RRF), agentmem (FTS5 + vector with adaptive ranking), and sqlite-memory (FTS5 + vector with offline sync). None publish formal NDCG evaluations on standard benchmarks. neo4j-labs/agent-memory takes an orthogonal approach with graph-native entity extraction and temporal knowledge graphs, targeting relational queries rather than dense retrieval.
 
@@ -185,7 +185,8 @@ Across 753 queries on 3 BEIR datasets (SciFact, NFCorpus, FiQA), 74.5% of querie
 | SciFact (biomedical claims) | 295 | 187 | 63.4% |
 | NFCorpus (health/nutrition) | 323 | 237 | 73.4% |
 | FiQA (financial QA) | 135 | 117 | 86.7% |
-| **Total** | **753** | **541** | **71.8% aggregate / 74.5% mean of means** |
+| **Total (pooled)** | **753** | **541** | **71.8%** |
+| **Mean of per-dataset rates** | | | **74.5%** |
 
 The spread (63% to 87%) is itself informative: SciFact has the most homogeneous query vocabulary (scientific claim statements), so vector and FTS mostly agree; FiQA has the most heterogeneous (user questions phrased in many ways), so the modalities disagree far more often. This per-dataset variation motivates the model-specific triple generation used in Section 5.5 (a different embedding model has different blind spots). Hard negatives are balanced: 51% are chunks ranked high by vector but absent from FTS top-5 (dense blind spots), and 49% are the reverse (lexical blind spots). This yields 75,981 (query, positive, hard_negative) triples at zero labeling cost.
 
@@ -349,7 +350,7 @@ Hybrid RRF is the strongest modality on both corpora, achieving the highest NDCG
 | SciFact (30q) | 2.60/3.0 | 2.40/3.0 | +8.3% | 4-1 (25 ties) | 1 | 3 |
 | NFCorpus (30q) | 2.50/3.0 | 2.37/3.0 | +5.6% | 5-5 (20 ties) | 3 | 4 |
 
-*LLM judge: Qwen 3.5 9B (local). **The sample size (N=30 per dataset) is too small to draw statistical conclusions;** the +8.3% and +5.6% point estimates are directional only, not significance-tested. We include the table for reader context because the retrieval-level improvements in Table 6 predict that a better retrieval pipeline should produce better end-to-end answers, and the directional result is consistent with that prediction. The head-to-head breakdown (4-1 and 5-5 with large tie counts) and the zero-score columns are arguably more informative than the mean delta: the tuned pipeline produced fewer score=0 catastrophic failures on both datasets (1 vs 3 on SciFact; 3 vs 4 on NFCorpus), which is the failure mode most likely to matter in a deployed memory layer. A properly powered end-to-end study (N >= 300 per dataset, with bootstrapped confidence intervals) remains future work.*
+*LLM judge: Qwen 3.5 9B (local). **The sample size (N=30 per dataset) is too small to draw statistical conclusions;** the +8.3% and +5.6% point estimates are directional only, not significance-tested. We include the table for reader context because the retrieval-level improvements in Table 6 predict that a better retrieval pipeline should produce better end-to-end answers, and the directional result is consistent with that prediction. The high tie rate (25/30 on SciFact, 20/30 on NFCorpus) indicates that the LLM judge rarely distinguishes the two systems at the answer level, limiting the sensitivity of this evaluation further. The zero-score columns are arguably the most informative row of the table: the tuned pipeline produced fewer catastrophic score=0 failures on both datasets (1 vs 3 on SciFact; 3 vs 4 on NFCorpus), which is the failure mode most likely to matter in a deployed memory layer. A properly powered end-to-end study (N >= 300 per dataset, with bootstrapped confidence intervals) remains future work.*
 
 ---
 
@@ -373,7 +374,7 @@ Hybrid RRF is the strongest modality on both corpora, achieving the highest NDCG
 
 We presented vstash, a local-first document memory system that makes four contributions to LLM agent memory:
 
-**Self-supervised embedding refinement.** Hybrid retrieval disagreement provides a free training signal. Fine-tuning BGE-small (33M params) with MNRL on 76K disagreement triples improves NDCG@10 on all 5 BEIR datasets relative to the same BGE-small base RRF pipeline (up to +19.5% on NFCorpus, Table 6). On 3 of 5 BEIR datasets, under different preprocessing conditions, the tuned 33M-parameter pipeline achieves NDCG comparable to or exceeding published ColBERTv2 results (110M params) (Section 7.3); on those same 3 datasets it also surpasses an untrained BGE-base (110M params), demonstrating that targeted training data can compensate for 3x model size. The remaining 2 datasets (FiQA, ArguAna) see smaller gains and remain below ColBERTv2; we attribute this to a mismatch between the training-triple distribution (claim/QA-style) and those benchmarks' query styles, not to a failure of the method (Section 5.5). The model is published as `Stffens/bge-small-rrf-v2`. Users can fine-tune on their own data via `vstash retrain`.
+**Self-supervised embedding refinement.** Hybrid retrieval disagreement provides a free training signal. Fine-tuning BGE-small (33M params) with MNRL on 76K disagreement triples improves NDCG@10 on 5 of 5 BEIR datasets relative to the same BGE-small base RRF pipeline, with gains ranging from +0.1% on FiQA (essentially neutral) to +19.5% on NFCorpus (Table 6). On 3 of 5 BEIR datasets, under different preprocessing conditions, the tuned 33M-parameter pipeline achieves NDCG comparable to or exceeding published ColBERTv2 results (110M params) (Section 7.3); on those same 3 datasets it also surpasses an untrained BGE-base (110M params), demonstrating that targeted training data can compensate for 3x model size. The remaining 2 datasets (FiQA, ArguAna) see smaller gains and remain below ColBERTv2; we attribute this to a mismatch between the training-triple distribution (claim/QA-style) and those benchmarks' query styles, not to a failure of the method (Section 5.5). The model is published as `Stffens/bge-small-rrf-v2`. Users can fine-tune on their own data via `vstash retrain`.
 
 **Adaptive RRF.** IDF-based per-query weight adjustment improves NDCG@10 on all 5 BEIR datasets (up to +21.4% on ArguAna). On SciFact, vstash achieves NDCG@10 = 0.7263 with BGE-small (384d), a pipeline-level result that compares favorably with published ColBERTv2 numbers on the same benchmark, though under different preprocessing conditions (Section 7.3).
 
@@ -469,7 +470,7 @@ Lightweight, append-only memory for LLM agents. Unlike document ingestion, journ
 
 ### E.1  Embedding Model Comparison
 
-EmbeddingGemma-300m (768d, Google) was evaluated as an alternative to BGE-small (384d). SciFact was evaluated separately; SciDocs, FiQA, and ArguAna numbers are from `experiments/results/embedding_gemma_eval.json`.
+EmbeddingGemma-300m (768d, Google) was evaluated as an alternative to BGE-small (384d) on 4 of the 5 BEIR datasets used elsewhere in the paper. NFCorpus is omitted: the EmbeddingGemma run was added late in our timeline to answer a specific question ("does a larger, domain-weighted model help on the benchmarks where BGE-small underperforms ColBERTv2?"), and NFCorpus is where BGE-small already beats the published ColBERTv2 number (+14.8% in Table 6), so we deprioritized adding it. SciFact was evaluated separately; SciDocs, FiQA, and ArguAna numbers are from `experiments/results/embedding_gemma_eval.json`.
 
 **Table E1: Embedding model comparison on BEIR (NDCG@10)**
 
@@ -479,7 +480,7 @@ EmbeddingGemma-300m (768d, Google) was evaluated as an alternative to BGE-small 
 | **EmbeddingGemma-300m** | 300M | 768 | **0.7801** | 0.1707 | 0.3543 | 0.4284 |
 | Delta | | | **+7.4%** | -12.2% | -9.6% | -2.0% |
 
-EmbeddingGemma excels on biomedical text (SciFact) but underperforms on CS papers (SciDocs) and financial queries (FiQA). Model choice is domain-dependent: no single embedding model dominates across all benchmarks. BGE-small remains the recommended default for general-purpose use.
+EmbeddingGemma excels on biomedical text (SciFact) but underperforms on CS papers (SciDocs) and financial queries (FiQA). Model choice is domain-dependent: no single embedding model dominates across all 4 benchmarks evaluated here. BGE-small remains the recommended default for general-purpose use.
 
 ### E.2  MMR Deduplication Effect
 
@@ -525,7 +526,7 @@ Every search records an event with query, best distance, relevance tier, and res
 
 [1] Carbonell, J., & Goldstein, J. (1998). The use of MMR, diversity-based reranking for reordering documents and producing summaries. *SIGIR*.
 
-[2] Chadha, T., Khattab, D., & Singhal, P. (2025). Mem0: Production-ready AI agents with scalable long-term memory. *arXiv:2504.19413*.
+[2] Chhikara, P., Khant, D., Aryan, S., & Singh, T. (2025). Mem0: Building production-ready AI agents with scalable long-term memory. *arXiv:2504.19413*.
 
 [3] Cormack, G. V., Clarke, C. L. A., & Buttcher, S. (2009). Reciprocal rank fusion outperforms condorcet and individual rank learning methods. *SIGIR*.
 
@@ -533,23 +534,23 @@ Every search records an event with query, best distance, relevance tier, and res
 
 [5] Ma, X., Wang, Y., & Lin, J. (2024). Is reciprocal rank fusion all you need for hybrid retrieval? *arXiv preprint*.
 
-[6] MaRS Team. (2025). MaRS: Forgetful but faithful -- cognitive memory architecture. *arXiv:2512.12856*.
+[6] Alqithami, S. (2025). Forgetful but Faithful: A Cognitive Memory Architecture and Benchmark for Privacy-Aware Generative Agents. *arXiv:2512.12856*.
 
-[7] Memoria Team. (2025). Memoria: Scalable agentic memory for personalized conversational AI. *arXiv:2512.12686*.
+[7] Sarin, S., Singh, L., Sarmah, B., & Mehta, D. (2025). Memoria: A scalable agentic memory framework for personalized conversational AI. *arXiv:2512.12686*.
 
 [8] Muennighoff, N., Tazi, N., Magne, L., & Reimers, N. (2023). MTEB: Massive Text Embedding Benchmark. *EACL*.
 
 [9] Packer, C., et al. (2023). MemGPT: Towards LLMs as operating systems. *arXiv:2310.08560*.
 
-[10] PAM Team. (2026). PAM: Predictive associative memory via temporal co-occurrence. *arXiv:2602.11322*.
+[10] Dury, J. (2026). Predictive Associative Memory: Retrieval Beyond Similarity Through Temporal Co-occurrence. *arXiv:2602.11322*.
 
 [11] Santhanam, K., et al. (2022). ColBERTv2: Effective and efficient retrieval via lightweight late interaction. *NAACL*.
 
 [12] Thakur, N., et al. (2021). BEIR: A heterogeneous benchmark for zero-shot evaluation of information retrieval models. *NeurIPS Datasets and Benchmarks*.
 
-[13] Zep Team. (2025). Zep: Temporal knowledge graph architecture for agent memory. *arXiv:2501.13956*.
+[13] Rasmussen, P., Paliychuk, P., Beauvais, T., & Ryan, J. (2025). Zep: A temporal knowledge graph architecture for agent memory. *arXiv:2501.13956*.
 
-[14] A-MEM Team. (2025). A-MEM: Agentic memory for LLM agents. *arXiv:2502.12110*.
+[14] Xu, W., Liang, Z., Mei, K., & Gao, H. (2025). A-MEM: Agentic memory for LLM agents. *arXiv:2502.12110*.
 
 [15] Karpukhin, V., et al. (2020). Dense passage retrieval for open-domain question answering. *EMNLP*.
 
