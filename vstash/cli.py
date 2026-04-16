@@ -149,6 +149,7 @@ def _get_store(
         ivfpq_K=cfg.storage.ivfpq_K,
         ivfpq_rerank_candidates=cfg.storage.ivfpq_rerank_candidates,
         ivfpq_nprobe=cfg.storage.ivfpq_nprobe,
+        cache=cfg.cache,
     )
     return cfg, store
 

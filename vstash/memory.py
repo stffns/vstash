@@ -106,6 +106,7 @@ class Memory:
             snapvec_bits=self._cfg.storage.snapvec_bits,
             observability=self._cfg.observability,
             limits=self._cfg.limits,
+            cache=self._cfg.cache,
         )
         # Silent killer defense: warn if the DB was built with a
         # different embedding model or a fastembed version that changed
