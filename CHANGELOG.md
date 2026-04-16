@@ -2,6 +2,17 @@
 
 All notable changes to vstash are documented here.
 
+## [0.31.0] - 2026-04-16
+
+### Added
+
+- **Query LRU cache** for `VstashStore.search()`. Opt-in via `[cache] query_cache_size` in `vstash.toml` (default 0 = disabled). Repeated identical queries return from an in-memory LRU cache. Automatically invalidated on any write (add, delete, reindex). Skipped for `explain=True` and `miss_analysis()`. Benchmark shows ~700x speedup on cache hits for repeated queries.
+- **Deferred FTS indexing** in `batch_mode(defer_fts=True)`. FTS5 inserts are collected in memory during batch operations and flushed in a single bulk pass on exit.
+
+### Changed
+
+- **`ingest_directory` now uses batched store writes.** Files are prepared (parse + chunk + embed) individually, then stored via `add_documents_batch` in a single transaction with deferred FTS. Combined speedup: **5x** at 500 docs versus the old per-file `add_document` loop.
+
 ## [0.30.0] - 2026-04-15
 
 ### Added

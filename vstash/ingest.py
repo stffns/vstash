@@ -27,8 +27,27 @@ from rich.progress import (
 
 from .config import EXCLUDED_DIRS, MAX_DIR_BYTES, MAX_DIR_FILES, SUPPORTED_EXTENSIONS, VstashConfig
 from .embed import embed_texts
+from typing import TypedDict
+
 from .models import IngestResult
 from .store import VstashStore
+
+
+class _PreparedDoc(TypedDict):
+    """Data ready to pass to add_document / add_documents_batch."""
+
+    path: str
+    title: str
+    chunks: list[str]
+    embeddings: list[list[float]]
+    source_type: str
+    collection: str
+    project: str | None
+    layer: str | None
+    tags: str | None
+    char_count: int
+    source: str
+
 
 console = Console(stderr=True)
 
@@ -393,6 +412,159 @@ def _get_source_type(source: str) -> str:
 # ------------------------------------------------------------------ #
 
 
+def _prepare_document(
+    source: str,
+    cfg: VstashConfig,
+    store: VstashStore,
+    *,
+    force: bool = False,
+    collection: str = "default",
+    project: str | None = None,
+    layer: str | None = None,
+    tags: str | None = None,
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
+    quiet: bool = False,
+) -> _PreparedDoc | IngestResult:
+    """Parse, chunk, and embed a source -- everything except the store write.
+
+    Returns a _PreparedDoc dict if ready to store, or an IngestResult
+    for skip/error/empty conditions.  The ``quiet`` flag suppresses
+    per-file Rich progress bars (used by ingest_directory which shows
+    its own progress bar).
+    """
+    source_path = str(Path(source).resolve()) if not _is_url(source) else source
+    title = _get_title(source)
+    source_type = _get_source_type(source)
+
+    if not force:
+        status = store.doc_completeness(source_path, collection=collection)
+        if status == "complete":
+            return IngestResult(status="skipped", source=source, title=title)
+        if status == "partial":
+            store.delete_document(source_path, collection=collection)
+
+    is_code = source_type == "code" and not _is_url(source) and cfg.chunking.code_aware
+
+    # --- Parse ---
+    if quiet:
+        try:
+            if is_code:
+                text = _read_raw_code(source_path)
+                if text is None:
+                    text = _parse(source)
+                    is_code = False
+            else:
+                text = _parse(source)
+        except Exception as exc:
+            return IngestResult(status="error", source=source, error=str(exc))
+    else:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[bold cyan]Parsing[/bold cyan] {task.description}"),
+            TimeElapsedColumn(),
+            console=console,
+            transient=True,
+        ) as progress:
+            progress.add_task(Path(source).name if not _is_url(source) else source)
+            try:
+                if is_code:
+                    text = _read_raw_code(source_path)
+                    if text is None:
+                        text = _parse(source)
+                        is_code = False
+                else:
+                    text = _parse(source)
+            except Exception as exc:
+                from rich.markup import escape as _rich_escape
+
+                console.print(f"[red]✗ Error parsing {source}: {_rich_escape(str(exc))}[/red]")
+                return IngestResult(status="error", source=source, error=str(exc))
+
+    if not text or not text.strip():
+        if not quiet:
+            console.print(f"[yellow]⚠ No text extracted from {source}[/yellow]")
+        return IngestResult(status="empty", source=source)
+
+    if _is_url(source):
+        extracted = _extract_title_from_content(text)
+        if extracted:
+            title = extracted
+
+    char_count = len(text)
+
+    # --- Frontmatter ---
+    frontmatter = _extract_frontmatter(text)
+    fm_project = project or frontmatter.get("project")
+    fm_layer = layer or frontmatter.get("layer")
+    if fm_project is not None:
+        if isinstance(fm_project, (dict, list)):
+            if not quiet:
+                console.print(
+                    f"[yellow]⚠ Frontmatter 'project' is a {type(fm_project).__name__}, "
+                    f"expected string -- ignoring.[/yellow]"
+                )
+            fm_project = None
+        else:
+            fm_project = str(fm_project)
+    if fm_layer is not None:
+        if isinstance(fm_layer, (dict, list)):
+            if not quiet:
+                console.print(
+                    f"[yellow]⚠ Frontmatter 'layer' is a {type(fm_layer).__name__}, "
+                    f"expected string -- ignoring.[/yellow]"
+                )
+            fm_layer = None
+        else:
+            fm_layer = str(fm_layer)
+    fm_tags_raw = tags or frontmatter.get("tags")
+    fm_tags: str | None = None
+    if fm_tags_raw:
+        if isinstance(fm_tags_raw, list):
+            fm_tags = ",".join(str(t) for t in fm_tags_raw)
+        elif not isinstance(fm_tags_raw, (dict,)):
+            fm_tags = str(fm_tags_raw)
+    text = _strip_frontmatter(text)
+
+    # --- Chunk ---
+    cs = chunk_size if chunk_size is not None else cfg.chunking.size
+    co = chunk_overlap if chunk_overlap is not None else cfg.chunking.overlap
+    if cs <= 0:
+        raise ValueError(f"chunk_size must be positive, got {cs}")
+    if co < 0:
+        raise ValueError(f"chunk_overlap must be non-negative, got {co}")
+    if co >= cs:
+        raise ValueError(f"chunk_overlap ({co}) must be less than chunk_size ({cs})")
+    if is_code:
+        ext = Path(source).suffix.lower()
+        language = _EXT_TO_LANG.get(ext, "")
+        chunks = chunk_code(text, cs, co, language)
+    else:
+        chunks = chunk_text(text, cs, co)
+
+    if not chunks:
+        if not quiet:
+            console.print(f"[yellow]⚠ No chunks generated from {source}[/yellow]")
+        return IngestResult(status="empty", source=source)
+
+    # --- Embed ---
+    embeddings = _embed_with_progress(chunks, cfg.embeddings.model, quiet=quiet)
+
+    return _PreparedDoc(
+        path=source_path,
+        title=title,
+        chunks=chunks,
+        embeddings=embeddings,
+        source_type=source_type,
+        collection=collection,
+        project=fm_project,
+        layer=fm_layer,
+        tags=fm_tags,
+        char_count=char_count,
+        source=source,
+    )
+
+
 def ingest(
     source: str,
     cfg: VstashConfig,
@@ -420,151 +592,32 @@ def ingest(
     """
     start_time = time.time()
 
-    source_path = str(Path(source).resolve()) if not _is_url(source) else source
-    title = _get_title(source)
-    source_type = _get_source_type(source)
+    prepared = _prepare_document(
+        source,
+        cfg,
+        store,
+        force=force,
+        collection=collection,
+        project=project,
+        layer=layer,
+        tags=tags,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+    )
+    if isinstance(prepared, IngestResult):
+        return prepared
 
-    # Idempotent re-ingest (#134).  Without --force, we now distinguish
-    # three states instead of "exists / not exists":
-    #   - "complete": fully ingested → skip
-    #   - "partial":  prior ingest crashed mid-flight → drop the partial
-    #     rows and re-ingest fresh (still treated as a non-error path)
-    #   - "missing":  ingest from scratch
-    if not force:
-        # Pass collection: doc_completeness must check the *exact*
-        # (collection, path) row, not "any document with this path",
-        # otherwise a partial copy in collection A could mask the
-        # health of collection B.  Same reason we restrict the
-        # delete_document call below to the target collection.
-        status = store.doc_completeness(source_path, collection=collection)
-        if status == "complete":
-            return IngestResult(
-                status="skipped",
-                source=source,
-                title=title,
-            )
-        if status == "partial":
-            # Drop the half-ingested document so the fresh ingest below
-            # produces a clean state instead of duplicating chunks.
-            # Scope to ``collection`` so we don't wipe other collections'
-            # complete copies of the same path.
-            store.delete_document(source_path, collection=collection)
-
-    # Should we try code-aware chunking?
-    is_code = source_type == "code" and not _is_url(source) and cfg.chunking.code_aware
-
-    # --- Step 1: Parse ---
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[bold cyan]Parsing[/bold cyan] {task.description}"),
-        TimeElapsedColumn(),
-        console=console,
-        transient=True,
-    ) as progress:
-        progress.add_task(Path(source).name if not _is_url(source) else source)
-        try:
-            if is_code:
-                text = _read_raw_code(source_path)
-                if text is None:
-                    text = _parse(source)
-                    is_code = False
-            else:
-                text = _parse(source)
-        except Exception as exc:
-            # rich.markup.escape on the exception text so brackets in
-            # messages like "pip install vstash[ingest]" don't get
-            # interpreted as markup tags and silently dropped.
-            from rich.markup import escape as _rich_escape
-
-            console.print(f"[red]✗ Error parsing {source}: {_rich_escape(str(exc))}[/red]")
-            return IngestResult(
-                status="error",
-                source=source,
-                error=str(exc),
-            )
-
-    if not text or not text.strip():
-        console.print(f"[yellow]⚠ No text extracted from {source}[/yellow]")
-        return IngestResult(status="empty", source=source)
-
-    # For URLs, try to extract a real title from the parsed content
-    if _is_url(source):
-        extracted = _extract_title_from_content(text)
-        if extracted:
-            title = extracted
-
-    char_count = len(text)
-
-    # --- Step 2: Extract frontmatter metadata ---
-    frontmatter = _extract_frontmatter(text)
-    # Explicit params override frontmatter values
-    fm_project = project or frontmatter.get("project")
-    fm_layer = layer or frontmatter.get("layer")
-    # Coerce non-string scalars to str; warn on dicts/lists
-    if fm_project is not None:
-        if isinstance(fm_project, (dict, list)):
-            console.print(
-                f"[yellow]⚠ Frontmatter 'project' is a {type(fm_project).__name__}, "
-                f"expected string — ignoring.[/yellow]"
-            )
-            fm_project = None
-        else:
-            fm_project = str(fm_project)
-    if fm_layer is not None:
-        if isinstance(fm_layer, (dict, list)):
-            console.print(
-                f"[yellow]⚠ Frontmatter 'layer' is a {type(fm_layer).__name__}, "
-                f"expected string — ignoring.[/yellow]"
-            )
-            fm_layer = None
-        else:
-            fm_layer = str(fm_layer)
-    fm_tags_raw = tags or frontmatter.get("tags")
-    fm_tags: str | None = None
-    if fm_tags_raw:
-        if isinstance(fm_tags_raw, list):
-            fm_tags = ",".join(str(t) for t in fm_tags_raw)
-        elif not isinstance(fm_tags_raw, (dict,)):
-            fm_tags = str(fm_tags_raw)
-    # Strip frontmatter block from text before chunking
-    text = _strip_frontmatter(text)
-
-    # --- Step 3: Chunk ---
-    with console.status("[bold cyan]Chunking...[/bold cyan]", spinner="dots"):
-        cs = chunk_size if chunk_size is not None else cfg.chunking.size
-        co = chunk_overlap if chunk_overlap is not None else cfg.chunking.overlap
-        if cs <= 0:
-            raise ValueError(f"chunk_size must be positive, got {cs}")
-        if co < 0:
-            raise ValueError(f"chunk_overlap must be non-negative, got {co}")
-        if co >= cs:
-            raise ValueError(f"chunk_overlap ({co}) must be less than chunk_size ({cs})")
-        if is_code:
-            ext = Path(source).suffix.lower()
-            language = _EXT_TO_LANG.get(ext, "")
-            chunks = chunk_code(text, cs, co, language)
-        else:
-            chunks = chunk_text(text, cs, co)
-
-    if not chunks:
-        console.print(f"[yellow]⚠ No chunks generated from {source}[/yellow]")
-        return IngestResult(status="empty", source=source)
-
-    # --- Step 4: Embed (with progress bar — this is the slow part) ---
-    embeddings = _embed_with_progress(chunks, cfg.embeddings.model)
-
-    # --- Step 5: Store ---
     with console.status("[bold cyan]Storing...[/bold cyan]", spinner="dots"):
         doc_id = store.add_document(
-            path=source_path,
-            title=title,
-            chunks=chunks,
-            embeddings=embeddings,
-            source_type=source_type,
-            collection=collection,
-            project=fm_project,
-            layer=fm_layer,
-            tags=fm_tags,
+            path=prepared["path"],
+            title=prepared["title"],
+            chunks=prepared["chunks"],
+            embeddings=prepared["embeddings"],
+            source_type=prepared["source_type"],
+            collection=prepared["collection"],
+            project=prepared["project"],
+            layer=prepared["layer"],
+            tags=prepared["tags"],
         )
 
     elapsed = round(time.time() - start_time, 2)
@@ -573,9 +626,9 @@ def ingest(
         status="ok",
         doc_id=doc_id,
         source=source,
-        title=title,
-        chunks=len(chunks),
-        chars=char_count,
+        title=prepared["title"],
+        chunks=len(prepared["chunks"]),
+        chars=prepared["char_count"],
         elapsed_s=elapsed,
     )
 
@@ -844,21 +897,21 @@ def ingest_directory(
     )
 
     results: list[IngestResult] = []
-    with (
-        store.batch_mode(),
-        Progress(
-            SpinnerColumn(),
-            TextColumn("[bold]Processing directory[/bold]"),
-            BarColumn(),
-            MofNCompleteColumn(),
-            TimeElapsedColumn(),
-            console=console,
-        ) as progress,
-    ):
+    pending: list[_PreparedDoc] = []
+
+    # Phase 1: parse + chunk + embed (per-file, progress bar)
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold]Preparing[/bold]"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
         task = progress.add_task("", total=len(files))
         for f in files:
             progress.update(task, description=f.name)
-            result = ingest(
+            prepared = _prepare_document(
                 str(f),
                 cfg,
                 store,
@@ -869,9 +922,49 @@ def ingest_directory(
                 tags=tags,
                 chunk_size=chunk_size,
                 chunk_overlap=chunk_overlap,
+                quiet=True,
             )
-            results.append(result)
+            if isinstance(prepared, IngestResult):
+                if prepared.status == "error":
+                    console.print(f"[red]  x {f.name}: {prepared.error}[/red]")
+                results.append(prepared)
+            else:
+                pending.append(prepared)
             progress.advance(task)
+
+    # Phase 2: store all prepared docs in one batched transaction
+    if pending:
+        batch_docs = [
+            {
+                "path": doc["path"],
+                "title": doc["title"],
+                "chunks": doc["chunks"],
+                "embeddings": doc["embeddings"],
+                "source_type": doc["source_type"],
+                "collection": doc["collection"],
+                "project": doc["project"],
+                "layer": doc["layer"],
+                "tags": doc["tags"],
+            }
+            for doc in pending
+        ]
+        store_start = time.time()
+        with store.batch_mode(defer_fts=True):
+            doc_ids = store.add_documents_batch(batch_docs)
+        store_elapsed = round(time.time() - store_start, 2)
+
+        for doc, doc_id in zip(pending, doc_ids):
+            results.append(
+                IngestResult(
+                    status="ok",
+                    doc_id=doc_id,
+                    source=doc["source"],
+                    title=doc["title"],
+                    chunks=len(doc["chunks"]),
+                    chars=doc["char_count"],
+                    elapsed_s=store_elapsed,
+                )
+            )
 
     return results
 
@@ -1101,18 +1194,28 @@ def _parse(source: str) -> str:
     return text.strip()
 
 
-def _embed_with_progress(chunks: list[str], model_name: str) -> list[list[float]]:
+def _embed_with_progress(
+    chunks: list[str], model_name: str, quiet: bool = False
+) -> list[list[float]]:
     """Embed chunks with a Rich progress bar. Batches for efficiency.
 
     Args:
         chunks: Text chunks to embed.
         model_name: FastEmbed model identifier.
+        quiet: Skip progress bar (used in batch directory ingest).
 
     Returns:
         List of embedding vectors.
     """
     BATCH_SIZE = 64
-    all_embeddings: list[list[float]] = []
+
+    if quiet:
+        all_embeddings: list[list[float]] = []
+        for i in range(0, len(chunks), BATCH_SIZE):
+            all_embeddings.extend(embed_texts(chunks[i : i + BATCH_SIZE], model_name))
+        return all_embeddings
+
+    all_embeddings = []
 
     with Progress(
         SpinnerColumn(),

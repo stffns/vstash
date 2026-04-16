@@ -29,7 +29,9 @@ import threading
 import numpy as np
 import sqlite_vec
 
-from .config import LimitsConfig, ObservabilityConfig
+from collections import OrderedDict
+
+from .config import CacheConfig, LimitsConfig, ObservabilityConfig
 from .validation import validate_document_input, validate_search_input
 from .models import (
     ChunkInfo,
@@ -268,6 +270,7 @@ class VstashStore:
         ivfpq_nprobe: int = 0,
         observability: ObservabilityConfig | None = None,
         limits: LimitsConfig | None = None,
+        cache: CacheConfig | None = None,
     ) -> None:
         self.db_path = Path(db_path).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -291,6 +294,10 @@ class VstashStore:
         self._batch_depth: int = 0
         self._batch_dirty: bool = False
 
+        # --- Deferred FTS indexing ---
+        self._defer_fts: bool = False
+        self._deferred_fts_rows: list[tuple[int, str]] = []
+
         # --- Observability ---
         # Store the whole ObservabilityConfig object (frozen Pydantic
         # model) so that future knobs can be added without touching
@@ -306,6 +313,12 @@ class VstashStore:
         # boundary (search, add_document) — never inside the hot path.
         self._limits: LimitsConfig = limits or LimitsConfig()
 
+        # --- Query result cache (opt-in LRU) ---
+        self._cache_config: CacheConfig = cache or CacheConfig()
+        self._cache_epoch: int = 0
+        self._query_cache: OrderedDict[int, list[SearchResult]] = OrderedDict()
+        self._cache_lock = threading.Lock()
+
         # --- SnapVec backend (optional) ---
         self._snap: Any = None
         self._vector_backend = vector_backend
@@ -320,6 +333,11 @@ class VstashStore:
             self._init_snapvec()
         elif vector_backend == "snapvec-ivfpq":
             self._init_ivfpq()
+
+    def _bump_cache_epoch(self) -> None:
+        with self._cache_lock:
+            self._cache_epoch += 1
+            self._query_cache.clear()
 
     @property
     def _snapvec_path(self) -> Path:
@@ -447,6 +465,7 @@ class VstashStore:
         self._snap.fit(sample)
         self._snap.add_batch(ids.tolist(), matrix)
         self._snap.save(str(self._ivfpq_path))
+        self._bump_cache_epoch()
         build_s = _time.perf_counter() - t0
         return {
             "n_indexed": int(n_rows),
@@ -516,11 +535,7 @@ class VstashStore:
         """Flush the in-memory snapvec index to disk if dirty."""
         if self._snap is None or not self._snap_dirty:
             return
-        target = (
-            self._ivfpq_path
-            if self._vector_backend == "snapvec-ivfpq"
-            else self._snapvec_path
-        )
+        target = self._ivfpq_path if self._vector_backend == "snapvec-ivfpq" else self._snapvec_path
         self._snap.save(str(target))
         self._snap_dirty = False
 
@@ -1006,10 +1021,11 @@ class VstashStore:
 
                 # FTS5 entries (rowid must match chunks.id)
                 fts_data = [(rowid, text) for rowid, text in zip(rowids, chunks)]
-                self._conn.executemany(
-                    "INSERT INTO fts_chunks (rowid, text) VALUES (?, ?)",
-                    fts_data,
-                )
+                if not self._defer_fts:
+                    self._conn.executemany(
+                        "INSERT INTO fts_chunks (rowid, text) VALUES (?, ?)",
+                        fts_data,
+                    )
 
                 # Add to snapvec in-memory (persisted after successful commit)
                 if self._snap is not None:
@@ -1018,7 +1034,10 @@ class VstashStore:
                     self._snap_dirty = True
 
                 self._conn.commit()
+                if self._defer_fts:
+                    self._deferred_fts_rows.extend(fts_data)
                 self._invalidate_idf_cache()
+                self._bump_cache_epoch()
                 # Persist snapvec AFTER successful SQLite commit
                 if self._snap_dirty:
                     self._save_snapvec()
@@ -1055,6 +1074,7 @@ class VstashStore:
 
         with self._write_lock:
             self._conn.execute("BEGIN IMMEDIATE")
+            pending_fts: list[tuple[int, str]] = []
             try:
                 now_iso = datetime.now(timezone.utc).isoformat()
 
@@ -1124,10 +1144,13 @@ class VstashStore:
                     )
 
                     fts_data = list(zip(rowids, chunks))
-                    self._conn.executemany(
-                        "INSERT INTO fts_chunks (rowid, text) VALUES (?, ?)",
-                        fts_data,
-                    )
+                    if self._defer_fts:
+                        pending_fts.extend(fts_data)
+                    else:
+                        self._conn.executemany(
+                            "INSERT INTO fts_chunks (rowid, text) VALUES (?, ?)",
+                            fts_data,
+                        )
 
                     if self._snap is not None:
                         snap_vecs = np.array(embeddings, dtype=np.float32)
@@ -1135,7 +1158,10 @@ class VstashStore:
                         self._snap_dirty = True
 
                 self._conn.commit()
+                if pending_fts:
+                    self._deferred_fts_rows.extend(pending_fts)
                 self._invalidate_idf_cache()
+                self._bump_cache_epoch()
                 if self._snap_dirty:
                     self._save_snapvec()
             except Exception:
@@ -1174,6 +1200,7 @@ class VstashStore:
                 self._delete_by_doc_ids([row[0] for row in rows])
                 self._conn.commit()
                 self._invalidate_idf_cache()
+                self._bump_cache_epoch()
                 if self._snap_dirty:
                     self._save_snapvec()
             except Exception:
@@ -1283,6 +1310,7 @@ class VstashStore:
                 self._delete_by_doc_ids(doc_ids)
                 self._conn.commit()
                 self._invalidate_idf_cache()
+                self._bump_cache_epoch()
                 # Persist snapvec AFTER successful SQLite commit
                 if self._snap_dirty:
                     self._save_snapvec()
@@ -1433,6 +1461,32 @@ class VstashStore:
             fts_weight=fts_weight,
         )
 
+        # --- Query cache key ---
+        _cache_key: int | None = None
+        _cache_max = self._cache_config.query_cache_size
+        if _cache_max > 0 and _tracer is None and not explain:
+            _emb_bytes = np.array(query_embedding, dtype=np.float32).tobytes()
+            _cache_key = hash(
+                (
+                    _emb_bytes,
+                    query_text,
+                    top_k,
+                    vec_weight,
+                    fts_weight,
+                    distance_cutoff,
+                    collection,
+                    project,
+                    layer,
+                    adaptive_rrf,
+                    recency_boost,
+                    added_after,
+                    added_before,
+                    mmr_lambda,
+                    fts_only,
+                    self._cache_epoch,
+                )
+            )
+
         # Per-search miss-analysis tracker (#108).  The tracer is owned
         # by the caller (miss_analysis) and passed in; this keeps the
         # tracking state thread-local to the caller and zero-cost on
@@ -1460,6 +1514,18 @@ class VstashStore:
         _fts_weight_observed: float = 0.0
         registry.counter_inc("searches_total")
         try:
+            # --- Cache hit (inside try/finally so observability is recorded) ---
+            if _cache_key is not None:
+                cached: list[SearchResult] | None = None
+                with self._cache_lock:
+                    if _cache_key in self._query_cache:
+                        self._query_cache.move_to_end(_cache_key)
+                        cached = list(self._query_cache[_cache_key])
+                if cached is not None:
+                    _result_count = len(cached)
+                    registry.counter_inc("query_cache_hits_total")
+                    return cached
+
             # FTS-only short-circuit (#152): bypass vector search entirely.
             # This forces the weights to (0.0, 1.0) and disables adaptive
             # RRF so the pipeline cannot silently re-enable the vector
@@ -2041,6 +2107,13 @@ class VstashStore:
 
             # _tracer.verdicts has been populated in-place by the record()
             # calls above when tracking is enabled.  No store-level state.
+
+            if _cache_key is not None:
+                with self._cache_lock:
+                    self._query_cache[_cache_key] = list(results)
+                    while len(self._query_cache) > _cache_max:
+                        self._query_cache.popitem(last=False)
+
             return results
         finally:
             # Record latency and slow-query telemetry for every search,
@@ -3265,6 +3338,7 @@ class VstashStore:
 
                 self._conn.commit()
                 self._invalidate_idf_cache()
+                self._bump_cache_epoch()
             except Exception as exc:
                 self._conn.rollback()
                 repairs.append(
@@ -3445,32 +3519,78 @@ class VstashStore:
             return
         self._idf_cache = None
 
+    def _flush_deferred_fts(self) -> None:
+        """Bulk-insert all deferred FTS rows in a single transaction."""
+        if not self._deferred_fts_rows:
+            return
+        with self._write_lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._conn.executemany(
+                    "INSERT INTO fts_chunks (rowid, text) VALUES (?, ?)",
+                    self._deferred_fts_rows,
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+            else:
+                self._deferred_fts_rows.clear()
+
     @contextmanager
-    def batch_mode(self) -> Iterator[None]:
-        """Context manager that defers IDF cache invalidation.
+    def batch_mode(self, *, defer_fts: bool = False) -> Iterator[None]:
+        """Context manager that defers IDF cache invalidation and optionally FTS indexing.
 
-        Use this when adding or deleting many documents in a loop to avoid
-        redundant cache rebuilds.  Supports re-entrant (nested) usage.
+        Use this when adding many documents in a loop to avoid redundant
+        cache rebuilds and per-insert FTS overhead.  Supports re-entrant
+        (nested) usage.
 
-        Not thread-safe — intended for single-threaded batch operations.
-        Searches executed during a batch may use stale IDF weights; the
-        cache is refreshed once the outermost batch exits.
+        Args:
+            defer_fts: When True, FTS5 inserts are collected in memory
+                and flushed in one bulk pass when the outermost batch
+                exits.  This avoids updating the FTS B-tree per chunk,
+                which is the dominant cost at >100 documents.
+
+        Not thread-safe -- intended for single-threaded batch operations.
+        Searches executed during a batch may use stale IDF weights and
+        (when defer_fts=True) miss newly added documents in FTS results.
+
+        Precondition when ``defer_fts=True``: do not ingest the same
+        path twice within a single batch.  Re-ingesting a path deletes
+        the old chunks (firing the FTS delete trigger), but deferred
+        rows for the old rowids are already queued and would become
+        orphaned FTS entries on flush.
 
         Example::
 
-            with store.batch_mode():
+            with store.batch_mode(defer_fts=True):
                 for path in paths:
                     store.add_document(...)
-            # IDF cache is invalidated once here
+            # IDF cache invalidated + FTS populated in one pass
         """
         self._batch_depth += 1
+        was_deferring = self._defer_fts
+        if defer_fts:
+            self._defer_fts = True
         try:
             yield
         finally:
             self._batch_depth -= 1
-            if self._batch_depth == 0 and self._batch_dirty:
-                self._idf_cache = None
-                self._batch_dirty = False
+            if self._batch_depth == 0:
+                try:
+                    if self._defer_fts:
+                        self._flush_deferred_fts()
+                except Exception:
+                    logger.error(
+                        "FTS flush failed; documents are stored but not FTS-indexed. "
+                        "Run 'vstash reindex' to rebuild the FTS index."
+                    )
+                    raise
+                finally:
+                    self._defer_fts = was_deferring
+                    if self._batch_dirty:
+                        self._idf_cache = None
+                        self._batch_dirty = False
 
     def _compute_adaptive_rrf_params(
         self, query_text: str, default_cutoff: float = 1.15
@@ -3821,6 +3941,7 @@ class VstashStore:
 
                 self._conn.commit()
                 self._invalidate_idf_cache()
+                self._bump_cache_epoch()
             except Exception:
                 self._conn.rollback()
                 self._reload_snapvec()
