@@ -395,8 +395,6 @@ class VstashStore:
     @staticmethod
     def _nlist_for(n: int) -> int:
         """FAISS rule of thumb: 4 * sqrt(N), clamped to [8, 1024]."""
-        import math
-
         if n <= 0:
             return 256  # placeholder; real nlist is derived at fit() time
         return max(8, min(1024, int(4 * math.sqrt(n))))
@@ -3501,6 +3499,7 @@ class VstashStore:
             }
         except Exception:
             # fts5vocab table may not exist — disable adaptive IDF
+            logger.debug("fts_chunks_vocab unavailable; adaptive IDF disabled", exc_info=True)
             self._idf_cache = ({}, 0)
             return self._idf_cache
 

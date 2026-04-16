@@ -14,10 +14,13 @@ from __future__ import annotations
 import logging
 import sys
 import time
-from collections.abc import Generator
+from collections.abc import Callable, Generator
+from typing import Any, TypeVar
 
 from .config import VstashConfig
 from .models import SearchResult
+
+T = TypeVar("T")
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +56,7 @@ def _is_retryable(exc: Exception) -> bool:
     return any(p in msg for p in _RETRYABLE_PATTERNS)
 
 
-def _retry_call(fn, *args, **kwargs):  # type: ignore[no-untyped-def]
+def _retry_call(fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
     """Retry a function with exponential backoff on transient errors."""
     for attempt in range(_MAX_RETRIES):
         try:
