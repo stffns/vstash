@@ -76,6 +76,7 @@ def _get_journal_store(cfg: VstashConfig | None = None) -> tuple[VstashConfig, V
         embedding_dim=dim,
         vector_backend=cfg.storage.vector_backend,
         snapvec_bits=cfg.storage.snapvec_bits,
+        cache=cfg.cache,
     )
     return cfg, store
 

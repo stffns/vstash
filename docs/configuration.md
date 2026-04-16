@@ -189,6 +189,21 @@ vector_backend = "sqlite-vec"  # or "snapvec" for compressed ANN
 
 ---
 
+## `[cache]`
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `query_cache_size` | int | `0` | Maximum cached query results (LRU). 0 = disabled. |
+
+```toml
+[cache]
+query_cache_size = 128  # cache up to 128 unique queries in memory
+```
+
+When enabled, repeated identical searches return instantly from an in-memory LRU cache. The cache is automatically invalidated whenever the corpus changes (add, delete, reindex). Disabled by default so search side effects (access tracking, explain) are never suppressed unless the caller opts in. The cache is skipped for `explain=True` and `miss_analysis()` calls.
+
+---
+
 ## Environment Variables
 
 | Variable | Purpose |

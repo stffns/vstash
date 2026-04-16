@@ -2,6 +2,12 @@
 
 All notable changes to vstash are documented here.
 
+## [Unreleased]
+
+### Added
+
+- **Query LRU cache** for `VstashStore.search()`. Opt-in via `[cache] query_cache_size` in `vstash.toml` (default 0 = disabled). Repeated identical queries return from an in-memory LRU cache. Automatically invalidated on any write (add, delete, reindex). Skipped for `explain=True` and `miss_analysis()`. Benchmark shows ~700x speedup on cache hits for repeated queries.
+
 ## [0.30.0] - 2026-04-15
 
 ### Added

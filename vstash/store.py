@@ -29,7 +29,9 @@ import threading
 import numpy as np
 import sqlite_vec
 
-from .config import LimitsConfig, ObservabilityConfig
+from collections import OrderedDict
+
+from .config import CacheConfig, LimitsConfig, ObservabilityConfig
 from .validation import validate_document_input, validate_search_input
 from .models import (
     ChunkInfo,
@@ -268,6 +270,7 @@ class VstashStore:
         ivfpq_nprobe: int = 0,
         observability: ObservabilityConfig | None = None,
         limits: LimitsConfig | None = None,
+        cache: CacheConfig | None = None,
     ) -> None:
         self.db_path = Path(db_path).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -306,6 +309,12 @@ class VstashStore:
         # boundary (search, add_document) — never inside the hot path.
         self._limits: LimitsConfig = limits or LimitsConfig()
 
+        # --- Query result cache (opt-in LRU) ---
+        self._cache_config: CacheConfig = cache or CacheConfig()
+        self._cache_epoch: int = 0
+        self._query_cache: OrderedDict[int, list[SearchResult]] = OrderedDict()
+        self._cache_lock = threading.Lock()
+
         # --- SnapVec backend (optional) ---
         self._snap: Any = None
         self._vector_backend = vector_backend
@@ -320,6 +329,11 @@ class VstashStore:
             self._init_snapvec()
         elif vector_backend == "snapvec-ivfpq":
             self._init_ivfpq()
+
+    def _bump_cache_epoch(self) -> None:
+        with self._cache_lock:
+            self._cache_epoch += 1
+            self._query_cache.clear()
 
     @property
     def _snapvec_path(self) -> Path:
@@ -447,6 +461,7 @@ class VstashStore:
         self._snap.fit(sample)
         self._snap.add_batch(ids.tolist(), matrix)
         self._snap.save(str(self._ivfpq_path))
+        self._bump_cache_epoch()
         build_s = _time.perf_counter() - t0
         return {
             "n_indexed": int(n_rows),
@@ -516,11 +531,7 @@ class VstashStore:
         """Flush the in-memory snapvec index to disk if dirty."""
         if self._snap is None or not self._snap_dirty:
             return
-        target = (
-            self._ivfpq_path
-            if self._vector_backend == "snapvec-ivfpq"
-            else self._snapvec_path
-        )
+        target = self._ivfpq_path if self._vector_backend == "snapvec-ivfpq" else self._snapvec_path
         self._snap.save(str(target))
         self._snap_dirty = False
 
@@ -1019,6 +1030,7 @@ class VstashStore:
 
                 self._conn.commit()
                 self._invalidate_idf_cache()
+                self._bump_cache_epoch()
                 # Persist snapvec AFTER successful SQLite commit
                 if self._snap_dirty:
                     self._save_snapvec()
@@ -1136,6 +1148,7 @@ class VstashStore:
 
                 self._conn.commit()
                 self._invalidate_idf_cache()
+                self._bump_cache_epoch()
                 if self._snap_dirty:
                     self._save_snapvec()
             except Exception:
@@ -1174,6 +1187,7 @@ class VstashStore:
                 self._delete_by_doc_ids([row[0] for row in rows])
                 self._conn.commit()
                 self._invalidate_idf_cache()
+                self._bump_cache_epoch()
                 if self._snap_dirty:
                     self._save_snapvec()
             except Exception:
@@ -1283,6 +1297,7 @@ class VstashStore:
                 self._delete_by_doc_ids(doc_ids)
                 self._conn.commit()
                 self._invalidate_idf_cache()
+                self._bump_cache_epoch()
                 # Persist snapvec AFTER successful SQLite commit
                 if self._snap_dirty:
                     self._save_snapvec()
@@ -1433,6 +1448,32 @@ class VstashStore:
             fts_weight=fts_weight,
         )
 
+        # --- Query cache key ---
+        _cache_key: int | None = None
+        _cache_max = self._cache_config.query_cache_size
+        if _cache_max > 0 and _tracer is None and not explain:
+            _emb_bytes = np.array(query_embedding, dtype=np.float32).tobytes()
+            _cache_key = hash(
+                (
+                    _emb_bytes,
+                    query_text,
+                    top_k,
+                    vec_weight,
+                    fts_weight,
+                    distance_cutoff,
+                    collection,
+                    project,
+                    layer,
+                    adaptive_rrf,
+                    recency_boost,
+                    added_after,
+                    added_before,
+                    mmr_lambda,
+                    fts_only,
+                    self._cache_epoch,
+                )
+            )
+
         # Per-search miss-analysis tracker (#108).  The tracer is owned
         # by the caller (miss_analysis) and passed in; this keeps the
         # tracking state thread-local to the caller and zero-cost on
@@ -1460,6 +1501,18 @@ class VstashStore:
         _fts_weight_observed: float = 0.0
         registry.counter_inc("searches_total")
         try:
+            # --- Cache hit (inside try/finally so observability is recorded) ---
+            if _cache_key is not None:
+                cached: list[SearchResult] | None = None
+                with self._cache_lock:
+                    if _cache_key in self._query_cache:
+                        self._query_cache.move_to_end(_cache_key)
+                        cached = list(self._query_cache[_cache_key])
+                if cached is not None:
+                    _result_count = len(cached)
+                    registry.counter_inc("query_cache_hits_total")
+                    return cached
+
             # FTS-only short-circuit (#152): bypass vector search entirely.
             # This forces the weights to (0.0, 1.0) and disables adaptive
             # RRF so the pipeline cannot silently re-enable the vector
@@ -2041,6 +2094,13 @@ class VstashStore:
 
             # _tracer.verdicts has been populated in-place by the record()
             # calls above when tracking is enabled.  No store-level state.
+
+            if _cache_key is not None:
+                with self._cache_lock:
+                    self._query_cache[_cache_key] = list(results)
+                    while len(self._query_cache) > _cache_max:
+                        self._query_cache.popitem(last=False)
+
             return results
         finally:
             # Record latency and slow-query telemetry for every search,
@@ -3265,6 +3325,7 @@ class VstashStore:
 
                 self._conn.commit()
                 self._invalidate_idf_cache()
+                self._bump_cache_epoch()
             except Exception as exc:
                 self._conn.rollback()
                 repairs.append(
@@ -3821,6 +3882,7 @@ class VstashStore:
 
                 self._conn.commit()
                 self._invalidate_idf_cache()
+                self._bump_cache_epoch()
             except Exception:
                 self._conn.rollback()
                 self._reload_snapvec()

@@ -355,6 +355,22 @@ class LimitsConfig(BaseModel):
     )
 
 
+class CacheConfig(BaseModel):
+    """Query result caching configuration."""
+
+    model_config = ConfigDict(frozen=True)
+
+    query_cache_size: int = Field(
+        default=0,
+        ge=0,
+        le=10_000,
+        description=(
+            "Maximum number of query results to cache in memory (LRU eviction). "
+            "0 = disabled (default). 128-512 is a good range for interactive use."
+        ),
+    )
+
+
 class VstashConfig(BaseModel):
     """Root configuration for vstash.
 
@@ -398,6 +414,7 @@ class VstashConfig(BaseModel):
     recency: RecencyConfig = Field(default_factory=RecencyConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
+    cache: CacheConfig = Field(default_factory=CacheConfig)
 
     @property
     def cerebras_api_key(self) -> str:
