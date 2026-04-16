@@ -313,6 +313,7 @@ class VstashStore:
         self._cache_config: CacheConfig = cache or CacheConfig()
         self._cache_epoch: int = 0
         self._query_cache: OrderedDict[int, list[SearchResult]] = OrderedDict()
+        self._cache_lock = threading.Lock()
 
         # --- SnapVec backend (optional) ---
         self._snap: Any = None
@@ -330,8 +331,9 @@ class VstashStore:
             self._init_ivfpq()
 
     def _bump_cache_epoch(self) -> None:
-        self._cache_epoch += 1
-        self._query_cache.clear()
+        with self._cache_lock:
+            self._cache_epoch += 1
+            self._query_cache.clear()
 
     @property
     def _snapvec_path(self) -> Path:
@@ -459,6 +461,7 @@ class VstashStore:
         self._snap.fit(sample)
         self._snap.add_batch(ids.tolist(), matrix)
         self._snap.save(str(self._ivfpq_path))
+        self._bump_cache_epoch()
         build_s = _time.perf_counter() - t0
         return {
             "n_indexed": int(n_rows),
@@ -1445,13 +1448,14 @@ class VstashStore:
             fts_weight=fts_weight,
         )
 
-        # --- Query cache lookup ---
+        # --- Query cache key ---
         _cache_key: int | None = None
         _cache_max = self._cache_config.query_cache_size
         if _cache_max > 0 and _tracer is None and not explain:
+            _emb_bytes = struct.pack(f"{len(query_embedding)}f", *query_embedding)
             _cache_key = hash(
                 (
-                    tuple(query_embedding[:8]),  # first 8 floats as proxy
+                    _emb_bytes,
                     query_text,
                     top_k,
                     vec_weight,
@@ -1469,9 +1473,6 @@ class VstashStore:
                     self._cache_epoch,
                 )
             )
-            if _cache_key in self._query_cache:
-                self._query_cache.move_to_end(_cache_key)
-                return list(self._query_cache[_cache_key])
 
         # Per-search miss-analysis tracker (#108).  The tracer is owned
         # by the caller (miss_analysis) and passed in; this keeps the
@@ -1500,6 +1501,18 @@ class VstashStore:
         _fts_weight_observed: float = 0.0
         registry.counter_inc("searches_total")
         try:
+            # --- Cache hit (inside try/finally so observability is recorded) ---
+            if _cache_key is not None:
+                cached: list[SearchResult] | None = None
+                with self._cache_lock:
+                    if _cache_key in self._query_cache:
+                        self._query_cache.move_to_end(_cache_key)
+                        cached = list(self._query_cache[_cache_key])
+                if cached is not None:
+                    _result_count = len(cached)
+                    registry.counter_inc("query_cache_hits_total")
+                    return cached
+
             # FTS-only short-circuit (#152): bypass vector search entirely.
             # This forces the weights to (0.0, 1.0) and disables adaptive
             # RRF so the pipeline cannot silently re-enable the vector
@@ -2083,9 +2096,10 @@ class VstashStore:
             # calls above when tracking is enabled.  No store-level state.
 
             if _cache_key is not None:
-                self._query_cache[_cache_key] = list(results)
-                while len(self._query_cache) > _cache_max:
-                    self._query_cache.popitem(last=False)
+                with self._cache_lock:
+                    self._query_cache[_cache_key] = list(results)
+                    while len(self._query_cache) > _cache_max:
+                        self._query_cache.popitem(last=False)
 
             return results
         finally:
