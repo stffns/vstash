@@ -363,6 +363,7 @@ class CacheConfig(BaseModel):
     query_cache_size: int = Field(
         default=0,
         ge=0,
+        le=10_000,
         description=(
             "Maximum number of query results to cache in memory (LRU eviction). "
             "0 = disabled (default). 128-512 is a good range for interactive use."

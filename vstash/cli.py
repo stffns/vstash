@@ -1199,6 +1199,7 @@ def reindex(
         embedding_dim=current_dim,
         vector_backend=cfg.storage.vector_backend,
         snapvec_bits=cfg.storage.snapvec_bits,
+        cache=cfg.cache,
     )
 
     with store:

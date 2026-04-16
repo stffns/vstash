@@ -1452,7 +1452,7 @@ class VstashStore:
         _cache_key: int | None = None
         _cache_max = self._cache_config.query_cache_size
         if _cache_max > 0 and _tracer is None and not explain:
-            _emb_bytes = struct.pack(f"{len(query_embedding)}f", *query_embedding)
+            _emb_bytes = np.array(query_embedding, dtype=np.float32).tobytes()
             _cache_key = hash(
                 (
                     _emb_bytes,
@@ -3325,6 +3325,7 @@ class VstashStore:
 
                 self._conn.commit()
                 self._invalidate_idf_cache()
+                self._bump_cache_epoch()
             except Exception as exc:
                 self._conn.rollback()
                 repairs.append(
