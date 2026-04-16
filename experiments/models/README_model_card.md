@@ -103,11 +103,11 @@ Fine-tuning on these disagreement pairs teaches the model to fix both types of b
 
 ### Why MNRL, not TripletLoss?
 
-We tested TripletLoss first. It **destroyed the model** (-84% NDCG after 3 epochs). TripletLoss pushes individual negatives away with brute force, distorting the embedding space. MNRL adjusts relationships across 64 documents simultaneously per batch, preserving the model's general knowledge while learning from disagreements.
+We tested TripletLoss first. It **destroyed the model** (NDCG@10 dropped from 0.6464 to 0.0550 on SciFact, a -91.5% relative delta after 3 epochs at lr=2e-5). TripletLoss pushes individual negatives away with brute force, distorting the embedding space. MNRL adjusts relationships across 64 documents simultaneously per batch, preserving the model's general knowledge while learning from disagreements.
 
 | Loss Function | NDCG@10 on SciFact | Result |
 |---|:-:|---|
-| TripletLoss (3 epochs, lr=2e-5) | 0.055 | -84% (destroyed) |
+| TripletLoss (3 epochs, lr=2e-5) | 0.055 | -91.5% (destroyed) |
 | TripletLoss (1 epoch, lr=1e-6) | 0.347 | -0.03% (no effect) |
 | MNRL batch-only negatives (v1) | 0.683 | +5.6% |
 | **MNRL + explicit hard negatives (this model)** | **0.695** | **+7.4%** |
