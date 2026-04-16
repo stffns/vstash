@@ -1448,13 +1448,17 @@ class VstashStore:
         if vec_weight is None and fts_weight is None:
             return 0.6, 0.4
         if vec_weight is None:
-            return 1.0 - float(fts_weight), float(fts_weight)  # type: ignore[arg-type]
+            assert fts_weight is not None
+            fts_w = float(fts_weight)
+            return 1.0 - fts_w, fts_w
         if fts_weight is None:
             return float(vec_weight), 1.0 - float(vec_weight)
         return float(vec_weight), float(fts_weight)
 
     @staticmethod
-    def _build_fts_match_query(query_text: str) -> tuple[str, list[str]]:
+    def _build_fts_match_query(
+        query_text: str, words: list[str] | None = None
+    ) -> tuple[str, list[str]]:
         """Build an injection-safe FTS5 MATCH string from raw query text.
 
         Returns ``(match_string, quoted_words)``. Words of length 1 are
@@ -1462,8 +1466,12 @@ class VstashStore:
         token is double-quoted so FTS5 cannot interpret operators like
         NEAR/NOT/OR from user input. If nothing survives, the entire
         query is quoted as a single phrase.
+
+        ``words`` may be passed by callers that already split the query
+        (e.g. ``search()``) so we do not tokenize twice on the hot path.
         """
-        words = query_text.split()
+        if words is None:
+            words = query_text.split()
         quoted_words = ['"' + w.replace('"', '""') + '"' for w in words if len(w) > 1]
         if quoted_words:
             return " OR ".join(quoted_words), quoted_words
@@ -1567,17 +1575,20 @@ class VstashStore:
 
         now = datetime.now(timezone.utc)
         chunk_ids = [int(r["id"]) for r in ranked]
-        placeholders = ",".join("?" * len(chunk_ids))
-        rows = self._conn.execute(
-            f"SELECT id, created_at FROM chunks WHERE id IN ({placeholders})",
-            chunk_ids,
-        ).fetchall()
+        # Batch the IN clause so large top_k / candidate pools don't trip
+        # SQLite's default SQLITE_LIMIT_VARIABLE_NUMBER (999 on most builds).
         created_map: dict[int, datetime] = {}
-        for row in rows:
-            try:
-                created_map[row["id"]] = datetime.fromisoformat(row["created_at"])
-            except (TypeError, ValueError):
-                pass
+        for start in range(0, len(chunk_ids), _SQLITE_PARAM_BATCH):
+            batch = chunk_ids[start : start + _SQLITE_PARAM_BATCH]
+            placeholders = ",".join("?" * len(batch))
+            for row in self._conn.execute(
+                f"SELECT id, created_at FROM chunks WHERE id IN ({placeholders})",
+                batch,
+            ).fetchall():
+                try:
+                    created_map[row["id"]] = datetime.fromisoformat(row["created_at"])
+                except (TypeError, ValueError):
+                    pass
 
         for r in ranked:
             cid = int(r["id"])
@@ -2001,7 +2012,7 @@ class VstashStore:
 
             # --- FTS5 search ---
             words = query_text.split()
-            safe_query, quoted_words = self._build_fts_match_query(query_text)
+            safe_query, quoted_words = self._build_fts_match_query(query_text, words)
             try:
                 fts_rows = self._conn.execute(
                     f"""
