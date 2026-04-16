@@ -2,6 +2,12 @@
 
 All notable changes to vstash are documented here.
 
+## [0.32.0] - 2026-04-16
+
+### Added
+
+- **Persistent embedder daemon**. `vstash serve` now pre-loads the embedding model at startup (`--warm`, on by default) and exposes a `/api/embed` HTTP endpoint. CLI and SDK clients automatically detect a running daemon on localhost:8585 and delegate embedding to it, eliminating ~2s cold start on every invocation. Falls back to local embedding transparently if no daemon is running. Override with `VSTASH_EMBED_URL` env var.
+
 ## [0.31.0] - 2026-04-16
 
 ### Added

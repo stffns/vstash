@@ -1288,12 +1288,26 @@ def watch(
 def serve(
     ctx: typer.Context,
     port: int = typer.Option(8585, "--port", "-p", help="Port to serve on"),
-    host: str = typer.Option("127.0.0.1", "--host", help="Host to bind to"),
+    host: str = typer.Option(
+        "127.0.0.1",
+        "--host",
+        help="Host to bind to. WARNING: 0.0.0.0 exposes all endpoints without authentication.",
+    ),
+    warm: bool = typer.Option(
+        True,
+        "--warm/--no-warm",
+        help="Pre-load embedding model at startup (eliminates first-query cold start)",
+    ),
 ) -> None:
-    """Launch the vstash web interface — a pocket memory agent.
+    """Launch the vstash web interface -- a pocket memory agent.
 
     Opens a browser-based chat and search interface on localhost.
     Chat with your documents, search your memory, upload files.
+
+    The --warm flag (on by default) pre-loads the embedding model so
+    the first query is fast.  The /api/embed endpoint allows CLI and
+    SDK clients to use the running server's embedder instead of loading
+    their own model, eliminating cold start for all clients.
     """
     # Friendly error if the serve extras (uvicorn / starlette) aren't
     # installed.  Without this catch, the user gets a raw ModuleNotFoundError
@@ -1309,6 +1323,40 @@ def serve(
         )
         console.print("  Install with: [bold]pip install 'vstash\\[serve]'[/bold]")
         raise typer.Exit(code=1) from exc
+
+    # Prevent the daemon from delegating to itself via the embed client.
+    import os
+
+    os.environ["_VSTASH_IS_DAEMON"] = "1"
+
+    # Also update the module-level flag in case embed.py was already imported.
+    import vstash.embed as _embed_mod
+
+    _embed_mod._is_daemon = True
+
+    if warm:
+        import threading
+
+        from .config import load_config
+        from .embed import warmup
+
+        cfg = load_config()
+        console.print("[dim]Warming up embedding model...[/dim]")
+
+        def _warmup_safe():
+            try:
+                warmup(cfg.embeddings.model)
+            except Exception as exc:
+                console.print(f"[yellow]Warning: warmup failed: {exc}[/yellow]")
+
+        t = threading.Thread(target=_warmup_safe, daemon=True)
+        t.start()
+
+    if host == "0.0.0.0":
+        console.print(
+            "[yellow]Warning: binding to 0.0.0.0 exposes all endpoints "
+            "(search, chat, embed, upload) without authentication.[/yellow]"
+        )
 
     console.print(f"[bold cyan]vstash[/bold cyan] serving at [link]http://{host}:{port}[/link]")
     console.print("[dim]Press Ctrl+C to stop[/dim]")
