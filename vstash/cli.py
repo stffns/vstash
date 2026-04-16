@@ -1289,11 +1289,21 @@ def serve(
     ctx: typer.Context,
     port: int = typer.Option(8585, "--port", "-p", help="Port to serve on"),
     host: str = typer.Option("127.0.0.1", "--host", help="Host to bind to"),
+    warm: bool = typer.Option(
+        True,
+        "--warm/--no-warm",
+        help="Pre-load embedding model at startup (eliminates first-query cold start)",
+    ),
 ) -> None:
-    """Launch the vstash web interface — a pocket memory agent.
+    """Launch the vstash web interface -- a pocket memory agent.
 
     Opens a browser-based chat and search interface on localhost.
     Chat with your documents, search your memory, upload files.
+
+    The --warm flag (on by default) pre-loads the embedding model so
+    the first query is fast.  The /api/embed endpoint allows CLI and
+    SDK clients to use the running server's embedder instead of loading
+    their own model, eliminating cold start for all clients.
     """
     # Friendly error if the serve extras (uvicorn / starlette) aren't
     # installed.  Without this catch, the user gets a raw ModuleNotFoundError
@@ -1309,6 +1319,17 @@ def serve(
         )
         console.print("  Install with: [bold]pip install 'vstash\\[serve]'[/bold]")
         raise typer.Exit(code=1) from exc
+
+    if warm:
+        import threading
+
+        from .config import load_config
+        from .embed import warmup
+
+        cfg = load_config()
+        console.print("[dim]Warming up embedding model...[/dim]")
+        t = threading.Thread(target=warmup, args=(cfg.embeddings.model,), daemon=True)
+        t.start()
 
     console.print(f"[bold cyan]vstash[/bold cyan] serving at [link]http://{host}:{port}[/link]")
     console.print("[dim]Press Ctrl+C to stop[/dim]")
