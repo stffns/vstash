@@ -197,8 +197,12 @@ async def api_embed(request: Request) -> JSONResponse:
     text = body.get("text")
 
     if texts is not None:
-        if not isinstance(texts, list) or not texts:
-            return _json({"error": "texts must be a non-empty list"}, 400)
+        if (
+            not isinstance(texts, list)
+            or not texts
+            or not all(isinstance(t, str) and t.strip() for t in texts)
+        ):
+            return _json({"error": "texts must be a non-empty list of non-empty strings"}, 400)
         data = await _run_sync(_do_embed, texts)
         return _json(data)
 

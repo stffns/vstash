@@ -1320,6 +1320,16 @@ def serve(
         console.print("  Install with: [bold]pip install 'vstash\\[serve]'[/bold]")
         raise typer.Exit(code=1) from exc
 
+    # Prevent the daemon from delegating to itself via the embed client.
+    import os
+
+    os.environ["_VSTASH_IS_DAEMON"] = "1"
+
+    # Also update the module-level flag in case embed.py was already imported.
+    import vstash.embed as _embed_mod
+
+    _embed_mod._is_daemon = True
+
     if warm:
         import threading
 

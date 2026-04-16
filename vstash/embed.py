@@ -486,22 +486,32 @@ def warmup(model_name: str, backend: BackendType = "auto") -> None:
 
 
 # ------------------------------------------------------------------ #
-# Daemon client — use a running `vstash serve` for embedding            #
+# Daemon client -- use a running `vstash serve` for embedding           #
 # ------------------------------------------------------------------ #
 
 # Set VSTASH_EMBED_URL to force daemon usage (e.g. "http://127.0.0.1:8585").
 # When unset, the client probes localhost:8585 once and caches the result.
+#
+# _VSTASH_IS_DAEMON is set by `vstash serve` to prevent the daemon
+# process from delegating to itself (infinite recursion).
 _daemon_url: str | None = os.getenv("VSTASH_EMBED_URL")
 _daemon_checked: bool = _daemon_url is not None
 _daemon_available: bool = _daemon_url is not None
 _daemon_lock = threading.Lock()
+_is_daemon: bool = os.getenv("_VSTASH_IS_DAEMON") == "1"
 
 _DAEMON_DEFAULT_URL = "http://127.0.0.1:8585"
-_DAEMON_TIMEOUT = 0.3  # seconds — fast fail for localhost
+_DAEMON_TIMEOUT = 0.3  # seconds -- fast fail for localhost
 
 
 def _check_daemon() -> str | None:
-    """Probe the default daemon URL once. Returns URL if reachable, else None."""
+    """Probe the default daemon URL once. Returns URL if reachable, else None.
+
+    Returns None immediately when running inside the daemon process
+    to prevent infinite recursion.
+    """
+    if _is_daemon:
+        return None
     global _daemon_checked, _daemon_available, _daemon_url  # noqa: PLW0603
     if _daemon_checked:
         return _daemon_url if _daemon_available else None
@@ -511,12 +521,13 @@ def _check_daemon() -> str | None:
         try:
             import urllib.request
 
+            url = _daemon_url or _DAEMON_DEFAULT_URL
             req = urllib.request.Request(
-                f"{_DAEMON_DEFAULT_URL}/health",
+                f"{url.rstrip('/')}/health",
                 method="GET",
             )
             with urllib.request.urlopen(req, timeout=_DAEMON_TIMEOUT):
-                _daemon_url = _DAEMON_DEFAULT_URL
+                _daemon_url = url
                 _daemon_available = True
                 _logger.debug("vstash daemon detected at %s", _daemon_url)
         except Exception:
@@ -525,41 +536,59 @@ def _check_daemon() -> str | None:
         return _daemon_url if _daemon_available else None
 
 
-def _daemon_embed_query(text: str, url: str) -> list[float] | None:
-    """Embed a single query via the daemon. Returns None on failure."""
+def _daemon_embed_query(
+    text: str, url: str, model_name: str
+) -> list[float] | None:
+    """Embed a single query via the daemon. Returns None on failure or model mismatch."""
     try:
         import json
         import urllib.request
 
         data = json.dumps({"text": text}).encode()
         req = urllib.request.Request(
-            f"{url}/api/embed",
+            f"{url.rstrip('/')}/api/embed",
             data=data,
             headers={"Content-Type": "application/json"},
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=5.0) as resp:
             result = json.loads(resp.read())
+            if result.get("model") != model_name:
+                _logger.warning(
+                    "Daemon model mismatch: requested %s, got %s. Falling back to local.",
+                    model_name,
+                    result.get("model"),
+                )
+                return None
             return result.get("embedding")
     except Exception:
         return None
 
 
-def _daemon_embed_texts(texts: list[str], url: str) -> list[list[float]] | None:
-    """Embed a batch of texts via the daemon. Returns None on failure."""
+def _daemon_embed_texts(
+    texts: list[str], url: str, model_name: str
+) -> list[list[float]] | None:
+    """Embed a batch of texts via the daemon. Returns None on failure or model mismatch."""
     try:
         import json
         import urllib.request
 
         data = json.dumps({"texts": texts}).encode()
         req = urllib.request.Request(
-            f"{url}/api/embed",
+            f"{url.rstrip('/')}/api/embed",
             data=data,
             headers={"Content-Type": "application/json"},
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=30.0) as resp:
             result = json.loads(resp.read())
+            if result.get("model") != model_name:
+                _logger.warning(
+                    "Daemon model mismatch: requested %s, got %s. Falling back to local.",
+                    model_name,
+                    result.get("model"),
+                )
+                return None
             return result.get("embeddings")
     except Exception:
         return None
@@ -587,7 +616,7 @@ def embed_texts(
     """
     url = _check_daemon()
     if url is not None:
-        result = _daemon_embed_texts(texts, url)
+        result = _daemon_embed_texts(texts, url, model_name)
         if result is not None and len(result) == len(texts):
             return result
 
@@ -621,7 +650,7 @@ def embed_query(
     """
     url = _check_daemon()
     if url is not None:
-        result = _daemon_embed_query(text, url)
+        result = _daemon_embed_query(text, url, model_name)
         if result is not None:
             return result
 

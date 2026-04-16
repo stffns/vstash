@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import threading
-import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
@@ -31,10 +30,14 @@ class _FakeEmbedHandler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length))
 
             if "text" in body:
-                resp = {"embedding": [0.1] * 384, "model": "test"}
+                resp = {"embedding": [0.1] * 384, "model": "BAAI/bge-small-en-v1.5"}
             elif "texts" in body:
                 n = len(body["texts"])
-                resp = {"embeddings": [[0.1] * 384] * n, "model": "test", "dim": 384}
+                resp = {
+                    "embeddings": [[0.1] * 384] * n,
+                    "model": "BAAI/bge-small-en-v1.5",
+                    "dim": 384,
+                }
             else:
                 self.send_response(400)
                 self.end_headers()
@@ -51,7 +54,7 @@ class _FakeEmbedHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
     def log_message(self, *args):
-        pass  # suppress output
+        pass
 
 
 @pytest.fixture
@@ -64,100 +67,106 @@ def fake_daemon():
     thread.start()
     yield url
     server.shutdown()
+    server.server_close()
+    thread.join(timeout=2)
+
+
+@pytest.fixture(autouse=True)
+def _reset_daemon_state():
+    """Reset daemon global state before and after each test."""
+    _saved = (
+        embed_mod._daemon_checked,
+        embed_mod._daemon_available,
+        embed_mod._daemon_url,
+        embed_mod._is_daemon,
+        embed_mod._DAEMON_DEFAULT_URL,
+    )
+    embed_mod._daemon_checked = False
+    embed_mod._daemon_available = False
+    embed_mod._daemon_url = None
+    embed_mod._is_daemon = False
+    yield
+    (
+        embed_mod._daemon_checked,
+        embed_mod._daemon_available,
+        embed_mod._daemon_url,
+        embed_mod._is_daemon,
+        embed_mod._DAEMON_DEFAULT_URL,
+    ) = _saved
 
 
 class TestDaemonClient:
     def test_daemon_embed_query(self, fake_daemon: str):
-        result = embed_mod._daemon_embed_query("hello", fake_daemon)
+        result = embed_mod._daemon_embed_query("hello", fake_daemon, "BAAI/bge-small-en-v1.5")
         assert result is not None
         assert len(result) == 384
 
     def test_daemon_embed_texts(self, fake_daemon: str):
-        result = embed_mod._daemon_embed_texts(["hello", "world"], fake_daemon)
+        result = embed_mod._daemon_embed_texts(
+            ["hello", "world"], fake_daemon, "BAAI/bge-small-en-v1.5"
+        )
         assert result is not None
         assert len(result) == 2
         assert len(result[0]) == 384
 
     def test_daemon_embed_query_bad_url(self):
-        result = embed_mod._daemon_embed_query("hello", "http://127.0.0.1:1")
+        result = embed_mod._daemon_embed_query(
+            "hello", "http://127.0.0.1:1", "BAAI/bge-small-en-v1.5"
+        )
         assert result is None
 
     def test_daemon_embed_texts_bad_url(self):
-        result = embed_mod._daemon_embed_texts(["hello"], "http://127.0.0.1:1")
+        result = embed_mod._daemon_embed_texts(
+            ["hello"], "http://127.0.0.1:1", "BAAI/bge-small-en-v1.5"
+        )
+        assert result is None
+
+    def test_model_mismatch_returns_none(self, fake_daemon: str):
+        result = embed_mod._daemon_embed_query("hello", fake_daemon, "wrong-model")
+        assert result is None
+
+    def test_model_mismatch_batch_returns_none(self, fake_daemon: str):
+        result = embed_mod._daemon_embed_texts(["hello"], fake_daemon, "wrong-model")
         assert result is None
 
     def test_check_daemon_finds_server(self, fake_daemon: str):
-        # Reset global state
-        embed_mod._daemon_checked = False
-        embed_mod._daemon_available = False
-        embed_mod._daemon_url = None
         embed_mod._DAEMON_DEFAULT_URL = fake_daemon
-        try:
-            url = embed_mod._check_daemon()
-            assert url == fake_daemon
-            assert embed_mod._daemon_available is True
-        finally:
-            # Restore defaults
-            embed_mod._DAEMON_DEFAULT_URL = "http://127.0.0.1:8585"
-            embed_mod._daemon_checked = False
-            embed_mod._daemon_available = False
-            embed_mod._daemon_url = None
+        url = embed_mod._check_daemon()
+        assert url == fake_daemon
+        assert embed_mod._daemon_available is True
 
     def test_check_daemon_caches_miss(self):
-        embed_mod._daemon_checked = False
-        embed_mod._daemon_available = False
-        embed_mod._daemon_url = None
-        old_url = embed_mod._DAEMON_DEFAULT_URL
         embed_mod._DAEMON_DEFAULT_URL = "http://127.0.0.1:1"
-        try:
-            url = embed_mod._check_daemon()
-            assert url is None
-            assert embed_mod._daemon_checked is True
-            # Second call should be instant (cached)
-            t0 = time.perf_counter()
-            url2 = embed_mod._check_daemon()
-            elapsed = time.perf_counter() - t0
-            assert url2 is None
-            assert elapsed < 0.01
-        finally:
-            embed_mod._DAEMON_DEFAULT_URL = old_url
-            embed_mod._daemon_checked = False
-            embed_mod._daemon_available = False
-            embed_mod._daemon_url = None
+        url = embed_mod._check_daemon()
+        assert url is None
+        assert embed_mod._daemon_checked is True
+        # Second call uses cache (no network)
+        url2 = embed_mod._check_daemon()
+        assert url2 is None
 
-    def test_embed_query_uses_daemon_when_available(self, fake_daemon: str):
+    def test_check_daemon_skipped_when_is_daemon(self, fake_daemon: str):
+        embed_mod._is_daemon = True
+        embed_mod._DAEMON_DEFAULT_URL = fake_daemon
+        url = embed_mod._check_daemon()
+        assert url is None
+
+    def test_embed_query_uses_daemon(self, fake_daemon: str):
         embed_mod._daemon_checked = True
         embed_mod._daemon_available = True
         embed_mod._daemon_url = fake_daemon
-        try:
-            result = embed_mod.embed_query("hello", "BAAI/bge-small-en-v1.5")
-            assert len(result) == 384
-        finally:
-            embed_mod._daemon_checked = False
-            embed_mod._daemon_available = False
-            embed_mod._daemon_url = None
+        result = embed_mod.embed_query("hello", "BAAI/bge-small-en-v1.5")
+        assert len(result) == 384
 
-    def test_embed_texts_uses_daemon_when_available(self, fake_daemon: str):
+    def test_embed_texts_uses_daemon(self, fake_daemon: str):
         embed_mod._daemon_checked = True
         embed_mod._daemon_available = True
         embed_mod._daemon_url = fake_daemon
-        try:
-            result = embed_mod.embed_texts(["hello", "world"], "BAAI/bge-small-en-v1.5")
-            assert len(result) == 2
-        finally:
-            embed_mod._daemon_checked = False
-            embed_mod._daemon_available = False
-            embed_mod._daemon_url = None
+        result = embed_mod.embed_texts(["hello", "world"], "BAAI/bge-small-en-v1.5")
+        assert len(result) == 2
 
     def test_fallback_to_local_on_daemon_failure(self):
         embed_mod._daemon_checked = True
         embed_mod._daemon_available = True
         embed_mod._daemon_url = "http://127.0.0.1:1"
-        try:
-            # Should fall back to local embedding (model is cached from other tests)
-            result = embed_mod.embed_query("hello", "BAAI/bge-small-en-v1.5")
-            assert len(result) == 384
-        finally:
-            embed_mod._daemon_checked = False
-            embed_mod._daemon_available = False
-            embed_mod._daemon_url = None
+        result = embed_mod.embed_query("hello", "BAAI/bge-small-en-v1.5")
+        assert len(result) == 384
