@@ -77,7 +77,7 @@ This model needs none of that. The training signal comes from running the existi
 
 ## The Training Signal: Hybrid Retrieval Disagreement
 
-We discovered that **82% of queries produce disagreement** between vector and keyword search in the top-5 results. These disagreements fall into two categories:
+We discovered that **74.5% of queries produce disagreement** between vector-heavy (vec=0.95, fts=0.05) and keyword-heavy (vec=0.05, fts=0.95) search in the top-10 results, measured on 753 BEIR queries across SciFact, NFCorpus, and FiQA. Per-dataset rates are 63.4% (SciFact) / 73.4% (NFCorpus) / 86.7% (FiQA); see [`rrf_training_pairs.py`](https://github.com/stffns/vstash/blob/develop/experiments/rrf_training_pairs.py) and [`experiments/results/rrf_training_pairs.stats.json`](https://github.com/stffns/vstash/blob/develop/experiments/results/rrf_training_pairs.stats.json). These disagreements fall into two categories:
 
 - **Vector blind spots** (51%): chunks the vector search ranks high but keyword search ignores. These are semantically similar but not actually relevant.
 - **Keyword blind spots** (49%): chunks keyword search finds but vector search misses. These contain relevant terms but the embedding doesn't recognize their relevance.
