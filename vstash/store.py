@@ -294,6 +294,10 @@ class VstashStore:
         self._batch_depth: int = 0
         self._batch_dirty: bool = False
 
+        # --- Deferred FTS indexing ---
+        self._defer_fts: bool = False
+        self._deferred_fts_rows: list[tuple[int, str]] = []
+
         # --- Observability ---
         # Store the whole ObservabilityConfig object (frozen Pydantic
         # model) so that future knobs can be added without touching
@@ -1017,10 +1021,11 @@ class VstashStore:
 
                 # FTS5 entries (rowid must match chunks.id)
                 fts_data = [(rowid, text) for rowid, text in zip(rowids, chunks)]
-                self._conn.executemany(
-                    "INSERT INTO fts_chunks (rowid, text) VALUES (?, ?)",
-                    fts_data,
-                )
+                if not self._defer_fts:
+                    self._conn.executemany(
+                        "INSERT INTO fts_chunks (rowid, text) VALUES (?, ?)",
+                        fts_data,
+                    )
 
                 # Add to snapvec in-memory (persisted after successful commit)
                 if self._snap is not None:
@@ -1029,6 +1034,8 @@ class VstashStore:
                     self._snap_dirty = True
 
                 self._conn.commit()
+                if self._defer_fts:
+                    self._deferred_fts_rows.extend(fts_data)
                 self._invalidate_idf_cache()
                 self._bump_cache_epoch()
                 # Persist snapvec AFTER successful SQLite commit
@@ -1067,6 +1074,7 @@ class VstashStore:
 
         with self._write_lock:
             self._conn.execute("BEGIN IMMEDIATE")
+            pending_fts: list[tuple[int, str]] = []
             try:
                 now_iso = datetime.now(timezone.utc).isoformat()
 
@@ -1136,10 +1144,13 @@ class VstashStore:
                     )
 
                     fts_data = list(zip(rowids, chunks))
-                    self._conn.executemany(
-                        "INSERT INTO fts_chunks (rowid, text) VALUES (?, ?)",
-                        fts_data,
-                    )
+                    if self._defer_fts:
+                        pending_fts.extend(fts_data)
+                    else:
+                        self._conn.executemany(
+                            "INSERT INTO fts_chunks (rowid, text) VALUES (?, ?)",
+                            fts_data,
+                        )
 
                     if self._snap is not None:
                         snap_vecs = np.array(embeddings, dtype=np.float32)
@@ -1147,6 +1158,8 @@ class VstashStore:
                         self._snap_dirty = True
 
                 self._conn.commit()
+                if pending_fts:
+                    self._deferred_fts_rows.extend(pending_fts)
                 self._invalidate_idf_cache()
                 self._bump_cache_epoch()
                 if self._snap_dirty:
@@ -3506,32 +3519,78 @@ class VstashStore:
             return
         self._idf_cache = None
 
+    def _flush_deferred_fts(self) -> None:
+        """Bulk-insert all deferred FTS rows in a single transaction."""
+        if not self._deferred_fts_rows:
+            return
+        with self._write_lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._conn.executemany(
+                    "INSERT INTO fts_chunks (rowid, text) VALUES (?, ?)",
+                    self._deferred_fts_rows,
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+            else:
+                self._deferred_fts_rows.clear()
+
     @contextmanager
-    def batch_mode(self) -> Iterator[None]:
-        """Context manager that defers IDF cache invalidation.
+    def batch_mode(self, *, defer_fts: bool = False) -> Iterator[None]:
+        """Context manager that defers IDF cache invalidation and optionally FTS indexing.
 
-        Use this when adding or deleting many documents in a loop to avoid
-        redundant cache rebuilds.  Supports re-entrant (nested) usage.
+        Use this when adding many documents in a loop to avoid redundant
+        cache rebuilds and per-insert FTS overhead.  Supports re-entrant
+        (nested) usage.
 
-        Not thread-safe — intended for single-threaded batch operations.
-        Searches executed during a batch may use stale IDF weights; the
-        cache is refreshed once the outermost batch exits.
+        Args:
+            defer_fts: When True, FTS5 inserts are collected in memory
+                and flushed in one bulk pass when the outermost batch
+                exits.  This avoids updating the FTS B-tree per chunk,
+                which is the dominant cost at >100 documents.
+
+        Not thread-safe -- intended for single-threaded batch operations.
+        Searches executed during a batch may use stale IDF weights and
+        (when defer_fts=True) miss newly added documents in FTS results.
+
+        Precondition when ``defer_fts=True``: do not ingest the same
+        path twice within a single batch.  Re-ingesting a path deletes
+        the old chunks (firing the FTS delete trigger), but deferred
+        rows for the old rowids are already queued and would become
+        orphaned FTS entries on flush.
 
         Example::
 
-            with store.batch_mode():
+            with store.batch_mode(defer_fts=True):
                 for path in paths:
                     store.add_document(...)
-            # IDF cache is invalidated once here
+            # IDF cache invalidated + FTS populated in one pass
         """
         self._batch_depth += 1
+        was_deferring = self._defer_fts
+        if defer_fts:
+            self._defer_fts = True
         try:
             yield
         finally:
             self._batch_depth -= 1
-            if self._batch_depth == 0 and self._batch_dirty:
-                self._idf_cache = None
-                self._batch_dirty = False
+            if self._batch_depth == 0:
+                try:
+                    if self._defer_fts:
+                        self._flush_deferred_fts()
+                except Exception:
+                    logger.error(
+                        "FTS flush failed; documents are stored but not FTS-indexed. "
+                        "Run 'vstash reindex' to rebuild the FTS index."
+                    )
+                    raise
+                finally:
+                    self._defer_fts = was_deferring
+                    if self._batch_dirty:
+                        self._idf_cache = None
+                        self._batch_dirty = False
 
     def _compute_adaptive_rrf_params(
         self, query_text: str, default_cutoff: float = 1.15
