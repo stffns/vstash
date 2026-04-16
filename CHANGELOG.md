@@ -2,7 +2,7 @@
 
 All notable changes to vstash are documented here.
 
-## [Unreleased]
+## [0.31.0] - 2026-04-16
 
 ### Added
 
