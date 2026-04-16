@@ -319,13 +319,15 @@ Hybrid RRF is the strongest modality on both corpora, achieving the highest NDCG
 
 **Table 8: Search latency across corpus sizes**
 
-| Corpus | Chunks | Mean | Median | P95 | Max |
+| Corpus | Chunks | Mean | Median | P95 | P99 |
 |--------|:---:|:---:|:---:|:---:|:---:|
 | LLM memory (24 papers) | 786 | 3.4 ms | 3.4 ms | 4.0 ms | 4.1 ms |
 | Real user corpus (209 docs) | 1,087 | 5.0 ms | 4.8 ms | 8.1 ms | 8.1 ms |
-| BEIR SciFact (5,183 docs) | 5,183 | 13.4 ms | -- | -- | -- |
-| Synthetic scale test | 10,005 | 15.7 ms | 14.1 ms | 23.1 ms | 23.1 ms |
+| BEIR SciFact (5,183 docs) | 5,183 | 13.0 ms | 11.1 ms | 24.9 ms | 47.8 ms |
+| Synthetic scale test | 10,000 | 11.6 ms | 10.9 ms | 19.0 ms | 24.2 ms |
 | SciFact + synthetic (50K) | 50,000 | 22.1 ms | 20.9 ms | 30.6 ms | 35.2 ms |
+
+*The rightmost column reports the 99th percentile, not the maximum observation (an earlier draft mislabeled it as \"Max\"). Rows at 5K, 10K, and 50K chunks are pulled from the same at-scale run committed to `experiments/results/scale_benchmark.json`, so Tables 8 and 9 report consistent numbers for overlapping scales. The 786-chunk and 1,087-chunk rows come from separate smaller-corpus measurements and are reproduced here for qualitative comparison.*
 
 **Table 9: NDCG@10 stability across scale**
 
