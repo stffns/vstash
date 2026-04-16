@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import io
 import json
-from unittest.mock import patch
+from collections.abc import Generator
+from unittest.mock import MagicMock, patch
 
 import pytest
 from starlette.testclient import TestClient
 
-from vstash.models import DocumentInfo, IngestResult, SearchResult, StoreStats
+from vstash.models import DocumentInfo, IngestResult, StoreStats
 from vstash.web import create_app
 
 
@@ -32,23 +33,34 @@ def _reset_singletons() -> None:
 
 
 @pytest.fixture(autouse=True)
-def _clean_singletons() -> None:
-    """Ensure web module singletons and chat history are reset around each test."""
+def _isolate_web_module(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Generator[None, None, None]:
+    """Reset web-module singletons and prevent the suite from touching real state.
+
+    ``create_app()`` eagerly calls ``_get_store()``, which would otherwise
+    open the user's real ``~/.vstash/memory.db`` (or whatever is configured
+    in ``vstash.toml``). Patching ``_get_store`` at the module level with
+    a MagicMock neutralizes the eager init and keeps every test fully
+    hermetic. Individual tests that care about the real store can patch
+    the ``_do_*`` helpers instead.
+    """
     _reset_singletons()
-    yield  # type: ignore[misc]
+    fake_store = MagicMock()
+    fake_store.stats.return_value = StoreStats(
+        documents=0, chunks=0, db_size_mb=0.0, db_path=":memory:"
+    )
+    monkeypatch.setattr("vstash.web._get_store", lambda: fake_store)
+    yield
     _reset_singletons()
 
 
 @pytest.fixture
-def client() -> TestClient:
+def client() -> Generator[TestClient, None, None]:
     """Starlette TestClient with a lifespan-less app for simple route testing."""
     app = create_app()
     with TestClient(app) as c:
-        yield c  # type: ignore[misc]
-
-
-def _make_search_result(text: str = "chunk", title: str = "Doc") -> SearchResult:
-    return SearchResult(chunk_id=1, text=text, title=title, path="/test/doc.md", chunk=0, score=0.5)
+        yield c
 
 
 def _make_doc_info(path: str = "/test/doc.md", title: str = "Doc") -> DocumentInfo:
@@ -83,10 +95,12 @@ class TestApiEmbed:
     def test_rejects_non_string_item_in_texts(self, client: TestClient) -> None:
         resp = client.post("/api/embed", json={"texts": ["ok", 123]})
         assert resp.status_code == 400
+        assert "non-empty list of non-empty strings" in resp.json()["error"]
 
     def test_rejects_whitespace_only_item(self, client: TestClient) -> None:
         resp = client.post("/api/embed", json={"texts": ["ok", "   "]})
         assert resp.status_code == 400
+        assert "non-empty list of non-empty strings" in resp.json()["error"]
 
     def test_rejects_batch_over_limit(self, client: TestClient) -> None:
         resp = client.post("/api/embed", json={"texts": ["t"] * 300})
@@ -150,8 +164,11 @@ class TestApiChat:
     def test_rejects_empty_query(self, client: TestClient) -> None:
         resp = client.post("/api/chat", json={"query": ""})
         assert resp.status_code == 400
+        assert "query is required" in resp.json()["error"]
 
     def test_chat_no_results_streams_fallback(self, client: TestClient) -> None:
+        import vstash.web as web_mod
+
         with patch("vstash.web._do_chat_retrieve") as mock_retrieve:
             mock_retrieve.return_value = ([], [])
             resp = client.post("/api/chat", json={"query": "what?"})
@@ -159,6 +176,9 @@ class TestApiChat:
         body = resp.text
         assert "No relevant documents found" in body
         assert '"done": true' in body
+        # The no-results branch must return early without appending to
+        # the chat history; only productive turns should be remembered.
+        assert web_mod._chat_history == []
 
     def test_chat_reset_clears_history(self, client: TestClient) -> None:
         import vstash.web as web_mod
