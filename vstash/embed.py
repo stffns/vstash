@@ -14,12 +14,18 @@ Models:
 
 from __future__ import annotations
 
+import json
+import logging
+import os
 import platform
 import threading
+import urllib.request
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from fastembed import TextEmbedding
+
+_logger = logging.getLogger(__name__)
 
 
 # ------------------------------------------------------------------ #
@@ -481,12 +487,126 @@ def warmup(model_name: str, backend: BackendType = "auto") -> None:
         _warmup_onnx(model_name)
 
 
+# ------------------------------------------------------------------ #
+# Daemon client -- use a running `vstash serve` for embedding           #
+# ------------------------------------------------------------------ #
+
+# Set VSTASH_EMBED_URL to force daemon usage (e.g. "http://127.0.0.1:8585").
+# When unset, the client probes localhost:8585 once and caches the result.
+#
+# _VSTASH_IS_DAEMON is set by `vstash serve` to prevent the daemon
+# process from delegating to itself (infinite recursion).
+_daemon_url: str | None = os.getenv("VSTASH_EMBED_URL")
+_daemon_checked: bool = False
+_daemon_available: bool = False
+_daemon_lock = threading.Lock()
+_is_daemon: bool = os.getenv("_VSTASH_IS_DAEMON") == "1"
+
+_DAEMON_DEFAULT_URL = "http://127.0.0.1:8585"
+_DAEMON_TIMEOUT = 0.3  # seconds -- fast fail for localhost
+
+
+def _check_daemon() -> str | None:
+    """Probe the daemon URL once. Returns URL if reachable, else None.
+
+    Returns None immediately when running inside the daemon process
+    to prevent infinite recursion. Probes both explicit VSTASH_EMBED_URL
+    and the default localhost:8585, caching the result either way.
+    """
+    if _is_daemon:
+        return None
+    global _daemon_checked, _daemon_available, _daemon_url  # noqa: PLW0603
+    if _daemon_checked:
+        return _daemon_url if _daemon_available else None
+    with _daemon_lock:
+        if _daemon_checked:
+            return _daemon_url if _daemon_available else None
+        url = (_daemon_url or _DAEMON_DEFAULT_URL).rstrip("/")
+        try:
+            req = urllib.request.Request(f"{url}/health", method="GET")
+            with urllib.request.urlopen(req, timeout=_DAEMON_TIMEOUT):
+                _daemon_url = url
+                _daemon_available = True
+                _logger.debug("vstash daemon detected at %s", _daemon_url)
+        except Exception:
+            _daemon_available = False
+        _daemon_checked = True
+        return _daemon_url if _daemon_available else None
+
+
+def _mark_daemon_unavailable() -> None:
+    """Mark daemon as unavailable after a failed request.
+
+    Resets _daemon_checked so the next call re-probes. This handles
+    daemon crashes gracefully: one failed request triggers a re-probe
+    instead of paying the full HTTP timeout on every subsequent call.
+    """
+    global _daemon_checked, _daemon_available  # noqa: PLW0603
+    _daemon_available = False
+    _daemon_checked = False
+
+
+def _daemon_embed_query(text: str, url: str, model_name: str) -> list[float] | None:
+    """Embed a single query via the daemon. Returns None on failure or model mismatch."""
+    try:
+        data = json.dumps({"text": text}).encode()
+        req = urllib.request.Request(
+            f"{url}/api/embed",
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=5.0) as resp:
+            result = json.loads(resp.read())
+            if result.get("model") != model_name:
+                _logger.warning(
+                    "Daemon model mismatch: requested %s, got %s. Falling back to local.",
+                    model_name,
+                    result.get("model"),
+                )
+                return None
+            return result.get("embedding")
+    except Exception:
+        _mark_daemon_unavailable()
+        return None
+
+
+def _daemon_embed_texts(texts: list[str], url: str, model_name: str) -> list[list[float]] | None:
+    """Embed a batch of texts via the daemon. Returns None on failure or model mismatch."""
+    try:
+        data = json.dumps({"texts": texts}).encode()
+        req = urllib.request.Request(
+            f"{url}/api/embed",
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=30.0) as resp:
+            result = json.loads(resp.read())
+            if result.get("model") != model_name:
+                _logger.warning(
+                    "Daemon model mismatch: requested %s, got %s. Falling back to local.",
+                    model_name,
+                    result.get("model"),
+                )
+                return None
+            return result.get("embeddings")
+    except Exception:
+        _mark_daemon_unavailable()
+        return None
+
+
 def embed_texts(
     texts: list[str],
     model_name: str,
     backend: BackendType = "auto",
 ) -> list[list[float]]:
     """Embed a batch of texts.
+
+    When a ``vstash serve`` daemon is running on localhost:8585
+    (or at ``VSTASH_EMBED_URL``), the embedding is delegated to
+    the daemon's warm model.  Falls back to local embedding on
+    any failure.
 
     Args:
         texts: List of text strings to embed.
@@ -496,6 +616,12 @@ def embed_texts(
     Returns:
         List of float vectors, one per input text.
     """
+    url = _check_daemon()
+    if url is not None:
+        result = _daemon_embed_texts(texts, url, model_name)
+        if result is not None and len(result) == len(texts):
+            return result
+
     if _is_gemma_model(model_name):
         return _embed_gemma(texts, model_name)
     if _is_hf_onnx_model(model_name):
@@ -513,6 +639,9 @@ def embed_query(
 ) -> list[float]:
     """Embed a single query string. Optimized path for search.
 
+    When a ``vstash serve`` daemon is running, delegates to the
+    daemon's warm model.  Falls back to local embedding on failure.
+
     Args:
         text: Query string to embed.
         model_name: Model identifier.
@@ -521,6 +650,12 @@ def embed_query(
     Returns:
         Float vector for the query.
     """
+    url = _check_daemon()
+    if url is not None:
+        result = _daemon_embed_query(text, url, model_name)
+        if result is not None:
+            return result
+
     if _is_gemma_model(model_name):
         return _query_gemma(text, model_name)
     if _is_hf_onnx_model(model_name):

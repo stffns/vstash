@@ -153,9 +153,70 @@ def _do_chat_retrieve(query: str, top_k: int) -> tuple[list[SearchResult], list[
     return chunks, sources
 
 
+def _do_embed(texts: list[str]) -> dict:
+    from .embed import embed_texts, get_embedding_dim
+
+    cfg = _get_config()
+    model = cfg.embeddings.model
+    vectors = embed_texts(texts, model)
+    return {
+        "embeddings": vectors,
+        "model": model,
+        "dim": get_embedding_dim(model),
+    }
+
+
+def _do_embed_query(text: str) -> dict:
+    cfg = _get_config()
+    model = cfg.embeddings.model
+    vec = embed_query(text, model)
+    return {
+        "embedding": vec,
+        "model": model,
+    }
+
+
 # ------------------------------------------------------------------ #
 # API endpoints (all async, blocking work via _run_sync)               #
 # ------------------------------------------------------------------ #
+
+
+async def api_embed(request: Request) -> JSONResponse:
+    """POST /api/embed -- embed texts via the warm daemon.
+
+    Request body:
+        {"texts": ["hello", "world"]}        -- batch embed
+        {"text": "hello"}                     -- single query embed
+
+    Response:
+        {"embeddings": [[...], [...]], "model": "...", "dim": 384}
+        {"embedding": [...], "model": "..."}
+    """
+    body = await request.json()
+    texts = body.get("texts")
+    text = body.get("text")
+
+    _MAX_BATCH = 256
+
+    if texts is not None:
+        if (
+            not isinstance(texts, list)
+            or not texts
+            or not all(isinstance(t, str) and t.strip() for t in texts)
+        ):
+            return _json({"error": "texts must be a non-empty list of non-empty strings"}, 400)
+        if len(texts) > _MAX_BATCH:
+            return _json({"error": f"batch size {len(texts)} exceeds limit of {_MAX_BATCH}"}, 400)
+        data = await _run_sync(_do_embed, texts)
+        return _json(data)
+
+    if text is not None:
+        if not isinstance(text, str) or not text.strip():
+            return _json({"error": "text must be a non-empty string"}, 400)
+        data = await _run_sync(_do_embed_query, text)
+        return _json(data)
+
+    return _json({"error": "provide 'text' (single) or 'texts' (batch)"}, 400)
 
 
 async def api_search(request: Request) -> JSONResponse:
@@ -373,6 +434,7 @@ def create_app() -> Starlette:
         lifespan=_lifespan,
         routes=[
             Route("/", index),
+            Route("/api/embed", api_embed, methods=["POST"]),
             Route("/api/search", api_search, methods=["POST"]),
             Route("/api/chat", api_chat, methods=["POST"]),
             Route("/api/chat/reset", api_chat_reset, methods=["POST"]),
