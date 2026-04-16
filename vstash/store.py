@@ -1388,6 +1388,271 @@ class VstashStore:
     # Search — Hybrid RRF                                                  #
     # ------------------------------------------------------------------ #
 
+    @staticmethod
+    def _compute_search_cache_key(
+        query_embedding: list[float],
+        query_text: str,
+        top_k: int,
+        vec_weight: float | None,
+        fts_weight: float | None,
+        distance_cutoff: float,
+        collection: str | None,
+        project: str | None,
+        layer: str | None,
+        adaptive_rrf: bool,
+        recency_boost: float,
+        added_after: str | None,
+        added_before: str | None,
+        mmr_lambda: float,
+        fts_only: bool,
+        cache_epoch: int,
+    ) -> int:
+        """Build the search cache key from the full set of query parameters.
+
+        ``cache_epoch`` is mixed in so a write invalidates every cached
+        entry without having to scan the LRU.
+        """
+        emb_bytes = np.array(query_embedding, dtype=np.float32).tobytes()
+        return hash(
+            (
+                emb_bytes,
+                query_text,
+                top_k,
+                vec_weight,
+                fts_weight,
+                distance_cutoff,
+                collection,
+                project,
+                layer,
+                adaptive_rrf,
+                recency_boost,
+                added_after,
+                added_before,
+                mmr_lambda,
+                fts_only,
+                cache_epoch,
+            )
+        )
+
+    @staticmethod
+    def _resolve_rrf_weights(
+        vec_weight: float | None, fts_weight: float | None
+    ) -> tuple[float, float]:
+        """Fill in missing RRF weights with the default 0.6/0.4 split.
+
+        If only one side is provided, the other is set so the pair sums
+        to 1.0. If both are ``None``, return the historical defaults.
+        """
+        if vec_weight is None and fts_weight is None:
+            return 0.6, 0.4
+        if vec_weight is None:
+            assert fts_weight is not None
+            fts_w = float(fts_weight)
+            return 1.0 - fts_w, fts_w
+        if fts_weight is None:
+            return float(vec_weight), 1.0 - float(vec_weight)
+        return float(vec_weight), float(fts_weight)
+
+    @staticmethod
+    def _build_fts_match_query(
+        query_text: str, words: list[str] | None = None
+    ) -> tuple[str, list[str]]:
+        """Build an injection-safe FTS5 MATCH string from raw query text.
+
+        Returns ``(match_string, quoted_words)``. Words of length 1 are
+        dropped (FTS5 tokenizer usually strips them anyway) and each
+        token is double-quoted so FTS5 cannot interpret operators like
+        NEAR/NOT/OR from user input. If nothing survives, the entire
+        query is quoted as a single phrase.
+
+        ``words`` may be passed by callers that already split the query
+        (e.g. ``search()``) so we do not tokenize twice on the hot path.
+        """
+        if words is None:
+            words = query_text.split()
+        quoted_words = ['"' + w.replace('"', '""') + '"' for w in words if len(w) > 1]
+        if quoted_words:
+            return " OR ".join(quoted_words), quoted_words
+        return '"' + query_text.replace('"', '""') + '"', quoted_words
+
+    def _fuse_rrf_scores(
+        self,
+        vec_rows: list,
+        fts_rows: list,
+        vec_weight: float,
+        fts_weight: float,
+        relevant_chunk_ids: set[int],
+        effective_k: int,
+        fts_only: bool,
+        explain: bool,
+    ) -> tuple[
+        dict[int, dict[str, str | int | float]],
+        dict[int, float],
+        dict[int, float],
+        dict[int, int],
+    ]:
+        """Run Reciprocal Rank Fusion over vector and FTS result sets.
+
+        Returns ``(scores, explain_rrf_vec, explain_rrf_fts, explain_fts_rank)``.
+        The explain maps are populated only when ``explain=True``, otherwise
+        they are empty.
+
+        FTS rows that neither pass the vector distance filter nor land in
+        the top ``effective_k * 2`` FTS hits are dropped, to keep weak
+        keyword noise out of the score pool when vector search has a
+        strong opinion. In ``fts_only`` mode this gate is disabled.
+        """
+        scores: dict[int, dict[str, str | int | float]] = {}
+        explain_rrf_vec: dict[int, float] = {}
+        explain_rrf_fts: dict[int, float] = {}
+        explain_fts_rank: dict[int, int] = {}
+
+        for rank, row in enumerate(vec_rows):
+            chunk_id: int = row["id"]
+            vec_contrib = vec_weight * (1.0 / (RRF_K + rank))
+            scores[chunk_id] = {
+                "id": chunk_id,
+                "text": row["text"],
+                "title": row["title"],
+                "path": row["path"],
+                "chunk": row["seq"],
+                "rrf": vec_contrib,
+                "added_at": row["added_at"],
+                "collection": row["collection"],
+                "tags": row["tags"],
+                "layer": row["layer"],
+            }
+            if explain:
+                explain_rrf_vec[chunk_id] = vec_contrib
+
+        for rank, row in enumerate(fts_rows):
+            chunk_id = row["id"]
+            # is_fts_top is the gate that lets FTS-only hits into the
+            # score pool when they are not also in the vector candidate
+            # set. In fts_only mode the vector signal is absent, so we
+            # let every FTS row through up to the candidate pool.
+            is_fts_top = True if fts_only else rank < effective_k * 2
+            fts_contribution = fts_weight * (1.0 / (RRF_K + rank))
+            if chunk_id in scores:
+                scores[chunk_id]["rrf"] = float(scores[chunk_id]["rrf"]) + fts_contribution
+                if explain:
+                    explain_rrf_fts[chunk_id] = fts_contribution
+                    explain_fts_rank[chunk_id] = rank
+            elif chunk_id in relevant_chunk_ids or is_fts_top:
+                scores[chunk_id] = {
+                    "id": chunk_id,
+                    "text": row["text"],
+                    "title": row["title"],
+                    "path": row["path"],
+                    "chunk": row["seq"],
+                    "rrf": fts_contribution,
+                    "added_at": row["added_at"],
+                    "collection": row["collection"],
+                    "tags": row["tags"],
+                    "layer": row["layer"],
+                }
+                if explain:
+                    explain_rrf_fts[chunk_id] = fts_contribution
+                    explain_fts_rank[chunk_id] = rank
+
+        return scores, explain_rrf_vec, explain_rrf_fts, explain_fts_rank
+
+    def _apply_recency_boost(
+        self,
+        ranked: list[dict[str, str | int | float]],
+        recency_boost: float,
+    ) -> list[dict[str, str | int | float]]:
+        """Multiply each chunk's RRF score by an exponential decay factor.
+
+        ``recency_boost=0`` disables the boost. Chunks whose ``created_at``
+        is unparseable are left untouched. Returns a newly sorted list
+        so callers always see post-boost ordering.
+        """
+        if recency_boost <= 0 or not ranked:
+            return ranked
+
+        now = datetime.now(timezone.utc)
+        chunk_ids = [int(r["id"]) for r in ranked]
+        # Batch the IN clause so large top_k / candidate pools don't trip
+        # SQLite's default SQLITE_LIMIT_VARIABLE_NUMBER (999 on most builds).
+        created_map: dict[int, datetime] = {}
+        for start in range(0, len(chunk_ids), _SQLITE_PARAM_BATCH):
+            batch = chunk_ids[start : start + _SQLITE_PARAM_BATCH]
+            placeholders = ",".join("?" * len(batch))
+            for row in self._conn.execute(
+                f"SELECT id, created_at FROM chunks WHERE id IN ({placeholders})",
+                batch,
+            ).fetchall():
+                try:
+                    created_map[row["id"]] = datetime.fromisoformat(row["created_at"])
+                except (TypeError, ValueError):
+                    pass
+
+        for r in ranked:
+            cid = int(r["id"])
+            if cid in created_map:
+                days_ago = max(0.0, (now - created_map[cid]).total_seconds() / 86400)
+                decay = math.exp(-0.05 * days_ago)
+                r["rrf"] = float(r["rrf"]) * (1.0 + recency_boost * decay)
+
+        return sorted(ranked, key=lambda x: float(x["rrf"]), reverse=True)
+
+    @staticmethod
+    def _build_search_results(
+        ranked: list[dict[str, str | int | float]],
+        *,
+        explain: bool,
+        explain_vec: dict[int, tuple[int, float]],
+        explain_rrf_vec: dict[int, float],
+        explain_rrf_fts: dict[int, float],
+        explain_fts_rank: dict[int, int],
+        quoted_words: list[str],
+        vec_weight: float,
+        fts_weight: float,
+    ) -> list[SearchResult]:
+        """Materialize ``SearchResult`` instances with optional ExplainInfo.
+
+        All rounding is applied here so callers see stable floating-point
+        values (scores to 6 decimals, distances to 4).
+        """
+        explain_map: dict[int, ExplainInfo] = {}
+        if explain:
+            fts_terms = [w.strip('"') for w in quoted_words] if quoted_words else []
+            for r in ranked:
+                cid = int(r["id"])
+                vec_info = explain_vec.get(cid)
+                rrf_vec_val = round(explain_rrf_vec.get(cid, 0.0), 6)
+                rrf_fts_val = round(explain_rrf_fts.get(cid, 0.0), 6)
+                explain_map[cid] = ExplainInfo(
+                    vec_rank=vec_info[0] if vec_info else None,
+                    vec_distance=round(vec_info[1], 4) if vec_info else None,
+                    fts_rank=explain_fts_rank.get(cid),
+                    rrf_vec=rrf_vec_val,
+                    rrf_fts=rrf_fts_val,
+                    rrf_total=round(rrf_vec_val + rrf_fts_val, 6),
+                    mmr_penalty=round(float(r.get("_mmr_penalty", 0.0)), 4),
+                    fts_terms=fts_terms,
+                    rrf_vec_weight=vec_weight,
+                    rrf_fts_weight=fts_weight,
+                )
+
+        return [
+            SearchResult(
+                chunk_id=int(r["id"]),
+                text=str(r["text"]),
+                title=str(r["title"]),
+                path=str(r["path"]),
+                chunk=int(r["chunk"]),
+                score=round(float(r["rrf"]), 6),
+                explain=explain_map.get(int(r["id"])) if explain else None,
+                added_at=r.get("added_at"),
+                collection=r.get("collection"),
+                tags=r.get("tags"),
+                layer=r.get("layer"),
+            )
+            for r in ranked
+        ]
+
     def search(
         self,
         query_embedding: list[float],
@@ -1463,26 +1728,23 @@ class VstashStore:
         _cache_key: int | None = None
         _cache_max = self._cache_config.query_cache_size
         if _cache_max > 0 and _tracer is None and not explain:
-            _emb_bytes = np.array(query_embedding, dtype=np.float32).tobytes()
-            _cache_key = hash(
-                (
-                    _emb_bytes,
-                    query_text,
-                    top_k,
-                    vec_weight,
-                    fts_weight,
-                    distance_cutoff,
-                    collection,
-                    project,
-                    layer,
-                    adaptive_rrf,
-                    recency_boost,
-                    added_after,
-                    added_before,
-                    mmr_lambda,
-                    fts_only,
-                    self._cache_epoch,
-                )
+            _cache_key = self._compute_search_cache_key(
+                query_embedding=query_embedding,
+                query_text=query_text,
+                top_k=top_k,
+                vec_weight=vec_weight,
+                fts_weight=fts_weight,
+                distance_cutoff=distance_cutoff,
+                collection=collection,
+                project=project,
+                layer=layer,
+                adaptive_rrf=adaptive_rrf,
+                recency_boost=recency_boost,
+                added_after=added_after,
+                added_before=added_before,
+                mmr_lambda=mmr_lambda,
+                fts_only=fts_only,
+                cache_epoch=self._cache_epoch,
             )
 
         # Per-search miss-analysis tracker (#108).  The tracer is owned
@@ -1542,12 +1804,7 @@ class VstashStore:
                 vec_weight, fts_weight, distance_cutoff = self._compute_adaptive_rrf_params(
                     query_text, default_cutoff=distance_cutoff
                 )
-            if vec_weight is None and fts_weight is None:
-                vec_weight, fts_weight = 0.6, 0.4
-            elif vec_weight is None:
-                vec_weight = 1.0 - fts_weight
-            elif fts_weight is None:
-                fts_weight = 1.0 - vec_weight
+            vec_weight, fts_weight = self._resolve_rrf_weights(vec_weight, fts_weight)
 
             # Adaptive candidate pool — avoid pulling half the corpus on small DBs
             effective_k = top_k
@@ -1752,17 +2009,8 @@ class VstashStore:
                     _explain_vec[int(row["id"])] = (rank, float(row["distance"]))
 
             # --- FTS5 search ---
-            # Quote each word individually and join with OR for keyword matching.
-            # This preserves injection safety (each token is double-quoted to
-            # prevent FTS5 syntax like NEAR, NOT, OR from being interpreted)
-            # while allowing keyword-level matching instead of exact-phrase.
             words = query_text.split()
-            quoted_words = ['"' + w.replace('"', '""') + '"' for w in words if len(w) > 1]
-            safe_query = (
-                " OR ".join(quoted_words)
-                if quoted_words
-                else '"' + query_text.replace('"', '""') + '"'
-            )
+            safe_query, quoted_words = self._build_fts_match_query(query_text, words)
             try:
                 fts_rows = self._conn.execute(
                     f"""
@@ -1855,67 +2103,16 @@ class VstashStore:
                     )
 
             # --- Reciprocal Rank Fusion ---
-            scores: dict[int, dict[str, str | int | float]] = {}
-            _explain_rrf_vec: dict[int, float] = {}  # chunk_id -> vec RRF contribution
-            _explain_rrf_fts: dict[int, float] = {}  # chunk_id -> fts RRF contribution
-            _explain_fts_rank: dict[int, int] = {}  # chunk_id -> fts rank
-
-            for rank, row in enumerate(vec_rows):
-                chunk_id: int = row["id"]
-                vec_contrib = vec_weight * (1.0 / (RRF_K + rank))
-                scores[chunk_id] = {
-                    "id": chunk_id,
-                    "text": row["text"],
-                    "title": row["title"],
-                    "path": row["path"],
-                    "chunk": row["seq"],
-                    "rrf": vec_contrib,
-                    "added_at": row["added_at"],
-                    "collection": row["collection"],
-                    "tags": row["tags"],
-                    "layer": row["layer"],
-                }
-                if explain:
-                    _explain_rrf_vec[chunk_id] = vec_contrib
-
-            for rank, row in enumerate(fts_rows):
-                chunk_id = row["id"]
-                # Only include FTS results that also passed vector relevance filter,
-                # OR that are in the top FTS results (strong keyword match).
-                # is_fts_top is the gate that lets FTS-only hits into
-                # the score pool when they are not also in the vector
-                # candidate set.  Normally we cap at top_k*2 to stop
-                # weak keyword noise from polluting results when
-                # vector search has a strong opinion.  In fts_only
-                # mode there is no vector signal, so the cap becomes
-                # a counter-productive artificial truncation — let
-                # every FTS row through up to the candidate pool.
-                if fts_only:
-                    is_fts_top = True
-                else:
-                    is_fts_top = rank < effective_k * 2
-                fts_contribution = fts_weight * (1.0 / (RRF_K + rank))
-                if chunk_id in scores:
-                    scores[chunk_id]["rrf"] = float(scores[chunk_id]["rrf"]) + fts_contribution
-                    if explain:
-                        _explain_rrf_fts[chunk_id] = fts_contribution
-                        _explain_fts_rank[chunk_id] = rank
-                elif chunk_id in relevant_chunk_ids or is_fts_top:
-                    scores[chunk_id] = {
-                        "id": chunk_id,
-                        "text": row["text"],
-                        "title": row["title"],
-                        "path": row["path"],
-                        "chunk": row["seq"],
-                        "rrf": fts_contribution,
-                        "added_at": row["added_at"],
-                        "collection": row["collection"],
-                        "tags": row["tags"],
-                        "layer": row["layer"],
-                    }
-                    if explain:
-                        _explain_rrf_fts[chunk_id] = fts_contribution
-                        _explain_fts_rank[chunk_id] = rank
+            scores, _explain_rrf_vec, _explain_rrf_fts, _explain_fts_rank = self._fuse_rrf_scores(
+                vec_rows=vec_rows,
+                fts_rows=fts_rows,
+                vec_weight=vec_weight,
+                fts_weight=fts_weight,
+                relevant_chunk_ids=relevant_chunk_ids,
+                effective_k=effective_k,
+                fts_only=fts_only,
+                explain=explain,
+            )
 
             # Sort by RRF score descending
             ranked = sorted(scores.values(), key=lambda x: float(x["rrf"]), reverse=True)
@@ -1951,32 +2148,9 @@ class VstashStore:
                     )
 
             # --- Recency boost (temporal decay) ---
-            # When recency_boost > 0, multiply each chunk's RRF score by a decay
-            # factor based on how recently it was created.  This biases results
-            # toward recent content — useful for agentic memory where the latest
-            # context is more likely to be relevant.
-            if recency_boost > 0 and ranked:
-                now = datetime.now(timezone.utc)
-                chunk_ids = [int(r["id"]) for r in ranked]
-                placeholders = ",".join("?" * len(chunk_ids))
-                rows = self._conn.execute(
-                    f"SELECT id, created_at FROM chunks WHERE id IN ({placeholders})",
-                    chunk_ids,
-                ).fetchall()
-                created_map = {}
-                for row in rows:
-                    try:
-                        created_map[row["id"]] = datetime.fromisoformat(row["created_at"])
-                    except (TypeError, ValueError):
-                        pass
-                for r in ranked:
-                    cid = int(r["id"])
-                    if cid in created_map:
-                        days_ago = max(0.0, (now - created_map[cid]).total_seconds() / 86400)
-                        decay = math.exp(-0.05 * days_ago)
-                        r["rrf"] = float(r["rrf"]) * (1.0 + recency_boost * decay)
-                # Re-sort after boost
-                ranked = sorted(ranked, key=lambda x: float(x["rrf"]), reverse=True)
+            # Biases scores toward recent content, useful for agentic
+            # memory where latest context tends to be most relevant.
+            ranked = self._apply_recency_boost(ranked, recency_boost)
 
             # --- Track: recency boost stage ---
             if track_target is not None and recency_boost > 0:
@@ -2058,44 +2232,17 @@ class VstashStore:
                             counterfactual=f"Would appear with top_k ≥ {target_final_rank + 1}",
                         )
 
-            # --- Build ExplainInfo per chunk when requested ---
-            _explain_map: dict[int, ExplainInfo] = {}
-            if explain:
-                fts_terms = [w.strip('"') for w in quoted_words] if quoted_words else []
-                for r in ranked:
-                    cid = int(r["id"])
-                    vec_info = _explain_vec.get(cid)
-                    rrf_vec_val = round(_explain_rrf_vec.get(cid, 0.0), 6)
-                    rrf_fts_val = round(_explain_rrf_fts.get(cid, 0.0), 6)
-                    _explain_map[cid] = ExplainInfo(
-                        vec_rank=vec_info[0] if vec_info else None,
-                        vec_distance=round(vec_info[1], 4) if vec_info else None,
-                        fts_rank=_explain_fts_rank.get(cid),
-                        rrf_vec=rrf_vec_val,
-                        rrf_fts=rrf_fts_val,
-                        rrf_total=round(rrf_vec_val + rrf_fts_val, 6),
-                        mmr_penalty=round(float(r.get("_mmr_penalty", 0.0)), 4),
-                        fts_terms=fts_terms,
-                        rrf_vec_weight=vec_weight,
-                        rrf_fts_weight=fts_weight,
-                    )
-
-            results = [
-                SearchResult(
-                    chunk_id=int(r["id"]),
-                    text=str(r["text"]),
-                    title=str(r["title"]),
-                    path=str(r["path"]),
-                    chunk=int(r["chunk"]),
-                    score=round(float(r["rrf"]), 6),
-                    explain=_explain_map.get(int(r["id"])) if explain else None,
-                    added_at=r.get("added_at"),
-                    collection=r.get("collection"),
-                    tags=r.get("tags"),
-                    layer=r.get("layer"),
-                )
-                for r in ranked
-            ]
+            results = self._build_search_results(
+                ranked,
+                explain=explain,
+                explain_vec=_explain_vec,
+                explain_rrf_vec=_explain_rrf_vec,
+                explain_rrf_fts=_explain_rrf_fts,
+                explain_fts_rank=_explain_fts_rank,
+                quoted_words=quoted_words,
+                vec_weight=vec_weight,
+                fts_weight=fts_weight,
+            )
 
             # Stash values the finally block needs to log slow queries
             # with accurate data.
