@@ -238,7 +238,7 @@ score(c) = a * s_rrf(c) + b * min(1, log(1 + f(c)) / log(1 + S))
 
 where *f(c) = (1 + access_count(c)) * e^(-L * days_ago(c))*, *a* and *b* are semantic and memory weights, *L* is the decay rate, and *S = 100* is a saturation constant. We evaluated 16 parameter configurations across 5 simulated access patterns.
 
-**Result:** On BEIR SciFact, frequency+decay scoring degraded NDCG@10 by -1.6% with an adaptive maturity gate and by -9.0% with fixed b=0.5. The fundamental problem is that access frequency is orthogonal to query-specific relevance -- a frequently accessed chunk is not necessarily relevant to the current query. The full grid search and cold-start analysis are in Appendix C.
+**Result:** On BEIR SciFact (5K documents, 300 queries, 30 rounds of simulated Zipf-weighted usage, `experiments/scoring_lifecycle.py` with output in `experiments/results/scoring_lifecycle_scifact.json`), frequency+decay scoring degraded NDCG@10 relative to pure RRF (baseline NDCG@10 = 0.7263) on every configuration evaluated. The adaptive maturity gate (γ activates at round 6 once the access-count max/mean ratio exceeds 8.0, peaks at γ=0.48) limits the damage but still underperforms pure RRF: final NDCG@10 = 0.7150, a -1.6% delta (0.7150/0.7263 − 1). Fixed *b=0.5* without the gate is far worse: final NDCG@10 = 0.661, a -9.0% delta. The fundamental problem is that access frequency is orthogonal to query-specific relevance -- a frequently accessed chunk is not necessarily relevant to the current query. The full grid search and cold-start analysis are in Appendix C.
 
 ### 6.2  Cross-Encoder Reranking
 
