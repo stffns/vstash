@@ -196,6 +196,8 @@ async def api_embed(request: Request) -> JSONResponse:
     texts = body.get("texts")
     text = body.get("text")
 
+    _MAX_BATCH = 256
+
     if texts is not None:
         if (
             not isinstance(texts, list)
@@ -203,6 +205,8 @@ async def api_embed(request: Request) -> JSONResponse:
             or not all(isinstance(t, str) and t.strip() for t in texts)
         ):
             return _json({"error": "texts must be a non-empty list of non-empty strings"}, 400)
+        if len(texts) > _MAX_BATCH:
+            return _json({"error": f"batch size {len(texts)} exceeds limit of {_MAX_BATCH}"}, 400)
         data = await _run_sync(_do_embed, texts)
         return _json(data)
 

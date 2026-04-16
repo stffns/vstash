@@ -14,10 +14,12 @@ Models:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import platform
 import threading
+import urllib.request
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
@@ -495,8 +497,8 @@ def warmup(model_name: str, backend: BackendType = "auto") -> None:
 # _VSTASH_IS_DAEMON is set by `vstash serve` to prevent the daemon
 # process from delegating to itself (infinite recursion).
 _daemon_url: str | None = os.getenv("VSTASH_EMBED_URL")
-_daemon_checked: bool = _daemon_url is not None
-_daemon_available: bool = _daemon_url is not None
+_daemon_checked: bool = False
+_daemon_available: bool = False
 _daemon_lock = threading.Lock()
 _is_daemon: bool = os.getenv("_VSTASH_IS_DAEMON") == "1"
 
@@ -505,10 +507,11 @@ _DAEMON_TIMEOUT = 0.3  # seconds -- fast fail for localhost
 
 
 def _check_daemon() -> str | None:
-    """Probe the default daemon URL once. Returns URL if reachable, else None.
+    """Probe the daemon URL once. Returns URL if reachable, else None.
 
     Returns None immediately when running inside the daemon process
-    to prevent infinite recursion.
+    to prevent infinite recursion. Probes both explicit VSTASH_EMBED_URL
+    and the default localhost:8585, caching the result either way.
     """
     if _is_daemon:
         return None
@@ -518,14 +521,9 @@ def _check_daemon() -> str | None:
     with _daemon_lock:
         if _daemon_checked:
             return _daemon_url if _daemon_available else None
+        url = (_daemon_url or _DAEMON_DEFAULT_URL).rstrip("/")
         try:
-            import urllib.request
-
-            url = _daemon_url or _DAEMON_DEFAULT_URL
-            req = urllib.request.Request(
-                f"{url.rstrip('/')}/health",
-                method="GET",
-            )
+            req = urllib.request.Request(f"{url}/health", method="GET")
             with urllib.request.urlopen(req, timeout=_DAEMON_TIMEOUT):
                 _daemon_url = url
                 _daemon_available = True
@@ -536,17 +534,24 @@ def _check_daemon() -> str | None:
         return _daemon_url if _daemon_available else None
 
 
-def _daemon_embed_query(
-    text: str, url: str, model_name: str
-) -> list[float] | None:
+def _mark_daemon_unavailable() -> None:
+    """Mark daemon as unavailable after a failed request.
+
+    Resets _daemon_checked so the next call re-probes. This handles
+    daemon crashes gracefully: one failed request triggers a re-probe
+    instead of paying the full HTTP timeout on every subsequent call.
+    """
+    global _daemon_checked, _daemon_available  # noqa: PLW0603
+    _daemon_available = False
+    _daemon_checked = False
+
+
+def _daemon_embed_query(text: str, url: str, model_name: str) -> list[float] | None:
     """Embed a single query via the daemon. Returns None on failure or model mismatch."""
     try:
-        import json
-        import urllib.request
-
         data = json.dumps({"text": text}).encode()
         req = urllib.request.Request(
-            f"{url.rstrip('/')}/api/embed",
+            f"{url}/api/embed",
             data=data,
             headers={"Content-Type": "application/json"},
             method="POST",
@@ -562,20 +567,16 @@ def _daemon_embed_query(
                 return None
             return result.get("embedding")
     except Exception:
+        _mark_daemon_unavailable()
         return None
 
 
-def _daemon_embed_texts(
-    texts: list[str], url: str, model_name: str
-) -> list[list[float]] | None:
+def _daemon_embed_texts(texts: list[str], url: str, model_name: str) -> list[list[float]] | None:
     """Embed a batch of texts via the daemon. Returns None on failure or model mismatch."""
     try:
-        import json
-        import urllib.request
-
         data = json.dumps({"texts": texts}).encode()
         req = urllib.request.Request(
-            f"{url.rstrip('/')}/api/embed",
+            f"{url}/api/embed",
             data=data,
             headers={"Content-Type": "application/json"},
             method="POST",
@@ -591,6 +592,7 @@ def _daemon_embed_texts(
                 return None
             return result.get("embeddings")
     except Exception:
+        _mark_daemon_unavailable()
         return None
 
 

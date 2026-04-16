@@ -1288,7 +1288,11 @@ def watch(
 def serve(
     ctx: typer.Context,
     port: int = typer.Option(8585, "--port", "-p", help="Port to serve on"),
-    host: str = typer.Option("127.0.0.1", "--host", help="Host to bind to"),
+    host: str = typer.Option(
+        "127.0.0.1",
+        "--host",
+        help="Host to bind to. WARNING: 0.0.0.0 exposes all endpoints without authentication.",
+    ),
     warm: bool = typer.Option(
         True,
         "--warm/--no-warm",
@@ -1338,8 +1342,21 @@ def serve(
 
         cfg = load_config()
         console.print("[dim]Warming up embedding model...[/dim]")
-        t = threading.Thread(target=warmup, args=(cfg.embeddings.model,), daemon=True)
+
+        def _warmup_safe():
+            try:
+                warmup(cfg.embeddings.model)
+            except Exception as exc:
+                console.print(f"[yellow]Warning: warmup failed: {exc}[/yellow]")
+
+        t = threading.Thread(target=_warmup_safe, daemon=True)
         t.start()
+
+    if host == "0.0.0.0":
+        console.print(
+            "[yellow]Warning: binding to 0.0.0.0 exposes all endpoints "
+            "(search, chat, embed, upload) without authentication.[/yellow]"
+        )
 
     console.print(f"[bold cyan]vstash[/bold cyan] serving at [link]http://{host}:{port}[/link]")
     console.print("[dim]Press Ctrl+C to stop[/dim]")
