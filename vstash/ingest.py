@@ -898,7 +898,6 @@ def ingest_directory(
 
     results: list[IngestResult] = []
     pending: list[_PreparedDoc] = []
-    start_time = time.time()
 
     # Phase 1: parse + chunk + embed (per-file, progress bar)
     with Progress(
@@ -926,6 +925,8 @@ def ingest_directory(
                 quiet=True,
             )
             if isinstance(prepared, IngestResult):
+                if prepared.status == "error":
+                    console.print(f"[red]  x {f.name}: {prepared.error}[/red]")
                 results.append(prepared)
             else:
                 pending.append(prepared)
@@ -947,10 +948,11 @@ def ingest_directory(
             }
             for doc in pending
         ]
+        store_start = time.time()
         with store.batch_mode(defer_fts=True):
             doc_ids = store.add_documents_batch(batch_docs)
+        store_elapsed = round(time.time() - store_start, 2)
 
-        elapsed = round(time.time() - start_time, 2)
         for doc, doc_id in zip(pending, doc_ids):
             results.append(
                 IngestResult(
@@ -960,7 +962,7 @@ def ingest_directory(
                     title=doc["title"],
                     chunks=len(doc["chunks"]),
                     chars=doc["char_count"],
-                    elapsed_s=elapsed,
+                    elapsed_s=store_elapsed,
                 )
             )
 

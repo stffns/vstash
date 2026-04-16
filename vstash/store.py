@@ -1021,9 +1021,7 @@ class VstashStore:
 
                 # FTS5 entries (rowid must match chunks.id)
                 fts_data = [(rowid, text) for rowid, text in zip(rowids, chunks)]
-                if self._defer_fts:
-                    self._deferred_fts_rows.extend(fts_data)
-                else:
+                if not self._defer_fts:
                     self._conn.executemany(
                         "INSERT INTO fts_chunks (rowid, text) VALUES (?, ?)",
                         fts_data,
@@ -1036,6 +1034,8 @@ class VstashStore:
                     self._snap_dirty = True
 
                 self._conn.commit()
+                if self._defer_fts:
+                    self._deferred_fts_rows.extend(fts_data)
                 self._invalidate_idf_cache()
                 self._bump_cache_epoch()
                 # Persist snapvec AFTER successful SQLite commit
@@ -1074,6 +1074,7 @@ class VstashStore:
 
         with self._write_lock:
             self._conn.execute("BEGIN IMMEDIATE")
+            pending_fts: list[tuple[int, str]] = []
             try:
                 now_iso = datetime.now(timezone.utc).isoformat()
 
@@ -1144,7 +1145,7 @@ class VstashStore:
 
                     fts_data = list(zip(rowids, chunks))
                     if self._defer_fts:
-                        self._deferred_fts_rows.extend(fts_data)
+                        pending_fts.extend(fts_data)
                     else:
                         self._conn.executemany(
                             "INSERT INTO fts_chunks (rowid, text) VALUES (?, ?)",
@@ -1157,6 +1158,8 @@ class VstashStore:
                         self._snap_dirty = True
 
                 self._conn.commit()
+                if pending_fts:
+                    self._deferred_fts_rows.extend(pending_fts)
                 self._invalidate_idf_cache()
                 self._bump_cache_epoch()
                 if self._snap_dirty:
@@ -3523,17 +3526,15 @@ class VstashStore:
         with self._write_lock:
             self._conn.execute("BEGIN IMMEDIATE")
             try:
-                for i in range(0, len(self._deferred_fts_rows), _SQLITE_PARAM_BATCH):
-                    batch = self._deferred_fts_rows[i : i + _SQLITE_PARAM_BATCH]
-                    self._conn.executemany(
-                        "INSERT INTO fts_chunks (rowid, text) VALUES (?, ?)",
-                        batch,
-                    )
+                self._conn.executemany(
+                    "INSERT INTO fts_chunks (rowid, text) VALUES (?, ?)",
+                    self._deferred_fts_rows,
+                )
                 self._conn.commit()
             except Exception:
                 self._conn.rollback()
                 raise
-            finally:
+            else:
                 self._deferred_fts_rows.clear()
 
     @contextmanager
@@ -3570,8 +3571,10 @@ class VstashStore:
         finally:
             self._batch_depth -= 1
             if self._batch_depth == 0:
-                if self._defer_fts:
-                    self._flush_deferred_fts()
+                try:
+                    if self._defer_fts:
+                        self._flush_deferred_fts()
+                finally:
                     self._defer_fts = was_deferring
                 if self._batch_dirty:
                     self._idf_cache = None
