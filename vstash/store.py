@@ -3555,6 +3555,12 @@ class VstashStore:
         Searches executed during a batch may use stale IDF weights and
         (when defer_fts=True) miss newly added documents in FTS results.
 
+        Precondition when ``defer_fts=True``: do not ingest the same
+        path twice within a single batch.  Re-ingesting a path deletes
+        the old chunks (firing the FTS delete trigger), but deferred
+        rows for the old rowids are already queued and would become
+        orphaned FTS entries on flush.
+
         Example::
 
             with store.batch_mode(defer_fts=True):
@@ -3574,11 +3580,17 @@ class VstashStore:
                 try:
                     if self._defer_fts:
                         self._flush_deferred_fts()
+                except Exception:
+                    logger.error(
+                        "FTS flush failed; documents are stored but not FTS-indexed. "
+                        "Run 'vstash reindex' to rebuild the FTS index."
+                    )
+                    raise
                 finally:
                     self._defer_fts = was_deferring
-                if self._batch_dirty:
-                    self._idf_cache = None
-                    self._batch_dirty = False
+                    if self._batch_dirty:
+                        self._idf_cache = None
+                        self._batch_dirty = False
 
     def _compute_adaptive_rrf_params(
         self, query_text: str, default_cutoff: float = 1.15
