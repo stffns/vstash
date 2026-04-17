@@ -11,7 +11,7 @@ from vstash._ivfpq_backend import IVFPQBackend  # noqa: E402
 from vstash.store import VstashStore  # noqa: E402
 
 DIM = 96  # multiple of ivfpq_M so no param juggling is needed
-N = 400   # big enough for the default nlist without overfitting warnings
+N = 400  # big enough for the default nlist without overfitting warnings
 
 
 def _unit_vectors(rng: np.random.Generator, n: int, dim: int) -> np.ndarray:
@@ -57,9 +57,7 @@ class TestIVFPQBackendWrapper:
         be.add_batch(ids, vecs)
         be.save(path)
 
-        be2 = IVFPQBackend.load(
-            path, dim=DIM, nlist=16, M=24, K=32, rerank_candidates=32
-        )
+        be2 = IVFPQBackend.load(path, dim=DIM, nlist=16, M=24, K=32, rerank_candidates=32)
         assert be2.fitted
         assert len(be2) == N
         hits = be2.search(vecs[3], k=5)
