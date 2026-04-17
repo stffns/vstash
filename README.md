@@ -3,11 +3,9 @@
 [![PyPI](https://img.shields.io/pypi/v/vstash)](https://pypi.org/project/vstash/)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![python](https://img.shields.io/badge/python-3.10+-blue)]()
-[![tests](https://img.shields.io/badge/tests-~750_passing-brightgreen)]()
+[![tests](https://img.shields.io/badge/tests-900+_passing-brightgreen)]()
 
-**Local document memory with hybrid retrieval that beats ColBERTv2 on 3/5 BEIR datasets.** Single SQLite file. Zero cloud dependencies. 20.9 ms at 50K chunks.
-
-A 33M parameter embedding model, fine-tuned with zero human labels using vstash's own hybrid retrieval disagreement signal, surpasses ColBERTv2 (110M params) on SciFact, NFCorpus, and SciDocs. The model is published as [`Stffens/bge-small-rrf-v2`](https://huggingface.co/Stffens/bge-small-rrf-v2).
+**Local document memory with hybrid retrieval.** Single SQLite file. Zero cloud dependencies for search. Beats ColBERTv2 on SciFact, NFCorpus, and SciDocs ([BEIR](https://github.com/beir-cellar/beir)). Under 60 ms p50 at 50K chunks.
 
 ```bash
 pip install vstash
@@ -39,10 +37,10 @@ Query --> Embed --+--> Vector ANN (sqlite-vec) --+
                   +--> FTS5 BM25 ----------------+
 ```
 
-1. **Hybrid search**: vector similarity + keyword matching, fused via Reciprocal Rank Fusion
-2. **Adaptive RRF**: IDF-based per-query weights. Rare terms boost keywords, common terms boost vectors. +21.4% on ArguAna
-3. **MMR dedup**: diverse sections from long documents surface instead of redundant chunks
-4. **Self-tuned embedding**: `vstash retrain` fine-tunes your embedding model using disagreements between vector and keyword search. Zero labels needed
+- **Hybrid search**: vector + keyword, fused via Reciprocal Rank Fusion.
+- **Adaptive RRF**: IDF-based per-query weights. Rare terms boost keywords, common terms boost vectors.
+- **MMR dedup**: diverse sections from long documents, not redundant chunks from one.
+- **Self-tuned, gated**: `vstash retrain` fine-tunes embeddings from your own disagreement signal; the eval gate refuses regressions.
 
 ---
 
@@ -57,19 +55,21 @@ pip install 'vstash[all]'             # everything
 
 ---
 
-## Quick Start
+## Usage
 
 ```bash
-# Search (free, no API key)
+# Ingest: files, folders, URLs
 vstash add report.pdf ~/notes/ https://arxiv.org/abs/2310.06825
+
+# Search: local, no API key
 vstash search "what is the proposed method?"
 
-# Ask (needs a local LLM -- auto-detects Ollama, LM Studio)
+# Ask: needs a local LLM, auto-detects Ollama / LM Studio
 vstash ask "summarize the key findings"
-vstash chat                           # interactive session
+vstash chat                           # interactive
 
-# Fine-tune on your own data
-vstash retrain                        # generates training data from your corpus, trains locally
+# Fine-tune on your own corpus (eval-gated, refuses regressions)
+vstash retrain
 vstash reindex --model ~/.vstash/models/retrained
 ```
 
@@ -138,17 +138,22 @@ vstash-mcp                            # start MCP server
 
 ## Self-Supervised Embedding Refinement
 
-vstash can improve its own embedding model by exploiting disagreements between vector and keyword search:
+vstash can tune its own embedding model to your corpus, without any human labels.
 
 ```bash
-vstash retrain                        # 1. Generate training pairs from your corpus
-                                      # 2. Fine-tune with MNRL (needs sentence-transformers)
-vstash reindex --model ~/.vstash/models/retrained  # 3. Apply the improved model
+vstash retrain                        # generate training pairs + fine-tune
+vstash reindex --model ~/.vstash/models/retrained
 ```
 
-82% of queries produce disagreement between vector and FTS search. These disagreements are free training signal. The published model (`Stffens/bge-small-rrf-v2`) was trained this way: 76K triples, zero human labels, 30 min on a T4 GPU.
+**How it works, in one paragraph.** When you search your corpus, the vector and keyword halves of the pipeline sometimes rank different documents at the top. Those disagreements are a free signal: the document each half picked is probably relevant, the one only one half picked might not be. vstash turns this into training pairs and fine-tunes the embedding model on them. The run is eval-gated: it evaluates the candidate against the base model on a held-out slice of your corpus and refuses to save a model that performs worse.
 
-**Results**: +7.4% NDCG on SciFact, +19.5% on NFCorpus, +5.5% on SciDocs. The 33M model surpasses an untrained 110M model on 3/5 datasets.
+**Published result**. `Stffens/bge-small-rrf-v2` was trained this way from 76K pairs across three BEIR datasets in 30 min on a T4 GPU. See the [Retrieval Quality](#retrieval-quality) table for the numbers it produces on BEIR.
+
+Requires `sentence-transformers`, `torch`, and `accelerate`:
+
+```bash
+pip install 'sentence-transformers>=3' torch 'accelerate>=1.1.0'
+```
 
 ---
 
@@ -169,7 +174,7 @@ Search is always private. Use a local LLM for fully private answers.
 
 [vstash: Local-First Hybrid Retrieval with Adaptive Fusion for LLM Agents](paper/vstash-paper.md)
 
-Four contributions: adaptive RRF, self-supervised embedding refinement, negative result on post-RRF scoring, production substrate. LaTeX version at `paper/arxiv/vstash.tex`.
+Adaptive RRF, self-supervised embedding refinement, a negative result on post-RRF scoring, and the production substrate all in one place. PDF build at `paper/arxiv/vstash.pdf`.
 
 ---
 
@@ -189,20 +194,18 @@ Four contributions: adaptive RRF, self-supervised embedding refinement, negative
 
 | Experiment | Key Result | Command |
 |---|---|---|
-| [BEIR Benchmark](experiments/beir_benchmark.py) | Beats ColBERTv2 on 3/5 datasets | `python -m experiments.beir_benchmark` |
-| [Embedding Fine-tune](experiments/finetune_rrf.py) | +7.4% NDCG, zero labels | `python -m experiments.finetune_rrf` |
-| [Scale Benchmark](experiments/scale_benchmark.py) | 20.9ms at 50K chunks | `python -m experiments.scale_benchmark` |
+| [BEIR Benchmark](experiments/beir_benchmark.py) | Beats ColBERTv2 on SciFact, NFCorpus, SciDocs | `python -m experiments.beir_benchmark` |
+| [Retrain (eval-gated)](vstash/retrain.py) | Fine-tune your embedding model on your own corpus, refuses regressions | `vstash retrain --help` |
+| [Pipeline latency](experiments/vstash_pipeline_ivfpq_bench.py) | Under 60 ms p50 @ 50K, 0.80x with snapvec-ivfpq @ 100K | `python -m experiments.vstash_pipeline_ivfpq_bench --n 100000` |
 | [Relevance Signal](experiments/relevance_signal_beir.py) | F1=0.996 cross-domain | `python -m experiments.relevance_signal_beir` |
 
 ---
 
-## What's New in v0.28
+## What's New in v0.32
 
-- **`vstash retrain`**: fine-tune embeddings on your own data using hybrid retrieval disagreement
-- **`Stffens/bge-small-rrf-v2`**: published embedding model (+7.4% SciFact, +19.5% NFCorpus)
-- **`SearchResult.added_at/collection/tags/layer`**: full metadata on search hits
-- **`add_documents_batch()`**: bulk ingest in single transaction
-- **Embedder provenance**: `embedding_model` stamped on fresh stores
-- **Search 32% faster**: MMR cache, batch expand_context, norm precompute
+- **Persistent embedder daemon** (v0.32) — `vstash serve` pre-loads the embedding model and exposes `/api/embed` on `localhost:8585`. CLI and SDK clients auto-detect and delegate; cold start drops from ~2 s to ~5 ms.
+- **Query LRU cache** (v0.31) — opt-in repeated-query cache via `[cache] query_cache_size`. Roughly 700x on cache hits, automatically invalidated on writes.
+- **Batched directory ingest** (v0.31) — single-transaction writes with deferred FTS. 5x faster at 500 docs versus per-file ingest.
+- **`snapvec-ivfpq` vector backend** (v0.30) — IVFPQ with fp16 rerank. Pareto-dominant over sqlite-vec at N >= 50K: 0.80x mean latency at 100K, NDCG within noise.
 
 See [CHANGELOG](CHANGELOG.md) for full version history.
