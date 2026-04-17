@@ -25,9 +25,10 @@ vstash stats
 
 ```
 vstash/
-  __init__.py       # version (__version__ = "0.28.0")
-  cli.py            # typer CLI — add, search, ask, chat, list, stats, forget, reindex, watch, config, export, remember, profile, journal, retrain
-  retrain.py        # Self-supervised embedding fine-tuning from hybrid retrieval disagreement
+  __init__.py       # version (__version__ = "0.32.0")
+  cli.py            # typer CLI — add, search, ask, chat, list, stats, forget, reindex, watch, config, export, remember, profile, journal, retrain, serve, check, snapvec
+  retrain.py        # Eval-gated self-supervised embedding fine-tuning. Composes split_corpus_for_eval, evaluate_model, generate_triples, train_mnrl. Refuses to save a model that regresses on held-out NDCG@10.
+  retrain_synth.py  # LLM query synthesis for retrain training pairs (OpenAI-compat, Ollama). JSONL cache keyed by (chunk_id, prompt_hash, model).
   profile.py        # Multi-profile management: resolution chain, CRUD, federated search
   journal.py        # Cross-session memory: save, recall, log, prune, transcript parsing
   store.py          # VstashStore — SQLite + sqlite-vec + FTS5, RRF, scoring, MMR dedup, reindex
@@ -58,7 +59,9 @@ tests/
   test_journal.py   # Journal save/recall/log/prune, CLI, SDK, MCP, transcript parsing
   test_get_chunk.py # Direct chunk retrieval by ID (store, SDK, MCP, edge cases)
   test_store_helpers.py # Store helper methods (get_document_chunks, added_at, batching)
-  conftest.py       # Fixtures (tmp_db_path, sample_store)
+  test_retrain.py   # generate_triples + evaluate_model + retrain() composer (eval gate, atomic promote, synth-queries integration)
+  test_retrain_synth.py # LLM query synthesis: prompt builder, parser edge cases, JSONL cache, LLM-failure resilience
+  conftest.py       # Fixtures (tmp_db_path, sample_store, populated_store -- the workhorse for most new tests)
 
 experiments/        # Research experiment scripts + results
 paper/              # Academic paper (vstash-paper.md)
@@ -74,9 +77,14 @@ docs/               # User-facing documentation
 - **Embeddings**: FastEmbed (ONNX) or MLX (Apple Silicon). Default `BAAI/bge-small-en-v1.5` (384 dims). Multilingual models available via `vstash reindex`.
 - **Code-aware chunking**: Hybrid 3-tier splitting — tree-sitter AST (25+ languages, optional) → parso AST (Python) → regex (6 languages). Graceful degradation. See `code_split.py`.
 - **Single SQLite file**: WAL mode, foreign keys, all data in one `.db`.
-- **Optional snapvec backend**: Compressed ANN via PolarQuant. Opt-in with `storage.vector_backend = "snapvec"`. sqlite-vec stays default.
+- **Optional snapvec backends**: Compressed ANN via PolarQuant. Two variants: `snapvec` (flat quantized) and `snapvec-ivfpq` (IVFPQ with fp16 rerank, pareto-dominant over sqlite-vec at N >= 50K). Opt-in with `storage.vector_backend`; sqlite-vec stays default. Fit via `vstash snapvec fit` before use.
 - **Local-first LLM**: Default backend `"local"` auto-detects Ollama, LM Studio, or any OpenAI-compatible local server.
-- **BEIR benchmark results**: NDCG@10=0.7263 on SciFact with adaptive RRF (surpasses ColBERTv2 0.693). Wins 5/5 BEIR datasets vs BM25, 4/5 vs ColBERTv2.
+- **BEIR benchmark results**: Two tracks worth keeping straight. Baseline BGE-small + adaptive RRF hits NDCG@10=0.7263 on SciFact, winning 5/5 BEIR vs BM25 and 4/5 vs ColBERTv2. The tuned fine-tune (`Stffens/bge-small-rrf-v2`, 33M params, published on HF) adds another +5% SciFact / +18% NFCorpus on top. The bench script lives at `experiments/beir_benchmark.py` with `--no-chroma` as the recommended default.
+- **Query LRU cache (v0.31)**: Opt-in via `[cache] query_cache_size`. ~700x speedup on cache hits for repeated queries. Automatically invalidated on any write. Skipped for `explain=True` and `miss_analysis()`.
+- **Batched ingest + deferred FTS (v0.31)**: `add_documents_batch` + `batch_mode(defer_fts=True)` collect FTS5 inserts in memory and flush in one bulk pass on exit. 5x speedup on `ingest_directory` at 500 docs.
+- **Embedder daemon (v0.32)**: `vstash serve --warm` pre-loads the embedding model and exposes `/api/embed` on localhost:8585. CLI and SDK clients auto-detect a running daemon and delegate. Drops cold start from ~2 s to ~5 ms. Fallback is transparent local embedding. Override via `VSTASH_EMBED_URL`.
+- **Eval-gated retrain (T1.1 in current develop)**: `retrain()` composes `split_corpus_for_eval` + `evaluate_model` + `generate_triples` + `train_mnrl` + atomic `.candidate`/`.old` promote. Refuses to save a candidate whose held-out NDCG@10 is worse than the baseline. `qrels_to_eval_queries` converts BEIR-style labels into the eval format; multi-relevant NDCG is handled natively. Settled empirically: query source (prefix vs LLM-synthesized via T1.3 `retrain_synth.py`) is a neutral lever at single-domain scale. The real gains come from multi-corpus training (T1.4, designed in `experiments/retrain_roadmap.md`, not yet implemented).
+- **HF ONNX fallback (v0.32+)**: `_init_hf_onnx` wraps ort init in a broad except; on failure the model gets routed through `SentenceTransformer` for safetensors loading. Added because `Stffens/bge-small-rrf-v2` shipped an ONNX stub referencing an external data file that was never uploaded to the repo. The fallback is cached per-model so we only take the ONNX-path hit once.
 - **Integrity & recovery (v0.24)**: `doc_completeness(path, collection)` → idempotent ingest; `integrity_check()` runs 5 invariants (chunk_count parity, vec/snapvec parity, FTS5 built-in `integrity-check`, orphans, PRAGMA) and returns a `list[IntegrityCheck]`; `integrity_repair()` is profile-scoped (rebuilds `fts_chunks`, recomputes chunk_count, deletes orphans). v0.24.1 made the **partial-ingest recovery path** (via `delete_document(path, collection=...)`) collection-scoped so repairing one collection cannot wipe a sibling collection's copy of the same path. Exposed as `vstash check [--repair] [--json]`.
 - **Explicit contracts & schema versioning (v0.25)**: `SCHEMA_VERSION` + `KNOWN_SCHEMA_VERSIONS` stamped in the `store_meta` table; `SchemaVersionError` on unknown versions; `INSERT OR IGNORE` for concurrent fresh-open; forward-compatible top-level config keys (warn-on-unknown). `SearchResult.score` is the RRF score with `k=60`, range `[0, ~0.033]`, comparable within a query but **not across queries**.
 - **Operational observability (v0.21–v0.22)**: in-process metrics registry, slow query log, `miss_analysis(query_embedding, query_text, *, expected_path=...)` API for ranking debugging (traces where a chunk was eliminated + rule-based suggestions).
@@ -89,7 +97,7 @@ docs/               # User-facing documentation
 - **Pydantic v2** for all config and data models (frozen=True)
 - **Type hints** on all public functions
 - **ruff** for linting and formatting (enforced in CI)
-- **pytest** for testing (~750 tests + 6 benchmark regression tests as of v0.28.0)
+- **pytest** for testing (900+ tests as of v0.32.0, benchmark regression tests marker-gated off by default)
 - **Conventional commits** with emoji prefixes (feat, fix, docs, chore, perf)
 - **No AI co-author lines** — do NOT add `Co-Authored-By` or any AI attribution to commit messages
 
@@ -119,7 +127,7 @@ Key sections: `[inference]`, `[cerebras]`, `[ollama]`, `[openai]`, `[embeddings]
 - **Run experiments**: `python -m experiments.<name>` (e.g., `experiments.scoring_grid`).
 - **Run Kaggle-scale benchmarks**: `python -m experiments.arxiv_retrieval_bench` (1K papers, 3 models) or `python -m experiments.dataset_discovery` (954 HuggingFace datasets, interactive mode with `--interactive`).
 - **Run all experiments**: `python -m experiments.run_all`.
-- **Run BEIR benchmarks**: `python -m experiments.beir_benchmark` (5 BEIR datasets, vstash vs Chroma). Datasets auto-download on first run (~330MB). Use `--datasets scifact nfcorpus` for quick runs, `--no-chroma` to skip Chroma comparison.
+- **Run BEIR benchmarks**: `python -m experiments.beir_benchmark --no-chroma` (recommended default, 5 BEIR datasets, vstash only). Drop `--no-chroma` to add a vstash-vs-Chroma comparison. Datasets auto-download on first run (~330 MB). `--datasets scifact nfcorpus` for a quick subset. Pipeline latency bench: `python -m experiments.vstash_pipeline_ivfpq_bench --n 100000` compares sqlite-vec vs snapvec-ivfpq end-to-end with multi-dataset padding.
 
 ## Branching strategy
 
