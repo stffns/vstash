@@ -3963,7 +3963,10 @@ class VstashStore:
                 if seq >= 0:  # sequence numbers are 0-indexed and non-negative
                     needed_targets.add((did, seq))
 
-        needed_targets_list = list(needed_targets)
+        # Sort target pairs by (doc_id, seq) so the SQL lookup touches rows
+        # in roughly sequential order within each document. Helps page-cache
+        # locality for large stores without changing correctness.
+        needed_targets_list = sorted(needed_targets)
 
         # Key: (doc_id, seq) → text
         chunk_text_map: dict[tuple[str, int], str] = {}
