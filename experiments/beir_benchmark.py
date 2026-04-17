@@ -61,6 +61,9 @@ BASELINES = {
 
 def download_beir(name: str) -> str:
     """Download and cache a BEIR dataset. Returns path to cache dir."""
+    # Ensure the cache parent exists. CACHE_DIR is a gitignored path
+    # inside the repo, so on a fresh clone it does not exist yet.
+    os.makedirs(CACHE_DIR, exist_ok=True)
     cache = f"{CACHE_DIR}/beir_{name}"
     if not os.path.exists(cache):
         print(f"  Downloading {name}...")
