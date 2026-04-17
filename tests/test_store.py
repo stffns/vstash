@@ -497,6 +497,82 @@ class TestExpandContext:
         expanded = sample_store.expand_context([], window=1)
         assert expanded == []
 
+    def test_expand_context_crosses_param_batch_boundary(self, sample_store: VstashStore) -> None:
+        """The CTE + VALUES batching path chunks (doc_id, seq) tuples
+        into groups of ``_SQLITE_PARAM_BATCH // 2`` pairs (each pair =
+        2 SQL parameters). Exercise the code path across more than one
+        batch so neighbours on both sides of the boundary still
+        resolve.
+        """
+        from vstash.store import _SQLITE_PARAM_BATCH
+
+        # With window=1 every result contributes 3 tuples (seq-1, seq,
+        # seq+1). We want total tuples > _SQLITE_PARAM_BATCH // 2 so
+        # the batch loop runs more than once.
+        pairs_per_batch = _SQLITE_PARAM_BATCH // 2
+        # Build a single long document: chunks_count chunks total,
+        # sampled_count evenly spaced seqs queried.
+        chunks_count = pairs_per_batch + 50  # comfortably > one batch worth
+        sampled_count = pairs_per_batch + 20
+        assert sampled_count * 3 > pairs_per_batch, (
+            "test must force more tuples than fit in one SQL batch"
+        )
+
+        dim = sample_store.embedding_dim
+        texts = [f"chunk {i}" for i in range(chunks_count)]
+        embs = [[0.001 * (i + 1)] * dim for i in range(chunks_count)]
+        sample_store.add_document(
+            path="/test/wide.md",
+            title="Wide doc",
+            chunks=texts,
+            embeddings=embs,
+        )
+
+        # Hand-craft SearchResult objects hitting seqs 1, 2, ... sampled_count
+        # so we avoid seq=0 underflow and always have a previous neighbour.
+        from vstash.models import SearchResult
+
+        doc_id_row = sample_store._conn.execute(
+            "SELECT id FROM documents WHERE path = ?",
+            ["/test/wide.md"],
+        ).fetchone()
+        assert doc_id_row is not None
+        chunk_rows = sample_store._conn.execute(
+            "SELECT id, seq FROM chunks WHERE doc_id = ? AND seq BETWEEN 1 AND ? "
+            "ORDER BY seq LIMIT ?",
+            [doc_id_row["id"], sampled_count, sampled_count],
+        ).fetchall()
+        assert len(chunk_rows) == sampled_count
+
+        results = [
+            SearchResult(
+                chunk_id=int(row["id"]),
+                text=texts[int(row["seq"])],
+                title="Wide doc",
+                path="/test/wide.md",
+                chunk=int(row["seq"]),
+                score=0.5,
+            )
+            for row in chunk_rows
+        ]
+
+        expanded = sample_store.expand_context(results, window=1)
+        assert len(expanded) == sampled_count
+
+        # For every original hit we must see the prev and next chunk
+        # text merged into expanded.text, including hits whose tuples
+        # landed in the second (or later) SQL batch.
+        for original, exp in zip(results, expanded):
+            prev_text = texts[original.chunk - 1]
+            next_text = texts[original.chunk + 1]
+            assert prev_text in exp.text, (
+                f"missing prev chunk text for seq {original.chunk} "
+                f"(batch-boundary coverage): {exp.text[:80]!r}"
+            )
+            assert next_text in exp.text, (
+                f"missing next chunk text for seq {original.chunk}: {exp.text[:80]!r}"
+            )
+
 
 class TestAdaptiveRelevanceThreshold:
     """Test adaptive relevance threshold based on spread history."""
