@@ -69,10 +69,7 @@ def embed_dataset(name: str) -> tuple[np.ndarray, list[str]]:
     cache = download_beir(name)
     corpus, _, _ = load_beir(cache)
     ids = list(corpus.keys())
-    texts = [
-        (corpus[d].get("title", "") + " " + corpus[d].get("text", "")).strip()
-        for d in ids
-    ]
+    texts = [(corpus[d].get("title", "") + " " + corpus[d].get("text", "")).strip() for d in ids]
     print(f"  embedding {name}: {len(texts)} docs ...")
     # Chunk to stay under MLX Metal buffer limits on Apple Silicon.
     batch = 256
@@ -110,11 +107,17 @@ def assemble_corpus(
         ids_str = sci_ids[:target_n]
         int_ids = list(range(target_n))
         id_map = {s: i for i, s in enumerate(ids_str)}
-        return sliced, int_ids, sliced, [id_map[s] for s in sci_ids if s in id_map], {
-            "queries": queries,
-            "qrels": qrels,
-            "sci_count": target_n,
-        }
+        return (
+            sliced,
+            int_ids,
+            sliced,
+            [id_map[s] for s in sci_ids if s in id_map],
+            {
+                "queries": queries,
+                "qrels": qrels,
+                "sci_count": target_n,
+            },
+        )
 
     pad_vecs, _ = embed_dataset("fiqa")
     need = target_n - n_sci
@@ -124,11 +127,17 @@ def assemble_corpus(
         pad_vecs = np.tile(pad_vecs, (repeats, 1))
     combined = np.concatenate([sci_vecs, pad_vecs[:need]], axis=0).astype(np.float32)
     int_ids = list(range(len(combined)))
-    return combined, int_ids, sci_vecs, list(range(n_sci)), {
-        "queries": queries,
-        "qrels": qrels,
-        "sci_count": n_sci,
-    }
+    return (
+        combined,
+        int_ids,
+        sci_vecs,
+        list(range(n_sci)),
+        {
+            "queries": queries,
+            "qrels": qrels,
+            "sci_count": n_sci,
+        },
+    )
 
 
 # ------------------------------------------------------------------ #
@@ -173,16 +182,12 @@ class SqliteVecIndex:
         self._conn.enable_load_extension(True)
         sqlite_vec.load(self._conn)
         self._conn.enable_load_extension(False)
-        self._conn.execute(
-            f"CREATE VIRTUAL TABLE vec_items USING vec0(embedding float[{dim}])"
-        )
+        self._conn.execute(f"CREATE VIRTUAL TABLE vec_items USING vec0(embedding float[{dim}])")
 
     def add_batch(self, ids: list[int], vectors: np.ndarray) -> None:
         vectors = np.ascontiguousarray(vectors, dtype=np.float32)
         rows = [(int(i), v.tobytes()) for i, v in zip(ids, vectors)]
-        self._conn.executemany(
-            "INSERT INTO vec_items (rowid, embedding) VALUES (?, ?)", rows
-        )
+        self._conn.executemany("INSERT INTO vec_items (rowid, embedding) VALUES (?, ?)", rows)
         self._conn.commit()
 
     def search(self, query: np.ndarray, k: int = 10) -> list[tuple[int, float]]:
@@ -430,9 +435,7 @@ def main() -> None:
 
     # Summary table
     print("\n" + "=" * 96)
-    print(
-        f"{'backend':<34}{'N':>8}{'build':>8}{'MB':>8}{'p50ms':>8}{'p95ms':>8}{'recall':>9}"
-    )
+    print(f"{'backend':<34}{'N':>8}{'build':>8}{'MB':>8}{'p50ms':>8}{'p95ms':>8}{'recall':>9}")
     print("-" * 96)
     for r in all_results:
         print(

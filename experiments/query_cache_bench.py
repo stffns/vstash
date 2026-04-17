@@ -43,7 +43,9 @@ def main():
     with tempfile.TemporaryDirectory() as tmpdir:
         # Without cache
         db_no_cache = f"{tmpdir}/no_cache.db"
-        store_nc = VstashStore(db_no_cache, embedding_dim=dim, cache=CacheConfig(query_cache_size=0))
+        store_nc = VstashStore(
+            db_no_cache, embedding_dim=dim, cache=CacheConfig(query_cache_size=0)
+        )
         store_nc.add_document(
             path="/bench/corpus.md", title="Corpus", chunks=chunks, embeddings=embeddings
         )

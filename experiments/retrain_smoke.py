@@ -35,8 +35,7 @@ def main() -> None:
     corpus, _, _ = load_beir(cache)
     doc_ids = list(corpus.keys())[:N_DOCS]
     texts = [
-        (corpus[d].get("title", "") + " " + corpus[d].get("text", "")).strip()
-        for d in doc_ids
+        (corpus[d].get("title", "") + " " + corpus[d].get("text", "")).strip() for d in doc_ids
     ]
     print(f"embedding {len(texts)} SciFact docs ...")
     t0 = time.perf_counter()
