@@ -7,6 +7,10 @@ MultipleNegativesRankingLoss (MNRL). The resulting model produces
 embeddings that better distinguish "semantically close" from "actually
 relevant" for the user's specific data.
 
+Includes an honest eval-gated training entry (`retrain`) that reindexes
+the relevant + noise chunks with each candidate model (baseline and
+fine-tuned) and reports NDCG@10 deltas before saving.
+
 Requires: pip install sentence-transformers torch
 """
 
@@ -14,8 +18,12 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import random
+import shutil
+import tempfile
 import time
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from .embed import embed_query
@@ -24,6 +32,10 @@ from .store import VstashStore
 logger = logging.getLogger(__name__)
 
 TOP_K = 10
+_EVAL_TOP_K = 10
+_EVAL_MAX_QUERIES = 200
+_EVAL_MIN_QUERIES = 20
+_EVAL_NOISE_DEFAULT = 1000
 
 
 def generate_triples(
@@ -31,6 +43,7 @@ def generate_triples(
     model_name: str,
     max_queries: int = 5000,
     seed: int = 42,
+    exclude_chunk_ids: set[int] | None = None,
 ) -> list[dict]:
     """Generate training triples from RRF signal disagreement.
 
@@ -43,24 +56,30 @@ def generate_triples(
         model_name: Embedding model to use for queries.
         max_queries: Maximum number of pseudo-queries to generate.
         seed: Random seed for reproducibility.
+        exclude_chunk_ids: Chunk IDs reserved for evaluation; skipped so
+            training and eval never overlap.
 
     Returns:
         List of dicts with 'query' and 'positive' keys.
     """
     random.Random(seed)
+    excluded = exclude_chunk_ids or set()
 
-    # Sample chunks as pseudo-queries
+    # Sample chunks as pseudo-queries. We pull every eligible chunk (minus
+    # the held-out set) and let SQLite shuffle, then slice.
     total = store._conn.execute("SELECT COUNT(*) as n FROM chunks").fetchone()["n"]
     if total == 0:
         return []
 
     sample_size = min(max_queries, total)
     rows = store._conn.execute(
-        "SELECT c.text, d.path FROM chunks c "
+        "SELECT c.id, c.text, d.path FROM chunks c "
         "JOIN documents d ON d.id = c.doc_id "
-        "ORDER BY RANDOM() LIMIT ?",
-        [sample_size],
+        "ORDER BY RANDOM()",
     ).fetchall()
+    if excluded:
+        rows = [r for r in rows if r["id"] not in excluded]
+    rows = rows[:sample_size]
 
     pairs = []
     disagreements = 0
@@ -245,3 +264,481 @@ def train_mnrl(
 
     logger.info("Model saved to %s (%.0fs)", output, elapsed)
     return output
+
+
+# ---------------------------------------------------------------------- #
+# Eval-gated retraining                                                   #
+# ---------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class EvalMetrics:
+    """Honest retrieval metrics on a held-out query set."""
+
+    ndcg_at_10: float
+    mrr: float
+    hit_at_10: float
+    n_queries: int
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class RetrainResult:
+    """Outcome of a full eval-gated retrain."""
+
+    output_path: str | None
+    baseline: EvalMetrics | None
+    final: EvalMetrics | None
+    n_pairs: int
+    gated_out: bool
+    min_gain: float
+
+    @property
+    def delta_ndcg(self) -> float:
+        if self.baseline is None or self.final is None:
+            return 0.0
+        return self.final.ndcg_at_10 - self.baseline.ndcg_at_10
+
+
+def split_corpus_for_eval(
+    store: VstashStore,
+    eval_fraction: float = 0.15,
+    min_queries: int = _EVAL_MIN_QUERIES,
+    max_queries: int = _EVAL_MAX_QUERIES,
+    seed: int = 42,
+) -> tuple[set[int], list[dict]]:
+    """Reserve a subset of chunks as held-out queries for evaluation.
+
+    Each held-out chunk becomes an eval query: first 200 chars as query
+    text, the chunk's own document path as the single relevant target.
+
+    Args:
+        store: VstashStore with ingested documents.
+        eval_fraction: Fraction of chunks to reserve.
+        min_queries: Minimum eval set size. Returns empty if the corpus
+            cannot provide at least this many queries.
+        max_queries: Cap on eval size. Large corpora are capped so eval
+            cost stays predictable.
+        seed: Deterministic split.
+
+    Returns:
+        Tuple of (reserved_chunk_ids, eval_queries). Each eval query is
+        a dict with 'query', 'relevant_path', 'source_chunk_id'.
+    """
+    rows = store._conn.execute(
+        "SELECT c.id, c.text, d.path FROM chunks c JOIN documents d ON d.id = c.doc_id",
+    ).fetchall()
+    if len(rows) < min_queries:
+        return set(), []
+
+    rng = random.Random(seed)
+    rows_shuffled = list(rows)
+    rng.shuffle(rows_shuffled)
+
+    target = max(min_queries, min(max_queries, int(len(rows_shuffled) * eval_fraction)))
+    target = min(target, len(rows_shuffled))
+
+    reserved = rows_shuffled[:target]
+    eval_queries = [
+        {
+            "query": r["text"][:200],
+            "relevant_path": r["path"],
+            "source_chunk_id": r["id"],
+        }
+        for r in reserved
+    ]
+    reserved_ids = {r["id"] for r in reserved}
+    return reserved_ids, eval_queries
+
+
+def _sample_noise_chunks(
+    store: VstashStore,
+    relevant_paths: set[str],
+    n: int,
+    seed: int,
+) -> list[dict]:
+    """Sample chunks from documents that are NOT relevant to any eval query.
+
+    These distractor chunks make NDCG meaningful: without real competition
+    a 10-query search on 10 chunks is trivially perfect.
+    """
+    rows = store._conn.execute(
+        "SELECT c.id, c.text, d.path, d.title FROM chunks c JOIN documents d ON d.id = c.doc_id",
+    ).fetchall()
+    pool = [r for r in rows if r["path"] not in relevant_paths]
+    if not pool:
+        return []
+    rng = random.Random(seed)
+    rng.shuffle(pool)
+    return [dict(r) for r in pool[:n]]
+
+
+def _relevant_chunks(store: VstashStore, relevant_paths: set[str]) -> list[dict]:
+    """Return every chunk from the documents that are eval-relevant.
+
+    We include the full document, not just the originating chunk, so the
+    eval index mirrors how retrieval works in production: any chunk of the
+    relevant doc counts as a hit.
+    """
+    if not relevant_paths:
+        return []
+    placeholders = ",".join("?" * len(relevant_paths))
+    rows = store._conn.execute(
+        f"SELECT c.id, c.text, d.path, d.title FROM chunks c "
+        f"JOIN documents d ON d.id = c.doc_id "
+        f"WHERE d.path IN ({placeholders})",
+        list(relevant_paths),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _ndcg_at_k(rank: int | None, k: int = _EVAL_TOP_K) -> float:
+    """Binary NDCG@k with a single relevant doc.
+
+    Returns 1 / log2(rank + 1) when the relevant doc is at 1 <= rank <= k,
+    else 0.0. IDCG = 1.0 (one relevant doc at rank 1).
+    """
+    if rank is None or rank > k:
+        return 0.0
+    return 1.0 / math.log2(rank + 1)
+
+
+def _load_sentence_transformer(model_name: str):
+    """Import + load a SentenceTransformer. Raises ImportError with install hint."""
+    try:
+        from sentence_transformers import SentenceTransformer
+    except ImportError as exc:
+        raise ImportError(
+            "sentence-transformers is required for eval. "
+            "Install with: pip install sentence-transformers torch"
+        ) from exc
+    return SentenceTransformer(model_name)
+
+
+def evaluate_model(
+    base_store: VstashStore,
+    model_name_or_path: str,
+    eval_queries: list[dict],
+    noise_sample_size: int = _EVAL_NOISE_DEFAULT,
+    seed: int = 42,
+    tmp_dir: Path | None = None,
+) -> EvalMetrics:
+    """Build a temp index with ``model_name_or_path`` and score it on
+    ``eval_queries``. Re-embeds every relevant + noise chunk with the
+    target model, so baseline and fine-tuned numbers are directly
+    comparable.
+
+    Args:
+        base_store: The original VstashStore (source of chunks).
+        model_name_or_path: HF hub name or local path to a sentence-
+            transformers model.
+        eval_queries: Output of ``split_corpus_for_eval``.
+        noise_sample_size: Non-relevant chunks added as distractors.
+        seed: Deterministic noise sample.
+        tmp_dir: Where to create the temp db. Defaults to system temp.
+
+    Returns:
+        EvalMetrics with NDCG@10, MRR, Hit@10.
+
+    Raises:
+        ImportError: If sentence-transformers is not installed.
+    """
+    if not eval_queries:
+        return EvalMetrics(ndcg_at_10=0.0, mrr=0.0, hit_at_10=0.0, n_queries=0)
+
+    model = _load_sentence_transformer(model_name_or_path)
+    dim = int(model.get_sentence_embedding_dimension())
+
+    relevant_paths = {q["relevant_path"] for q in eval_queries}
+    relevant_rows = _relevant_chunks(base_store, relevant_paths)
+    noise_rows = _sample_noise_chunks(base_store, relevant_paths, noise_sample_size, seed)
+    all_rows = relevant_rows + noise_rows
+
+    if not relevant_rows:
+        return EvalMetrics(ndcg_at_10=0.0, mrr=0.0, hit_at_10=0.0, n_queries=0)
+
+    # Embed all corpus chunks with the target model.
+    texts = [r["text"] for r in all_rows]
+    t0 = time.perf_counter()
+    corpus_vecs = model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
+    logger.info(
+        "Embedded %d eval corpus chunks with %s (%.1fs)",
+        len(texts),
+        model_name_or_path,
+        time.perf_counter() - t0,
+    )
+
+    # Build a fresh temp store with the matching dim.
+    tmp_parent = Path(tmp_dir) if tmp_dir else Path(tempfile.gettempdir())
+    tmp_parent.mkdir(parents=True, exist_ok=True)
+    tmp_db = tmp_parent / f"retrain_eval_{int(time.time() * 1000)}_{random.randint(0, 1 << 30)}.db"
+
+    eval_store = VstashStore(str(tmp_db), embedding_dim=dim)
+    try:
+        # Group chunks by document path so add_document gets full docs.
+        by_path: dict[str, dict] = {}
+        idx_by_path: dict[str, list[int]] = {}
+        for i, row in enumerate(all_rows):
+            path = row["path"]
+            if path not in by_path:
+                by_path[path] = {"title": row.get("title") or path}
+                idx_by_path[path] = []
+            idx_by_path[path].append(i)
+
+        for path, doc_meta in by_path.items():
+            idxs = idx_by_path[path]
+            chunks = [all_rows[i]["text"] for i in idxs]
+            embs = [list(map(float, corpus_vecs[i])) for i in idxs]
+            eval_store.add_document(
+                path=path,
+                title=doc_meta["title"],
+                chunks=chunks,
+                embeddings=embs,
+            )
+
+        # Score each query via production search (RRF with adaptive weights).
+        ranks_found: list[int | None] = []
+        for q in eval_queries:
+            q_vec = model.encode([q["query"]], normalize_embeddings=True, show_progress_bar=False)[
+                0
+            ]
+            results = eval_store.search(
+                query_embedding=list(map(float, q_vec)),
+                query_text=q["query"],
+                top_k=_EVAL_TOP_K,
+            )
+            rank = None
+            for i, r in enumerate(results, start=1):
+                if r.path == q["relevant_path"]:
+                    rank = i
+                    break
+            ranks_found.append(rank)
+
+        ndcgs = [_ndcg_at_k(r) for r in ranks_found]
+        mrrs = [1.0 / r if r is not None else 0.0 for r in ranks_found]
+        hits = [1.0 if r is not None else 0.0 for r in ranks_found]
+
+        return EvalMetrics(
+            ndcg_at_10=sum(ndcgs) / len(ndcgs),
+            mrr=sum(mrrs) / len(mrrs),
+            hit_at_10=sum(hits) / len(hits),
+            n_queries=len(eval_queries),
+        )
+    finally:
+        try:
+            eval_store.close()
+        except Exception:
+            pass
+        try:
+            tmp_db.unlink(missing_ok=True)
+            wal = tmp_db.with_suffix(tmp_db.suffix + "-wal")
+            shm = tmp_db.with_suffix(tmp_db.suffix + "-shm")
+            wal.unlink(missing_ok=True)
+            shm.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def retrain(
+    store: VstashStore,
+    base_model: str,
+    output_path: str = "~/.vstash/models/retrained",
+    max_queries: int = 5000,
+    epochs: int = 2,
+    lr: float = 3e-6,
+    batch_size: int = 64,
+    eval_fraction: float = 0.15,
+    eval_noise_size: int = _EVAL_NOISE_DEFAULT,
+    min_gain: float = 0.0,
+    skip_eval: bool = False,
+    seed: int = 42,
+) -> RetrainResult:
+    """Full eval-gated retrain pipeline.
+
+    Splits the corpus into train and held-out eval sets, measures the
+    base model's NDCG@10 on eval, generates training triples from the
+    train set, fine-tunes, measures the fine-tuned model, and only
+    commits the model to ``output_path`` if the NDCG delta meets
+    ``min_gain``.
+
+    Args:
+        store: The corpus to train on.
+        base_model: HF model name to fine-tune from.
+        output_path: Final save location.
+        max_queries: Max pseudo-queries for triple generation.
+        epochs: Training epochs.
+        lr: Learning rate.
+        batch_size: Training batch size.
+        eval_fraction: Fraction of corpus reserved for held-out eval.
+        eval_noise_size: Distractor chunks added to the eval index.
+        min_gain: Required NDCG@10 improvement (0.0 = no regression).
+            Pass a negative value to always save.
+        skip_eval: If True, skip eval entirely and save unconditionally.
+        seed: Deterministic split + sampling.
+
+    Returns:
+        RetrainResult with baseline, final, delta, and final path.
+        ``output_path`` is None when training was gated out or skipped.
+    """
+    final_path_str = str(Path(output_path).expanduser())
+
+    if skip_eval:
+        pairs = generate_triples(store, base_model, max_queries=max_queries, seed=seed)
+        if not pairs:
+            return RetrainResult(
+                output_path=None,
+                baseline=None,
+                final=None,
+                n_pairs=0,
+                gated_out=False,
+                min_gain=min_gain,
+            )
+        train_mnrl(
+            pairs,
+            base_model=base_model,
+            output_path=final_path_str,
+            epochs=epochs,
+            lr=lr,
+            batch_size=batch_size,
+        )
+        return RetrainResult(
+            output_path=final_path_str,
+            baseline=None,
+            final=None,
+            n_pairs=len(pairs),
+            gated_out=False,
+            min_gain=min_gain,
+        )
+
+    reserved_ids, eval_queries = split_corpus_for_eval(
+        store, eval_fraction=eval_fraction, seed=seed
+    )
+    if len(eval_queries) < _EVAL_MIN_QUERIES:
+        logger.warning(
+            "Only %d eval queries available (need >= %d). Running without eval gate.",
+            len(eval_queries),
+            _EVAL_MIN_QUERIES,
+        )
+        return retrain(
+            store,
+            base_model=base_model,
+            output_path=output_path,
+            max_queries=max_queries,
+            epochs=epochs,
+            lr=lr,
+            batch_size=batch_size,
+            skip_eval=True,
+            seed=seed,
+        )
+
+    logger.info("Running baseline eval on %d held-out queries ...", len(eval_queries))
+    baseline = evaluate_model(
+        store,
+        model_name_or_path=base_model,
+        eval_queries=eval_queries,
+        noise_sample_size=eval_noise_size,
+        seed=seed,
+    )
+
+    pairs = generate_triples(
+        store,
+        base_model,
+        max_queries=max_queries,
+        seed=seed,
+        exclude_chunk_ids=reserved_ids,
+    )
+    if len(pairs) < 10:
+        logger.warning("Only %d training pairs generated. Skipping training.", len(pairs))
+        return RetrainResult(
+            output_path=None,
+            baseline=baseline,
+            final=None,
+            n_pairs=len(pairs),
+            gated_out=False,
+            min_gain=min_gain,
+        )
+
+    # Train to a .candidate path; promote to output_path only if gate passes.
+    candidate_path = Path(final_path_str + ".candidate")
+    if candidate_path.exists():
+        shutil.rmtree(candidate_path)
+
+    train_mnrl(
+        pairs,
+        base_model=base_model,
+        output_path=str(candidate_path),
+        epochs=epochs,
+        lr=lr,
+        batch_size=batch_size,
+    )
+
+    logger.info("Running final eval on fine-tuned candidate ...")
+    final = evaluate_model(
+        store,
+        model_name_or_path=str(candidate_path),
+        eval_queries=eval_queries,
+        noise_sample_size=eval_noise_size,
+        seed=seed,
+    )
+
+    delta = final.ndcg_at_10 - baseline.ndcg_at_10
+    gated_out = delta < min_gain
+
+    # Persist eval numbers into training_meta.json regardless of gate
+    # outcome, so the candidate directory is useful for debugging.
+    meta_path = candidate_path / "training_meta.json"
+    try:
+        existing_meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+    except Exception:
+        existing_meta = {}
+    existing_meta["eval"] = {
+        "baseline": baseline.as_dict(),
+        "final": final.as_dict(),
+        "delta_ndcg_at_10": round(delta, 5),
+        "min_gain": min_gain,
+        "gated_out": gated_out,
+        "seed": seed,
+        "eval_noise_size": eval_noise_size,
+    }
+    meta_path.write_text(json.dumps(existing_meta, indent=2))
+
+    if gated_out:
+        logger.warning(
+            "Candidate gated out: delta NDCG@10 = %+.4f < min_gain=%+.4f. "
+            "Candidate left at %s for inspection.",
+            delta,
+            min_gain,
+            candidate_path,
+        )
+        return RetrainResult(
+            output_path=None,
+            baseline=baseline,
+            final=final,
+            n_pairs=len(pairs),
+            gated_out=True,
+            min_gain=min_gain,
+        )
+
+    # Promote candidate to final path atomically.
+    final_path = Path(final_path_str)
+    if final_path.exists():
+        shutil.rmtree(final_path)
+    final_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(candidate_path), str(final_path))
+
+    logger.info(
+        "Retrain saved: delta NDCG@10 = %+.4f (baseline=%.4f, final=%.4f)",
+        delta,
+        baseline.ndcg_at_10,
+        final.ndcg_at_10,
+    )
+    return RetrainResult(
+        output_path=str(final_path),
+        baseline=baseline,
+        final=final,
+        n_pairs=len(pairs),
+        gated_out=False,
+        min_gain=min_gain,
+    )
