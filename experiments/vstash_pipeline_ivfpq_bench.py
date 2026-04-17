@@ -55,11 +55,28 @@ def ndcg_at_k(ranked_ids: list[str], qrel: dict[str, int], k: int) -> float:
     return _dcg(gains, k) / idcg if idcg > 0 else 0.0
 
 
+_PAD_DATASETS: tuple[str, ...] = ("fiqa", "scidocs", "arguana", "nfcorpus")
+
+
+def _load_dataset_for_padding(name: str) -> tuple[np.ndarray, list[str], list[str]]:
+    """Return (vecs, ids, texts) for a padding BEIR dataset."""
+    vecs, ids = embed_dataset(name)
+    corpus = load_beir(download_beir(name))[0]
+    texts = [(corpus[d].get("title", "") + " " + corpus[d].get("text", "")).strip() for d in ids]
+    return vecs, ids, texts
+
+
 def build_corpus(target_n: int) -> tuple[list[str], list[str], list[list[float]]]:
-    """Returns (doc_ids, texts, embeddings) aligned row-wise."""
+    """Returns (doc_ids, texts, embeddings) aligned row-wise.
+
+    Anchor dataset is SciFact (so its qrel ids map directly onto the
+    first 5k rows). Padding datasets are pulled in a fixed order
+    (fiqa, scidocs, arguana, nfcorpus) and prefixed to avoid id
+    collisions with SciFact's eval set. Embeddings for each padding
+    dataset are cached on first use via embed_dataset().
+    """
     sci_vecs, sci_ids = embed_dataset("scifact")
-    sci_cache = download_beir("scifact")
-    sci_corpus, _, _ = load_beir(sci_cache)
+    sci_corpus = load_beir(download_beir("scifact"))[0]
     sci_texts = [
         (sci_corpus[d].get("title", "") + " " + sci_corpus[d].get("text", "")).strip()
         for d in sci_ids
@@ -68,22 +85,24 @@ def build_corpus(target_n: int) -> tuple[list[str], list[str], list[list[float]]
     if target_n <= len(sci_ids):
         return sci_ids[:target_n], sci_texts[:target_n], sci_vecs[:target_n].tolist()
 
-    fiqa_vecs, fiqa_ids = embed_dataset("fiqa")
-    fiqa_cache = download_beir("fiqa")
-    fiqa_corpus, _, _ = load_beir(fiqa_cache)
-    fiqa_texts = [
-        (fiqa_corpus[d].get("title", "") + " " + fiqa_corpus[d].get("text", "")).strip()
-        for d in fiqa_ids
-    ]
-    need = target_n - len(sci_ids)
-    if need > len(fiqa_ids):
-        raise RuntimeError(
-            f"target_n={target_n} too large; SciFact+FIQA = "
-            f"{len(sci_ids) + len(fiqa_ids)}"
-        )
-    ids = sci_ids + [f"fiqa_{i}" for i in fiqa_ids[:need]]
-    texts = sci_texts + fiqa_texts[:need]
-    vecs = np.concatenate([sci_vecs, fiqa_vecs[:need]], axis=0).tolist()
+    ids: list[str] = list(sci_ids)
+    texts: list[str] = list(sci_texts)
+    vec_parts: list[np.ndarray] = [sci_vecs]
+
+    for name in _PAD_DATASETS:
+        if len(ids) >= target_n:
+            break
+        pad_vecs, pad_ids, pad_texts = _load_dataset_for_padding(name)
+        take = min(len(pad_ids), target_n - len(ids))
+        ids.extend(f"{name}_{i}" for i in pad_ids[:take])
+        texts.extend(pad_texts[:take])
+        vec_parts.append(pad_vecs[:take])
+
+    if len(ids) < target_n:
+        total = len(ids)
+        raise RuntimeError(f"target_n={target_n} too large; SciFact + {_PAD_DATASETS} = {total}")
+
+    vecs = np.concatenate(vec_parts, axis=0).tolist()
     return ids, texts, vecs
 
 
@@ -104,8 +123,9 @@ def ingest(db_path: str, ids: list[str], texts: list[str], vecs: list[list[float
     store.close()
 
 
-def evaluate(db_path: str, backend: str, queries: dict, qrels: dict,
-             doc_id_to_path: dict[str, str]) -> dict:
+def evaluate(
+    db_path: str, backend: str, queries: dict, qrels: dict, doc_id_to_path: dict[str, str]
+) -> dict:
     kwargs = {
         "embedding_dim": DIM,
         "vector_backend": backend,
@@ -119,8 +139,10 @@ def evaluate(db_path: str, backend: str, queries: dict, qrels: dict,
         print("    running fit_ivfpq ...")
         t0 = time.perf_counter()
         info = store.fit_ivfpq()
-        print(f"    fit done in {time.perf_counter() - t0:.1f}s "
-              f"(nlist={info['nlist']}, n={info['n_indexed']})")
+        print(
+            f"    fit done in {time.perf_counter() - t0:.1f}s "
+            f"(nlist={info['nlist']}, n={info['n_indexed']})"
+        )
 
     ndcgs, latencies = [], []
     for qid, qtext in queries.items():
@@ -141,18 +163,20 @@ def evaluate(db_path: str, backend: str, queries: dict, qrels: dict,
         "n_queries": len(latencies),
         "ndcg_at_10": round(statistics.mean(ndcgs), 4),
         "latency_p50_ms": round(statistics.median(latencies), 2),
-        "latency_p95_ms": round(
-            statistics.quantiles(latencies, n=20, method="inclusive")[-1], 2
-        ),
+        "latency_p95_ms": round(statistics.quantiles(latencies, n=20, method="inclusive")[-1], 2),
         "latency_mean_ms": round(statistics.mean(latencies), 2),
     }
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--n", type=int, default=50_000,
-                        help="target corpus size (chunks)")
-    parser.add_argument("--output", default="experiments/results/pipeline_ivfpq_bench.json")
+    parser.add_argument("--n", type=int, default=50_000, help="target corpus size (chunks)")
+    parser.add_argument(
+        "--output",
+        default=None,
+        help="Output path. Defaults to experiments/results/pipeline_ivfpq_bench_n{N}.json "
+        "so re-runs at different N don't overwrite each other.",
+    )
     args = parser.parse_args()
 
     print(f"=== vstash full-pipeline benchmark, N={args.n} ===")
@@ -185,7 +209,8 @@ def main() -> None:
         print("  snapvec-ivfpq ...")
         ivfpq_stats = evaluate(ivfpq_db, "snapvec-ivfpq", queries, qrels, {})
 
-    out = Path(args.output)
+    out_path = args.output or f"experiments/results/pipeline_ivfpq_bench_n{args.n}.json"
+    out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     results = {"n": args.n, "model": MODEL, "base": base_stats, "ivfpq": ivfpq_stats}
     with open(out, "w") as f:
