@@ -1490,6 +1490,23 @@ def retrain(
     base_model: str | None = typer.Option(
         None, "--base-model", help="Base model to fine-tune (default: current config model)"
     ),
+    min_gain: float = typer.Option(
+        0.0,
+        "--min-gain",
+        help="Required NDCG@10 improvement over baseline (0.0 = no regression). "
+        "Pass a negative value to always save.",
+    ),
+    no_eval: bool = typer.Option(
+        False, "--no-eval", help="Skip eval gate entirely and save unconditionally"
+    ),
+    eval_fraction: float = typer.Option(
+        0.15, "--eval-fraction", help="Fraction of corpus reserved for held-out eval"
+    ),
+    eval_noise_size: int = typer.Option(
+        1000,
+        "--eval-noise",
+        help="Distractor chunks added to the eval index (higher = stricter eval)",
+    ),
 ) -> None:
     """Fine-tune the embedding model using your own data.
 
@@ -1498,17 +1515,23 @@ def retrain(
     the embedding model to better understand your data. No human labels
     needed.
 
+    By default the fine-tuned candidate is evaluated honestly on a
+    held-out slice of the corpus (reindexed with the new model) and
+    only saved if NDCG@10 meets or exceeds ``--min-gain`` over the
+    baseline. Use ``--no-eval`` to skip the gate.
+
     Requires: pip install sentence-transformers torch
 
     After training, use the model with:
         vstash reindex --model <output-path>
     """
     try:
-        from .retrain import generate_triples, train_mnrl
+        from .retrain import retrain as run_retrain
     except ImportError as exc:
         console.print(
-            "[red]x[/red] vstash retrain requires sentence-transformers and torch. "
-            "Install with: [bold]pip install sentence-transformers torch[/bold]"
+            "[red]x[/red] vstash retrain requires sentence-transformers, torch, "
+            "and accelerate. Install with: "
+            "[bold]pip install 'sentence-transformers>=3' torch 'accelerate>=1.1.0'[/bold]"
         )
         raise typer.Exit(code=1) from exc
 
@@ -1529,41 +1552,81 @@ def retrain(
         raise typer.Exit(code=1)
 
     console.print("[bold cyan]vstash retrain[/bold cyan]")
-    console.print(f"  Store: {stats.documents} docs, {stats.chunks} chunks")
-    console.print(f"  Base model: {model_name}")
-    console.print(f"  Max queries: {max_queries}")
+    console.print(f"  Store:        {stats.documents} docs, {stats.chunks} chunks")
+    console.print(f"  Base model:   {model_name}")
+    console.print(f"  Max queries:  {max_queries}")
+    if no_eval:
+        console.print("  Eval gate:    [yellow]disabled[/yellow]")
+    else:
+        console.print(
+            f"  Eval gate:    min-gain={min_gain:+.4f}, "
+            f"fraction={eval_fraction:.2f}, noise={eval_noise_size}"
+        )
     console.print()
 
-    # Step 1: Generate triples
-    console.print("[bold]Step 1/2:[/bold] Generating training pairs from signal disagreement...")
-    pairs = generate_triples(store, model_name, max_queries=max_queries)
+    result = run_retrain(
+        store,
+        base_model=model_name,
+        output_path=output,
+        max_queries=max_queries,
+        epochs=epochs,
+        lr=lr,
+        batch_size=batch_size,
+        eval_fraction=eval_fraction,
+        eval_noise_size=eval_noise_size,
+        min_gain=min_gain,
+        skip_eval=no_eval,
+    )
 
-    if len(pairs) < 10:
+    if result.n_pairs == 0:
         console.print(
-            "[yellow]! Not enough disagreement pairs generated. "
+            "[yellow]! No training pairs generated. "
             "Your corpus may be too small or too homogeneous.[/yellow]"
         )
         raise typer.Exit(code=1)
 
-    console.print(f"  Generated {len(pairs)} training pairs")
-    console.print()
+    console.print(f"  Training pairs: {result.n_pairs}")
 
-    # Step 2: Train
-    console.print("[bold]Step 2/2:[/bold] Fine-tuning with MNRL...")
-    saved_path = train_mnrl(
-        pairs,
-        base_model=model_name,
-        output_path=output,
-        epochs=epochs,
-        lr=lr,
-        batch_size=batch_size,
-    )
+    if result.baseline is not None and result.final is not None:
+        console.print()
+        console.print("[bold]Eval results[/bold]")
+        console.print(f"  Queries:         {result.baseline.n_queries}")
+        console.print(f"  Baseline NDCG@10: {result.baseline.ndcg_at_10:.4f}")
+        console.print(f"  Final NDCG@10:    {result.final.ndcg_at_10:.4f}")
+        delta = result.delta_ndcg
+        color = "green" if delta >= 0 else "red"
+        console.print(f"  Delta NDCG@10:    [{color}]{delta:+.4f}[/{color}]")
+        console.print(f"  Baseline MRR:    {result.baseline.mrr:.4f}")
+        console.print(f"  Final MRR:       {result.final.mrr:.4f}")
+
+    if result.gated_out:
+        console.print()
+        if result.final is None:
+            # No candidate was trained (too few pairs). Nothing to promote
+            # or inspect -- the retrain simply did not produce a model.
+            console.print(
+                "[red]Training skipped[/red]: not enough training pairs to "
+                "fine-tune. Your corpus may be too small or too homogeneous."
+            )
+        else:
+            console.print(
+                f"[red]Gated out[/red]: delta NDCG@10 did not meet min-gain "
+                f"({result.min_gain:+.4f}). Candidate left at "
+                f"[dim]{Path(output).expanduser()}.candidate[/dim] for inspection."
+            )
+        raise typer.Exit(code=2)
+
+    if result.output_path is None:
+        # Defensive: any future RetrainResult path that returns None for
+        # output_path without setting gated_out=True would land here.
+        console.print("[red]x[/red] retrain did not save a model. See logs for details.")
+        raise typer.Exit(code=2)
 
     console.print()
-    console.print(f"[green]Model saved to:[/green] {saved_path}")
+    console.print(f"[green]Model saved to:[/green] {result.output_path}")
     console.print()
     console.print("To use the retrained model:")
-    console.print(f"  [bold]vstash reindex --model {saved_path}[/bold]")
+    console.print(f"  [bold]vstash reindex --model {result.output_path}[/bold]")
 
 
 @profile_app.command(name="create")

@@ -12,7 +12,17 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from vstash.models import SearchResult
-from vstash.retrain import generate_triples, train_mnrl
+from vstash.retrain import (
+    EvalMetrics,
+    _ndcg_at_k,
+    _ndcg_from_ranks,
+    evaluate_model,
+    generate_triples,
+    qrels_to_eval_queries,
+    retrain,
+    split_corpus_for_eval,
+    train_mnrl,
+)
 from vstash.store import VstashStore
 
 
@@ -234,6 +244,34 @@ class TestGenerateTriples:
         assert pairs == []
         assert calls["n"] > 1  # continued after the first failure
 
+    def test_seed_is_actually_deterministic(self, populated_store: VstashStore) -> None:
+        """Two runs with the same seed must visit chunks in the same
+        order. Before the fix, seed was silently ignored because
+        random.Random(seed) was instantiated but never used and the
+        shuffle relied on SQLite's ORDER BY RANDOM()."""
+        seen_a: list[str] = []
+        seen_b: list[str] = []
+
+        def record_into(bucket: list[str]):
+            def _embed(text: str, *_a: Any, **_k: Any) -> list[float]:
+                bucket.append(text)
+                return [0.0] * populated_store.embedding_dim
+
+            return _embed
+
+        with (
+            patch("vstash.retrain.embed_query", side_effect=record_into(seen_a)),
+            patch.object(populated_store, "search", return_value=[]),
+        ):
+            generate_triples(populated_store, model_name="m", max_queries=10, seed=123)
+        with (
+            patch("vstash.retrain.embed_query", side_effect=record_into(seen_b)),
+            patch.object(populated_store, "search", return_value=[]),
+        ):
+            generate_triples(populated_store, model_name="m", max_queries=10, seed=123)
+
+        assert seen_a == seen_b, "same seed must produce the same sampling order"
+
 
 # ------------------------------------------------------------------ #
 # train_mnrl                                                           #
@@ -353,3 +391,634 @@ class TestTrainMNRL:
             )
         assert Path(saved_to).is_dir()
         assert (Path(saved_to) / "training_meta.json").is_file()
+
+
+# ------------------------------------------------------------------ #
+# NDCG math                                                            #
+# ------------------------------------------------------------------ #
+
+
+class TestNdcgAtK:
+    """Direct unit tests for the NDCG@k helper."""
+
+    def test_rank_1_is_perfect(self) -> None:
+        assert _ndcg_at_k(1) == pytest.approx(1.0)
+
+    def test_rank_above_k_is_zero(self) -> None:
+        assert _ndcg_at_k(11, k=10) == 0.0
+
+    def test_none_rank_is_zero(self) -> None:
+        assert _ndcg_at_k(None) == 0.0
+
+    def test_rank_2_matches_formula(self) -> None:
+        # 1 / log2(3) ~= 0.6309
+        assert _ndcg_at_k(2) == pytest.approx(1.0 / 1.584962500721156, rel=1e-9)
+
+
+class TestNdcgFromRanks:
+    """Multi-relevant NDCG@k handles BEIR-style qrels correctly."""
+
+    def test_single_relevant_at_rank_1_scores_one(self) -> None:
+        assert _ndcg_from_ranks([1], num_relevant=1) == pytest.approx(1.0)
+
+    def test_zero_num_relevant_is_zero(self) -> None:
+        assert _ndcg_from_ranks([], num_relevant=0) == 0.0
+
+    def test_no_hits_is_zero(self) -> None:
+        assert _ndcg_from_ranks([], num_relevant=3) == 0.0
+
+    def test_all_relevant_at_top_is_perfect(self) -> None:
+        # 3 relevant docs at ranks 1,2,3 -> NDCG = 1.0 exactly.
+        assert _ndcg_from_ranks([1, 2, 3], num_relevant=3) == pytest.approx(1.0)
+
+    def test_partial_hits_below_one(self) -> None:
+        # 1 of 3 relevant found at rank 1: ideal would place 3 at ranks 1,2,3.
+        # DCG = 1/log2(2) = 1; IDCG = 1/log2(2) + 1/log2(3) + 1/log2(4).
+        dcg = 1.0
+        idcg = 1.0 + 1.0 / 1.584962500721156 + 1.0 / 2.0
+        score = _ndcg_from_ranks([1], num_relevant=3)
+        assert score == pytest.approx(dcg / idcg, rel=1e-9)
+        assert 0.0 < score < 1.0
+
+    def test_caps_idcg_at_k(self) -> None:
+        # 20 relevant total but k=10 -> IDCG counts only the first 10 slots.
+        perfect_at_k = _ndcg_from_ranks(list(range(1, 11)), num_relevant=20, k=10)
+        assert perfect_at_k == pytest.approx(1.0)
+
+
+class TestQrelsToEvalQueries:
+    """BEIR-style qrels must convert cleanly to the eval_queries format."""
+
+    def test_basic_mapping(self) -> None:
+        queries = {"q1": "What is RRF?", "q2": "Multilingual retrieval"}
+        qrels = {
+            "q1": {"doc_a": 1, "doc_b": 1, "doc_c": 0},
+            "q2": {"doc_d": 1},
+        }
+        out = qrels_to_eval_queries(queries, qrels)
+        assert len(out) == 2
+        q1 = next(q for q in out if q["query_id"] == "q1")
+        assert set(q1["relevant_paths"]) == {"doc_a", "doc_b"}
+        assert q1["query"] == "What is RRF?"
+        q2 = next(q for q in out if q["query_id"] == "q2")
+        assert q2["relevant_paths"] == ["doc_d"]
+
+    def test_custom_path_resolver(self) -> None:
+        queries = {"q1": "test"}
+        qrels = {"q1": {"42": 1}}
+        out = qrels_to_eval_queries(queries, qrels, path_for_doc_id=lambda d: f"scifact://{d}")
+        assert out[0]["relevant_paths"] == ["scifact://42"]
+
+    def test_drops_queries_with_no_relevant_docs(self) -> None:
+        queries = {"q1": "ok", "q2": "drop me"}
+        qrels = {"q1": {"a": 1}, "q2": {"b": 0}}
+        out = qrels_to_eval_queries(queries, qrels)
+        assert {q["query_id"] for q in out} == {"q1"}
+
+    def test_min_relevance_threshold(self) -> None:
+        queries = {"q1": "q"}
+        qrels = {"q1": {"a": 1, "b": 2, "c": 0}}
+        out_strict = qrels_to_eval_queries(queries, qrels, min_relevance=2)
+        assert out_strict[0]["relevant_paths"] == ["b"]
+
+
+# ------------------------------------------------------------------ #
+# Held-out split                                                       #
+# ------------------------------------------------------------------ #
+
+
+class TestSplitCorpusForEval:
+    """The train/eval split must be deterministic, disjoint, and capped."""
+
+    def test_empty_store_returns_empty(self, sample_store: VstashStore) -> None:
+        reserved, queries = split_corpus_for_eval(sample_store)
+        assert reserved == set()
+        assert queries == []
+
+    def test_too_few_chunks_returns_empty(self, populated_store: VstashStore) -> None:
+        # populated_store has 5 chunks, below the default min of 20.
+        reserved, queries = split_corpus_for_eval(populated_store)
+        assert reserved == set()
+        assert queries == []
+
+    def test_deterministic_across_calls(self, populated_store: VstashStore) -> None:
+        """Same seed -> same split twice in a row (true determinism, not
+        SQLite random() luck)."""
+        a_ids, a_queries = split_corpus_for_eval(
+            populated_store, min_queries=2, max_queries=3, seed=1
+        )
+        b_ids, b_queries = split_corpus_for_eval(
+            populated_store, min_queries=2, max_queries=3, seed=1
+        )
+        assert a_ids == b_ids
+        assert [q["source_chunk_id"] for q in a_queries] == [
+            q["source_chunk_id"] for q in b_queries
+        ]
+
+    def test_deterministic_seed_is_stable_order(self, populated_store: VstashStore) -> None:
+        """Repeated calls at seed=99 yield the same sample (no reliance on
+        SQLite's internal row order)."""
+        c_ids, c_queries = split_corpus_for_eval(
+            populated_store, min_queries=2, max_queries=3, seed=99
+        )
+        d_ids, d_queries = split_corpus_for_eval(
+            populated_store, min_queries=2, max_queries=3, seed=99
+        )
+        assert c_ids == d_ids
+        assert [q["source_chunk_id"] for q in c_queries] == [
+            q["source_chunk_id"] for q in d_queries
+        ]
+        # Output must be self-consistent: reserved_ids matches the query set.
+        assert c_ids == {q["source_chunk_id"] for q in c_queries}
+
+    def test_queries_carry_required_fields(self, populated_store: VstashStore) -> None:
+        _, queries = split_corpus_for_eval(populated_store, min_queries=2, max_queries=3)
+        assert queries
+        for q in queries:
+            assert set(q.keys()) >= {"query", "relevant_paths", "source_chunk_id"}
+            assert isinstance(q["relevant_paths"], list)
+            assert len(q["relevant_paths"]) == 1
+            # Legacy field kept for backward compat with any external caller.
+            assert q.get("relevant_path") == q["relevant_paths"][0]
+            assert len(q["query"]) <= 200
+
+
+# ------------------------------------------------------------------ #
+# generate_triples: exclude_chunk_ids                                  #
+# ------------------------------------------------------------------ #
+
+
+class TestGenerateTriplesExcludesHeldOut:
+    """Chunks reserved for eval must never appear as pseudo-queries."""
+
+    def test_exclude_ids_skipped(self, populated_store: VstashStore) -> None:
+        all_ids = [
+            r["id"] for r in populated_store._conn.execute("SELECT id FROM chunks").fetchall()
+        ]
+        # Reserve all but one chunk. Only that one should ever become a
+        # pseudo-query.
+        keep_id = all_ids[0]
+        excluded = set(all_ids[1:])
+
+        seen_ids: list[int] = []
+
+        def capture_embed(text: str, *_a: Any, **_k: Any) -> list[float]:
+            row = populated_store._conn.execute(
+                "SELECT id FROM chunks WHERE text = ? OR text LIKE ? LIMIT 1",
+                [text, text + "%"],
+            ).fetchone()
+            if row is not None:
+                seen_ids.append(row["id"])
+            return [0.0] * populated_store.embedding_dim
+
+        with (
+            patch("vstash.retrain.embed_query", side_effect=capture_embed),
+            patch.object(populated_store, "search") as mock_search,
+        ):
+            mock_search.return_value = []
+            generate_triples(
+                populated_store,
+                model_name="m",
+                max_queries=10,
+                exclude_chunk_ids=excluded,
+            )
+
+        assert all(sid == keep_id for sid in seen_ids), (
+            f"excluded chunk ids leaked into pseudo-queries: {seen_ids}"
+        )
+
+
+# ------------------------------------------------------------------ #
+# evaluate_model                                                       #
+# ------------------------------------------------------------------ #
+
+
+def _install_fake_st_model(dim: int, mapping: dict[str, list[float]]) -> Any:
+    """Return a fake SentenceTransformer whose encode() reads from a table."""
+    fake = MagicMock()
+    fake.get_sentence_embedding_dimension = MagicMock(return_value=dim)
+    # sentence-transformers v5.x renamed this method; support both so the
+    # fake matches whichever attribute the production code probes first.
+    fake.get_embedding_dimension = MagicMock(return_value=dim)
+
+    def encode(
+        texts: list[str] | str,
+        normalize_embeddings: bool = True,
+        show_progress_bar: bool = False,
+    ) -> Any:
+        import numpy as np
+
+        if isinstance(texts, str):
+            texts = [texts]
+        vecs = []
+        for t in texts:
+            key = t[:60]  # prefix-match to be robust to truncation
+            v = None
+            for k, vec in mapping.items():
+                if key.startswith(k[:60]) or k.startswith(key):
+                    v = vec
+                    break
+            if v is None:
+                v = [0.0] * dim
+            vecs.append(v)
+        return np.asarray(vecs, dtype=float)
+
+    fake.encode = encode
+    return fake
+
+
+class TestEvaluateModel:
+    """evaluate_model reindexes with the target model and reports metrics."""
+
+    def test_empty_queries_returns_zero(self, populated_store: VstashStore) -> None:
+        metrics = evaluate_model(populated_store, model_name_or_path="m", eval_queries=[])
+        assert metrics.n_queries == 0
+        assert metrics.ndcg_at_10 == 0.0
+
+    def test_perfect_retrieval_scores_one(self, populated_store: VstashStore) -> None:
+        """If the target model puts the relevant chunk at rank 1 for every
+        query, NDCG@10, MRR, and Hit@10 must all equal 1.0.
+        """
+        dim = populated_store.embedding_dim
+        rows = populated_store._conn.execute(
+            "SELECT c.text, d.path FROM chunks c JOIN documents d ON d.id = c.doc_id"
+        ).fetchall()
+        assert rows, "populated_store should have chunks"
+
+        # Give each distinct path its own dense basis vector.
+        paths = sorted({r["path"] for r in rows})
+        assert len(paths) <= dim, "test assumes n_paths <= embedding dim"
+        path_vec: dict[str, list[float]] = {}
+        for i, p in enumerate(paths):
+            v = [0.0] * dim
+            v[i] = 1.0
+            path_vec[p] = v
+
+        # mapping from text-prefix -> embedding. Chunks and queries derived
+        # from the same chunk share the same relevant_path, so they share the
+        # same vector -> perfect retrieval.
+        mapping = {r["text"][:60]: path_vec[r["path"]] for r in rows}
+
+        eval_queries = [
+            {
+                "query": r["text"][:200],
+                "relevant_path": r["path"],
+                "source_chunk_id": 0,
+            }
+            for r in rows
+        ]
+
+        fake_model = _install_fake_st_model(dim, mapping)
+        with patch("vstash.retrain._load_sentence_transformer", return_value=fake_model):
+            metrics = evaluate_model(
+                populated_store,
+                model_name_or_path="fake",
+                eval_queries=eval_queries,
+                noise_sample_size=0,
+            )
+
+        assert metrics.n_queries == len(rows)
+        assert metrics.hit_at_10 == pytest.approx(1.0)
+        assert metrics.mrr == pytest.approx(1.0)
+        assert metrics.ndcg_at_10 == pytest.approx(1.0)
+
+    def test_multi_relevant_query_counts_all_hits(self, populated_store: VstashStore) -> None:
+        """When a single query has multiple relevant docs, NDCG credits
+        hits against all of them up to k."""
+        dim = populated_store.embedding_dim
+        rows = populated_store._conn.execute(
+            "SELECT c.text, d.path FROM chunks c JOIN documents d ON d.id = c.doc_id"
+        ).fetchall()
+        paths = sorted({r["path"] for r in rows})
+        # Use one basis vector per path, plus an extra dim for the query.
+        path_vec: dict[str, list[float]] = {}
+        for i, p in enumerate(paths):
+            v = [0.0] * dim
+            v[i] = 1.0
+            path_vec[p] = v
+        # Query vector sits halfway between the first two path vectors so
+        # both come out near the top under cosine.
+        q_vec = [0.0] * dim
+        q_vec[0] = 1.0
+        q_vec[1] = 1.0
+
+        # Chunks keyed by 60-char prefix -> path's basis vector.
+        mapping = {r["text"][:60]: path_vec[r["path"]] for r in rows}
+        mapping["MULTIRELEVANT_QUERY"] = q_vec
+
+        eval_queries = [
+            {
+                "query": "MULTIRELEVANT_QUERY",
+                "relevant_paths": paths[:2],  # both top-2 paths are relevant
+            }
+        ]
+
+        fake_model = _install_fake_st_model(dim, mapping)
+        with patch("vstash.retrain._load_sentence_transformer", return_value=fake_model):
+            metrics = evaluate_model(
+                populated_store,
+                model_name_or_path="fake",
+                eval_queries=eval_queries,
+                noise_sample_size=0,
+            )
+
+        # With both relevant docs retrieved in the top 2, NDCG must be 1.0.
+        assert metrics.n_queries == 1
+        assert metrics.ndcg_at_10 == pytest.approx(1.0)
+        assert metrics.hit_at_10 == pytest.approx(1.0)
+
+    def test_accepts_legacy_relevant_path_field(self, populated_store: VstashStore) -> None:
+        """Queries with the legacy 'relevant_path' (singular) key still work."""
+        dim = populated_store.embedding_dim
+        rows = populated_store._conn.execute(
+            "SELECT c.text, d.path FROM chunks c JOIN documents d ON d.id = c.doc_id"
+        ).fetchall()
+        paths = sorted({r["path"] for r in rows})
+        path_vec = {p: [0.0] * dim for p in paths}
+        for i, p in enumerate(paths):
+            path_vec[p][i] = 1.0
+        mapping = {r["text"][:60]: path_vec[r["path"]] for r in rows}
+
+        legacy_queries = [{"query": r["text"][:200], "relevant_path": r["path"]} for r in rows]
+        fake_model = _install_fake_st_model(dim, mapping)
+        with patch("vstash.retrain._load_sentence_transformer", return_value=fake_model):
+            metrics = evaluate_model(
+                populated_store,
+                model_name_or_path="fake",
+                eval_queries=legacy_queries,
+                noise_sample_size=0,
+            )
+        assert metrics.n_queries == len(rows)
+        assert metrics.ndcg_at_10 == pytest.approx(1.0)
+
+
+# ------------------------------------------------------------------ #
+# retrain() orchestration                                              #
+# ------------------------------------------------------------------ #
+
+
+class TestRetrainOrchestration:
+    """The composed retrain() entry gates on NDCG delta."""
+
+    def test_skip_eval_saves_unconditionally(
+        self, populated_store: VstashStore, tmp_path: Path, st_stubs: Any
+    ) -> None:
+        """--no-eval path: no baseline/final computed, model is saved."""
+        st_mod, _, _ = st_stubs
+        st_mod.SentenceTransformer.return_value = MagicMock()
+
+        fake_pairs = [{"query": "q", "positive": "p", "negative": "n"}] * 20
+        with patch("vstash.retrain.generate_triples", return_value=fake_pairs):
+            result = retrain(
+                populated_store,
+                base_model="dummy",
+                output_path=str(tmp_path / "m"),
+                skip_eval=True,
+                eval_fraction=0.15,
+            )
+
+        assert result.output_path == str(tmp_path / "m")
+        assert result.baseline is None
+        assert result.final is None
+        assert result.n_pairs == 20
+        assert result.gated_out is False
+        assert (tmp_path / "m" / "training_meta.json").is_file()
+
+    def test_gates_out_on_regression(
+        self, populated_store: VstashStore, tmp_path: Path, st_stubs: Any
+    ) -> None:
+        """When the final model is worse than baseline and min_gain=0,
+        retrain must NOT promote the candidate to ``output_path``."""
+        st_mod, _, _ = st_stubs
+        st_mod.SentenceTransformer.return_value = MagicMock()
+
+        baseline_metrics = EvalMetrics(ndcg_at_10=0.80, mrr=0.80, hit_at_10=1.0, n_queries=25)
+        final_metrics = EvalMetrics(ndcg_at_10=0.70, mrr=0.70, hit_at_10=0.9, n_queries=25)
+        fake_eval_queries = [
+            {"query": f"q{i}", "relevant_path": f"/p{i}", "source_chunk_id": i} for i in range(25)
+        ]
+        fake_pairs = [{"query": "q", "positive": "p", "negative": "n"}] * 20
+
+        with (
+            patch(
+                "vstash.retrain.split_corpus_for_eval",
+                return_value=(set(), fake_eval_queries),
+            ),
+            patch(
+                "vstash.retrain.evaluate_model",
+                side_effect=[baseline_metrics, final_metrics],
+            ),
+            patch("vstash.retrain.generate_triples", return_value=fake_pairs),
+        ):
+            result = retrain(
+                populated_store,
+                base_model="dummy",
+                output_path=str(tmp_path / "m"),
+                min_gain=0.0,
+            )
+
+        assert result.gated_out is True
+        assert result.output_path is None
+        assert result.delta_ndcg == pytest.approx(-0.10)
+        # Candidate directory must be retained for inspection.
+        assert (tmp_path / "m.candidate").is_dir()
+        # Final model directory must NOT exist.
+        assert not (tmp_path / "m").exists()
+        # Eval block must be persisted into candidate meta.
+        meta = json.loads((tmp_path / "m.candidate" / "training_meta.json").read_text())
+        assert meta["eval"]["gated_out"] is True
+        assert meta["eval"]["delta_ndcg_at_10"] == pytest.approx(-0.10, abs=1e-5)
+
+    def test_promotes_candidate_on_gain(
+        self, populated_store: VstashStore, tmp_path: Path, st_stubs: Any
+    ) -> None:
+        """When the final model improves NDCG, the candidate is promoted
+        to ``output_path`` and the .candidate directory disappears."""
+        st_mod, _, _ = st_stubs
+        st_mod.SentenceTransformer.return_value = MagicMock()
+
+        baseline_metrics = EvalMetrics(ndcg_at_10=0.70, mrr=0.70, hit_at_10=0.9, n_queries=25)
+        final_metrics = EvalMetrics(ndcg_at_10=0.80, mrr=0.80, hit_at_10=1.0, n_queries=25)
+        fake_eval_queries = [
+            {"query": f"q{i}", "relevant_path": f"/p{i}", "source_chunk_id": i} for i in range(25)
+        ]
+        fake_pairs = [{"query": "q", "positive": "p"}] * 20
+
+        with (
+            patch(
+                "vstash.retrain.split_corpus_for_eval",
+                return_value=(set(), fake_eval_queries),
+            ),
+            patch(
+                "vstash.retrain.evaluate_model",
+                side_effect=[baseline_metrics, final_metrics],
+            ),
+            patch("vstash.retrain.generate_triples", return_value=fake_pairs),
+        ):
+            result = retrain(
+                populated_store,
+                base_model="dummy",
+                output_path=str(tmp_path / "m"),
+                min_gain=0.0,
+            )
+
+        assert result.gated_out is False
+        assert result.output_path == str(tmp_path / "m")
+        assert result.delta_ndcg == pytest.approx(0.10)
+        assert (tmp_path / "m" / "training_meta.json").is_file()
+        assert not (tmp_path / "m.candidate").exists()
+
+        meta = json.loads((tmp_path / "m" / "training_meta.json").read_text())
+        assert meta["eval"]["gated_out"] is False
+        assert meta["eval"]["baseline"]["ndcg_at_10"] == pytest.approx(0.70)
+        assert meta["eval"]["final"]["ndcg_at_10"] == pytest.approx(0.80)
+
+    def test_insufficient_eval_queries_falls_back_to_no_eval(
+        self, populated_store: VstashStore, tmp_path: Path, st_stubs: Any
+    ) -> None:
+        """When the corpus is too small to build a valid eval set, retrain
+        must fall back to skip_eval=True instead of crashing."""
+        st_mod, _, _ = st_stubs
+        st_mod.SentenceTransformer.return_value = MagicMock()
+
+        fake_pairs = [{"query": "q", "positive": "p"}] * 20
+        with (
+            patch("vstash.retrain.split_corpus_for_eval", return_value=(set(), [])),
+            patch("vstash.retrain.generate_triples", return_value=fake_pairs),
+            patch("vstash.retrain.evaluate_model") as mock_eval,
+        ):
+            result = retrain(
+                populated_store,
+                base_model="dummy",
+                output_path=str(tmp_path / "m"),
+            )
+
+        assert mock_eval.call_count == 0, "evaluate_model must not be called when eval set is empty"
+        assert result.output_path == str(tmp_path / "m")
+        assert result.baseline is None
+        assert result.final is None
+
+    def test_external_eval_queries_override_split(
+        self, populated_store: VstashStore, tmp_path: Path, st_stubs: Any
+    ) -> None:
+        """When the caller passes eval_queries explicitly, the internal
+        pseudo-query split is skipped and the supplied queries are used
+        verbatim for both baseline and final eval."""
+        st_mod, _, _ = st_stubs
+        st_mod.SentenceTransformer.return_value = MagicMock()
+
+        baseline_metrics = EvalMetrics(ndcg_at_10=0.55, mrr=0.55, hit_at_10=0.7, n_queries=30)
+        final_metrics = EvalMetrics(ndcg_at_10=0.60, mrr=0.60, hit_at_10=0.75, n_queries=30)
+
+        external = [
+            {"query": f"labeled q{i}", "relevant_paths": [f"/p{i}"], "query_id": f"q{i}"}
+            for i in range(30)
+        ]
+        fake_pairs = [{"query": "q", "positive": "p"}] * 20
+
+        with (
+            patch("vstash.retrain.split_corpus_for_eval") as mock_split,
+            patch(
+                "vstash.retrain.evaluate_model",
+                side_effect=[baseline_metrics, final_metrics],
+            ) as mock_eval,
+            patch("vstash.retrain.generate_triples", return_value=fake_pairs),
+        ):
+            result = retrain(
+                populated_store,
+                base_model="dummy",
+                output_path=str(tmp_path / "m"),
+                eval_queries=external,
+            )
+
+        # split_corpus_for_eval must be bypassed when external queries supplied.
+        assert mock_split.call_count == 0
+        # Both baseline and final must receive the same external query set.
+        assert mock_eval.call_count == 2
+        for call in mock_eval.call_args_list:
+            assert call.kwargs["eval_queries"] is external
+        assert result.gated_out is False
+        assert result.delta_ndcg == pytest.approx(0.05)
+
+    def test_too_few_pairs_is_gated_out_not_saved(
+        self, populated_store: VstashStore, tmp_path: Path, st_stubs: Any
+    ) -> None:
+        """When generate_triples produces fewer than 10 pairs, retrain
+        must NOT claim success. Earlier behavior returned
+        gated_out=False with output_path=None, which drove the CLI to
+        print "Model saved to: None". Now it must flag gated_out=True."""
+        st_mod, _, _ = st_stubs
+        st_mod.SentenceTransformer.return_value = MagicMock()
+
+        baseline_metrics = EvalMetrics(ndcg_at_10=0.5, mrr=0.5, hit_at_10=0.6, n_queries=25)
+        fake_eval_queries = [{"query": f"q{i}", "relevant_paths": [f"/p{i}"]} for i in range(25)]
+        too_few = [{"query": "q", "positive": "p"}] * 3  # < 10 minimum
+
+        with (
+            patch(
+                "vstash.retrain.split_corpus_for_eval",
+                return_value=(set(), fake_eval_queries),
+            ),
+            patch("vstash.retrain.evaluate_model", return_value=baseline_metrics),
+            patch("vstash.retrain.generate_triples", return_value=too_few),
+        ):
+            result = retrain(
+                populated_store,
+                base_model="dummy",
+                output_path=str(tmp_path / "m"),
+            )
+
+        assert result.n_pairs == 3
+        assert result.output_path is None
+        assert result.gated_out is True
+        assert result.final is None
+        assert not (tmp_path / "m").exists()
+        assert not (tmp_path / "m.candidate").exists()
+
+    def test_atomic_promote_preserves_existing_model_on_failure(
+        self, populated_store: VstashStore, tmp_path: Path, st_stubs: Any
+    ) -> None:
+        """If shutil.move fails mid-promote, the previous model at
+        output_path must still be there afterwards (rolled back from
+        the .old backup)."""
+        st_mod, _, _ = st_stubs
+        st_mod.SentenceTransformer.return_value = MagicMock()
+
+        # Seed an "existing" model at the final path so we have something
+        # to preserve during promote.
+        final_path = tmp_path / "m"
+        final_path.mkdir()
+        (final_path / "existing.txt").write_text("previous good model")
+
+        baseline_metrics = EvalMetrics(ndcg_at_10=0.70, mrr=0.70, hit_at_10=0.9, n_queries=25)
+        final_metrics = EvalMetrics(ndcg_at_10=0.80, mrr=0.80, hit_at_10=1.0, n_queries=25)
+        fake_eval_queries = [{"query": f"q{i}", "relevant_paths": [f"/p{i}"]} for i in range(25)]
+        fake_pairs = [{"query": "q", "positive": "p"}] * 20
+
+        boom = RuntimeError("disk full during promote")
+        with (
+            patch(
+                "vstash.retrain.split_corpus_for_eval",
+                return_value=(set(), fake_eval_queries),
+            ),
+            patch(
+                "vstash.retrain.evaluate_model",
+                side_effect=[baseline_metrics, final_metrics],
+            ),
+            patch("vstash.retrain.generate_triples", return_value=fake_pairs),
+            patch("vstash.retrain.shutil.move", side_effect=boom),
+            pytest.raises(RuntimeError, match="disk full"),
+        ):
+            retrain(
+                populated_store,
+                base_model="dummy",
+                output_path=str(final_path),
+                min_gain=0.0,
+            )
+
+        # The previous model must still be at the final path after the
+        # failed promote (rolled back from .old).
+        assert final_path.is_dir()
+        assert (final_path / "existing.txt").read_text() == "previous good model"
+        # No leftover backup.
+        assert not (tmp_path / "m.old").exists()
