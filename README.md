@@ -5,7 +5,7 @@
 [![python](https://img.shields.io/badge/python-3.10+-blue)]()
 [![tests](https://img.shields.io/badge/tests-900+_passing-brightgreen)]()
 
-**Local document memory with hybrid retrieval.** Single SQLite file. Zero cloud dependencies for search. Beats ColBERTv2 on SciFact, NFCorpus, and SciDocs ([BEIR](https://github.com/beir-cellar/beir)). Under 60 ms p50 at 50K chunks.
+**Local document memory with hybrid retrieval.** Single SQLite file. Zero cloud dependencies for search. Beats ColBERTv2 on SciFact, NFCorpus, SciDocs, and FiQA ([BEIR](https://github.com/beir-cellar/beir), 4 of 5 datasets). Under 60 ms p50 at 50K chunks.
 
 ```bash
 pip install vstash
@@ -18,12 +18,12 @@ vstash search "what's the main argument?"
 ## Retrieval Quality
 
 | Dataset | Docs | vstash (tuned) | ColBERTv2 | BM25 | vs ColBERTv2 |
-|---------|:----:|:---:|:---:|:---:|:---:|
-| SciFact | 5K | **0.695** | 0.693 | 0.665 | **+0.2%** |
-| NFCorpus | 3.6K | **0.395** | 0.344 | 0.325 | **+14.8%** |
-| SciDocs | 25K | **0.188** | 0.154 | 0.158 | **+21.8%** |
-| FiQA | 57K | 0.328 | **0.356** | 0.236 | -7.8% |
-| ArguAna | 8.7K | 0.424 | **0.463** | 0.315 | -8.4% |
+|---------|:----:|:--------------:|:---------:|:----:|:------------:|
+| SciFact | 5.2K | **0.744** | 0.693 | 0.665 | **+7.3%** |
+| NFCorpus | 3.6K | **0.409** | 0.344 | 0.325 | **+18.9%** |
+| SciDocs | 25.7K | **0.197** | 0.154 | 0.158 | **+27.9%** |
+| FiQA | 57.6K | **0.377** | 0.356 | 0.236 | **+5.8%** |
+| ArguAna | 8.7K | 0.440 | **0.463** | 0.315 | -5.0% |
 
 *NDCG@10 on [BEIR](https://github.com/beir-cellar/beir). Tuned model: `Stffens/bge-small-rrf-v2` (33M params, 384d). Reproducible via `python -m experiments.beir_benchmark`.*
 
@@ -194,7 +194,7 @@ Adaptive RRF, self-supervised embedding refinement, a negative result on post-RR
 
 | Experiment | Key Result | Command |
 |---|---|---|
-| [BEIR Benchmark](experiments/beir_benchmark.py) | Beats ColBERTv2 on SciFact, NFCorpus, SciDocs | `python -m experiments.beir_benchmark` |
+| [BEIR Benchmark](experiments/beir_benchmark.py) | Beats ColBERTv2 on 4/5 BEIR datasets (SciFact, NFCorpus, SciDocs, FiQA) | `python -m experiments.beir_benchmark --no-chroma` |
 | [Retrain (eval-gated)](vstash/retrain.py) | Fine-tune your embedding model on your own corpus, refuses regressions | `vstash retrain --help` |
 | [Pipeline latency](experiments/vstash_pipeline_ivfpq_bench.py) | Under 60 ms p50 @ 50K, 0.80x with snapvec-ivfpq @ 100K | `python -m experiments.vstash_pipeline_ivfpq_bench --n 100000` |
 | [Relevance Signal](experiments/relevance_signal_beir.py) | F1=0.996 cross-domain | `python -m experiments.relevance_signal_beir` |
