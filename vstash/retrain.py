@@ -44,6 +44,7 @@ def generate_triples(
     max_queries: int = 5000,
     seed: int = 42,
     exclude_chunk_ids: set[int] | None = None,
+    triplets_per_query: int = 1,
 ) -> list[dict]:
     """Generate training triples from RRF signal disagreement.
 
@@ -58,9 +59,15 @@ def generate_triples(
         seed: Random seed for reproducibility.
         exclude_chunk_ids: Chunk IDs reserved for evaluation; skipped so
             training and eval never overlap.
+        triplets_per_query: Up to N triplets emitted per pseudo-query,
+            each sharing the same (query, positive) but paired with a
+            different hard negative drawn from the top-5 disagreement
+            set. Default 1 preserves legacy behavior. Higher values
+            (e.g., 5) yield 3-5x more training signal from the same
+            disagreement data.
 
     Returns:
-        List of dicts with 'query' and 'positive' keys.
+        List of dicts with 'query', 'positive', and 'negative' keys.
     """
     rng = random.Random(seed)
     excluded = exclude_chunk_ids or set()
@@ -93,8 +100,9 @@ def generate_triples(
     by_id = {r["id"]: r for r in fetched}
     rows = [by_id[i] for i in sample_ids if i in by_id]
 
-    pairs = []
+    pairs: list[dict] = []
     disagreements = 0
+    k_per_query = max(1, int(triplets_per_query))
 
     for row in rows:
         query_text = row["text"][:200]  # use first 200 chars as pseudo-query
@@ -159,32 +167,68 @@ def generate_triples(
         if not positive_text or positive_text == query_text:
             continue
 
-        # Hard negatives: chunks in one signal's top-5 but not the other's
-        hard_neg_text = None
-        for r in vec_results[:5]:
-            if r.path not in fts_paths and r.path != doc_path:
-                hard_neg_text = r.text
+        # Hard negatives: chunks in one signal's top-5 but not the other's.
+        # Collect up to k_per_query distinct negatives in rank order,
+        # preferring vec-side disagreements first (consistent with the
+        # legacy single-negative preference), then fts-side. Dedup by
+        # negative text (same text from different paths is still a
+        # duplicate signal to the loss).
+        hard_negs: list[str] = []
+        seen_neg_texts: set[str] = set()
+
+        def _try_add(candidate_text: str, candidate_path: str, other_paths: set[str]) -> None:
+            if candidate_path == doc_path:
+                return
+            if candidate_path in other_paths:
+                return
+            if not candidate_text or candidate_text in seen_neg_texts:
+                return
+            hard_negs.append(candidate_text)
+            seen_neg_texts.add(candidate_text)
+
+        # Disagreement set definition stays at top-5 (vec_paths/fts_paths
+        # above). For candidate gathering we iterate the whole top_k
+        # window so K > 5 has enough depth to find K distinct negatives.
+        for r in vec_results:
+            if len(hard_negs) >= k_per_query:
                 break
-        if hard_neg_text is None:
-            for r in fts_results[:5]:
-                if r.path not in vec_paths and r.path != doc_path:
-                    hard_neg_text = r.text
-                    break
+            _try_add(r.text, r.path, fts_paths)
+        for r in fts_results:
+            if len(hard_negs) >= k_per_query:
+                break
+            _try_add(r.text, r.path, vec_paths)
 
-        pairs.append(
-            {
-                "query": query_text,
-                "positive": positive_text,
-                "negative": hard_neg_text,
-            }
-        )
+        if not hard_negs:
+            # No disagreement-based negative found. Emit a single triplet
+            # with negative=None so MNRL falls back to in-batch negatives
+            # (legacy behavior when the signals agreed).
+            pairs.append(
+                {
+                    "query": query_text,
+                    "positive": positive_text,
+                    "negative": None,
+                }
+            )
+        else:
+            for neg_text in hard_negs:
+                pairs.append(
+                    {
+                        "query": query_text,
+                        "positive": positive_text,
+                        "negative": neg_text,
+                    }
+                )
 
+    avg_triplets = len(pairs) / len(rows) if rows else 0.0
     logger.info(
-        "Generated %d pairs from %d queries (%d disagreements, %.0f%%)",
+        "Generated %d triplets from %d queries "
+        "(%d disagreements, %.0f%%, avg %.2f triplets/query, target k=%d)",
         len(pairs),
         len(rows),
         disagreements,
         disagreements / len(rows) * 100 if rows else 0,
+        avg_triplets,
+        k_per_query,
     )
     return pairs
 
@@ -735,6 +779,7 @@ def retrain(
     skip_eval: bool = False,
     seed: int = 42,
     eval_queries: list[dict] | None = None,
+    triplets_per_query: int = 1,
 ) -> RetrainResult:
     """Full eval-gated retrain pipeline.
 
@@ -774,7 +819,13 @@ def retrain(
     final_path_str = str(Path(output_path).expanduser())
 
     if skip_eval:
-        pairs = generate_triples(store, base_model, max_queries=max_queries, seed=seed)
+        pairs = generate_triples(
+            store,
+            base_model,
+            max_queries=max_queries,
+            seed=seed,
+            triplets_per_query=triplets_per_query,
+        )
         if not pairs:
             return RetrainResult(
                 output_path=None,
@@ -829,6 +880,7 @@ def retrain(
             min_gain=min_gain,
             skip_eval=True,
             seed=seed,
+            triplets_per_query=triplets_per_query,
         )
 
     logger.info("Running baseline eval on %d held-out queries ...", len(effective_queries))
@@ -846,6 +898,7 @@ def retrain(
         max_queries=max_queries,
         seed=seed,
         exclude_chunk_ids=reserved_ids,
+        triplets_per_query=triplets_per_query,
     )
     if len(pairs) < 10:
         logger.warning(

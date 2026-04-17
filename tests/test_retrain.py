@@ -244,6 +244,115 @@ class TestGenerateTriples:
         assert pairs == []
         assert calls["n"] > 1  # continued after the first failure
 
+    def _make_dynamic_search(self, store: VstashStore, negatives: list[tuple[str, str]]) -> Any:
+        """Build a search mock that produces a positive matching whatever
+        chunk generate_triples is currently processing, plus the given
+        vec-side negatives. fts side returns only the positive.
+
+        negatives: list of (path, text) tuples.
+        """
+
+        def _side_effect(**kwargs: Any) -> list[SearchResult]:
+            query_text = kwargs["query_text"]
+            row = store._conn.execute(
+                "SELECT d.path FROM chunks c JOIN documents d ON d.id = c.doc_id "
+                "WHERE c.text LIKE ? LIMIT 1",
+                [query_text[:60] + "%"],
+            ).fetchone()
+            own_path = row["path"] if row else "/unknown"
+            positive = SearchResult(
+                chunk_id=1,
+                text="POSITIVE_DOC_TEXT",
+                title="own",
+                path=own_path,
+                chunk=0,
+                score=0.9,
+            )
+            if kwargs["vec_weight"] > kwargs["fts_weight"]:
+                extras = [
+                    SearchResult(
+                        chunk_id=100 + i,
+                        text=text,
+                        title=f"N{i}",
+                        path=path,
+                        chunk=0,
+                        score=0.5 - 0.01 * i,
+                    )
+                    for i, (path, text) in enumerate(negatives)
+                ]
+                return [positive] + extras
+            return [positive]
+
+        return _side_effect
+
+    def test_multi_triplet_emits_up_to_k_distinct_negatives(
+        self, populated_store: VstashStore
+    ) -> None:
+        """With triplets_per_query=5 and 5 unique disagreement candidates,
+        generate_triples must emit 5 triplets per query sharing the same
+        (query, positive) but with distinct negatives."""
+        negs = [(f"/test/other_{i}.md", f"hard negative {i}") for i in range(5)]
+        with (
+            patch("vstash.retrain.embed_query") as mock_embed,
+            patch.object(populated_store, "search") as mock_search,
+        ):
+            mock_embed.return_value = [0.0] * populated_store.embedding_dim
+            mock_search.side_effect = self._make_dynamic_search(populated_store, negs)
+            pairs = generate_triples(
+                populated_store,
+                model_name="m",
+                max_queries=1,
+                triplets_per_query=5,
+            )
+
+        # One query, 5 distinct negatives available -> 5 triplets.
+        assert len(pairs) == 5
+        assert len({p["query"] for p in pairs}) == 1
+        assert len({p["positive"] for p in pairs}) == 1
+        negatives = [p["negative"] for p in pairs]
+        assert len(set(negatives)) == 5, "each triplet must have a distinct negative"
+        assert set(negatives) == {text for _, text in negs}
+
+    def test_multi_triplet_dedupes_same_negative_text(self, populated_store: VstashStore) -> None:
+        """If two result chunks have identical text, only one triplet is
+        emitted for it (text dedup, not path dedup)."""
+        dup_negs = [("/a.md", "SAME NEG TEXT"), ("/b.md", "SAME NEG TEXT")]
+        with (
+            patch("vstash.retrain.embed_query") as mock_embed,
+            patch.object(populated_store, "search") as mock_search,
+        ):
+            mock_embed.return_value = [0.0] * populated_store.embedding_dim
+            mock_search.side_effect = self._make_dynamic_search(populated_store, dup_negs)
+            pairs = generate_triples(
+                populated_store,
+                model_name="m",
+                max_queries=1,
+                triplets_per_query=5,
+            )
+        # Only one distinct negative text -> one triplet, not two.
+        assert len(pairs) == 1
+        assert pairs[0]["negative"] == "SAME NEG TEXT"
+
+    def test_multi_triplet_default_equals_one_preserves_legacy(
+        self, populated_store: VstashStore
+    ) -> None:
+        """triplets_per_query=1 (the default) must reproduce the prior
+        behavior: exactly one triplet per query, vec-preference when a
+        hard negative exists."""
+        negs = [("/v.md", "vec-only negative"), ("/v2.md", "another vec-only negative")]
+        with (
+            patch("vstash.retrain.embed_query") as mock_embed,
+            patch.object(populated_store, "search") as mock_search,
+        ):
+            mock_embed.return_value = [0.0] * populated_store.embedding_dim
+            mock_search.side_effect = self._make_dynamic_search(populated_store, negs)
+            pairs = generate_triples(populated_store, model_name="m", max_queries=1)
+
+        # Default triplets_per_query=1 -> exactly one triplet, first-choice
+        # vec-side negative.
+        assert len(pairs) == 1
+        assert pairs[0]["negative"] == "vec-only negative"
+
     def test_seed_is_actually_deterministic(self, populated_store: VstashStore) -> None:
         """Two runs with the same seed must visit chunks in the same
         order. Before the fix, seed was silently ignored because

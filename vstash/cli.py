@@ -1507,6 +1507,13 @@ def retrain(
         "--eval-noise",
         help="Distractor chunks added to the eval index (higher = stricter eval)",
     ),
+    triplets_per_query: int = typer.Option(
+        5,
+        "--triplets-per-query",
+        help="Up to N triplets emitted per pseudo-query, each with a different "
+        "hard negative drawn from top-5 disagreement. 1 = legacy behavior; "
+        "5 is the sweet spot on diverse corpora.",
+    ),
 ) -> None:
     """Fine-tune the embedding model using your own data.
 
@@ -1555,6 +1562,7 @@ def retrain(
     console.print(f"  Store:        {stats.documents} docs, {stats.chunks} chunks")
     console.print(f"  Base model:   {model_name}")
     console.print(f"  Max queries:  {max_queries}")
+    console.print(f"  Triplets/query: up to {triplets_per_query}")
     if no_eval:
         console.print("  Eval gate:    [yellow]disabled[/yellow]")
     else:
@@ -1576,6 +1584,7 @@ def retrain(
         eval_noise_size=eval_noise_size,
         min_gain=min_gain,
         skip_eval=no_eval,
+        triplets_per_query=triplets_per_query,
     )
 
     if result.n_pairs == 0:

@@ -105,6 +105,15 @@ as a drop-in query encoder?".
 
 ### T1.2 Multi-triplet emission
 
+[SHIPPED on feat/retrain-t12-multi-triplet] `generate_triples` now
+accepts `triplets_per_query: int = 1` (legacy default). With K > 1 it
+emits up to K triplets per pseudo-query, sharing the same
+(query, positive) but paired with distinct hard negatives drawn from
+the top-K disagreement window. Negatives are deduped by text. CLI
+default is 5 (the sweet spot on diverse corpora); `--triplets-per-query 1`
+restores the old behavior. Logged as avg triplets/query in
+`generate_triples` output.
+
 **Goal:** extract 3-5x more training signal from the same disagreement data.
 
 **Design:**
