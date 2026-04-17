@@ -310,10 +310,16 @@ def split_corpus_for_eval(
     max_queries: int = _EVAL_MAX_QUERIES,
     seed: int = 42,
 ) -> tuple[set[int], list[dict]]:
-    """Reserve a subset of chunks as held-out queries for evaluation.
+    """Reserve a subset of chunks as held-out pseudo-queries for evaluation.
 
     Each held-out chunk becomes an eval query: first 200 chars as query
     text, the chunk's own document path as the single relevant target.
+
+    This is a fallback for stores without labeled queries. On diverse
+    corpora it saturates at NDCG=1.0 because the first 200 chars are a
+    near-perfect cue for their own doc. Prefer passing external
+    labeled queries (BEIR qrels, user-annotated pairs) via
+    ``retrain(..., eval_queries=...)`` when available.
 
     Args:
         store: VstashStore with ingested documents.
@@ -326,7 +332,9 @@ def split_corpus_for_eval(
 
     Returns:
         Tuple of (reserved_chunk_ids, eval_queries). Each eval query is
-        a dict with 'query', 'relevant_path', 'source_chunk_id'.
+        a dict with 'query', 'relevant_paths' (list with one entry),
+        'source_chunk_id'. ``relevant_path`` (singular) is still
+        populated for legacy callers.
     """
     rows = store._conn.execute(
         "SELECT c.id, c.text, d.path FROM chunks c JOIN documents d ON d.id = c.doc_id",
@@ -345,13 +353,62 @@ def split_corpus_for_eval(
     eval_queries = [
         {
             "query": r["text"][:200],
-            "relevant_path": r["path"],
+            "relevant_paths": [r["path"]],
+            "relevant_path": r["path"],  # legacy single-relevant field
             "source_chunk_id": r["id"],
         }
         for r in reserved
     ]
     reserved_ids = {r["id"] for r in reserved}
     return reserved_ids, eval_queries
+
+
+def qrels_to_eval_queries(
+    queries: dict[str, str],
+    qrels: dict[str, dict[str, int | float]],
+    path_for_doc_id: "callable | None" = None,
+    min_relevance: float = 1.0,
+) -> list[dict]:
+    """Convert BEIR-style (queries, qrels) to the eval_queries format
+    expected by ``retrain(..., eval_queries=...)`` / ``evaluate_model``.
+
+    Args:
+        queries: Mapping query_id -> query text.
+        qrels: Mapping query_id -> {doc_id: relevance}. Any doc with
+            ``relevance >= min_relevance`` is treated as relevant.
+        path_for_doc_id: Optional function mapping a BEIR doc_id to the
+            ``path`` used when the doc was ingested into the vstash
+            store. Defaults to ``lambda d: d`` -- use a matching format
+            at ingest time (e.g., ``path=f"scifact://{doc_id}"``) so
+            the two sides line up.
+        min_relevance: Threshold for treating a qrel entry as relevant
+            (binary). Defaults to 1.0 (BEIR convention).
+
+    Returns:
+        List of ``{query, relevant_paths, query_id}`` dicts. Queries
+        whose qrels have no docs above threshold are dropped.
+    """
+    if path_for_doc_id is None:
+
+        def path_for_doc_id(doc_id: str) -> str:
+            return doc_id
+
+    out: list[dict] = []
+    for qid, text in queries.items():
+        rel = qrels.get(qid) or {}
+        relevant_paths = [
+            path_for_doc_id(doc_id) for doc_id, score in rel.items() if score >= min_relevance
+        ]
+        if not relevant_paths:
+            continue
+        out.append(
+            {
+                "query": text,
+                "relevant_paths": relevant_paths,
+                "query_id": qid,
+            }
+        )
+    return out
 
 
 def _sample_noise_chunks(
@@ -396,7 +453,7 @@ def _relevant_chunks(store: VstashStore, relevant_paths: set[str]) -> list[dict]
 
 
 def _ndcg_at_k(rank: int | None, k: int = _EVAL_TOP_K) -> float:
-    """Binary NDCG@k with a single relevant doc.
+    """Binary NDCG@k for a single relevant doc.
 
     Returns 1 / log2(rank + 1) when the relevant doc is at 1 <= rank <= k,
     else 0.0. IDCG = 1.0 (one relevant doc at rank 1).
@@ -404,6 +461,34 @@ def _ndcg_at_k(rank: int | None, k: int = _EVAL_TOP_K) -> float:
     if rank is None or rank > k:
         return 0.0
     return 1.0 / math.log2(rank + 1)
+
+
+def _ndcg_from_ranks(
+    ranks_in_topk: list[int],
+    num_relevant: int,
+    k: int = _EVAL_TOP_K,
+) -> float:
+    """Binary NDCG@k for queries with any number of relevant docs.
+
+    Args:
+        ranks_in_topk: 1-indexed ranks (<= k) at which relevant docs
+            actually appear in the result list. Unordered.
+        num_relevant: Total number of relevant docs for this query.
+            Used for IDCG (the denominator counts perfect placements
+            only up to min(num_relevant, k)).
+        k: Cutoff.
+
+    Returns:
+        NDCG@k in [0, 1].
+    """
+    if num_relevant <= 0:
+        return 0.0
+    dcg = sum(1.0 / math.log2(r + 1) for r in ranks_in_topk if 1 <= r <= k)
+    ideal_hits = min(num_relevant, k)
+    idcg = sum(1.0 / math.log2(i + 1) for i in range(1, ideal_hits + 1))
+    if idcg <= 0:
+        return 0.0
+    return dcg / idcg
 
 
 def _load_sentence_transformer(model_name: str):
@@ -449,6 +534,16 @@ def evaluate_model(
     if not eval_queries:
         return EvalMetrics(ndcg_at_10=0.0, mrr=0.0, hit_at_10=0.0, n_queries=0)
 
+    # Normalize each query's relevant_paths into a list[str]. Accept the
+    # legacy 'relevant_path' (str) as a single-element list.
+    normalized_queries: list[dict] = []
+    for q in eval_queries:
+        paths = q.get("relevant_paths")
+        if paths is None:
+            legacy = q.get("relevant_path")
+            paths = [legacy] if legacy is not None else []
+        normalized_queries.append({**q, "relevant_paths": list(paths)})
+
     model = _load_sentence_transformer(model_name_or_path)
     # sentence-transformers renamed get_sentence_embedding_dimension ->
     # get_embedding_dimension in v5.x. Support both for compatibility.
@@ -457,7 +552,9 @@ def evaluate_model(
     else:
         dim = int(model.get_sentence_embedding_dimension())
 
-    relevant_paths = {q["relevant_path"] for q in eval_queries}
+    relevant_paths: set[str] = set()
+    for q in normalized_queries:
+        relevant_paths.update(q["relevant_paths"])
     relevant_rows = _relevant_chunks(base_store, relevant_paths)
     noise_rows = _sample_noise_chunks(base_store, relevant_paths, noise_sample_size, seed)
     all_rows = relevant_rows + noise_rows
@@ -505,8 +602,10 @@ def evaluate_model(
             )
 
         # Score each query via production search (RRF with adaptive weights).
-        ranks_found: list[int | None] = []
-        for q in eval_queries:
+        ndcgs: list[float] = []
+        mrrs: list[float] = []
+        hits: list[float] = []
+        for q in normalized_queries:
             q_vec = model.encode([q["query"]], normalize_embeddings=True, show_progress_bar=False)[
                 0
             ]
@@ -515,22 +614,23 @@ def evaluate_model(
                 query_text=q["query"],
                 top_k=_EVAL_TOP_K,
             )
-            rank = None
+            relevant_set = set(q["relevant_paths"])
+            ranks_hit: list[int] = []
+            first_rank: int | None = None
             for i, r in enumerate(results, start=1):
-                if r.path == q["relevant_path"]:
-                    rank = i
-                    break
-            ranks_found.append(rank)
-
-        ndcgs = [_ndcg_at_k(r) for r in ranks_found]
-        mrrs = [1.0 / r if r is not None else 0.0 for r in ranks_found]
-        hits = [1.0 if r is not None else 0.0 for r in ranks_found]
+                if r.path in relevant_set:
+                    ranks_hit.append(i)
+                    if first_rank is None:
+                        first_rank = i
+            ndcgs.append(_ndcg_from_ranks(ranks_hit, num_relevant=len(relevant_set)))
+            mrrs.append(1.0 / first_rank if first_rank is not None else 0.0)
+            hits.append(1.0 if first_rank is not None else 0.0)
 
         return EvalMetrics(
             ndcg_at_10=sum(ndcgs) / len(ndcgs),
             mrr=sum(mrrs) / len(mrrs),
             hit_at_10=sum(hits) / len(hits),
-            n_queries=len(eval_queries),
+            n_queries=len(normalized_queries),
         )
     finally:
         try:
@@ -560,6 +660,7 @@ def retrain(
     min_gain: float = 0.0,
     skip_eval: bool = False,
     seed: int = 42,
+    eval_queries: list[dict] | None = None,
 ) -> RetrainResult:
     """Full eval-gated retrain pipeline.
 
@@ -578,11 +679,19 @@ def retrain(
         lr: Learning rate.
         batch_size: Training batch size.
         eval_fraction: Fraction of corpus reserved for held-out eval.
+            Ignored when ``eval_queries`` is provided.
         eval_noise_size: Distractor chunks added to the eval index.
         min_gain: Required NDCG@10 improvement (0.0 = no regression).
             Pass a negative value to always save.
         skip_eval: If True, skip eval entirely and save unconditionally.
         seed: Deterministic split + sampling.
+        eval_queries: Optional externally provided eval set (e.g., BEIR
+            qrels converted via ``qrels_to_eval_queries``). When passed,
+            the internal pseudo-query split is skipped and these queries
+            are used for both baseline and final eval. Training
+            pseudo-queries are still derived from the full store (no
+            exclusion), which is correct because external eval docs
+            typically have no chunk overlap with training.
 
     Returns:
         RetrainResult with baseline, final, delta, and final path.
@@ -618,13 +727,19 @@ def retrain(
             min_gain=min_gain,
         )
 
-    reserved_ids, eval_queries = split_corpus_for_eval(
-        store, eval_fraction=eval_fraction, seed=seed
-    )
-    if len(eval_queries) < _EVAL_MIN_QUERIES:
+    if eval_queries is not None:
+        # Externally labeled queries: skip the internal split. Training
+        # excludes no chunks -- labeled queries live outside the corpus.
+        effective_queries = eval_queries
+        reserved_ids: set[int] = set()
+    else:
+        reserved_ids, effective_queries = split_corpus_for_eval(
+            store, eval_fraction=eval_fraction, seed=seed
+        )
+    if len(effective_queries) < _EVAL_MIN_QUERIES:
         logger.warning(
             "Only %d eval queries available (need >= %d). Running without eval gate.",
-            len(eval_queries),
+            len(effective_queries),
             _EVAL_MIN_QUERIES,
         )
         return retrain(
@@ -639,11 +754,11 @@ def retrain(
             seed=seed,
         )
 
-    logger.info("Running baseline eval on %d held-out queries ...", len(eval_queries))
+    logger.info("Running baseline eval on %d held-out queries ...", len(effective_queries))
     baseline = evaluate_model(
         store,
         model_name_or_path=base_model,
-        eval_queries=eval_queries,
+        eval_queries=effective_queries,
         noise_sample_size=eval_noise_size,
         seed=seed,
     )
@@ -684,7 +799,7 @@ def retrain(
     final = evaluate_model(
         store,
         model_name_or_path=str(candidate_path),
-        eval_queries=eval_queries,
+        eval_queries=effective_queries,
         noise_sample_size=eval_noise_size,
         seed=seed,
     )

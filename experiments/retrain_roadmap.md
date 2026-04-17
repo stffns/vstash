@@ -35,6 +35,33 @@ Owner: Jay + Claude. Not shipped (under `experiments/`, excluded from sdist).
 
 ### T1.1 Eval-gated training
 
+[SHIPPED on feat/retrain-tier1] Added `split_corpus_for_eval`,
+`evaluate_model`, and the composed `retrain()` with a `.candidate`
+promote/reject gate. See commits on the branch.
+
+**T1.1b follow-up: external labeled queries + multi-relevant NDCG.**
+
+Colab smoke on a SciFact 1k subset showed baseline + final NDCG both
+saturating at 1.0. Root cause: our internal pseudo-queries (first
+200 chars of a chunk) are too strong a cue for their own doc on
+diverse corpora. The eval then has no discriminating power.
+
+Fix shipped in the same branch:
+
+- New multi-relevant `_ndcg_from_ranks(ranks, num_relevant, k)` math
+  that handles the BEIR case where a query has more than one relevant
+  doc.
+- New public helper `qrels_to_eval_queries(queries, qrels,
+  path_for_doc_id)` converting BEIR-style labels into our eval
+  format. Supports a configurable binary-relevance threshold.
+- `evaluate_model` accepts the new `relevant_paths: list[str]` shape
+  and still honors the legacy single-path form.
+- `retrain(..., eval_queries=...)` override so a caller can plug in
+  human-labeled queries. The internal pseudo-query split becomes the
+  fallback when no labels are available (typical user stores).
+- Colab notebook switched to real SciFact qrels across the full 5k
+  corpus for an honest eval.
+
 **Goal:** never save a model that is worse than the base on the user's corpus.
 
 **Design:**

@@ -15,8 +15,10 @@ from vstash.models import SearchResult
 from vstash.retrain import (
     EvalMetrics,
     _ndcg_at_k,
+    _ndcg_from_ranks,
     evaluate_model,
     generate_triples,
+    qrels_to_eval_queries,
     retrain,
     split_corpus_for_eval,
     train_mnrl,
@@ -385,6 +387,73 @@ class TestNdcgAtK:
         assert _ndcg_at_k(2) == pytest.approx(1.0 / 1.584962500721156, rel=1e-9)
 
 
+class TestNdcgFromRanks:
+    """Multi-relevant NDCG@k handles BEIR-style qrels correctly."""
+
+    def test_single_relevant_at_rank_1_scores_one(self) -> None:
+        assert _ndcg_from_ranks([1], num_relevant=1) == pytest.approx(1.0)
+
+    def test_zero_num_relevant_is_zero(self) -> None:
+        assert _ndcg_from_ranks([], num_relevant=0) == 0.0
+
+    def test_no_hits_is_zero(self) -> None:
+        assert _ndcg_from_ranks([], num_relevant=3) == 0.0
+
+    def test_all_relevant_at_top_is_perfect(self) -> None:
+        # 3 relevant docs at ranks 1,2,3 -> NDCG = 1.0 exactly.
+        assert _ndcg_from_ranks([1, 2, 3], num_relevant=3) == pytest.approx(1.0)
+
+    def test_partial_hits_below_one(self) -> None:
+        # 1 of 3 relevant found at rank 1: ideal would place 3 at ranks 1,2,3.
+        # DCG = 1/log2(2) = 1; IDCG = 1/log2(2) + 1/log2(3) + 1/log2(4).
+        dcg = 1.0
+        idcg = 1.0 + 1.0 / 1.584962500721156 + 1.0 / 2.0
+        score = _ndcg_from_ranks([1], num_relevant=3)
+        assert score == pytest.approx(dcg / idcg, rel=1e-9)
+        assert 0.0 < score < 1.0
+
+    def test_caps_idcg_at_k(self) -> None:
+        # 20 relevant total but k=10 -> IDCG counts only the first 10 slots.
+        perfect_at_k = _ndcg_from_ranks(list(range(1, 11)), num_relevant=20, k=10)
+        assert perfect_at_k == pytest.approx(1.0)
+
+
+class TestQrelsToEvalQueries:
+    """BEIR-style qrels must convert cleanly to the eval_queries format."""
+
+    def test_basic_mapping(self) -> None:
+        queries = {"q1": "What is RRF?", "q2": "Multilingual retrieval"}
+        qrels = {
+            "q1": {"doc_a": 1, "doc_b": 1, "doc_c": 0},
+            "q2": {"doc_d": 1},
+        }
+        out = qrels_to_eval_queries(queries, qrels)
+        assert len(out) == 2
+        q1 = next(q for q in out if q["query_id"] == "q1")
+        assert set(q1["relevant_paths"]) == {"doc_a", "doc_b"}
+        assert q1["query"] == "What is RRF?"
+        q2 = next(q for q in out if q["query_id"] == "q2")
+        assert q2["relevant_paths"] == ["doc_d"]
+
+    def test_custom_path_resolver(self) -> None:
+        queries = {"q1": "test"}
+        qrels = {"q1": {"42": 1}}
+        out = qrels_to_eval_queries(queries, qrels, path_for_doc_id=lambda d: f"scifact://{d}")
+        assert out[0]["relevant_paths"] == ["scifact://42"]
+
+    def test_drops_queries_with_no_relevant_docs(self) -> None:
+        queries = {"q1": "ok", "q2": "drop me"}
+        qrels = {"q1": {"a": 1}, "q2": {"b": 0}}
+        out = qrels_to_eval_queries(queries, qrels)
+        assert {q["query_id"] for q in out} == {"q1"}
+
+    def test_min_relevance_threshold(self) -> None:
+        queries = {"q1": "q"}
+        qrels = {"q1": {"a": 1, "b": 2, "c": 0}}
+        out_strict = qrels_to_eval_queries(queries, qrels, min_relevance=2)
+        assert out_strict[0]["relevant_paths"] == ["b"]
+
+
 # ------------------------------------------------------------------ #
 # Held-out split                                                       #
 # ------------------------------------------------------------------ #
@@ -423,7 +492,11 @@ class TestSplitCorpusForEval:
         _, queries = split_corpus_for_eval(populated_store, min_queries=2, max_queries=3)
         assert queries
         for q in queries:
-            assert set(q.keys()) == {"query", "relevant_path", "source_chunk_id"}
+            assert set(q.keys()) >= {"query", "relevant_paths", "source_chunk_id"}
+            assert isinstance(q["relevant_paths"], list)
+            assert len(q["relevant_paths"]) == 1
+            # Legacy field kept for backward compat with any external caller.
+            assert q.get("relevant_path") == q["relevant_paths"][0]
             assert len(q["query"]) <= 200
 
 
@@ -564,6 +637,75 @@ class TestEvaluateModel:
         assert metrics.n_queries == len(rows)
         assert metrics.hit_at_10 == pytest.approx(1.0)
         assert metrics.mrr == pytest.approx(1.0)
+        assert metrics.ndcg_at_10 == pytest.approx(1.0)
+
+    def test_multi_relevant_query_counts_all_hits(self, populated_store: VstashStore) -> None:
+        """When a single query has multiple relevant docs, NDCG credits
+        hits against all of them up to k."""
+        dim = populated_store.embedding_dim
+        rows = populated_store._conn.execute(
+            "SELECT c.text, d.path FROM chunks c JOIN documents d ON d.id = c.doc_id"
+        ).fetchall()
+        paths = sorted({r["path"] for r in rows})
+        # Use one basis vector per path, plus an extra dim for the query.
+        path_vec: dict[str, list[float]] = {}
+        for i, p in enumerate(paths):
+            v = [0.0] * dim
+            v[i] = 1.0
+            path_vec[p] = v
+        # Query vector sits halfway between the first two path vectors so
+        # both come out near the top under cosine.
+        q_vec = [0.0] * dim
+        q_vec[0] = 1.0
+        q_vec[1] = 1.0
+
+        # Chunks keyed by 60-char prefix -> path's basis vector.
+        mapping = {r["text"][:60]: path_vec[r["path"]] for r in rows}
+        mapping["MULTIRELEVANT_QUERY"] = q_vec
+
+        eval_queries = [
+            {
+                "query": "MULTIRELEVANT_QUERY",
+                "relevant_paths": paths[:2],  # both top-2 paths are relevant
+            }
+        ]
+
+        fake_model = _install_fake_st_model(dim, mapping)
+        with patch("vstash.retrain._load_sentence_transformer", return_value=fake_model):
+            metrics = evaluate_model(
+                populated_store,
+                model_name_or_path="fake",
+                eval_queries=eval_queries,
+                noise_sample_size=0,
+            )
+
+        # With both relevant docs retrieved in the top 2, NDCG must be 1.0.
+        assert metrics.n_queries == 1
+        assert metrics.ndcg_at_10 == pytest.approx(1.0)
+        assert metrics.hit_at_10 == pytest.approx(1.0)
+
+    def test_accepts_legacy_relevant_path_field(self, populated_store: VstashStore) -> None:
+        """Queries with the legacy 'relevant_path' (singular) key still work."""
+        dim = populated_store.embedding_dim
+        rows = populated_store._conn.execute(
+            "SELECT c.text, d.path FROM chunks c JOIN documents d ON d.id = c.doc_id"
+        ).fetchall()
+        paths = sorted({r["path"] for r in rows})
+        path_vec = {p: [0.0] * dim for p in paths}
+        for i, p in enumerate(paths):
+            path_vec[p][i] = 1.0
+        mapping = {r["text"][:60]: path_vec[r["path"]] for r in rows}
+
+        legacy_queries = [{"query": r["text"][:200], "relevant_path": r["path"]} for r in rows]
+        fake_model = _install_fake_st_model(dim, mapping)
+        with patch("vstash.retrain._load_sentence_transformer", return_value=fake_model):
+            metrics = evaluate_model(
+                populated_store,
+                model_name_or_path="fake",
+                eval_queries=legacy_queries,
+                noise_sample_size=0,
+            )
+        assert metrics.n_queries == len(rows)
         assert metrics.ndcg_at_10 == pytest.approx(1.0)
 
 
@@ -712,3 +854,45 @@ class TestRetrainOrchestration:
         assert result.output_path == str(tmp_path / "m")
         assert result.baseline is None
         assert result.final is None
+
+    def test_external_eval_queries_override_split(
+        self, populated_store: VstashStore, tmp_path: Path, st_stubs: Any
+    ) -> None:
+        """When the caller passes eval_queries explicitly, the internal
+        pseudo-query split is skipped and the supplied queries are used
+        verbatim for both baseline and final eval."""
+        st_mod, _, _ = st_stubs
+        st_mod.SentenceTransformer.return_value = MagicMock()
+
+        baseline_metrics = EvalMetrics(ndcg_at_10=0.55, mrr=0.55, hit_at_10=0.7, n_queries=30)
+        final_metrics = EvalMetrics(ndcg_at_10=0.60, mrr=0.60, hit_at_10=0.75, n_queries=30)
+
+        external = [
+            {"query": f"labeled q{i}", "relevant_paths": [f"/p{i}"], "query_id": f"q{i}"}
+            for i in range(30)
+        ]
+        fake_pairs = [{"query": "q", "positive": "p"}] * 20
+
+        with (
+            patch("vstash.retrain.split_corpus_for_eval") as mock_split,
+            patch(
+                "vstash.retrain.evaluate_model",
+                side_effect=[baseline_metrics, final_metrics],
+            ) as mock_eval,
+            patch("vstash.retrain.generate_triples", return_value=fake_pairs),
+        ):
+            result = retrain(
+                populated_store,
+                base_model="dummy",
+                output_path=str(tmp_path / "m"),
+                eval_queries=external,
+            )
+
+        # split_corpus_for_eval must be bypassed when external queries supplied.
+        assert mock_split.call_count == 0
+        # Both baseline and final must receive the same external query set.
+        assert mock_eval.call_count == 2
+        for call in mock_eval.call_args_list:
+            assert call.kwargs["eval_queries"] is external
+        assert result.gated_out is False
+        assert result.delta_ndcg == pytest.approx(0.05)
