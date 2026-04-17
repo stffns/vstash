@@ -303,8 +303,24 @@ def _init_hf_onnx(model_name: str) -> tuple:
 
                 try:
                     model_path = hf_hub_download(model_name, "onnx/model.onnx")
+                    onnx_prefix = "onnx/"
                 except (EntryNotFoundError, OSError):
                     model_path = hf_hub_download(model_name, "model.onnx")
+                    onnx_prefix = ""
+                # Large ONNX exports store weights in an external data file
+                # (`model.onnx.data` with a dot, or `model.onnx_data` with
+                # an underscore depending on the exporter version). ONNX
+                # Runtime expects that file to sit next to the .onnx. Fetch
+                # it alongside; best-effort, not all models have it.
+                for data_name in (
+                    f"{onnx_prefix}model.onnx.data",
+                    f"{onnx_prefix}model.onnx_data",
+                ):
+                    try:
+                        hf_hub_download(model_name, data_name)
+                        break
+                    except (EntryNotFoundError, OSError):
+                        continue
                 try:
                     tokenizer_path = hf_hub_download(model_name, "onnx/tokenizer.json")
                 except (EntryNotFoundError, OSError):
