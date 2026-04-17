@@ -210,8 +210,9 @@ def train_mnrl(
         from torch.utils.data import DataLoader
     except ImportError:
         raise ImportError(
-            "sentence-transformers and torch are required for vstash retrain. "
-            "Install with: pip install sentence-transformers torch"
+            "sentence-transformers, torch, and accelerate are required for "
+            "vstash retrain. Install with: "
+            "pip install 'sentence-transformers>=3' torch 'accelerate>=1.1.0'"
         )
 
     output = str(Path(output_path).expanduser())
@@ -411,8 +412,8 @@ def _load_sentence_transformer(model_name: str):
         from sentence_transformers import SentenceTransformer
     except ImportError as exc:
         raise ImportError(
-            "sentence-transformers is required for eval. "
-            "Install with: pip install sentence-transformers torch"
+            "sentence-transformers is required for eval. Install with: "
+            "pip install 'sentence-transformers>=3' torch 'accelerate>=1.1.0'"
         ) from exc
     return SentenceTransformer(model_name)
 
@@ -449,7 +450,12 @@ def evaluate_model(
         return EvalMetrics(ndcg_at_10=0.0, mrr=0.0, hit_at_10=0.0, n_queries=0)
 
     model = _load_sentence_transformer(model_name_or_path)
-    dim = int(model.get_sentence_embedding_dimension())
+    # sentence-transformers renamed get_sentence_embedding_dimension ->
+    # get_embedding_dimension in v5.x. Support both for compatibility.
+    if hasattr(model, "get_embedding_dimension"):
+        dim = int(model.get_embedding_dimension())
+    else:
+        dim = int(model.get_sentence_embedding_dimension())
 
     relevant_paths = {q["relevant_path"] for q in eval_queries}
     relevant_rows = _relevant_chunks(base_store, relevant_paths)

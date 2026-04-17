@@ -1529,8 +1529,9 @@ def retrain(
         from .retrain import retrain as run_retrain
     except ImportError as exc:
         console.print(
-            "[red]x[/red] vstash retrain requires sentence-transformers and torch. "
-            "Install with: [bold]pip install sentence-transformers torch[/bold]"
+            "[red]x[/red] vstash retrain requires sentence-transformers, torch, "
+            "and accelerate. Install with: "
+            "[bold]pip install 'sentence-transformers>=3' torch 'accelerate>=1.1.0'[/bold]"
         )
         raise typer.Exit(code=1) from exc
 

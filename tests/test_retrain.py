@@ -481,6 +481,9 @@ def _install_fake_st_model(dim: int, mapping: dict[str, list[float]]) -> Any:
     """Return a fake SentenceTransformer whose encode() reads from a table."""
     fake = MagicMock()
     fake.get_sentence_embedding_dimension = MagicMock(return_value=dim)
+    # sentence-transformers v5.x renamed this method; support both so the
+    # fake matches whichever attribute the production code probes first.
+    fake.get_embedding_dimension = MagicMock(return_value=dim)
 
     def encode(
         texts: list[str] | str,
