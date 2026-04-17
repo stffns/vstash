@@ -1507,6 +1507,30 @@ def retrain(
         "--eval-noise",
         help="Distractor chunks added to the eval index (higher = stricter eval)",
     ),
+    synthesize: bool = typer.Option(
+        False,
+        "--synthesize-queries/--no-synthesize-queries",
+        help="Use the configured LLM backend to generate short realistic "
+        "queries for each training chunk (InPars-style). Closes the "
+        "chunk-prefix vs natural-query distribution gap.",
+    ),
+    synth_n: int = typer.Option(
+        2,
+        "--synth-n",
+        help="Queries synthesized per chunk when --synthesize-queries is on.",
+    ),
+    synth_cache: str | None = typer.Option(
+        None,
+        "--synth-cache",
+        help="JSONL cache file for synthesized queries. Reusing the same "
+        "path across runs avoids re-calling the LLM on unchanged chunks.",
+    ),
+    synth_model: str | None = typer.Option(
+        None,
+        "--synth-model",
+        help="Model name override for synthesis (defaults to the configured "
+        "inference backend's model).",
+    ),
 ) -> None:
     """Fine-tune the embedding model using your own data.
 
@@ -1555,6 +1579,13 @@ def retrain(
     console.print(f"  Store:        {stats.documents} docs, {stats.chunks} chunks")
     console.print(f"  Base model:   {model_name}")
     console.print(f"  Max queries:  {max_queries}")
+    if synthesize:
+        console.print(
+            f"  Query source: [cyan]LLM-synthesized[/cyan] "
+            f"(n={synth_n}" + (f", cache={synth_cache}" if synth_cache else "") + ")"
+        )
+    else:
+        console.print("  Query source: chunk prefix (legacy)")
     if no_eval:
         console.print("  Eval gate:    [yellow]disabled[/yellow]")
     else:
@@ -1576,6 +1607,11 @@ def retrain(
         eval_noise_size=eval_noise_size,
         min_gain=min_gain,
         skip_eval=no_eval,
+        synthesize_queries=synthesize,
+        synth_n=synth_n,
+        synth_cache=synth_cache,
+        synth_model=synth_model,
+        cfg=cfg,
     )
 
     if result.n_pairs == 0:
