@@ -282,6 +282,9 @@ _HF_ONNX_MODELS: set[str] = {
 
 _hf_onnx_cache: dict[str, tuple] = {}  # model_name -> (session, tokenizer, max_len)
 _hf_onnx_lock = threading.Lock()
+_hf_st_cache: dict[str, object] = {}  # model_name -> SentenceTransformer
+_hf_st_lock = threading.Lock()
+_hf_onnx_unavailable: set[str] = set()
 
 
 def _is_hf_onnx_model(model_name: str) -> bool:
@@ -332,14 +335,60 @@ def _init_hf_onnx(model_name: str) -> tuple:
     return _hf_onnx_cache[model_name]
 
 
+def _init_hf_st(model_name: str):
+    """Lazily load a SentenceTransformer for an HF model. Used as the
+    fallback path when the ONNX export is broken (missing external data
+    file) or when sentence-transformers is the only published format."""
+    if model_name not in _hf_st_cache:
+        with _hf_st_lock:
+            if model_name not in _hf_st_cache:
+                try:
+                    from sentence_transformers import SentenceTransformer
+                except ImportError as exc:
+                    raise ImportError(
+                        f"Cannot load {model_name}: ONNX init failed AND "
+                        "sentence-transformers is not installed. Install with: "
+                        "pip install 'sentence-transformers>=3' torch 'accelerate>=1.1.0'"
+                    ) from exc
+                _logger.info("Loading %s via SentenceTransformer fallback", model_name)
+                _hf_st_cache[model_name] = SentenceTransformer(model_name)
+    return _hf_st_cache[model_name]
+
+
+def _embed_hf_st(texts: list[str], model_name: str) -> list[list[float]]:
+    """Embed texts via the SentenceTransformer fallback path."""
+    if not texts:
+        return []
+    model = _init_hf_st(model_name)
+    vecs = model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
+    return [list(map(float, v)) for v in vecs]
+
+
 def _embed_hf_onnx(texts: list[str], model_name: str) -> list[list[float]]:
-    """Embed texts using a custom HF ONNX model with mean pooling."""
+    """Embed texts using a custom HF ONNX model with mean pooling.
+
+    Falls back to ``_embed_hf_st`` if the ONNX init fails for this model
+    (e.g., the HF repo publishes a stub ``model.onnx`` whose external
+    ``.data`` file was never uploaded).
+    """
     import numpy as np
 
     if not texts:
         return []
 
-    session, tokenizer, max_len = _init_hf_onnx(model_name)
+    if model_name in _hf_onnx_unavailable:
+        return _embed_hf_st(texts, model_name)
+
+    try:
+        session, tokenizer, max_len = _init_hf_onnx(model_name)
+    except Exception as exc:  # includes onnxruntime RuntimeException
+        _logger.warning(
+            "HF ONNX init failed for %s (%s); falling back to sentence-transformers.",
+            model_name,
+            exc.__class__.__name__,
+        )
+        _hf_onnx_unavailable.add(model_name)
+        return _embed_hf_st(texts, model_name)
     all_embeddings: list[list[float]] = []
     batch_size = 32
 
