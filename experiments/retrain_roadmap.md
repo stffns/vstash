@@ -142,7 +142,139 @@ synthesis) lands so the base signal is clean.
 
 ---
 
-### T1.3 LLM query synthesis
+### T1.3 LLM query synthesis [SHIPPED in PR #232]
+
+Module `vstash/retrain_synth.py` with `synthesize_queries()` + JSONL
+cache. `generate_triples(..., synthesized_queries=..., pre_sampled_chunks=...)`.
+`retrain(..., synthesize_queries=True, synth_n, synth_cache, synth_model, cfg)`.
+CLI flags: `--synthesize-queries`, `--synth-n`, `--synth-cache`, `--synth-model`.
+
+**Empirical result on two BEIR datasets (Gemini 2.5 Flash, synth_n=2,
+max_queries=1000):**
+
+| Dataset  | Baseline NDCG@10 | Final NDCG@10 | Delta     |
+|----------|------------------|---------------|-----------|
+| SciFact  | 0.7251           | 0.7272        | +0.21%    |
+| NFCorpus | 0.3570           | 0.3573        | +0.03%    |
+
+Both deltas are within noise. Synth queries DO NOT beat chunk prefix
+at this scale on single-domain corpora. The published +5/+18%
+numbers (bge-small-rrf-v2 card) come from **multi-dataset training**
+with ~100k triples combining scifact + nfcorpus + fiqa, not from
+better queries on a single domain.
+
+T1.3 mechanics are sound; the quality lift is a different problem
+handled by T1.4.
+
+---
+
+### T1.4 Multi-corpus training harness with temperature sampling
+
+**Goal**: productize the training path that produced
+`Stffens/bge-small-rrf-v2` (+5% SciFact, +18.3% NFCorpus, validated
+in `experiments/retrain_v5_hard_neg.ipynb`) into a first-class
+`retrain_multi()` API. The numbers are real -- the v5 notebook
+proves them -- but today reproducing them requires running two
+ad-hoc scripts (`experiments.rrf_training_pairs` + a bespoke
+training cell). T1.4 brings that flow into `vstash.retrain` so
+users can get the same win with one `retrain_multi(stores=...)`
+call + the T1.1 eval gate in front.
+
+**Why naive concatenation fails**: with NFCorpus=3.6k, SciFact=5k,
+FiQA=57k, raw concat produces batches that are ~87% FiQA. The
+smallest corpus (NFCorpus) receives almost no gradient signal, so
+its NDCG gain evaporates. This is a classic multi-task sampling
+problem, standard fix is temperature sampling. The v5 notebook
+generated a fixed number of triples per dataset which implicitly
+balanced it; T1.4 makes the strategy explicit and tunable.
+
+**Design:**
+
+Add a new entry point that accepts N stores (or a single store with
+a `collection` filter list) plus a sampling strategy:
+
+```python
+def retrain_multi(
+    stores: list[VstashStore] | dict[str, VstashStore],
+    base_model: str,
+    sampling: Literal["uniform", "proportional", "temperature"] = "temperature",
+    temperature: float = 0.5,
+    total_triples: int = 10000,
+    output_path: str = "~/.vstash/models/retrained-multi",
+    synthesize_queries: bool = False,
+    eval_queries_by_dataset: dict[str, list[dict]] | None = None,
+    ...
+) -> RetrainResult:
+```
+
+Sampling math (for dataset `d` with `|D_d|` eligible chunks):
+- **uniform**: `p(d) = 1/N` -- every dataset contributes equally
+  regardless of size.
+- **proportional**: `p(d) = |D_d| / Sum(|D_i|)` -- naive concat,
+  included for comparison only.
+- **temperature** (default): `p(d) = |D_d|^alpha / Sum(|D_i|^alpha)`
+  where `alpha = temperature`. `alpha=0` -> uniform, `alpha=1` ->
+  proportional. `alpha=0.5` is a common middle ground (favours
+  smaller datasets somewhat but still rewards size).
+
+Per-dataset triple budget = `round(p(d) * total_triples)`.
+
+**Batch construction**: triples from all datasets get shuffled
+together before going into the DataLoader. The sampling-ratio work
+is done at triple generation, not per-batch. This is simpler than a
+custom BatchSampler and gives the same expected per-epoch ratio.
+
+**Eval**: accept a mapping `{dataset_name: eval_queries}` so the
+gate reports per-dataset NDCG@10 plus a macro-average. Save all
+slices into `training_meta.json`. `min_gain` applies to the
+macro-average by default; optional `--per-dataset-gate` makes the
+gate require each dataset individually to hold.
+
+**Reference implementation**: `experiments/retrain_v5_hard_neg.ipynb`
++ `experiments/rrf_training_pairs.py`. T1.4 is effectively
+extracting that flow into library code + adding explicit sampling
+control + wiring the T1.1 eval gate around it.
+
+**Files:**
+- `vstash/retrain.py`: add `retrain_multi()` composer. Reuse
+  `sample_training_chunks`, `generate_triples`, `train_mnrl`,
+  `evaluate_model`. Per-dataset triple generation iterates the
+  stores; global shuffle before DataLoader. The generator logic
+  already exists in `experiments/rrf_training_pairs.py`, migrate
+  the core loop into `retrain.py`.
+- `vstash/cli.py`: new `vstash retrain-multi` subcommand OR extend
+  `retrain` with `--extra-store path=alias path=alias` +
+  `--sampling-temperature 0.5`. Probably a new subcommand is clearer.
+- `experiments/retrain_t1_4_multi_beir.ipynb`: Colab notebook that
+  ingests scifact+nfcorpus+fiqa into three vstash stores, runs
+  `retrain_multi` with `temperature=0.5`, reports per-dataset +
+  macro NDCG delta. Regression target: match the v5 notebook's
+  NFCorpus delta of +18.3% within noise. If we do not match, the
+  delta between v5's flow and T1.4's implementation is a bug we
+  need to hunt.
+- `tests/test_retrain_multi.py`: triple budget math across 3 sizes
+  under each strategy, eval-per-dataset persistence, gate behaviour
+  on mixed deltas.
+
+**Exit criteria:**
+- With `sampling="uniform"` and 3 BEIR datasets, each dataset
+  contributes `total_triples / 3` triples exactly.
+- With `sampling="temperature", temperature=0.5`, ratios follow the
+  formula within +-1 triple rounding.
+- On Colab smoke with the same dataset mix as v5
+  (scifact+nfcorpus+fiqa), the per-dataset NDCG deltas match v5's
+  numbers within a reasonable noise band (v5 ran at a specific
+  seed, rerunning will vary). Concretely: NFCorpus delta > +10%,
+  SciFact delta > +3%.
+- T1.1 gate still works exactly as before on single-store calls.
+
+**Risk**: scaling to 30k-100k triples with synthesize_queries=True
+is LLM-bill-heavy (30k+ calls). Default should be prefix on this
+harness and synth opt-in per dataset. Cache helps on re-runs.
+
+**Estimate**: 1-2 weeks. Biggest unknown is whether naive-shuffled
+batches suffice or whether we actually need a domain-balanced
+BatchSampler. Start simple; upgrade only if metrics demand it.
 
 [IN REVIEW on feat/retrain-t13-llm-synth] New module
 `vstash/retrain_synth.py` with `synthesize_queries()` + JSONL cache
