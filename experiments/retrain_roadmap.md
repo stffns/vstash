@@ -105,6 +105,18 @@ as a drop-in query encoder?".
 
 ### T1.2 Multi-triplet emission
 
+[PARKED on feat/retrain-t12-multi-triplet, PR #231 left open as WIP]
+Mechanics shipped (tests green), but the Colab smoke on SciFact
+showed the approach regresses hard when the underlying query signal
+is poor: delta NDCG@10 -4.97% with 10k pairs (vs +0.24% with 2k pairs
+at K=1). The T1.1 gate correctly rejected it.
+
+**Finding**: multiplying training signal only helps when the signal
+itself is quality. With chunk-prefix pseudo-queries, K>1 amplifies
+the distribution mismatch between training queries and real queries
+instead of improving the model. Revisit once T1.3 (LLM query
+synthesis) lands so the base signal is clean.
+
 **Goal:** extract 3-5x more training signal from the same disagreement data.
 
 **Design:**
@@ -131,6 +143,20 @@ as a drop-in query encoder?".
 ---
 
 ### T1.3 LLM query synthesis
+
+[IN REVIEW on feat/retrain-t13-llm-synth] New module
+`vstash/retrain_synth.py` with `synthesize_queries()` + JSONL cache
+keyed by (chunk_id, prompt_hash, model). `generate_triples` gained
+`synthesized_queries` + `pre_sampled_chunks` parameters so the LLM
+and triple-generation paths operate on the same chunk set. `retrain()`
+exposes `synthesize_queries: bool`, `synth_n`, `synth_cache`,
+`synth_model`, `cfg`. CLI flags: `--synthesize-queries`, `--synth-n`,
+`--synth-cache`, `--synth-model`. Tests: prompt + parser edge cases,
+cache hit/miss, LLM failure resilience, progress callback, and a
+generate_triples integration test proving synth queries replace the
+prefix and emit one triplet per synthesized query. Colab smoke
+notebook: `experiments/retrain_t1_3_llm_synth.ipynb` (separate from
+the T1.1 notebook so history stays clean).
 
 **Goal:** replace chunk-prefix pseudo-queries with short, realistic queries
 produced by a local LLM. Closes the query-chunk distribution gap that limits

@@ -244,6 +244,60 @@ class TestGenerateTriples:
         assert pairs == []
         assert calls["n"] > 1  # continued after the first failure
 
+    def test_synthesized_queries_replace_prefix_and_emit_per_query(
+        self, populated_store: VstashStore
+    ) -> None:
+        """When synthesized_queries maps a chunk to multiple queries,
+        generate_triples emits one triplet per synthesized query sharing
+        the same positive. Chunks absent from the map fall back to the
+        prefix query (one triplet)."""
+        chunk_rows = populated_store._conn.execute(
+            "SELECT c.id, c.text, d.path FROM chunks c "
+            "JOIN documents d ON d.id = c.doc_id ORDER BY c.id"
+        ).fetchall()
+        assert chunk_rows, "populated_store should have chunks"
+
+        # Synthesize 3 queries only for the first chunk.
+        target_id = chunk_rows[0]["id"]
+        synth_map = {
+            target_id: [
+                "what is this python guide about",
+                "how does python support multiple paradigms",
+                "is python a simple language",
+            ]
+        }
+
+        queries_used: list[str] = []
+
+        def capture_embed(text: str, *_a: Any, **_k: Any) -> list[float]:
+            queries_used.append(text)
+            return [0.0] * populated_store.embedding_dim
+
+        with (
+            patch("vstash.retrain.embed_query", side_effect=capture_embed),
+            patch.object(populated_store, "search", return_value=[]),
+        ):
+            generate_triples(
+                populated_store,
+                model_name="m",
+                max_queries=len(chunk_rows),  # visit every chunk
+                synthesized_queries=synth_map,
+            )
+
+        # The target chunk must be queried exactly once per synthesized query.
+        synth_hits = sum(1 for q in queries_used if q in synth_map[target_id])
+        assert synth_hits == 3, (
+            f"expected 3 synth queries used for chunk {target_id}, got {synth_hits}. "
+            f"queries_used={queries_used}"
+        )
+        # Other chunks fall back to the prefix. No synth-text should appear
+        # for chunks absent from synth_map.
+        for row in chunk_rows[1:]:
+            prefix = row["text"][:200]
+            assert prefix in queries_used, (
+                f"prefix for non-synth chunk {row['id']} should still be used"
+            )
+
     def test_seed_is_actually_deterministic(self, populated_store: VstashStore) -> None:
         """Two runs with the same seed must visit chunks in the same
         order. Before the fix, seed was silently ignored because

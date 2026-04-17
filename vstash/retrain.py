@@ -29,6 +29,9 @@ from pathlib import Path
 from .embed import embed_query
 from .store import VstashStore
 
+if False:  # TYPE_CHECKING only; avoids import cycle at runtime
+    from .config import VstashConfig  # noqa: F401
+
 logger = logging.getLogger(__name__)
 
 TOP_K = 10
@@ -38,38 +41,21 @@ _EVAL_MIN_QUERIES = 20
 _EVAL_NOISE_DEFAULT = 1000
 
 
-def generate_triples(
+def sample_training_chunks(
     store: VstashStore,
-    model_name: str,
-    max_queries: int = 5000,
+    max_queries: int,
     seed: int = 42,
     exclude_chunk_ids: set[int] | None = None,
 ) -> list[dict]:
-    """Generate training triples from RRF signal disagreement.
+    """Deterministically sample chunks to use as pseudo-queries.
 
-    For each document chunk, uses it as a pseudo-query against the store.
-    Identifies cases where vector-heavy and FTS-heavy search disagree on
-    the top results, and builds (query, positive) pairs for MNRL training.
-
-    Args:
-        store: VstashStore with ingested documents.
-        model_name: Embedding model to use for queries.
-        max_queries: Maximum number of pseudo-queries to generate.
-        seed: Random seed for reproducibility.
-        exclude_chunk_ids: Chunk IDs reserved for evaluation; skipped so
-            training and eval never overlap.
-
-    Returns:
-        List of dicts with 'query' and 'positive' keys.
+    Returns ``[{id, text, path}, ...]`` in the shuffled training order.
+    Extracted so LLM query synthesis can share the exact chunk set
+    with ``generate_triples``.
     """
     rng = random.Random(seed)
     excluded = exclude_chunk_ids or set()
 
-    # Sample chunks as pseudo-queries. Determinism: fetch IDs in stable
-    # order, shuffle with a seeded Python RNG, slice to sample_size, then
-    # fetch the chunk text/path only for those IDs. Keeps memory linear
-    # in the sample size (not in the whole corpus) and actually honors
-    # ``seed`` across runs and SQLite versions.
     id_rows = store._conn.execute("SELECT id FROM chunks ORDER BY id").fetchall()
     if not id_rows:
         return []
@@ -90,101 +76,178 @@ def generate_triples(
         f"WHERE c.id IN ({placeholders})",
         sample_ids,
     ).fetchall()
-    by_id = {r["id"]: r for r in fetched}
-    rows = [by_id[i] for i in sample_ids if i in by_id]
+    by_id = {r["id"]: {"id": r["id"], "text": r["text"], "path": r["path"]} for r in fetched}
+    return [by_id[i] for i in sample_ids if i in by_id]
 
+
+def generate_triples(
+    store: VstashStore,
+    model_name: str,
+    max_queries: int = 5000,
+    seed: int = 42,
+    exclude_chunk_ids: set[int] | None = None,
+    synthesized_queries: dict[int, list[str]] | None = None,
+    pre_sampled_chunks: list[dict] | None = None,
+) -> list[dict]:
+    """Generate training triples from RRF signal disagreement.
+
+    For each document chunk, uses it as a pseudo-query against the store.
+    Identifies cases where vector-heavy and FTS-heavy search disagree on
+    the top results, and builds (query, positive) pairs for MNRL training.
+
+    Args:
+        store: VstashStore with ingested documents.
+        model_name: Embedding model to use for queries.
+        max_queries: Maximum number of pseudo-queries to generate.
+        seed: Random seed for reproducibility.
+        exclude_chunk_ids: Chunk IDs reserved for evaluation; skipped so
+            training and eval never overlap.
+        synthesized_queries: Optional mapping ``{chunk_id: [query, ...]}``
+            produced by ``retrain_synth.synthesize_queries``. When a
+            chunk appears in this mapping, its synthesized queries are
+            used instead of the first-200-chars prefix, and one triplet
+            is emitted per synthesized query. Chunks missing from the
+            map fall back to the prefix behavior.
+
+    Returns:
+        List of dicts with 'query' and 'positive' keys.
+    """
+    if pre_sampled_chunks is not None:
+        rows = pre_sampled_chunks
+    else:
+        rows = sample_training_chunks(
+            store,
+            max_queries=max_queries,
+            seed=seed,
+            exclude_chunk_ids=exclude_chunk_ids,
+        )
+    if not rows:
+        return []
+
+    synth_map = synthesized_queries or {}
     pairs = []
     disagreements = 0
+    total_query_iterations = 0
+    synth_used = 0
+    prefix_used = 0
 
     for row in rows:
-        query_text = row["text"][:200]  # use first 200 chars as pseudo-query
         doc_path = row["path"]
-
-        emb = embed_query(query_text, model_name)
-
-        # Adaptive weights based on query length: short queries have
-        # more FTS value (exact term matching matters), long queries
-        # lean harder on vector (semantic matching dominates).
-        word_count = len(query_text.split())
-        if word_count <= 10:
-            vec_hi, fts_hi = 0.70, 0.30
-            vec_lo, fts_lo = 0.30, 0.70
-        elif word_count <= 50:
-            vec_hi, fts_hi = 0.85, 0.15
-            vec_lo, fts_lo = 0.15, 0.85
+        # Build the list of queries for this chunk. Synthesized queries
+        # take precedence when available; otherwise fall back to the
+        # first-200-char prefix (legacy behavior).
+        queries_for_row: list[str]
+        if row["id"] in synth_map and synth_map[row["id"]]:
+            queries_for_row = list(synth_map[row["id"]])
+            synth_used += len(queries_for_row)
         else:
-            vec_hi, fts_hi = 0.95, 0.05
-            vec_lo, fts_lo = 0.50, 0.50
+            queries_for_row = [row["text"][:200]]
+            prefix_used += 1
 
-        # Vector-heavy search
-        try:
-            vec_results = store.search(
-                query_embedding=emb,
-                query_text=query_text,
-                top_k=TOP_K,
-                vec_weight=vec_hi,
-                fts_weight=fts_hi,
-                adaptive_rrf=False,
-            )
-        except Exception:
-            continue
+        # The positive is always the chunk's own text. Fixed per chunk,
+        # independent of how many queries map to it.
+        own_chunk_text = row["text"]
 
-        # FTS-heavy search
-        try:
-            fts_results = store.search(
-                query_embedding=emb,
-                query_text=query_text,
-                top_k=TOP_K,
-                vec_weight=vec_lo,
-                fts_weight=fts_lo,
-                adaptive_rrf=False,
-            )
-        except Exception:
-            continue
+        for query_text in queries_for_row:
+            total_query_iterations += 1
+            if not query_text:
+                continue
 
-        vec_paths = {r.path for r in vec_results[:5]}
-        fts_paths = {r.path for r in fts_results[:5]}
+            emb = embed_query(query_text, model_name)
 
-        if vec_paths != fts_paths:
-            disagreements += 1
+            # Adaptive weights based on query length: short queries have
+            # more FTS value (exact term matching matters), long queries
+            # lean harder on vector (semantic matching dominates).
+            word_count = len(query_text.split())
+            if word_count <= 10:
+                vec_hi, fts_hi = 0.70, 0.30
+                vec_lo, fts_lo = 0.30, 0.70
+            elif word_count <= 50:
+                vec_hi, fts_hi = 0.85, 0.15
+                vec_lo, fts_lo = 0.15, 0.85
+            else:
+                vec_hi, fts_hi = 0.95, 0.05
+                vec_lo, fts_lo = 0.50, 0.50
 
-        # Build text lookup from all results
-        result_texts: dict[str, str] = {}
-        for r in vec_results + fts_results:
-            result_texts[r.path] = r.text
+            # Vector-heavy search
+            try:
+                vec_results = store.search(
+                    query_embedding=emb,
+                    query_text=query_text,
+                    top_k=TOP_K,
+                    vec_weight=vec_hi,
+                    fts_weight=fts_hi,
+                    adaptive_rrf=False,
+                )
+            except Exception:
+                continue
 
-        # The document's own chunk is the positive
-        positive_text = result_texts.get(doc_path)
+            # FTS-heavy search
+            try:
+                fts_results = store.search(
+                    query_embedding=emb,
+                    query_text=query_text,
+                    top_k=TOP_K,
+                    vec_weight=vec_lo,
+                    fts_weight=fts_lo,
+                    adaptive_rrf=False,
+                )
+            except Exception:
+                continue
 
-        if not positive_text or positive_text == query_text:
-            continue
+            vec_paths = {r.path for r in vec_results[:5]}
+            fts_paths = {r.path for r in fts_results[:5]}
 
-        # Hard negatives: chunks in one signal's top-5 but not the other's
-        hard_neg_text = None
-        for r in vec_results[:5]:
-            if r.path not in fts_paths and r.path != doc_path:
-                hard_neg_text = r.text
-                break
-        if hard_neg_text is None:
-            for r in fts_results[:5]:
-                if r.path not in vec_paths and r.path != doc_path:
+            if vec_paths != fts_paths:
+                disagreements += 1
+
+            # Build text lookup from all results
+            result_texts: dict[str, str] = {}
+            for r in vec_results + fts_results:
+                result_texts[r.path] = r.text
+
+            # The document's own chunk is the positive. Prefer the
+            # result-side copy (its path is in the index) but fall back
+            # to the raw chunk text so synthesized queries whose source
+            # chunk does not surface in retrieval still emit a pair.
+            positive_text = result_texts.get(doc_path) or own_chunk_text
+
+            if not positive_text or positive_text == query_text:
+                continue
+
+            # Hard negatives: chunks in one signal's top-5 but not the other's
+            hard_neg_text = None
+            for r in vec_results[:5]:
+                if r.path not in fts_paths and r.path != doc_path:
                     hard_neg_text = r.text
                     break
+            if hard_neg_text is None:
+                for r in fts_results[:5]:
+                    if r.path not in vec_paths and r.path != doc_path:
+                        hard_neg_text = r.text
+                        break
 
-        pairs.append(
-            {
-                "query": query_text,
-                "positive": positive_text,
-                "negative": hard_neg_text,
-            }
-        )
+            pairs.append(
+                {
+                    "query": query_text,
+                    "positive": positive_text,
+                    "negative": hard_neg_text,
+                }
+            )
 
+    source_desc = (
+        f"{synth_used} synthesized + {prefix_used} prefix"
+        if synth_used
+        else f"{prefix_used} prefix"
+    )
     logger.info(
-        "Generated %d pairs from %d queries (%d disagreements, %.0f%%)",
+        "Generated %d pairs from %d chunks / %d query iterations (%s; %d disagreements, %.0f%%)",
         len(pairs),
         len(rows),
+        total_query_iterations,
+        source_desc,
         disagreements,
-        disagreements / len(rows) * 100 if rows else 0,
+        disagreements / total_query_iterations * 100 if total_query_iterations else 0,
     )
     return pairs
 
@@ -735,6 +798,11 @@ def retrain(
     skip_eval: bool = False,
     seed: int = 42,
     eval_queries: list[dict] | None = None,
+    synthesize_queries: bool = False,
+    synth_n: int = 2,
+    synth_cache: str | Path | None = None,
+    synth_model: str | None = None,
+    cfg: "VstashConfig | None" = None,
 ) -> RetrainResult:
     """Full eval-gated retrain pipeline.
 
@@ -774,7 +842,28 @@ def retrain(
     final_path_str = str(Path(output_path).expanduser())
 
     if skip_eval:
-        pairs = generate_triples(store, base_model, max_queries=max_queries, seed=seed)
+        training_chunks = sample_training_chunks(store, max_queries=max_queries, seed=seed)
+        synth_map: dict[int, list[str]] = {}
+        if synthesize_queries and training_chunks:
+            if cfg is None:
+                raise ValueError("synthesize_queries=True requires the ``cfg`` argument.")
+            from .retrain_synth import synthesize_queries as _synth_queries
+
+            synth_map = _synth_queries(
+                training_chunks,
+                cfg=cfg,
+                n_per_chunk=synth_n,
+                cache_path=synth_cache,
+                model=synth_model,
+            )
+        pairs = generate_triples(
+            store,
+            base_model,
+            max_queries=max_queries,
+            seed=seed,
+            synthesized_queries=synth_map or None,
+            pre_sampled_chunks=training_chunks,
+        )
         if not pairs:
             return RetrainResult(
                 output_path=None,
@@ -829,6 +918,11 @@ def retrain(
             min_gain=min_gain,
             skip_eval=True,
             seed=seed,
+            synthesize_queries=synthesize_queries,
+            synth_n=synth_n,
+            synth_cache=synth_cache,
+            synth_model=synth_model,
+            cfg=cfg,
         )
 
     logger.info("Running baseline eval on %d held-out queries ...", len(effective_queries))
@@ -840,12 +934,51 @@ def retrain(
         seed=seed,
     )
 
+    # Sample training chunks once, then optionally synthesize queries on
+    # that exact set so generate_triples and the LLM operate on the same
+    # chunk population (no wasted LLM calls).
+    training_chunks = sample_training_chunks(
+        store,
+        max_queries=max_queries,
+        seed=seed,
+        exclude_chunk_ids=reserved_ids,
+    )
+
+    synth_map: dict[int, list[str]] = {}
+    if synthesize_queries and training_chunks:
+        if cfg is None:
+            raise ValueError(
+                "synthesize_queries=True requires the ``cfg`` argument "
+                "(a VstashConfig) so the LLM backend can be resolved."
+            )
+        from .retrain_synth import synthesize_queries as _synth_queries
+
+        logger.info(
+            "Synthesizing %d queries per chunk across %d chunks ...",
+            synth_n,
+            len(training_chunks),
+        )
+        synth_map = _synth_queries(
+            training_chunks,
+            cfg=cfg,
+            n_per_chunk=synth_n,
+            cache_path=synth_cache,
+            model=synth_model,
+        )
+        logger.info(
+            "Synthesis done: %d of %d chunks produced queries.",
+            len(synth_map),
+            len(training_chunks),
+        )
+
     pairs = generate_triples(
         store,
         base_model,
         max_queries=max_queries,
         seed=seed,
         exclude_chunk_ids=reserved_ids,
+        synthesized_queries=synth_map or None,
+        pre_sampled_chunks=training_chunks,
     )
     if len(pairs) < 10:
         logger.warning(
