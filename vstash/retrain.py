@@ -62,24 +62,36 @@ def generate_triples(
     Returns:
         List of dicts with 'query' and 'positive' keys.
     """
-    random.Random(seed)
+    rng = random.Random(seed)
     excluded = exclude_chunk_ids or set()
 
-    # Sample chunks as pseudo-queries. We pull every eligible chunk (minus
-    # the held-out set) and let SQLite shuffle, then slice.
-    total = store._conn.execute("SELECT COUNT(*) as n FROM chunks").fetchone()["n"]
-    if total == 0:
+    # Sample chunks as pseudo-queries. Determinism: fetch IDs in stable
+    # order, shuffle with a seeded Python RNG, slice to sample_size, then
+    # fetch the chunk text/path only for those IDs. Keeps memory linear
+    # in the sample size (not in the whole corpus) and actually honors
+    # ``seed`` across runs and SQLite versions.
+    id_rows = store._conn.execute("SELECT id FROM chunks ORDER BY id").fetchall()
+    if not id_rows:
         return []
 
-    sample_size = min(max_queries, total)
-    rows = store._conn.execute(
-        "SELECT c.id, c.text, d.path FROM chunks c "
-        "JOIN documents d ON d.id = c.doc_id "
-        "ORDER BY RANDOM()",
-    ).fetchall()
+    ids = [r["id"] for r in id_rows]
     if excluded:
-        rows = [r for r in rows if r["id"] not in excluded]
-    rows = rows[:sample_size]
+        ids = [i for i in ids if i not in excluded]
+    rng.shuffle(ids)
+    sample_size = min(max_queries, len(ids))
+    sample_ids = ids[:sample_size]
+    if not sample_ids:
+        return []
+
+    placeholders = ",".join("?" * len(sample_ids))
+    fetched = store._conn.execute(
+        f"SELECT c.id, c.text, d.path FROM chunks c "
+        f"JOIN documents d ON d.id = c.doc_id "
+        f"WHERE c.id IN ({placeholders})",
+        sample_ids,
+    ).fetchall()
+    by_id = {r["id"]: r for r in fetched}
+    rows = [by_id[i] for i in sample_ids if i in by_id]
 
     pairs = []
     disagreements = 0
@@ -336,30 +348,44 @@ def split_corpus_for_eval(
         'source_chunk_id'. ``relevant_path`` (singular) is still
         populated for legacy callers.
     """
-    rows = store._conn.execute(
-        "SELECT c.id, c.text, d.path FROM chunks c JOIN documents d ON d.id = c.doc_id",
+    # Fetch ids + paths first in stable order (ints + short strings);
+    # shuffle with a seeded Python RNG so the split is deterministic
+    # across SQLite versions. We only pay the full-text read for the
+    # final held-out set, not the whole corpus.
+    id_rows = store._conn.execute(
+        "SELECT c.id AS id, d.path AS path FROM chunks c "
+        "JOIN documents d ON d.id = c.doc_id "
+        "ORDER BY c.id",
     ).fetchall()
-    if len(rows) < min_queries:
+    if len(id_rows) < min_queries:
         return set(), []
 
     rng = random.Random(seed)
-    rows_shuffled = list(rows)
-    rng.shuffle(rows_shuffled)
+    shuffled = list(id_rows)
+    rng.shuffle(shuffled)
 
-    target = max(min_queries, min(max_queries, int(len(rows_shuffled) * eval_fraction)))
-    target = min(target, len(rows_shuffled))
+    target = max(min_queries, min(max_queries, int(len(shuffled) * eval_fraction)))
+    target = min(target, len(shuffled))
 
-    reserved = rows_shuffled[:target]
+    reserved = shuffled[:target]
+    reserved_ids = {r["id"] for r in reserved}
+
+    placeholders = ",".join("?" * len(reserved))
+    text_rows = store._conn.execute(
+        f"SELECT id, text FROM chunks WHERE id IN ({placeholders})",
+        list(reserved_ids),
+    ).fetchall()
+    text_by_id = {r["id"]: r["text"] for r in text_rows}
+
     eval_queries = [
         {
-            "query": r["text"][:200],
+            "query": text_by_id.get(r["id"], "")[:200],
             "relevant_paths": [r["path"]],
             "relevant_path": r["path"],  # legacy single-relevant field
             "source_chunk_id": r["id"],
         }
         for r in reserved
     ]
-    reserved_ids = {r["id"] for r in reserved}
     return reserved_ids, eval_queries
 
 
@@ -421,16 +447,48 @@ def _sample_noise_chunks(
 
     These distractor chunks make NDCG meaningful: without real competition
     a 10-query search on 10 chunks is trivially perfect.
+
+    Strategy: push the NOT IN filter to SQL so we never materialise the
+    whole chunks table in Python. Then fetch ids only, shuffle with a
+    seeded RNG for determinism, and pull the full rows for just the
+    sample.
     """
-    rows = store._conn.execute(
-        "SELECT c.id, c.text, d.path, d.title FROM chunks c JOIN documents d ON d.id = c.doc_id",
-    ).fetchall()
-    pool = [r for r in rows if r["path"] not in relevant_paths]
-    if not pool:
+    if n <= 0:
         return []
+
+    if relevant_paths:
+        placeholders = ",".join("?" * len(relevant_paths))
+        id_rows = store._conn.execute(
+            f"SELECT c.id FROM chunks c "
+            f"JOIN documents d ON d.id = c.doc_id "
+            f"WHERE d.path NOT IN ({placeholders}) "
+            f"ORDER BY c.id",
+            list(relevant_paths),
+        ).fetchall()
+    else:
+        id_rows = store._conn.execute(
+            "SELECT id FROM chunks ORDER BY id",
+        ).fetchall()
+
+    if not id_rows:
+        return []
+
+    ids = [r["id"] for r in id_rows]
     rng = random.Random(seed)
-    rng.shuffle(pool)
-    return [dict(r) for r in pool[:n]]
+    rng.shuffle(ids)
+    sample_ids = ids[:n]
+    if not sample_ids:
+        return []
+
+    ph = ",".join("?" * len(sample_ids))
+    rows = store._conn.execute(
+        f"SELECT c.id, c.text, d.path, d.title FROM chunks c "
+        f"JOIN documents d ON d.id = c.doc_id "
+        f"WHERE c.id IN ({ph})",
+        sample_ids,
+    ).fetchall()
+    by_id = {r["id"]: dict(r) for r in rows}
+    return [by_id[i] for i in sample_ids if i in by_id]
 
 
 def _relevant_chunks(store: VstashStore, relevant_paths: set[str]) -> list[dict]:
@@ -573,14 +631,23 @@ def evaluate_model(
         time.perf_counter() - t0,
     )
 
-    # Build a fresh temp store with the matching dim.
-    tmp_parent = Path(tmp_dir) if tmp_dir else Path(tempfile.gettempdir())
-    tmp_parent.mkdir(parents=True, exist_ok=True)
-    tmp_db = tmp_parent / f"retrain_eval_{int(time.time() * 1000)}_{random.randint(0, 1 << 30)}.db"
-
-    eval_store = VstashStore(str(tmp_db), embedding_dim=dim)
+    # Build a fresh temp store with the matching dim. Initialise the
+    # cleanup targets up front so the finally block cannot raise
+    # UnboundLocalError if the constructor or path math throws.
+    eval_store: VstashStore | None = None
+    tmp_db: Path | None = None
     try:
-        # Group chunks by document path so add_document gets full docs.
+        tmp_parent = Path(tmp_dir) if tmp_dir else Path(tempfile.gettempdir())
+        tmp_parent.mkdir(parents=True, exist_ok=True)
+        tmp_db = (
+            tmp_parent / f"retrain_eval_{int(time.time() * 1000)}_{random.randint(0, 1 << 30)}.db"
+        )
+
+        eval_store = VstashStore(str(tmp_db), embedding_dim=dim)
+
+        # Group chunks by document path, then batch-ingest all docs in a
+        # single transaction via add_documents_batch (much faster than a
+        # per-doc loop, which commits once per document).
         by_path: dict[str, dict] = {}
         idx_by_path: dict[str, list[int]] = {}
         for i, row in enumerate(all_rows):
@@ -590,25 +657,33 @@ def evaluate_model(
                 idx_by_path[path] = []
             idx_by_path[path].append(i)
 
+        docs_to_add = []
         for path, doc_meta in by_path.items():
             idxs = idx_by_path[path]
-            chunks = [all_rows[i]["text"] for i in idxs]
-            embs = [list(map(float, corpus_vecs[i])) for i in idxs]
-            eval_store.add_document(
-                path=path,
-                title=doc_meta["title"],
-                chunks=chunks,
-                embeddings=embs,
+            docs_to_add.append(
+                {
+                    "path": path,
+                    "title": doc_meta["title"],
+                    "chunks": [all_rows[i]["text"] for i in idxs],
+                    "embeddings": [list(map(float, corpus_vecs[i])) for i in idxs],
+                    "source_type": "file",
+                }
             )
+        eval_store.add_documents_batch(docs_to_add)
+
+        # Batch-encode every eval query in one shot instead of per-query.
+        query_texts = [q["query"] for q in normalized_queries]
+        q_vecs = model.encode(
+            query_texts,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        )
 
         # Score each query via production search (RRF with adaptive weights).
         ndcgs: list[float] = []
         mrrs: list[float] = []
         hits: list[float] = []
-        for q in normalized_queries:
-            q_vec = model.encode([q["query"]], normalize_embeddings=True, show_progress_bar=False)[
-                0
-            ]
+        for q, q_vec in zip(normalized_queries, q_vecs):
             results = eval_store.search(
                 query_embedding=list(map(float, q_vec)),
                 query_text=q["query"],
@@ -633,18 +708,17 @@ def evaluate_model(
             n_queries=len(normalized_queries),
         )
     finally:
-        try:
-            eval_store.close()
-        except Exception:
-            pass
-        try:
-            tmp_db.unlink(missing_ok=True)
-            wal = tmp_db.with_suffix(tmp_db.suffix + "-wal")
-            shm = tmp_db.with_suffix(tmp_db.suffix + "-shm")
-            wal.unlink(missing_ok=True)
-            shm.unlink(missing_ok=True)
-        except Exception:
-            pass
+        if eval_store is not None:
+            try:
+                eval_store.close()
+            except Exception:
+                pass
+        if tmp_db is not None:
+            for suffix in ("", "-wal", "-shm"):
+                try:
+                    (tmp_db.parent / (tmp_db.name + suffix)).unlink(missing_ok=True)
+                except Exception:
+                    pass
 
 
 def retrain(
@@ -750,6 +824,9 @@ def retrain(
             epochs=epochs,
             lr=lr,
             batch_size=batch_size,
+            eval_fraction=eval_fraction,
+            eval_noise_size=eval_noise_size,
+            min_gain=min_gain,
             skip_eval=True,
             seed=seed,
         )
@@ -771,13 +848,17 @@ def retrain(
         exclude_chunk_ids=reserved_ids,
     )
     if len(pairs) < 10:
-        logger.warning("Only %d training pairs generated. Skipping training.", len(pairs))
+        logger.warning(
+            "Only %d training pairs generated (need >= 10). Skipping training.", len(pairs)
+        )
+        # Treat as gated_out so callers (CLI, scripts) don't mistake a
+        # skipped training for a successful save.
         return RetrainResult(
             output_path=None,
             baseline=baseline,
             final=None,
             n_pairs=len(pairs),
-            gated_out=False,
+            gated_out=True,
             min_gain=min_gain,
         )
 
@@ -842,12 +923,29 @@ def retrain(
             min_gain=min_gain,
         )
 
-    # Promote candidate to final path atomically.
+    # Promote candidate to final path with a last-known-good backup.
+    # If we rmtree(final_path) before the move, a crash between those
+    # two steps leaves the user with no model. Instead: rename the
+    # existing model aside to `.old`, move the candidate into place,
+    # remove the backup only once the new model is committed. On any
+    # failure, roll the backup back so the user never ends up empty.
     final_path = Path(final_path_str)
-    if final_path.exists():
-        shutil.rmtree(final_path)
+    backup_path = final_path.with_name(final_path.name + ".old")
     final_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(candidate_path), str(final_path))
+    if backup_path.exists():
+        shutil.rmtree(backup_path)
+
+    try:
+        if final_path.exists():
+            final_path.rename(backup_path)
+        shutil.move(str(candidate_path), str(final_path))
+    except Exception:
+        if backup_path.exists() and not final_path.exists():
+            backup_path.rename(final_path)
+        raise
+    else:
+        if backup_path.exists():
+            shutil.rmtree(backup_path)
 
     logger.info(
         "Retrain saved: delta NDCG@10 = %+.4f (baseline=%.4f, final=%.4f)",

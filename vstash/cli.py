@@ -1601,11 +1601,25 @@ def retrain(
 
     if result.gated_out:
         console.print()
-        console.print(
-            f"[red]Gated out[/red]: delta NDCG@10 did not meet min-gain "
-            f"({result.min_gain:+.4f}). Candidate left at "
-            f"[dim]{Path(output).expanduser()}.candidate[/dim] for inspection."
-        )
+        if result.final is None:
+            # No candidate was trained (too few pairs). Nothing to promote
+            # or inspect -- the retrain simply did not produce a model.
+            console.print(
+                "[red]Training skipped[/red]: not enough training pairs to "
+                "fine-tune. Your corpus may be too small or too homogeneous."
+            )
+        else:
+            console.print(
+                f"[red]Gated out[/red]: delta NDCG@10 did not meet min-gain "
+                f"({result.min_gain:+.4f}). Candidate left at "
+                f"[dim]{Path(output).expanduser()}.candidate[/dim] for inspection."
+            )
+        raise typer.Exit(code=2)
+
+    if result.output_path is None:
+        # Defensive: any future RetrainResult path that returns None for
+        # output_path without setting gated_out=True would land here.
+        console.print("[red]x[/red] retrain did not save a model. See logs for details.")
         raise typer.Exit(code=2)
 
     console.print()

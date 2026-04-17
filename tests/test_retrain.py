@@ -244,6 +244,34 @@ class TestGenerateTriples:
         assert pairs == []
         assert calls["n"] > 1  # continued after the first failure
 
+    def test_seed_is_actually_deterministic(self, populated_store: VstashStore) -> None:
+        """Two runs with the same seed must visit chunks in the same
+        order. Before the fix, seed was silently ignored because
+        random.Random(seed) was instantiated but never used and the
+        shuffle relied on SQLite's ORDER BY RANDOM()."""
+        seen_a: list[str] = []
+        seen_b: list[str] = []
+
+        def record_into(bucket: list[str]):
+            def _embed(text: str, *_a: Any, **_k: Any) -> list[float]:
+                bucket.append(text)
+                return [0.0] * populated_store.embedding_dim
+
+            return _embed
+
+        with (
+            patch("vstash.retrain.embed_query", side_effect=record_into(seen_a)),
+            patch.object(populated_store, "search", return_value=[]),
+        ):
+            generate_triples(populated_store, model_name="m", max_queries=10, seed=123)
+        with (
+            patch("vstash.retrain.embed_query", side_effect=record_into(seen_b)),
+            patch.object(populated_store, "search", return_value=[]),
+        ):
+            generate_triples(populated_store, model_name="m", max_queries=10, seed=123)
+
+        assert seen_a == seen_b, "same seed must produce the same sampling order"
+
 
 # ------------------------------------------------------------------ #
 # train_mnrl                                                           #
@@ -473,20 +501,35 @@ class TestSplitCorpusForEval:
         assert reserved == set()
         assert queries == []
 
-    def test_deterministic(self, populated_store: VstashStore) -> None:
-        """Same seed -> same split. min_queries lowered for fixture size."""
-        a_ids, a_queries = split_corpus_for_eval(populated_store, min_queries=2, max_queries=3)
-        b_ids, b_queries = split_corpus_for_eval(populated_store, min_queries=2, max_queries=3)
+    def test_deterministic_across_calls(self, populated_store: VstashStore) -> None:
+        """Same seed -> same split twice in a row (true determinism, not
+        SQLite random() luck)."""
+        a_ids, a_queries = split_corpus_for_eval(
+            populated_store, min_queries=2, max_queries=3, seed=1
+        )
+        b_ids, b_queries = split_corpus_for_eval(
+            populated_store, min_queries=2, max_queries=3, seed=1
+        )
         assert a_ids == b_ids
         assert [q["source_chunk_id"] for q in a_queries] == [
             q["source_chunk_id"] for q in b_queries
         ]
 
-    def test_different_seeds_produce_different_splits(self, populated_store: VstashStore) -> None:
-        a_ids, _ = split_corpus_for_eval(populated_store, min_queries=2, max_queries=3, seed=1)
-        b_ids, _ = split_corpus_for_eval(populated_store, min_queries=2, max_queries=3, seed=99)
-        # Not strictly guaranteed on tiny data, but overwhelmingly likely.
-        assert a_ids != b_ids
+    def test_deterministic_seed_is_stable_order(self, populated_store: VstashStore) -> None:
+        """Repeated calls at seed=99 yield the same sample (no reliance on
+        SQLite's internal row order)."""
+        c_ids, c_queries = split_corpus_for_eval(
+            populated_store, min_queries=2, max_queries=3, seed=99
+        )
+        d_ids, d_queries = split_corpus_for_eval(
+            populated_store, min_queries=2, max_queries=3, seed=99
+        )
+        assert c_ids == d_ids
+        assert [q["source_chunk_id"] for q in c_queries] == [
+            q["source_chunk_id"] for q in d_queries
+        ]
+        # Output must be self-consistent: reserved_ids matches the query set.
+        assert c_ids == {q["source_chunk_id"] for q in c_queries}
 
     def test_queries_carry_required_fields(self, populated_store: VstashStore) -> None:
         _, queries = split_corpus_for_eval(populated_store, min_queries=2, max_queries=3)
@@ -896,3 +939,86 @@ class TestRetrainOrchestration:
             assert call.kwargs["eval_queries"] is external
         assert result.gated_out is False
         assert result.delta_ndcg == pytest.approx(0.05)
+
+    def test_too_few_pairs_is_gated_out_not_saved(
+        self, populated_store: VstashStore, tmp_path: Path, st_stubs: Any
+    ) -> None:
+        """When generate_triples produces fewer than 10 pairs, retrain
+        must NOT claim success. Earlier behavior returned
+        gated_out=False with output_path=None, which drove the CLI to
+        print "Model saved to: None". Now it must flag gated_out=True."""
+        st_mod, _, _ = st_stubs
+        st_mod.SentenceTransformer.return_value = MagicMock()
+
+        baseline_metrics = EvalMetrics(ndcg_at_10=0.5, mrr=0.5, hit_at_10=0.6, n_queries=25)
+        fake_eval_queries = [{"query": f"q{i}", "relevant_paths": [f"/p{i}"]} for i in range(25)]
+        too_few = [{"query": "q", "positive": "p"}] * 3  # < 10 minimum
+
+        with (
+            patch(
+                "vstash.retrain.split_corpus_for_eval",
+                return_value=(set(), fake_eval_queries),
+            ),
+            patch("vstash.retrain.evaluate_model", return_value=baseline_metrics),
+            patch("vstash.retrain.generate_triples", return_value=too_few),
+        ):
+            result = retrain(
+                populated_store,
+                base_model="dummy",
+                output_path=str(tmp_path / "m"),
+            )
+
+        assert result.n_pairs == 3
+        assert result.output_path is None
+        assert result.gated_out is True
+        assert result.final is None
+        assert not (tmp_path / "m").exists()
+        assert not (tmp_path / "m.candidate").exists()
+
+    def test_atomic_promote_preserves_existing_model_on_failure(
+        self, populated_store: VstashStore, tmp_path: Path, st_stubs: Any
+    ) -> None:
+        """If shutil.move fails mid-promote, the previous model at
+        output_path must still be there afterwards (rolled back from
+        the .old backup)."""
+        st_mod, _, _ = st_stubs
+        st_mod.SentenceTransformer.return_value = MagicMock()
+
+        # Seed an "existing" model at the final path so we have something
+        # to preserve during promote.
+        final_path = tmp_path / "m"
+        final_path.mkdir()
+        (final_path / "existing.txt").write_text("previous good model")
+
+        baseline_metrics = EvalMetrics(ndcg_at_10=0.70, mrr=0.70, hit_at_10=0.9, n_queries=25)
+        final_metrics = EvalMetrics(ndcg_at_10=0.80, mrr=0.80, hit_at_10=1.0, n_queries=25)
+        fake_eval_queries = [{"query": f"q{i}", "relevant_paths": [f"/p{i}"]} for i in range(25)]
+        fake_pairs = [{"query": "q", "positive": "p"}] * 20
+
+        boom = RuntimeError("disk full during promote")
+        with (
+            patch(
+                "vstash.retrain.split_corpus_for_eval",
+                return_value=(set(), fake_eval_queries),
+            ),
+            patch(
+                "vstash.retrain.evaluate_model",
+                side_effect=[baseline_metrics, final_metrics],
+            ),
+            patch("vstash.retrain.generate_triples", return_value=fake_pairs),
+            patch("vstash.retrain.shutil.move", side_effect=boom),
+            pytest.raises(RuntimeError, match="disk full"),
+        ):
+            retrain(
+                populated_store,
+                base_model="dummy",
+                output_path=str(final_path),
+                min_gain=0.0,
+            )
+
+        # The previous model must still be at the final path after the
+        # failed promote (rolled back from .old).
+        assert final_path.is_dir()
+        assert (final_path / "existing.txt").read_text() == "previous good model"
+        # No leftover backup.
+        assert not (tmp_path / "m.old").exists()
