@@ -1665,6 +1665,273 @@ def retrain(
     console.print(f"  [bold]vstash reindex --model {result.output_path}[/bold]")
 
 
+@app.command(name="retrain-multi")
+def retrain_multi_cmd(
+    ctx: typer.Context,
+    store_spec: list[str] = typer.Option(
+        [],
+        "--store",
+        "-s",
+        help="Extra corpus in the form NAME=PATH. Repeat for each dataset. "
+        "The current profile's store is also included, aliased by its "
+        "config name (or 'primary' if unnamed) unless --exclude-primary is passed.",
+    ),
+    exclude_primary: bool = typer.Option(
+        False,
+        "--exclude-primary",
+        help="Do not include the current profile's store in the multi-corpus mix. "
+        "Use this when --store alone covers all datasets you want to train on.",
+    ),
+    output: str = typer.Option(
+        "~/.vstash/models/retrained-multi",
+        "--output",
+        "-o",
+        help="Where to save the fine-tuned model",
+    ),
+    sampling_strategy: str = typer.Option(
+        "temperature",
+        "--sampling-strategy",
+        help="uniform | proportional | temperature. Temperature (default) "
+        "damps the largest corpus toward a more balanced triple budget.",
+    ),
+    sampling_temperature: float = typer.Option(
+        0.5,
+        "--sampling-temperature",
+        help="Exponent for the temperature strategy. 0=uniform, 1=proportional, "
+        "0.5=favours smaller corpora without abandoning size signal.",
+    ),
+    total_triples: int = typer.Option(
+        10000,
+        "--total-triples",
+        help="Target total pseudo-query budget across all datasets. Actual "
+        "pair count may be lower when corpora are smaller than their share.",
+    ),
+    epochs: int = typer.Option(2, "--epochs", help="Training epochs"),
+    lr: float = typer.Option(3e-6, "--lr", help="Learning rate"),
+    batch_size: int = typer.Option(64, "--batch-size", help="Training batch size"),
+    base_model: str | None = typer.Option(
+        None, "--base-model", help="Base model to fine-tune (default: current config model)"
+    ),
+    min_gain: float = typer.Option(
+        0.0,
+        "--min-gain",
+        help="Required NDCG@10 improvement over baseline. Applied to the "
+        "macro-average unless --per-dataset-gate is passed.",
+    ),
+    per_dataset_gate: bool = typer.Option(
+        False,
+        "--per-dataset-gate",
+        help="Require every dataset individually to clear --min-gain. "
+        "Stricter than the default macro-average gate.",
+    ),
+    no_eval: bool = typer.Option(
+        False, "--no-eval", help="Skip eval gate entirely and save unconditionally"
+    ),
+    eval_fraction: float = typer.Option(
+        0.15, "--eval-fraction", help="Fraction of each corpus reserved for held-out eval"
+    ),
+    eval_noise_size: int = typer.Option(
+        1000,
+        "--eval-noise",
+        help="Distractor chunks added to each eval index (higher = stricter eval)",
+    ),
+) -> None:
+    """Fine-tune the embedding model over multiple corpora with balanced sampling.
+
+    Wrapper around ``vstash.retrain.retrain_multi``. Give it one or more
+    vstash stores (each one a separate corpus) plus the current
+    profile's store; retrain-multi computes a per-dataset triple budget,
+    generates (query, positive, hard_neg) triples from each corpus,
+    shuffles them globally, and fine-tunes a single embedding model.
+
+    Per-dataset NDCG@10 is reported before and after. The macro-average
+    gate (or --per-dataset-gate) prevents a regressed model from being
+    promoted over your current one.
+
+    Example:
+        vstash retrain-multi \\
+            --store nfcorpus=/data/vstash-nfcorpus.db \\
+            --store fiqa=/data/vstash-fiqa.db \\
+            --sampling-strategy temperature \\
+            --sampling-temperature 0.5 \\
+            --total-triples 30000 \\
+            --output ~/.vstash/models/multi-tuned
+
+    Requires: pip install sentence-transformers torch
+    """
+    try:
+        from .retrain import retrain_multi as run_retrain_multi
+    except ImportError as exc:
+        console.print(
+            "[red]x[/red] vstash retrain-multi requires sentence-transformers, torch, "
+            "and accelerate. Install with: "
+            "[bold]pip install 'sentence-transformers>=3' torch 'accelerate>=1.1.0'[/bold]"
+        )
+        raise typer.Exit(code=1) from exc
+
+    from .embed import get_embedding_dim as _get_dim
+
+    cfg, primary_store = _get_store(profile=_profile_from_ctx(ctx))
+    model_name = base_model or cfg.embeddings.model
+
+    stores: dict[str, VstashStore] = {}
+    opened_extra: list[VstashStore] = []
+    if not exclude_primary:
+        primary_alias = _profile_from_ctx(ctx) or "primary"
+        stores[primary_alias] = primary_store
+
+    try:
+        dim = _get_dim(cfg.embeddings.model)
+        for spec in store_spec:
+            if "=" not in spec:
+                console.print(
+                    f"[red]x[/red] Invalid --store spec [bold]{spec}[/bold]. Expected NAME=PATH."
+                )
+                raise typer.Exit(code=1)
+            alias, _, path = spec.partition("=")
+            alias = alias.strip()
+            path = path.strip()
+            if not alias or not path:
+                console.print(
+                    f"[red]x[/red] Invalid --store spec [bold]{spec}[/bold]. "
+                    "Both NAME and PATH must be non-empty."
+                )
+                raise typer.Exit(code=1)
+            if alias in stores:
+                console.print(
+                    f"[red]x[/red] Duplicate store alias [bold]{alias}[/bold]. "
+                    "Each --store must use a unique name."
+                )
+                raise typer.Exit(code=1)
+            extra_store = VstashStore(
+                path,
+                embedding_dim=dim,
+                vector_backend=cfg.storage.vector_backend,
+                snapvec_bits=cfg.storage.snapvec_bits,
+                ivfpq_nlist=cfg.storage.ivfpq_nlist,
+                ivfpq_M=cfg.storage.ivfpq_M,
+                ivfpq_K=cfg.storage.ivfpq_K,
+                ivfpq_rerank_candidates=cfg.storage.ivfpq_rerank_candidates,
+                ivfpq_nprobe=cfg.storage.ivfpq_nprobe,
+                cache=cfg.cache,
+            )
+            opened_extra.append(extra_store)
+            stores[alias] = extra_store
+
+        if not stores:
+            console.print(
+                "[red]x[/red] No stores to train on. "
+                "Pass one or more --store NAME=PATH, or remove --exclude-primary."
+            )
+            raise typer.Exit(code=1)
+
+        # Quick sanity check: each store should have at least a few chunks,
+        # otherwise we print a hint rather than failing inside retrain_multi.
+        sizes = {name: s.stats().chunks for name, s in stores.items()}
+        if all(n < 10 for n in sizes.values()):
+            console.print(
+                "[yellow]! Every provided store has fewer than 10 chunks. "
+                "Add more documents before retraining.[/yellow]"
+            )
+            raise typer.Exit(code=1)
+
+        console.print("[bold cyan]vstash retrain-multi[/bold cyan]")
+        for name, s in stores.items():
+            stats = s.stats()
+            console.print(f"  {name}: {stats.documents} docs, {stats.chunks} chunks")
+        console.print(f"  Base model:       {model_name}")
+        console.print(
+            f"  Sampling:         {sampling_strategy} (temperature={sampling_temperature})"
+        )
+        console.print(f"  Total triples:    {total_triples}")
+        if no_eval:
+            console.print("  Eval gate:        [yellow]disabled[/yellow]")
+        else:
+            gate_mode = "per-dataset" if per_dataset_gate else "macro-average"
+            console.print(
+                f"  Eval gate:        {gate_mode}, min-gain={min_gain:+.4f}, "
+                f"fraction={eval_fraction:.2f}, noise={eval_noise_size}"
+            )
+        console.print()
+
+        result = run_retrain_multi(
+            stores,
+            base_model=model_name,
+            output_path=output,
+            sampling=sampling_strategy,  # type: ignore[arg-type]
+            temperature=sampling_temperature,
+            total_triples=total_triples,
+            epochs=epochs,
+            lr=lr,
+            batch_size=batch_size,
+            eval_fraction=eval_fraction,
+            eval_noise_size=eval_noise_size,
+            min_gain=min_gain,
+            per_dataset_gate=per_dataset_gate,
+            skip_eval=no_eval,
+            cfg=cfg,
+        )
+    finally:
+        for s in opened_extra:
+            try:
+                s.close()
+            except Exception:
+                pass
+
+    console.print(f"  Total training pairs: {result.total_pairs}")
+    for name, n_pairs in result.per_dataset_pairs.items():
+        budget_for_name = result.per_dataset_budget.get(name, 0)
+        console.print(f"    {name}: {n_pairs} pairs (budget: {budget_for_name})")
+
+    if result.per_dataset_baseline and result.per_dataset_final:
+        console.print()
+        console.print("[bold]Eval results (per dataset)[/bold]")
+        for name in result.per_dataset_baseline:
+            base = result.per_dataset_baseline[name]
+            final = result.per_dataset_final.get(name)
+            if final is None or base.n_queries == 0:
+                continue
+            delta = final.ndcg_at_10 - base.ndcg_at_10
+            color = "green" if delta >= 0 else "red"
+            console.print(
+                f"  {name:<20} baseline={base.ndcg_at_10:.4f}  "
+                f"final={final.ndcg_at_10:.4f}  "
+                f"delta=[{color}]{delta:+.4f}[/{color}]  (n={base.n_queries})"
+            )
+        macro_color = "green" if result.macro_delta_ndcg >= 0 else "red"
+        console.print(
+            f"  [bold]macro-avg            baseline={result.macro_baseline_ndcg:.4f}  "
+            f"final={result.macro_final_ndcg:.4f}  "
+            f"delta=[{macro_color}]{result.macro_delta_ndcg:+.4f}[/{macro_color}][/bold]"
+        )
+
+    if result.gated_out:
+        console.print()
+        if result.total_pairs < 10:
+            console.print(
+                "[red]Training skipped[/red]: not enough training pairs across all corpora. "
+                "Try a larger --total-triples or add more documents."
+            )
+        else:
+            gate_mode = "per-dataset" if per_dataset_gate else "macro-average"
+            console.print(
+                f"[red]Gated out[/red] ({gate_mode}): NDCG@10 delta did not meet "
+                f"min-gain ({result.min_gain:+.4f}). Candidate left at "
+                f"[dim]{Path(output).expanduser()}.candidate[/dim] for inspection."
+            )
+        raise typer.Exit(code=2)
+
+    if result.output_path is None:
+        console.print("[red]x[/red] retrain-multi did not save a model. See logs for details.")
+        raise typer.Exit(code=2)
+
+    console.print()
+    console.print(f"[green]Model saved to:[/green] {result.output_path}")
+    console.print()
+    console.print("To use the retrained model:")
+    console.print(f"  [bold]vstash reindex --model {result.output_path}[/bold]")
+
+
 @profile_app.command(name="create")
 def profile_create(
     name: str = typer.Argument(..., help="Profile name"),

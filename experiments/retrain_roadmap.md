@@ -170,6 +170,16 @@ handled by T1.4.
 
 ### T1.4 Multi-corpus training harness with temperature sampling
 
+[LANDED on feat/retrain-t14-multi-corpus] `retrain_multi()` + CLI
+`vstash retrain-multi` shipped with `compute_triple_budget` (uniform /
+proportional / temperature with largest-remainder allocation), atomic
+`.candidate` / `.old` promotion, per-dataset + macro NDCG@10 eval
+gate, and optional `--per-dataset-gate` for stricter regressions.
+Reference Colab: `experiments/retrain_t1_4_multi_beir.ipynb`. 23 new
+unit tests under `tests/test_retrain_multi.py`. Next action: run the
+notebook on T4 to confirm per-dataset deltas match v5 within noise
+(target: NFCorpus > +10%, SciFact > +3%).
+
 **Goal**: productize the training path that produced
 `Stffens/bge-small-rrf-v2` (+5% SciFact, +18.3% NFCorpus, validated
 in `experiments/retrain_v5_hard_neg.ipynb`) into a first-class
