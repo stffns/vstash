@@ -1760,10 +1760,19 @@ def retrain_multi_cmd(
         "the default per-query path on FiQA-sized corpora, at the cost "
         "of holding the full corpus in GPU memory for a moment.",
     ),
+    bulk_eval: bool = typer.Option(
+        False,
+        "--bulk-eval/--no-bulk-eval",
+        help="Route baseline + final eval through the GPU-batched "
+        "evaluator (retrain_batch.evaluate_model_batched). Biggest win "
+        "when --eval-noise is large (e.g. >= 10k). Pair with --bulk-mine "
+        "for end-to-end speedup on Colab T4.",
+    ),
     bulk_mine_device: str | None = typer.Option(
         None,
         "--bulk-mine-device",
-        help="Device override for --bulk-mine ('cuda' or 'cpu'). Leave unset to auto-detect.",
+        help="Device override for --bulk-mine / --bulk-eval ('cuda' or "
+        "'cpu'). Leave unset to auto-detect.",
     ),
 ) -> None:
     """Fine-tune the embedding model over multiple corpora with balanced sampling.
@@ -1804,14 +1813,13 @@ def retrain_multi_cmd(
     cfg, primary_store = _get_store(profile=_profile_from_ctx(ctx))
     model_name = base_model or cfg.embeddings.model
 
-    # Nudge when --bulk-mine-device is set without --bulk-mine; the
-    # flag would otherwise be silently ignored and leave the user
-    # puzzled about why the legacy path is running.
-    if bulk_mine_device and not bulk_mine:
+    # Nudge when --bulk-mine-device is set without either batched path.
+    # The device override would otherwise be silently ignored.
+    if bulk_mine_device and not (bulk_mine or bulk_eval):
         console.print(
-            "[yellow]! --bulk-mine-device was passed without --bulk-mine. "
-            "The device override is ignored; pass --bulk-mine to enable "
-            "GPU-batched triple mining.[/yellow]"
+            "[yellow]! --bulk-mine-device was passed without --bulk-mine or "
+            "--bulk-eval. The device override is ignored; pass one of the "
+            "--bulk-* flags to enable the GPU-batched path.[/yellow]"
         )
 
     stores: dict[str, VstashStore] = {}
@@ -1913,6 +1921,7 @@ def retrain_multi_cmd(
             skip_eval=no_eval,
             bulk_mine=bulk_mine,
             bulk_mine_device=bulk_mine_device,
+            bulk_eval=bulk_eval,
             cfg=cfg,
         )
     finally:

@@ -1320,6 +1320,7 @@ def retrain_multi(
     synth_model: str | None = None,
     bulk_mine: bool = False,
     bulk_mine_device: str | None = None,
+    bulk_eval: bool = False,
     cfg: "VstashConfig | None" = None,
 ) -> MultiRetrainResult:
     """Fine-tune an embedding model over N corpora with balanced sampling.
@@ -1361,6 +1362,14 @@ def retrain_multi(
         bulk_mine_device: ``"cuda" | "cpu" | None``. ``None`` lets
             the batched miner auto-detect. Ignored when
             ``bulk_mine=False``.
+        bulk_eval: Route baseline + final eval through
+            ``retrain_batch.evaluate_model_batched`` which replaces
+            the per-query ``eval_store.search`` scan with one GPU
+            matmul over all eval queries. Biggest win when
+            ``eval_noise_size`` is large (e.g. >= 10k): baseline +
+            final eval for a 3-corpus run drops from ~60 min to
+            ~2 min on Colab T4. See the module docstring for the
+            approximation trade-offs.
         eval_queries_by_dataset: Optional per-dataset labeled eval
             sets (e.g., BEIR qrels converted via
             ``qrels_to_eval_queries``). Datasets missing from the map
@@ -1423,6 +1432,22 @@ def retrain_multi(
             per_dataset_reserved[name] = reserved
 
     # Baseline eval per dataset (run once, reused for all gate math).
+    if bulk_eval:
+        from .retrain_batch import evaluate_model_batched as _eval_fn
+    else:
+        _eval_fn = evaluate_model
+
+    def _run_eval(store: VstashStore, model_path: str, queries: list[dict], ds_seed: int):
+        kwargs = {
+            "model_name_or_path": model_path,
+            "eval_queries": queries,
+            "noise_sample_size": eval_noise_size,
+            "seed": ds_seed,
+        }
+        if bulk_eval:
+            kwargs["device"] = bulk_mine_device
+        return _eval_fn(store, **kwargs)
+
     per_dataset_baseline: dict[str, EvalMetrics] = {}
     if not skip_eval:
         for name, store in stores_dict.items():
@@ -1431,12 +1456,8 @@ def retrain_multi(
                 per_dataset_baseline[name] = EvalMetrics(0.0, 0.0, 0.0, 0)
                 continue
             logger.info("Baseline eval on '%s' (%d queries)", name, len(queries))
-            per_dataset_baseline[name] = evaluate_model(
-                store,
-                model_name_or_path=base_model,
-                eval_queries=queries,
-                noise_sample_size=eval_noise_size,
-                seed=per_dataset_seed[name],
+            per_dataset_baseline[name] = _run_eval(
+                store, base_model, queries, per_dataset_seed[name]
             )
 
     # Triple generation per dataset.
@@ -1574,12 +1595,8 @@ def retrain_multi(
                 per_dataset_final[name] = EvalMetrics(0.0, 0.0, 0.0, 0)
                 continue
             logger.info("Final eval on '%s' (%d queries)", name, len(queries))
-            per_dataset_final[name] = evaluate_model(
-                store,
-                model_name_or_path=str(candidate_path),
-                eval_queries=queries,
-                noise_sample_size=eval_noise_size,
-                seed=per_dataset_seed[name],
+            per_dataset_final[name] = _run_eval(
+                store, str(candidate_path), queries, per_dataset_seed[name]
             )
 
     macro_final = _macro(per_dataset_final) if not skip_eval else 0.0
