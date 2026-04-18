@@ -1708,7 +1708,23 @@ def retrain_multi_cmd(
     ),
     epochs: int = typer.Option(2, "--epochs", help="Training epochs"),
     lr: float = typer.Option(3e-6, "--lr", help="Learning rate"),
-    batch_size: int = typer.Option(64, "--batch-size", help="Training batch size"),
+    batch_size: int = typer.Option(
+        32,
+        "--batch-size",
+        help="Training batch size. Default 32 keeps a 15 GB T4 in range when "
+        "three corpora are live during eval; raise on bigger GPUs.",
+    ),
+    use_amp: bool = typer.Option(
+        True,
+        "--use-amp/--no-use-amp",
+        help="Automatic mixed precision during training. Near-free and halves GPU memory on T4+.",
+    ),
+    max_seq_length: int | None = typer.Option(
+        None,
+        "--max-seq-length",
+        help="Cap the encoder's max sequence length. Lower values (256, 128) "
+        "further reduce memory when most chunks are short.",
+    ),
     base_model: str | None = typer.Option(
         None, "--base-model", help="Base model to fine-tune (default: current config model)"
     ),
@@ -1864,6 +1880,8 @@ def retrain_multi_cmd(
             epochs=epochs,
             lr=lr,
             batch_size=batch_size,
+            use_amp=use_amp,
+            max_seq_length=max_seq_length,
             eval_fraction=eval_fraction,
             eval_noise_size=eval_noise_size,
             min_gain=min_gain,

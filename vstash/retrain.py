@@ -260,6 +260,8 @@ def train_mnrl(
     epochs: int = 2,
     lr: float = 3e-6,
     batch_size: int = 64,
+    use_amp: bool = True,
+    max_seq_length: int | None = None,
 ) -> str:
     """Fine-tune an embedding model using MNRL on disagreement pairs.
 
@@ -274,6 +276,14 @@ def train_mnrl(
         epochs: Number of training epochs.
         lr: Learning rate.
         batch_size: Training batch size.
+        use_amp: Enable automatic mixed precision. Roughly halves GPU
+            memory and is near-free on modern accelerators; required on
+            T4-class GPUs when training bge-small with hard negatives at
+            batch_size >= 32. Ignored when running on CPU.
+        max_seq_length: Cap the encoder's max sequence length before
+            training. ``None`` keeps the model's default (512 for
+            bge-small). Lower values (256 or 128) further reduce memory
+            when most chunks are short.
 
     Returns:
         Path to the saved model.
@@ -296,6 +306,8 @@ def train_mnrl(
 
     logger.info("Loading base model: %s", base_model)
     model = SentenceTransformer(base_model)
+    if max_seq_length is not None:
+        model.max_seq_length = max_seq_length
 
     examples = []
     for p in pairs:
@@ -308,11 +320,13 @@ def train_mnrl(
 
     warmup_steps = min(50, len(loader) // 5)
     logger.info(
-        "Training: %d pairs, %d epochs, batch=%d, lr=%s",
+        "Training: %d pairs, %d epochs, batch=%d, lr=%s, amp=%s, max_seq_length=%s",
         len(pairs),
         epochs,
         batch_size,
         lr,
+        use_amp,
+        max_seq_length,
     )
 
     t0 = time.perf_counter()
@@ -323,6 +337,7 @@ def train_mnrl(
         optimizer_params={"lr": lr},
         output_path=output,
         show_progress_bar=True,
+        use_amp=use_amp,
     )
     elapsed = time.perf_counter() - t0
 
@@ -335,12 +350,35 @@ def train_mnrl(
         "epochs": epochs,
         "batch_size": batch_size,
         "lr": lr,
+        "use_amp": use_amp,
+        "max_seq_length": max_seq_length,
         "training_time_s": round(elapsed, 1),
     }
     (Path(output) / "training_meta.json").write_text(json.dumps(meta, indent=2))
 
     logger.info("Model saved to %s (%.0fs)", output, elapsed)
     return output
+
+
+def _release_gpu_memory() -> None:
+    """Free PyTorch CUDA cache + run GC. No-op when torch is not loaded.
+
+    Training + evaluation both encode large corpus slices; on a 15 GB
+    T4 the lingering cache can push training over the edge. Call this
+    between phases (e.g., after baseline eval, before training) to
+    keep peak memory down without touching the library's internal
+    references. Defensive against stubbed torch modules in tests.
+    """
+    import gc
+
+    gc.collect()
+    try:
+        import torch  # type: ignore[import-not-found]
+
+        if getattr(torch, "cuda", None) is not None and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
 
 
 def _promote_candidate(candidate_path: Path, final_path: Path) -> None:
@@ -818,6 +856,8 @@ def retrain(
     epochs: int = 2,
     lr: float = 3e-6,
     batch_size: int = 64,
+    use_amp: bool = True,
+    max_seq_length: int | None = None,
     eval_fraction: float = 0.15,
     eval_noise_size: int = _EVAL_NOISE_DEFAULT,
     min_gain: float = 0.0,
@@ -906,6 +946,8 @@ def retrain(
             epochs=epochs,
             lr=lr,
             batch_size=batch_size,
+            use_amp=use_amp,
+            max_seq_length=max_seq_length,
         )
         return RetrainResult(
             output_path=final_path_str,
@@ -1026,6 +1068,10 @@ def retrain(
     if candidate_path.exists():
         shutil.rmtree(candidate_path)
 
+    # Free the baseline-eval encoder's GPU state before loading the
+    # training model; on a 15 GB T4 this prevents peak-memory overlap.
+    _release_gpu_memory()
+
     train_mnrl(
         pairs,
         base_model=base_model,
@@ -1033,7 +1079,11 @@ def retrain(
         epochs=epochs,
         lr=lr,
         batch_size=batch_size,
+        use_amp=use_amp,
+        max_seq_length=max_seq_length,
     )
+
+    _release_gpu_memory()
 
     logger.info("Running final eval on fine-tuned candidate ...")
     final = evaluate_model(
@@ -1233,7 +1283,9 @@ def retrain_multi(
     total_triples: int = 10000,
     epochs: int = 2,
     lr: float = 3e-6,
-    batch_size: int = 64,
+    batch_size: int = 32,
+    use_amp: bool = True,
+    max_seq_length: int | None = None,
     eval_fraction: float = 0.15,
     eval_noise_size: int = _EVAL_NOISE_DEFAULT,
     min_gain: float = 0.0,
@@ -1269,6 +1321,13 @@ def retrain_multi(
             datasets. Actual triple count may be lower when individual
             corpora are smaller than their per-dataset share or when
             generate_triples drops degenerate pairs.
+        batch_size: Training batch size. Default 32 (vs 64 for the
+            single-store retrain) keeps peak memory inside a 15 GB T4
+            when three corpora are live during eval.
+        use_amp: Automatic mixed precision. Default on; halves GPU
+            memory on T4 and higher and is near-free.
+        max_seq_length: Optional encoder sequence cap. Lower values
+            reduce memory further when most chunks are short.
         eval_queries_by_dataset: Optional per-dataset labeled eval
             sets (e.g., BEIR qrels converted via
             ``qrels_to_eval_queries``). Datasets missing from the map
@@ -1434,6 +1493,11 @@ def retrain_multi(
     if candidate_path.exists():
         shutil.rmtree(candidate_path)
 
+    # Release GPU cache held by the baseline-eval encoders. Without
+    # this, the 3-corpus eval leaves enough fragmented memory to push
+    # bge-small + hard-neg training past the 15 GB T4 limit.
+    _release_gpu_memory()
+
     train_mnrl(
         all_pairs,
         base_model=base_model,
@@ -1441,7 +1505,11 @@ def retrain_multi(
         epochs=epochs,
         lr=lr,
         batch_size=batch_size,
+        use_amp=use_amp,
+        max_seq_length=max_seq_length,
     )
+
+    _release_gpu_memory()
 
     per_dataset_final: dict[str, EvalMetrics] = {}
     if not skip_eval:
@@ -1478,7 +1546,10 @@ def retrain_multi(
         gated_out = (macro_final - macro_baseline) < min_gain
 
     # Persist eval metadata on the candidate directory regardless of
-    # gate outcome, so debugging/inspection still works.
+    # gate outcome, so debugging/inspection still works. ``train_mnrl``
+    # normally creates this directory; the ``mkdir`` below is defensive
+    # so tests that mock training still get meta on disk.
+    candidate_path.mkdir(parents=True, exist_ok=True)
     meta_path = candidate_path / "training_meta.json"
     try:
         existing_meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}

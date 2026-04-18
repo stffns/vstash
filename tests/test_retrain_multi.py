@@ -530,6 +530,41 @@ def test_too_few_pairs_gated_out(
     assert not (tmp_path / "m").exists()
 
 
+def test_use_amp_and_max_seq_length_forwarded_to_train_mnrl(
+    triple_stores: dict[str, VstashStore], tmp_path: Path, st_stubs: Any
+) -> None:
+    """use_amp + max_seq_length must reach train_mnrl so the T4-safe
+    defaults in the CLI and notebook actually take effect during
+    training."""
+    st_mod, _, _ = st_stubs
+    st_mod.SentenceTransformer.return_value = MagicMock()
+
+    with (
+        patch("vstash.retrain.train_mnrl") as mock_train,
+        patch(
+            "vstash.retrain.generate_triples",
+            return_value=[{"query": "q", "positive": "p", "negative": None}] * 10,
+        ),
+    ):
+        retrain_multi(
+            triple_stores,
+            base_model="dummy",
+            output_path=str(tmp_path / "m"),
+            total_triples=300,
+            sampling="uniform",
+            skip_eval=True,
+            batch_size=16,
+            use_amp=True,
+            max_seq_length=128,
+        )
+
+    assert mock_train.call_count == 1
+    kwargs = mock_train.call_args.kwargs
+    assert kwargs["use_amp"] is True
+    assert kwargs["max_seq_length"] == 128
+    assert kwargs["batch_size"] == 16
+
+
 def test_synthesize_queries_requires_cfg(
     triple_stores: dict[str, VstashStore], tmp_path: Path
 ) -> None:
