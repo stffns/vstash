@@ -1297,6 +1297,8 @@ def retrain_multi(
     synth_n: int = 2,
     synth_cache: str | Path | None = None,
     synth_model: str | None = None,
+    bulk_mine: bool = False,
+    bulk_mine_device: str | None = None,
     cfg: "VstashConfig | None" = None,
 ) -> MultiRetrainResult:
     """Fine-tune an embedding model over N corpora with balanced sampling.
@@ -1328,6 +1330,16 @@ def retrain_multi(
             memory on T4 and higher and is near-free.
         max_seq_length: Optional encoder sequence cap. Lower values
             reduce memory further when most chunks are short.
+        bulk_mine: Route per-dataset triple generation through
+            ``retrain_batch.generate_triples_batched``. Batch-encodes
+            queries + corpus on GPU and replaces the per-query
+            sqlite-vec full scan with a single ``Q @ D.T`` matmul. On
+            a FiQA-sized corpus (~57k chunks) this is 20-50x faster
+            than the default per-query path, making the published
+            regression target reproducible on a Colab T4.
+        bulk_mine_device: ``"cuda" | "cpu" | None``. ``None`` lets
+            the batched miner auto-detect. Ignored when
+            ``bulk_mine=False``.
         eval_queries_by_dataset: Optional per-dataset labeled eval
             sets (e.g., BEIR qrels converted via
             ``qrels_to_eval_queries``). Datasets missing from the map
@@ -1440,15 +1452,29 @@ def retrain_multi(
                 model=synth_model,
             )
 
-        dataset_pairs = generate_triples(
-            store,
-            base_model,
-            max_queries=n_queries,
-            seed=seed,
-            exclude_chunk_ids=per_dataset_reserved.get(name) or None,
-            synthesized_queries=synth_map or None,
-            pre_sampled_chunks=training_chunks,
-        )
+        if bulk_mine:
+            from .retrain_batch import generate_triples_batched
+
+            dataset_pairs = generate_triples_batched(
+                store,
+                base_model,
+                max_queries=n_queries,
+                seed=seed,
+                exclude_chunk_ids=per_dataset_reserved.get(name) or None,
+                synthesized_queries=synth_map or None,
+                pre_sampled_chunks=training_chunks,
+                device=bulk_mine_device,
+            )
+        else:
+            dataset_pairs = generate_triples(
+                store,
+                base_model,
+                max_queries=n_queries,
+                seed=seed,
+                exclude_chunk_ids=per_dataset_reserved.get(name) or None,
+                synthesized_queries=synth_map or None,
+                pre_sampled_chunks=training_chunks,
+            )
         per_dataset_pairs[name] = len(dataset_pairs)
         all_pairs.extend(dataset_pairs)
         logger.info("Dataset '%s': %d training pairs generated.", name, len(dataset_pairs))

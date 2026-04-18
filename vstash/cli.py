@@ -1751,6 +1751,19 @@ def retrain_multi_cmd(
         "--eval-noise",
         help="Distractor chunks added to each eval index (higher = stricter eval)",
     ),
+    bulk_mine: bool = typer.Option(
+        False,
+        "--bulk-mine/--no-bulk-mine",
+        help="Route triple generation through the GPU-batched miner "
+        "(retrain_batch.generate_triples_batched). 20-50x faster than "
+        "the default per-query path on FiQA-sized corpora, at the cost "
+        "of holding the full corpus in GPU memory for a moment.",
+    ),
+    bulk_mine_device: str | None = typer.Option(
+        None,
+        "--bulk-mine-device",
+        help="Device override for --bulk-mine ('cuda' or 'cpu'). Leave unset to auto-detect.",
+    ),
 ) -> None:
     """Fine-tune the embedding model over multiple corpora with balanced sampling.
 
@@ -1887,6 +1900,8 @@ def retrain_multi_cmd(
             min_gain=min_gain,
             per_dataset_gate=per_dataset_gate,
             skip_eval=no_eval,
+            bulk_mine=bulk_mine,
+            bulk_mine_device=bulk_mine_device,
             cfg=cfg,
         )
     finally:

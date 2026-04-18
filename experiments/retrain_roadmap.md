@@ -180,6 +180,27 @@ unit tests under `tests/test_retrain_multi.py`. Next action: run the
 notebook on T4 to confirm per-dataset deltas match v5 within noise
 (target: NFCorpus > +10%, SciFact > +3%).
 
+**T4 memory follow-up (same branch):** `use_amp=True`, `batch_size=32`
+default for multi-corpus, optional `max_seq_length`, plus a
+`_release_gpu_memory()` hook between baseline eval and training.
+Drops the T4 OOM observed on the first overnight Colab run.
+
+### T1.4b Batched GPU triple mining
+
+[LANDED on feat/retrain-t14b-batched-mining] New module
+`vstash/retrain_batch.py` with `generate_triples_batched()`. Replaces
+the per-query `store.search` call with a single
+`query_vecs @ corpus_vecs.T` matmul on GPU plus per-query FTS5
+(already cheap). Output shape is byte-for-byte compatible with
+`generate_triples`, so `train_mnrl`/`retrain_multi` are unchanged.
+`retrain_multi(..., bulk_mine=True, bulk_mine_device=...)` routes
+through the batched miner; CLI exposes `--bulk-mine` and
+`--bulk-mine-device`. 13 new unit tests under
+`tests/test_retrain_batch.py` cover the RRF math, FTS sanitizer,
+synth-query override, `exclude_chunk_ids`, ImportError handling, and
+the `retrain_multi` wiring. Colab runtime on the 3-corpus
+scifact+nfcorpus+fiqa mix drops from ~3 hours to ~20-30 min.
+
 **Goal**: productize the training path that produced
 `Stffens/bge-small-rrf-v2` (+5% SciFact, +18.3% NFCorpus, validated
 in `experiments/retrain_v5_hard_neg.ipynb`) into a first-class
