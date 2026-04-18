@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import click
 import typer
 from rich.console import Console
 from rich.markdown import Markdown
@@ -1691,8 +1692,8 @@ def retrain_multi_cmd(
     sampling_strategy: str = typer.Option(
         "temperature",
         "--sampling-strategy",
-        help="uniform | proportional | temperature. Temperature (default) "
-        "damps the largest corpus toward a more balanced triple budget.",
+        help="Temperature (default) damps the largest corpus toward a more balanced triple budget.",
+        click_type=click.Choice(["uniform", "proportional", "temperature"]),
     ),
     sampling_temperature: float = typer.Option(
         0.5,
@@ -1802,6 +1803,16 @@ def retrain_multi_cmd(
 
     cfg, primary_store = _get_store(profile=_profile_from_ctx(ctx))
     model_name = base_model or cfg.embeddings.model
+
+    # Nudge when --bulk-mine-device is set without --bulk-mine; the
+    # flag would otherwise be silently ignored and leave the user
+    # puzzled about why the legacy path is running.
+    if bulk_mine_device and not bulk_mine:
+        console.print(
+            "[yellow]! --bulk-mine-device was passed without --bulk-mine. "
+            "The device override is ignored; pass --bulk-mine to enable "
+            "GPU-batched triple mining.[/yellow]"
+        )
 
     stores: dict[str, VstashStore] = {}
     opened_extra: list[VstashStore] = []

@@ -42,6 +42,22 @@ _EVAL_MIN_QUERIES = 20
 _EVAL_NOISE_DEFAULT = 1000
 
 
+def adaptive_rrf_weights(word_count: int) -> tuple[float, float, float, float]:
+    """Return ``(vec_hi, fts_hi, vec_lo, fts_lo)`` weights for RRF fusion.
+
+    Short queries (<= 10 words) weight FTS higher because exact-term
+    match is informative; long queries (> 50 words) lean hard on vector.
+    The mid band (11-50 words) uses a steep ladder for sharper
+    disagreement mining. Shared by ``generate_triples`` and the batched
+    miner so both signals use byte-identical weights.
+    """
+    if word_count <= 10:
+        return 0.70, 0.30, 0.30, 0.70
+    if word_count <= 50:
+        return 0.85, 0.15, 0.15, 0.85
+    return 0.95, 0.05, 0.50, 0.50
+
+
 def sample_training_chunks(
     store: VstashStore,
     max_queries: int,
@@ -156,19 +172,10 @@ def generate_triples(
 
             emb = embed_query(query_text, model_name)
 
-            # Adaptive weights based on query length: short queries have
-            # more FTS value (exact term matching matters), long queries
-            # lean harder on vector (semantic matching dominates).
-            word_count = len(query_text.split())
-            if word_count <= 10:
-                vec_hi, fts_hi = 0.70, 0.30
-                vec_lo, fts_lo = 0.30, 0.70
-            elif word_count <= 50:
-                vec_hi, fts_hi = 0.85, 0.15
-                vec_lo, fts_lo = 0.15, 0.85
-            else:
-                vec_hi, fts_hi = 0.95, 0.05
-                vec_lo, fts_lo = 0.50, 0.50
+            # Adaptive weights based on query length. Centralised in
+            # adaptive_rrf_weights() so the batched miner uses the
+            # same ladder.
+            vec_hi, fts_hi, vec_lo, fts_lo = adaptive_rrf_weights(len(query_text.split()))
 
             # Vector-heavy search
             try:
@@ -377,8 +384,22 @@ def _release_gpu_memory() -> None:
 
         if getattr(torch, "cuda", None) is not None and torch.cuda.is_available():
             torch.cuda.empty_cache()
-    except Exception:
+    except (ImportError, AttributeError):
         pass
+
+
+def _derive_seed(seed: int, name: str) -> int:
+    """Stable, reproducible per-dataset seed from a shared base seed.
+
+    Uses SHA-256 so distinct dataset names produce uncorrelated
+    permutations, while the same (seed, name) pair always yields the
+    same int. Keeps retrain_multi reproducibility guarantees when
+    users rename datasets.
+    """
+    import hashlib
+
+    digest = hashlib.sha256(f"{seed}:{name}".encode()).digest()
+    return int.from_bytes(digest[:4], "big")
 
 
 def _promote_candidate(candidate_path: Path, final_path: Path) -> None:
@@ -1376,6 +1397,12 @@ def retrain_multi(
         {name: {"chunks": sizes[name], "budget": budget[name]} for name in stores_dict},
     )
 
+    # Per-dataset seeds derived from (seed, name) so datasets with
+    # identical chunk counts do not share a permutation prefix. This
+    # matters when a user runs the same seed across renamed datasets
+    # or mirrored corpora.
+    per_dataset_seed = {name: _derive_seed(seed, name) for name in stores_dict}
+
     # Per-dataset eval prep: reserved_ids exclude train chunks from
     # the matching dataset only; stores do not share chunk ids.
     per_dataset_eval: dict[str, list[dict]] = {}
@@ -1389,7 +1416,9 @@ def retrain_multi(
             per_dataset_eval[name] = list(eval_queries_by_dataset[name])
             per_dataset_reserved[name] = set()
         else:
-            reserved, queries = split_corpus_for_eval(store, eval_fraction=eval_fraction, seed=seed)
+            reserved, queries = split_corpus_for_eval(
+                store, eval_fraction=eval_fraction, seed=per_dataset_seed[name]
+            )
             per_dataset_eval[name] = queries
             per_dataset_reserved[name] = reserved
 
@@ -1407,7 +1436,7 @@ def retrain_multi(
                 model_name_or_path=base_model,
                 eval_queries=queries,
                 noise_sample_size=eval_noise_size,
-                seed=seed,
+                seed=per_dataset_seed[name],
             )
 
     # Triple generation per dataset.
@@ -1422,7 +1451,7 @@ def retrain_multi(
         training_chunks = sample_training_chunks(
             store,
             max_queries=n_queries,
-            seed=seed,
+            seed=per_dataset_seed[name],
             exclude_chunk_ids=per_dataset_reserved.get(name) or None,
         )
         if not training_chunks:
@@ -1459,7 +1488,7 @@ def retrain_multi(
                 store,
                 base_model,
                 max_queries=n_queries,
-                seed=seed,
+                seed=per_dataset_seed[name],
                 exclude_chunk_ids=per_dataset_reserved.get(name) or None,
                 synthesized_queries=synth_map or None,
                 pre_sampled_chunks=training_chunks,
@@ -1470,7 +1499,7 @@ def retrain_multi(
                 store,
                 base_model,
                 max_queries=n_queries,
-                seed=seed,
+                seed=per_dataset_seed[name],
                 exclude_chunk_ids=per_dataset_reserved.get(name) or None,
                 synthesized_queries=synth_map or None,
                 pre_sampled_chunks=training_chunks,
@@ -1550,7 +1579,7 @@ def retrain_multi(
                 model_name_or_path=str(candidate_path),
                 eval_queries=queries,
                 noise_sample_size=eval_noise_size,
-                seed=seed,
+                seed=per_dataset_seed[name],
             )
 
     macro_final = _macro(per_dataset_final) if not skip_eval else 0.0

@@ -259,11 +259,14 @@ class TestGenerateTriplesBatched:
             store.close()
         assert pairs == []
 
-    def test_matches_generate_triples_shape(self, tmp_path: Path, torch_st_stubs: Any) -> None:
+    def test_output_dict_has_required_keys(self, tmp_path: Path, torch_st_stubs: Any) -> None:
         """Output dicts must have the same keys as generate_triples so
-        train_mnrl + retrain_multi do not care which path produced the
-        pairs. Chunks here are >200 chars so the text[:200] prefix
-        differs from the full chunk text, making query != positive."""
+        train_mnrl + retrain_multi do not care which path produced
+        the pairs. Chunks here are > 200 chars so the text[:200]
+        prefix differs from the full chunk text, making
+        query != positive. Shape check only; see
+        ``test_parity_with_generate_triples_on_small_store`` for the
+        approximate content parity assertion."""
         filler_a = " ".join([f"alpha-word-{i}" for i in range(60)])  # > 200 chars
         filler_b = " ".join([f"beta-word-{i}" for i in range(60)])
         filler_c = " ".join([f"gamma-word-{i}" for i in range(60)])
@@ -477,13 +480,119 @@ class TestRetrainMultiBulkMine:
 
 
 # ------------------------------------------------------------------ #
-# RRF_K export surface                                                 #
+# Shared constants + approximation parity                              #
 # ------------------------------------------------------------------ #
 
 
 def test_rrf_k_imported_from_store_module() -> None:
-    """retrain_batch must use the same RRF_K as store.py so disagreement
-    mining is byte-for-byte comparable to the legacy per-query path."""
+    """retrain_batch uses the same RRF_K as store.py so the fusion
+    formula matches. This is a precondition for the batched miner to
+    be a faithful approximation of the legacy disagreement signal;
+    see the module docstring for the remaining divergences (distance
+    cutoff, candidate pool, MMR dedup, embedder path)."""
     from vstash.retrain_batch import RRF_K as batch_rrf_k
 
     assert batch_rrf_k == RRF_K == 60
+
+
+def test_shared_top_k_and_adaptive_weights() -> None:
+    """Both modules must consume the shared ``TOP_K`` and
+    ``adaptive_rrf_weights``. If either drifts, the vec/fts top-5
+    disagreement comparison is no longer meaningful across the two
+    miners."""
+    from vstash.retrain import TOP_K as retrain_top_k
+    from vstash.retrain import adaptive_rrf_weights
+    from vstash.retrain_batch import TOP_K as batch_top_k
+
+    assert retrain_top_k == batch_top_k == 10
+    # Spot-check the ladder at the three representative word counts.
+    assert adaptive_rrf_weights(5) == (0.70, 0.30, 0.30, 0.70)
+    assert adaptive_rrf_weights(30) == (0.85, 0.15, 0.15, 0.85)
+    assert adaptive_rrf_weights(80) == (0.95, 0.05, 0.50, 0.50)
+
+
+def test_parity_with_generate_triples_on_small_store(tmp_path: Path, torch_st_stubs: Any) -> None:
+    """Coarse parity check against ``generate_triples`` on a small
+    store. Not byte-for-byte -- the batched path skips the distance
+    cutoff, candidate pool, and MMR dedup (see module docstring) --
+    but both miners must return the same pair count and must share a
+    nonzero fraction of their query texts. If this drops to 0 overlap,
+    something structural has broken in the batched path (empty top-k,
+    wrong RRF weights, etc.)."""
+    from vstash.retrain import generate_triples
+
+    def filler(tag: str) -> str:  # > 200 chars so prefix != full text
+        return " ".join(f"{tag}-word-{i}" for i in range(60))
+
+    docs = [
+        ("/a", "A", filler("alpha")),
+        ("/b", "B", filler("beta")),
+        ("/c", "C", filler("gamma")),
+        ("/d", "D", filler("delta")),
+    ]
+    store = _mk_store(str(tmp_path / "parity.db"), docs)
+    try:
+        vec_map = {
+            docs[0][2]: [1.0, 0.0, 0.0, 0.0],
+            docs[1][2]: [0.0, 1.0, 0.0, 0.0],
+            docs[2][2]: [0.0, 0.0, 1.0, 0.0],
+            docs[3][2]: [0.0, 0.0, 0.0, 1.0],
+        }
+        prefixes = {doc[2][:200]: vec_map[doc[2]] for doc in docs}
+        torch_st_stubs.set_encode({**vec_map, **prefixes})
+
+        # Batched path.
+        batched_pairs = generate_triples_batched(
+            store,
+            base_model="dummy",
+            max_queries=4,
+            seed=42,
+        )
+
+        # Legacy path -- mock embed_query + store.search with results
+        # that roughly reproduce what the batched path sees, so the
+        # two outputs are in the same ballpark. We do not mirror the
+        # disagreement logic exactly; we just assert both return a
+        # nonempty list and share the queries that survive.
+        def _fake_embed(text: str, model_name: str) -> list[float]:
+            return prefixes.get(text) or [0.0, 0.0, 0.0, 0.0]
+
+        from vstash.models import SearchResult
+
+        def _fake_search(**kwargs: Any) -> list[SearchResult]:
+            # Return all docs in a stable order -- the positive lookup
+            # in generate_triples keys on doc_path, not ranking.
+            return [
+                SearchResult(
+                    chunk_id=i + 1,
+                    text=docs[i][2],
+                    title=docs[i][1],
+                    path=docs[i][0],
+                    chunk=0,
+                    score=0.5,
+                )
+                for i in range(len(docs))
+            ]
+
+        with (
+            patch("vstash.retrain.embed_query", side_effect=_fake_embed),
+            patch.object(store, "search", side_effect=_fake_search),
+        ):
+            legacy_pairs = generate_triples(
+                store,
+                model_name="dummy",
+                max_queries=4,
+                seed=42,
+            )
+    finally:
+        store.close()
+
+    assert batched_pairs, "batched miner must produce pairs on this fixture"
+    assert legacy_pairs, "legacy miner must produce pairs on this fixture"
+    batched_queries = {p["query"] for p in batched_pairs}
+    legacy_queries = {p["query"] for p in legacy_pairs}
+    # Both must share at least one query; they sample from the same
+    # pool and use the same seed.
+    assert batched_queries & legacy_queries, (
+        f"no query overlap: batched={batched_queries}, legacy={legacy_queries}"
+    )

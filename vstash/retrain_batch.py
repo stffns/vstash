@@ -7,16 +7,31 @@ the per-query sqlite-vec full scan dominates at ~500 ms per search on
 a Colab CPU path. For ~19k queries that is ~5 hours before any
 training happens.
 
-``generate_triples_batched`` replaces the vector search with a single
-``query_vecs @ corpus_vecs.T`` matmul on GPU and keeps FTS5 per-query
-(already cheap at 5-50 ms). Net effect on FiQA-sized corpora is a
-20-50x speedup on triple generation, making the published
-``Stffens/bge-small-rrf-v2`` regression target reproducible on a
-Colab T4 inside a single session.
+``generate_triples_batched`` is a **fast approximation** of that
+disagreement signal, not a drop-in reproduction. It trades a few
+pipeline features for a 20-50x speedup:
 
-The output shape is identical to ``generate_triples`` so downstream
-callers (``train_mnrl``, ``retrain``, ``retrain_multi``) do not care
-which path was used.
+- Vec ranking via one ``query_vecs @ corpus_vecs.T`` matmul on GPU,
+  embedded with ``SentenceTransformer(base_model)`` directly. This
+  bypasses ``embed_query``'s ONNX path and the ``vec_chunks`` table,
+  so the resulting query/doc vectors may not match what the
+  production index would produce bit-for-bit (e.g. if the store was
+  reindexed with a different model between ingest and retrain).
+- No ``distance_cutoff`` filter: the batched path always keeps the
+  top-10 cosine hits. ``store.search`` drops results past a default
+  cutoff of 1.15.
+- FTS5 ``LIMIT 10`` per query. ``store.search`` uses a larger
+  candidate pool (``min(K*10, max(K*3, total//3))``) before RRF.
+- Raw RRF over the top-10 vec + top-10 FTS, no MMR dedup. Multiple
+  chunks from the same doc can occupy the disagreement set.
+
+The output dict shape (``{query, positive, negative}``) and the RRF
+fusion math match ``generate_triples`` exactly, so ``train_mnrl`` /
+``retrain`` / ``retrain_multi`` are drop-in compatible. The training
+signal is similar in expectation but is a different sample of
+disagreement. Use it when wall-time is the bottleneck on a big
+corpus; use ``generate_triples`` when faithful reproduction of the
+production search pipeline matters.
 """
 
 from __future__ import annotations
@@ -26,7 +41,7 @@ import sqlite3
 import time
 from typing import TYPE_CHECKING
 
-from .retrain import sample_training_chunks
+from .retrain import TOP_K, adaptive_rrf_weights, sample_training_chunks
 from .store import RRF_K, VstashStore
 
 if TYPE_CHECKING:
@@ -34,7 +49,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-TOP_K = 10
 _DISAGREEMENT_TOP = 5
 
 
@@ -70,7 +84,16 @@ def _fts_top_k(
             "WHERE fts_chunks MATCH ? ORDER BY rank LIMIT ?",
             [safe_query, top_k],
         ).fetchall()
-    except sqlite3.OperationalError:
+    except sqlite3.OperationalError as exc:
+        # FTS5 rejected the sanitized query (e.g. only stop-words left).
+        # Drop to empty result so mining continues, but warn so the
+        # user can diagnose abnormally low pair counts.
+        logger.warning(
+            "FTS5 match failed for query %r (sanitized=%r): %s",
+            query_text[:60],
+            safe_query[:60],
+            exc,
+        )
         return []
     return [int(r["id"]) for r in rows]
 
@@ -269,17 +292,9 @@ def generate_triples_batched(
         # that by filtering.
         fts_top = [cid for cid in fts_top if cid in chunk_id_to_path]
 
-        # Adaptive RRF weights: match generate_triples exactly.
-        word_count = len(query_text.split())
-        if word_count <= 10:
-            vec_hi, fts_hi = 0.70, 0.30
-            vec_lo, fts_lo = 0.30, 0.70
-        elif word_count <= 50:
-            vec_hi, fts_hi = 0.85, 0.15
-            vec_lo, fts_lo = 0.15, 0.85
-        else:
-            vec_hi, fts_hi = 0.95, 0.05
-            vec_lo, fts_lo = 0.50, 0.50
+        # Adaptive RRF weights: shared with generate_triples so the
+        # two signals use byte-identical ladders.
+        vec_hi, fts_hi, vec_lo, fts_lo = adaptive_rrf_weights(len(query_text.split()))
 
         vec_heavy_top5 = _rrf_top5_paths(vec_top, fts_top, vec_hi, fts_hi, chunk_id_to_path)
         fts_heavy_top5 = _rrf_top5_paths(vec_top, fts_top, vec_lo, fts_lo, chunk_id_to_path)
@@ -343,4 +358,12 @@ def generate_triples_batched(
         disagreements,
         disagreements / len(query_texts) * 100 if query_texts else 0,
     )
+
+    # Release the big GPU tensors before returning so the next dataset
+    # in retrain_multi's loop does not see doubled peak memory.
+    del corpus_vecs, query_vecs
+    from .retrain import _release_gpu_memory
+
+    _release_gpu_memory()
+
     return pairs
