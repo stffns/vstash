@@ -23,8 +23,9 @@ import random
 import shutil
 import tempfile
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from .embed import embed_query
 from .store import VstashStore
@@ -259,6 +260,8 @@ def train_mnrl(
     epochs: int = 2,
     lr: float = 3e-6,
     batch_size: int = 64,
+    use_amp: bool = True,
+    max_seq_length: int | None = None,
 ) -> str:
     """Fine-tune an embedding model using MNRL on disagreement pairs.
 
@@ -273,6 +276,14 @@ def train_mnrl(
         epochs: Number of training epochs.
         lr: Learning rate.
         batch_size: Training batch size.
+        use_amp: Enable automatic mixed precision. Roughly halves GPU
+            memory and is near-free on modern accelerators; required on
+            T4-class GPUs when training bge-small with hard negatives at
+            batch_size >= 32. Ignored when running on CPU.
+        max_seq_length: Cap the encoder's max sequence length before
+            training. ``None`` keeps the model's default (512 for
+            bge-small). Lower values (256 or 128) further reduce memory
+            when most chunks are short.
 
     Returns:
         Path to the saved model.
@@ -295,6 +306,8 @@ def train_mnrl(
 
     logger.info("Loading base model: %s", base_model)
     model = SentenceTransformer(base_model)
+    if max_seq_length is not None:
+        model.max_seq_length = max_seq_length
 
     examples = []
     for p in pairs:
@@ -307,11 +320,13 @@ def train_mnrl(
 
     warmup_steps = min(50, len(loader) // 5)
     logger.info(
-        "Training: %d pairs, %d epochs, batch=%d, lr=%s",
+        "Training: %d pairs, %d epochs, batch=%d, lr=%s, amp=%s, max_seq_length=%s",
         len(pairs),
         epochs,
         batch_size,
         lr,
+        use_amp,
+        max_seq_length,
     )
 
     t0 = time.perf_counter()
@@ -322,6 +337,7 @@ def train_mnrl(
         optimizer_params={"lr": lr},
         output_path=output,
         show_progress_bar=True,
+        use_amp=use_amp,
     )
     elapsed = time.perf_counter() - t0
 
@@ -334,12 +350,60 @@ def train_mnrl(
         "epochs": epochs,
         "batch_size": batch_size,
         "lr": lr,
+        "use_amp": use_amp,
+        "max_seq_length": max_seq_length,
         "training_time_s": round(elapsed, 1),
     }
     (Path(output) / "training_meta.json").write_text(json.dumps(meta, indent=2))
 
     logger.info("Model saved to %s (%.0fs)", output, elapsed)
     return output
+
+
+def _release_gpu_memory() -> None:
+    """Free PyTorch CUDA cache + run GC. No-op when torch is not loaded.
+
+    Training + evaluation both encode large corpus slices; on a 15 GB
+    T4 the lingering cache can push training over the edge. Call this
+    between phases (e.g., after baseline eval, before training) to
+    keep peak memory down without touching the library's internal
+    references. Defensive against stubbed torch modules in tests.
+    """
+    import gc
+
+    gc.collect()
+    try:
+        import torch  # type: ignore[import-not-found]
+
+        if getattr(torch, "cuda", None) is not None and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
+def _promote_candidate(candidate_path: Path, final_path: Path) -> None:
+    """Move a trained candidate model into its final location atomically.
+
+    The current model (if any) is renamed to ``<name>.old`` first so a
+    crash between operations never leaves the user without a working
+    model. On success the backup is removed; on failure it is rolled
+    back into place.
+    """
+    backup_path = final_path.with_name(final_path.name + ".old")
+    final_path.parent.mkdir(parents=True, exist_ok=True)
+    if backup_path.exists():
+        shutil.rmtree(backup_path)
+    try:
+        if final_path.exists():
+            final_path.rename(backup_path)
+        shutil.move(str(candidate_path), str(final_path))
+    except Exception:
+        if backup_path.exists() and not final_path.exists():
+            backup_path.rename(final_path)
+        raise
+    else:
+        if backup_path.exists():
+            shutil.rmtree(backup_path)
 
 
 # ---------------------------------------------------------------------- #
@@ -792,6 +856,8 @@ def retrain(
     epochs: int = 2,
     lr: float = 3e-6,
     batch_size: int = 64,
+    use_amp: bool = True,
+    max_seq_length: int | None = None,
     eval_fraction: float = 0.15,
     eval_noise_size: int = _EVAL_NOISE_DEFAULT,
     min_gain: float = 0.0,
@@ -880,6 +946,8 @@ def retrain(
             epochs=epochs,
             lr=lr,
             batch_size=batch_size,
+            use_amp=use_amp,
+            max_seq_length=max_seq_length,
         )
         return RetrainResult(
             output_path=final_path_str,
@@ -1000,6 +1068,10 @@ def retrain(
     if candidate_path.exists():
         shutil.rmtree(candidate_path)
 
+    # Free the baseline-eval encoder's GPU state before loading the
+    # training model; on a 15 GB T4 this prevents peak-memory overlap.
+    _release_gpu_memory()
+
     train_mnrl(
         pairs,
         base_model=base_model,
@@ -1007,7 +1079,11 @@ def retrain(
         epochs=epochs,
         lr=lr,
         batch_size=batch_size,
+        use_amp=use_amp,
+        max_seq_length=max_seq_length,
     )
+
+    _release_gpu_memory()
 
     logger.info("Running final eval on fine-tuned candidate ...")
     final = evaluate_model(
@@ -1056,29 +1132,10 @@ def retrain(
             min_gain=min_gain,
         )
 
-    # Promote candidate to final path with a last-known-good backup.
-    # If we rmtree(final_path) before the move, a crash between those
-    # two steps leaves the user with no model. Instead: rename the
-    # existing model aside to `.old`, move the candidate into place,
-    # remove the backup only once the new model is committed. On any
-    # failure, roll the backup back so the user never ends up empty.
+    # Atomic promotion with last-known-good backup (keeps the user's
+    # previous model available if anything below fails).
     final_path = Path(final_path_str)
-    backup_path = final_path.with_name(final_path.name + ".old")
-    final_path.parent.mkdir(parents=True, exist_ok=True)
-    if backup_path.exists():
-        shutil.rmtree(backup_path)
-
-    try:
-        if final_path.exists():
-            final_path.rename(backup_path)
-        shutil.move(str(candidate_path), str(final_path))
-    except Exception:
-        if backup_path.exists() and not final_path.exists():
-            backup_path.rename(final_path)
-        raise
-    else:
-        if backup_path.exists():
-            shutil.rmtree(backup_path)
+    _promote_candidate(candidate_path, final_path)
 
     logger.info(
         "Retrain saved: delta NDCG@10 = %+.4f (baseline=%.4f, final=%.4f)",
@@ -1093,4 +1150,479 @@ def retrain(
         n_pairs=len(pairs),
         gated_out=False,
         min_gain=min_gain,
+    )
+
+
+# ---------------------------------------------------------------------- #
+# Multi-corpus retraining (T1.4)                                          #
+# ---------------------------------------------------------------------- #
+
+
+SamplingStrategy = Literal["uniform", "proportional", "temperature"]
+
+
+def compute_triple_budget(
+    sizes: dict[str, int],
+    total_triples: int,
+    strategy: SamplingStrategy = "temperature",
+    temperature: float = 0.5,
+) -> dict[str, int]:
+    """Allocate ``total_triples`` across datasets by the given strategy.
+
+    Strategies (``|D_d|`` is the chunk count of dataset ``d``):
+
+    - ``uniform``: every dataset gets the same share (weights=1).
+    - ``proportional``: weights=``|D_d|``, ie naive concatenation.
+    - ``temperature``: weights=``|D_d|^temperature``. ``temperature=0``
+      collapses to uniform; ``temperature=1`` to proportional;
+      ``temperature=0.5`` (the default) is a common middle ground that
+      favours smaller corpora without abandoning size signal.
+
+    The returned budget always sums exactly to ``total_triples``. The
+    rounding remainder is distributed using the largest-remainder
+    method, so per-dataset budgets never differ from the ideal
+    fractional allocation by more than 1.
+    """
+    if not sizes:
+        return {}
+    if total_triples <= 0:
+        return {name: 0 for name in sizes}
+
+    if strategy == "uniform":
+        weights = {name: 1.0 for name in sizes}
+    elif strategy == "proportional":
+        weights = {name: float(n) for name, n in sizes.items()}
+    elif strategy == "temperature":
+        if temperature < 0:
+            raise ValueError(f"temperature must be >= 0, got {temperature!r}")
+        weights = {name: float(n) ** temperature for name, n in sizes.items()}
+    else:
+        raise ValueError(
+            f"Unknown sampling strategy: {strategy!r}. "
+            "Expected one of: uniform, proportional, temperature."
+        )
+
+    total_weight = sum(weights.values())
+    if total_weight <= 0:
+        return {name: 0 for name in sizes}
+
+    fractions = {name: weights[name] / total_weight * total_triples for name in sizes}
+    floors = {name: int(fractions[name]) for name in sizes}
+    remainder = total_triples - sum(floors.values())
+    if remainder > 0:
+        # Largest-remainder: datasets whose fractional share is furthest
+        # above their floor get the extra triples first.
+        leftovers = sorted(
+            sizes.keys(),
+            key=lambda name: (fractions[name] - floors[name], name),
+            reverse=True,
+        )
+        for i in range(remainder):
+            floors[leftovers[i % len(leftovers)]] += 1
+    return floors
+
+
+def _count_chunks(store: VstashStore) -> int:
+    row = store._conn.execute("SELECT COUNT(*) AS n FROM chunks").fetchone()
+    return int(row["n"]) if row is not None else 0
+
+
+@dataclass(frozen=True)
+class MultiRetrainResult:
+    """Outcome of a full multi-corpus eval-gated retrain."""
+
+    output_path: str | None
+    per_dataset_baseline: dict[str, EvalMetrics] = field(default_factory=dict)
+    per_dataset_final: dict[str, EvalMetrics] = field(default_factory=dict)
+    macro_baseline_ndcg: float = 0.0
+    macro_final_ndcg: float = 0.0
+    per_dataset_pairs: dict[str, int] = field(default_factory=dict)
+    per_dataset_budget: dict[str, int] = field(default_factory=dict)
+    total_pairs: int = 0
+    gated_out: bool = False
+    min_gain: float = 0.0
+    sampling: SamplingStrategy = "temperature"
+    temperature: float = 0.5
+    per_dataset_gate: bool = False
+
+    @property
+    def macro_delta_ndcg(self) -> float:
+        return self.macro_final_ndcg - self.macro_baseline_ndcg
+
+    @property
+    def per_dataset_delta(self) -> dict[str, float]:
+        deltas: dict[str, float] = {}
+        for name, base in self.per_dataset_baseline.items():
+            final = self.per_dataset_final.get(name)
+            if final is None:
+                continue
+            deltas[name] = final.ndcg_at_10 - base.ndcg_at_10
+        return deltas
+
+
+def _normalize_stores(
+    stores: dict[str, VstashStore] | list[VstashStore],
+) -> dict[str, VstashStore]:
+    if isinstance(stores, dict):
+        if not stores:
+            raise ValueError("retrain_multi requires at least one store.")
+        return dict(stores)
+    if not stores:
+        raise ValueError("retrain_multi requires at least one store.")
+    # Preserve order while giving each store a predictable alias so
+    # per-dataset metrics round-trip through JSON meta.
+    return {f"corpus_{i}": s for i, s in enumerate(stores)}
+
+
+def retrain_multi(
+    stores: dict[str, VstashStore] | list[VstashStore],
+    base_model: str,
+    output_path: str = "~/.vstash/models/retrained-multi",
+    sampling: SamplingStrategy = "temperature",
+    temperature: float = 0.5,
+    total_triples: int = 10000,
+    epochs: int = 2,
+    lr: float = 3e-6,
+    batch_size: int = 32,
+    use_amp: bool = True,
+    max_seq_length: int | None = None,
+    eval_fraction: float = 0.15,
+    eval_noise_size: int = _EVAL_NOISE_DEFAULT,
+    min_gain: float = 0.0,
+    per_dataset_gate: bool = False,
+    skip_eval: bool = False,
+    seed: int = 42,
+    eval_queries_by_dataset: dict[str, list[dict]] | None = None,
+    synthesize_queries: bool = False,
+    synth_n: int = 2,
+    synth_cache: str | Path | None = None,
+    synth_model: str | None = None,
+    cfg: "VstashConfig | None" = None,
+) -> MultiRetrainResult:
+    """Fine-tune an embedding model over N corpora with balanced sampling.
+
+    Extracts the v5-notebook training flow that produced
+    ``Stffens/bge-small-rrf-v2`` into a first-class API: compute a
+    per-dataset triple budget via ``compute_triple_budget``, generate
+    triples from each store with shared disagreement mining, globally
+    shuffle, train one model on the union, and evaluate per-dataset.
+
+    Args:
+        stores: Mapping ``{alias: VstashStore}`` or a list (aliases
+            auto-assigned as ``corpus_0`` etc).
+        base_model: HF model name / local path to fine-tune.
+        output_path: Final save location. ``<path>.candidate`` is used
+            during training; ``<path>.old`` is the last-known-good
+            rollback target during atomic promote.
+        sampling: ``"uniform" | "proportional" | "temperature"``.
+        temperature: Exponent for the temperature strategy
+            (``|D_d|^alpha``). ``0`` = uniform, ``1`` = proportional.
+        total_triples: Target total pseudo-query budget across all
+            datasets. Actual triple count may be lower when individual
+            corpora are smaller than their per-dataset share or when
+            generate_triples drops degenerate pairs.
+        batch_size: Training batch size. Default 32 (vs 64 for the
+            single-store retrain) keeps peak memory inside a 15 GB T4
+            when three corpora are live during eval.
+        use_amp: Automatic mixed precision. Default on; halves GPU
+            memory on T4 and higher and is near-free.
+        max_seq_length: Optional encoder sequence cap. Lower values
+            reduce memory further when most chunks are short.
+        eval_queries_by_dataset: Optional per-dataset labeled eval
+            sets (e.g., BEIR qrels converted via
+            ``qrels_to_eval_queries``). Datasets missing from the map
+            fall back to ``split_corpus_for_eval``.
+        min_gain: Required NDCG@10 improvement. Applied to the
+            macro-average unless ``per_dataset_gate=True``.
+        per_dataset_gate: Every dataset must individually satisfy
+            ``min_gain``. Off by default because single-dataset
+            regressions are common in multi-corpus training.
+        skip_eval: Train + save unconditionally, no baseline/final
+            eval. Useful for smoke tests.
+
+    Returns:
+        ``MultiRetrainResult``. ``output_path`` is ``None`` when
+        training was gated out or produced too few pairs.
+    """
+    stores_dict = _normalize_stores(stores)
+
+    sizes = {name: _count_chunks(store) for name, store in stores_dict.items()}
+    if sum(sizes.values()) == 0:
+        raise ValueError("All provided stores are empty; nothing to train on.")
+
+    budget = compute_triple_budget(
+        sizes,
+        total_triples=total_triples,
+        strategy=sampling,
+        temperature=temperature,
+    )
+    logger.info(
+        "retrain_multi budget (strategy=%s, temperature=%s, total=%d): %s",
+        sampling,
+        temperature,
+        total_triples,
+        {name: {"chunks": sizes[name], "budget": budget[name]} for name in stores_dict},
+    )
+
+    # Per-dataset eval prep: reserved_ids exclude train chunks from
+    # the matching dataset only; stores do not share chunk ids.
+    per_dataset_eval: dict[str, list[dict]] = {}
+    per_dataset_reserved: dict[str, set[int]] = {}
+    for name, store in stores_dict.items():
+        if skip_eval:
+            per_dataset_eval[name] = []
+            per_dataset_reserved[name] = set()
+            continue
+        if eval_queries_by_dataset and name in eval_queries_by_dataset:
+            per_dataset_eval[name] = list(eval_queries_by_dataset[name])
+            per_dataset_reserved[name] = set()
+        else:
+            reserved, queries = split_corpus_for_eval(store, eval_fraction=eval_fraction, seed=seed)
+            per_dataset_eval[name] = queries
+            per_dataset_reserved[name] = reserved
+
+    # Baseline eval per dataset (run once, reused for all gate math).
+    per_dataset_baseline: dict[str, EvalMetrics] = {}
+    if not skip_eval:
+        for name, store in stores_dict.items():
+            queries = per_dataset_eval[name]
+            if not queries:
+                per_dataset_baseline[name] = EvalMetrics(0.0, 0.0, 0.0, 0)
+                continue
+            logger.info("Baseline eval on '%s' (%d queries)", name, len(queries))
+            per_dataset_baseline[name] = evaluate_model(
+                store,
+                model_name_or_path=base_model,
+                eval_queries=queries,
+                noise_sample_size=eval_noise_size,
+                seed=seed,
+            )
+
+    # Triple generation per dataset.
+    all_pairs: list[dict] = []
+    per_dataset_pairs: dict[str, int] = {}
+    for name, store in stores_dict.items():
+        n_queries = budget.get(name, 0)
+        if n_queries <= 0:
+            per_dataset_pairs[name] = 0
+            continue
+
+        training_chunks = sample_training_chunks(
+            store,
+            max_queries=n_queries,
+            seed=seed,
+            exclude_chunk_ids=per_dataset_reserved.get(name) or None,
+        )
+        if not training_chunks:
+            per_dataset_pairs[name] = 0
+            continue
+
+        synth_map: dict[int, list[str]] = {}
+        if synthesize_queries:
+            if cfg is None:
+                raise ValueError(
+                    "synthesize_queries=True requires the ``cfg`` argument "
+                    "(a VstashConfig) so the LLM backend can be resolved."
+                )
+            from .retrain_synth import synthesize_queries as _synth_queries
+
+            logger.info(
+                "Synthesizing %d queries per chunk across %d chunks in '%s' ...",
+                synth_n,
+                len(training_chunks),
+                name,
+            )
+            synth_map = _synth_queries(
+                training_chunks,
+                cfg=cfg,
+                n_per_chunk=synth_n,
+                cache_path=synth_cache,
+                model=synth_model,
+            )
+
+        dataset_pairs = generate_triples(
+            store,
+            base_model,
+            max_queries=n_queries,
+            seed=seed,
+            exclude_chunk_ids=per_dataset_reserved.get(name) or None,
+            synthesized_queries=synth_map or None,
+            pre_sampled_chunks=training_chunks,
+        )
+        per_dataset_pairs[name] = len(dataset_pairs)
+        all_pairs.extend(dataset_pairs)
+        logger.info("Dataset '%s': %d training pairs generated.", name, len(dataset_pairs))
+
+    total_pairs = len(all_pairs)
+
+    def _macro(metrics: dict[str, EvalMetrics]) -> float:
+        evaluated = [m for m in metrics.values() if m.n_queries > 0]
+        if not evaluated:
+            return 0.0
+        return sum(m.ndcg_at_10 for m in evaluated) / len(evaluated)
+
+    macro_baseline = _macro(per_dataset_baseline)
+
+    if total_pairs < 10:
+        logger.warning(
+            "Only %d training pairs generated across all corpora (need >= 10). Skipping training.",
+            total_pairs,
+        )
+        return MultiRetrainResult(
+            output_path=None,
+            per_dataset_baseline=per_dataset_baseline,
+            per_dataset_final={},
+            macro_baseline_ndcg=macro_baseline,
+            macro_final_ndcg=0.0,
+            per_dataset_pairs=per_dataset_pairs,
+            per_dataset_budget=budget,
+            total_pairs=total_pairs,
+            gated_out=True,
+            min_gain=min_gain,
+            sampling=sampling,
+            temperature=temperature,
+            per_dataset_gate=per_dataset_gate,
+        )
+
+    # Global shuffle so the DataLoader mixes datasets inside each batch.
+    rng = random.Random(seed)
+    rng.shuffle(all_pairs)
+
+    final_path_str = str(Path(output_path).expanduser())
+    candidate_path = Path(final_path_str + ".candidate")
+    if candidate_path.exists():
+        shutil.rmtree(candidate_path)
+
+    # Release GPU cache held by the baseline-eval encoders. Without
+    # this, the 3-corpus eval leaves enough fragmented memory to push
+    # bge-small + hard-neg training past the 15 GB T4 limit.
+    _release_gpu_memory()
+
+    train_mnrl(
+        all_pairs,
+        base_model=base_model,
+        output_path=str(candidate_path),
+        epochs=epochs,
+        lr=lr,
+        batch_size=batch_size,
+        use_amp=use_amp,
+        max_seq_length=max_seq_length,
+    )
+
+    _release_gpu_memory()
+
+    per_dataset_final: dict[str, EvalMetrics] = {}
+    if not skip_eval:
+        for name, store in stores_dict.items():
+            queries = per_dataset_eval[name]
+            if not queries:
+                per_dataset_final[name] = EvalMetrics(0.0, 0.0, 0.0, 0)
+                continue
+            logger.info("Final eval on '%s' (%d queries)", name, len(queries))
+            per_dataset_final[name] = evaluate_model(
+                store,
+                model_name_or_path=str(candidate_path),
+                eval_queries=queries,
+                noise_sample_size=eval_noise_size,
+                seed=seed,
+            )
+
+    macro_final = _macro(per_dataset_final) if not skip_eval else 0.0
+
+    # Gate: macro-average by default, or every dataset individually
+    # when per_dataset_gate is on. Skip when eval is off.
+    if skip_eval:
+        gated_out = False
+    elif per_dataset_gate:
+        gated_out = False
+        for name, base_metrics in per_dataset_baseline.items():
+            final_metrics = per_dataset_final.get(name)
+            if final_metrics is None or base_metrics.n_queries == 0:
+                continue
+            if (final_metrics.ndcg_at_10 - base_metrics.ndcg_at_10) < min_gain:
+                gated_out = True
+                break
+    else:
+        gated_out = (macro_final - macro_baseline) < min_gain
+
+    # Persist eval metadata on the candidate directory regardless of
+    # gate outcome, so debugging/inspection still works. ``train_mnrl``
+    # normally creates this directory; the ``mkdir`` below is defensive
+    # so tests that mock training still get meta on disk.
+    candidate_path.mkdir(parents=True, exist_ok=True)
+    meta_path = candidate_path / "training_meta.json"
+    try:
+        existing_meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+    except Exception:
+        existing_meta = {}
+    existing_meta["multi_eval"] = {
+        "per_dataset_baseline": {n: m.as_dict() for n, m in per_dataset_baseline.items()},
+        "per_dataset_final": {n: m.as_dict() for n, m in per_dataset_final.items()},
+        "per_dataset_pairs": per_dataset_pairs,
+        "per_dataset_budget": budget,
+        "per_dataset_sizes": sizes,
+        "macro_baseline_ndcg": round(macro_baseline, 5),
+        "macro_final_ndcg": round(macro_final, 5),
+        "macro_delta_ndcg": round(macro_final - macro_baseline, 5),
+        "sampling": sampling,
+        "temperature": temperature,
+        "total_triples_target": total_triples,
+        "gated_out": gated_out,
+        "per_dataset_gate": per_dataset_gate,
+        "min_gain": min_gain,
+        "seed": seed,
+    }
+    meta_path.write_text(json.dumps(existing_meta, indent=2))
+
+    if gated_out:
+        logger.warning(
+            "Candidate gated out: macro delta NDCG@10 = %+.4f, per_dataset_gate=%s, "
+            "min_gain=%+.4f. Candidate left at %s for inspection.",
+            macro_final - macro_baseline,
+            per_dataset_gate,
+            min_gain,
+            candidate_path,
+        )
+        return MultiRetrainResult(
+            output_path=None,
+            per_dataset_baseline=per_dataset_baseline,
+            per_dataset_final=per_dataset_final,
+            macro_baseline_ndcg=macro_baseline,
+            macro_final_ndcg=macro_final,
+            per_dataset_pairs=per_dataset_pairs,
+            per_dataset_budget=budget,
+            total_pairs=total_pairs,
+            gated_out=True,
+            min_gain=min_gain,
+            sampling=sampling,
+            temperature=temperature,
+            per_dataset_gate=per_dataset_gate,
+        )
+
+    final_path = Path(final_path_str)
+    _promote_candidate(candidate_path, final_path)
+
+    logger.info(
+        "retrain_multi saved: macro delta NDCG@10 = %+.4f "
+        "(macro baseline=%.4f, macro final=%.4f, %d pairs across %d corpora)",
+        macro_final - macro_baseline,
+        macro_baseline,
+        macro_final,
+        total_pairs,
+        len(stores_dict),
+    )
+    return MultiRetrainResult(
+        output_path=str(final_path),
+        per_dataset_baseline=per_dataset_baseline,
+        per_dataset_final=per_dataset_final,
+        macro_baseline_ndcg=macro_baseline,
+        macro_final_ndcg=macro_final,
+        per_dataset_pairs=per_dataset_pairs,
+        per_dataset_budget=budget,
+        total_pairs=total_pairs,
+        gated_out=False,
+        min_gain=min_gain,
+        sampling=sampling,
+        temperature=temperature,
+        per_dataset_gate=per_dataset_gate,
     )
