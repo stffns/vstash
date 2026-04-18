@@ -41,10 +41,27 @@ drop-in reproductions. Trade-offs:
 For mining this is fine -- the training signal is similar in
 expectation but a different sample of disagreement. For eval, the
 absolute NDCG numbers will differ from the legacy path by a few
-points, but the baseline-vs-final delta (which is what the gate
-checks) is preserved because both sides of the comparison use the
-same batched eval. When faithful reproduction of production search
-matters, use the non-batched defaults.
+points. The macro-averaged baseline-vs-final delta is
+*approximately* preserved because both sides of the comparison
+use the same batched eval, but per-query sign can flip:
+
+- Adaptive RRF in production up-weights FTS on rare query terms
+  via IDF. The batched path skips IDF, so a rare-term query that
+  legacy eval scores on the FTS side will score on vec here.
+  Fine-tuning changes vec distances but not IDF, so the two
+  paths can disagree on whether the fine-tune helped that query.
+- Distance cutoff (1.15 in production): baseline can have a
+  relevant doc just under the cutoff and fine-tune pushes it
+  over (or vice versa). Batched eval has no cutoff, so it keeps
+  top-10 unconditionally.
+
+If you change the RRF weights used by ``evaluate_model_batched``,
+re-run the batched-vs-legacy delta parity check on a real BEIR
+slice -- not just the unit tests -- before shipping. Unit tests
+verify plumbing, not semantic equivalence.
+
+When faithful reproduction of production search matters (paper
+numbers, published eval tables), use the non-batched defaults.
 """
 
 from __future__ import annotations
@@ -112,7 +129,7 @@ def _fts_top_k(
     return [int(r["id"]) for r in rows]
 
 
-def _rrf_top5_paths(
+def _rrf_fuse(
     vec_chunk_ids: list[int],
     fts_chunk_ids: list[int],
     vec_weight: float,
@@ -123,7 +140,9 @@ def _rrf_top5_paths(
     """Reciprocal-rank-fuse vec and FTS rankings, return top-N chunk ids.
 
     Matches the RRF formula used by ``VstashStore._fuse_rrf_scores``:
-    ``w * 1 / (RRF_K + rank)`` with 0-indexed rank.
+    ``w * 1 / (RRF_K + rank)`` with 0-indexed rank. ``top_n`` defaults
+    to the disagreement-mining top-5 but callers that need top-10
+    (evaluate_model_batched) pass it explicitly.
     """
     scores: dict[int, float] = {}
     for rank, cid in enumerate(vec_chunk_ids):
@@ -310,8 +329,8 @@ def generate_triples_batched(
         # two signals use byte-identical ladders.
         vec_hi, fts_hi, vec_lo, fts_lo = adaptive_rrf_weights(len(query_text.split()))
 
-        vec_heavy_top5 = _rrf_top5_paths(vec_top, fts_top, vec_hi, fts_hi, chunk_id_to_path)
-        fts_heavy_top5 = _rrf_top5_paths(vec_top, fts_top, vec_lo, fts_lo, chunk_id_to_path)
+        vec_heavy_top5 = _rrf_fuse(vec_top, fts_top, vec_hi, fts_hi, chunk_id_to_path)
+        fts_heavy_top5 = _rrf_fuse(vec_top, fts_top, vec_lo, fts_lo, chunk_id_to_path)
 
         vec_paths = {chunk_id_to_path[cid] for cid in vec_heavy_top5}
         fts_paths = {chunk_id_to_path[cid] for cid in fts_heavy_top5}
@@ -602,7 +621,12 @@ def evaluate_model_batched(
                         ]
                     )
 
-        # Per-query FTS + RRF merge.
+        # Per-query FTS + RRF merge. Multiple chunks from the same
+        # doc can land in the fused list (no MMR dedup in this path),
+        # but NDCG is a per-document metric, so we collapse the
+        # ranking to unique paths in first-occurrence order before
+        # scoring. Without this, a relevant doc surfacing twice in
+        # top-10 would be counted twice and push NDCG above 1.0.
         for q, vec_top in zip(normalized_queries, all_vec_topk):
             fts_top = _fts_top_k(eval_store._conn, q["query"], TOP_K)
             fts_top = [cid for cid in fts_top if cid in chunk_id_to_path]
@@ -610,15 +634,22 @@ def evaluate_model_batched(
             # Adaptive RRF weights, vec-heavy side. Faithful enough to
             # store.search's default for short/medium queries.
             vec_hi, fts_hi, _vec_lo, _fts_lo = adaptive_rrf_weights(len(q["query"].split()))
-            fused = _rrf_top5_paths(
-                vec_top, fts_top, vec_hi, fts_hi, chunk_id_to_path, top_n=_EVAL_TOP_K
-            )
-            ranked_paths = [chunk_id_to_path[cid] for cid in fused]
+            fused = _rrf_fuse(vec_top, fts_top, vec_hi, fts_hi, chunk_id_to_path, top_n=_EVAL_TOP_K)
+
+            # Collapse chunk-level ranking to doc-level (unique paths).
+            unique_paths: list[str] = []
+            seen_paths: set[str] = set()
+            for cid in fused:
+                p = chunk_id_to_path[cid]
+                if p in seen_paths:
+                    continue
+                seen_paths.add(p)
+                unique_paths.append(p)
 
             relevant_set = set(q["relevant_paths"])
             ranks_hit: list[int] = []
             first_rank: int | None = None
-            for rank_i, p in enumerate(ranked_paths, start=1):
+            for rank_i, p in enumerate(unique_paths, start=1):
                 if p in relevant_set:
                     ranks_hit.append(rank_i)
                     if first_rank is None:
@@ -638,9 +669,14 @@ def evaluate_model_batched(
                     (tmp_db.parent / (tmp_db.name + suffix)).unlink(missing_ok=True)
                 except Exception:
                     pass
-
-    del corpus_vecs, query_vecs
-    _release_gpu_memory()
+        # Release GPU tensors here so exceptions during the per-query
+        # loop do not leave the corpus + query matrices live for the
+        # next dataset in retrain_multi's loop.
+        try:
+            del corpus_vecs, query_vecs
+        except NameError:
+            pass
+        _release_gpu_memory()
 
     return EvalMetrics(
         ndcg_at_10=sum(ndcgs) / len(ndcgs) if ndcgs else 0.0,

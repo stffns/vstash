@@ -14,7 +14,7 @@ import pytest
 from vstash.embed import get_embedding_dim
 from vstash.retrain_batch import (
     _fts_top_k,
-    _rrf_top5_paths,
+    _rrf_fuse,
     generate_triples_batched,
 )
 from vstash.store import RRF_K, VstashStore
@@ -164,14 +164,14 @@ def _mk_store(path: str, docs: list[tuple[str, str, str]]) -> VstashStore:
 
 
 # ------------------------------------------------------------------ #
-# _rrf_top5_paths                                                      #
+# _rrf_fuse                                                      #
 # ------------------------------------------------------------------ #
 
 
-class TestRrfTopN:
+class TestRrfFuse:
     def test_agreement_ranks_head_chunks_first(self) -> None:
         id_to_path = {10: "/a", 20: "/b", 30: "/c"}
-        top = _rrf_top5_paths(
+        top = _rrf_fuse(
             vec_chunk_ids=[10, 20, 30],
             fts_chunk_ids=[10, 20, 30],
             vec_weight=0.5,
@@ -186,14 +186,14 @@ class TestRrfTopN:
         id_to_path = {1: "/vec-top", 2: "/fts-top"}
         # Each appears only in one signal. With weights 0.7 vs 0.3, the
         # 0.7 side wins even though both are at rank 0.
-        top_vec_heavy = _rrf_top5_paths(
+        top_vec_heavy = _rrf_fuse(
             vec_chunk_ids=[1],
             fts_chunk_ids=[2],
             vec_weight=0.7,
             fts_weight=0.3,
             chunk_id_to_path=id_to_path,
         )
-        top_fts_heavy = _rrf_top5_paths(
+        top_fts_heavy = _rrf_fuse(
             vec_chunk_ids=[1],
             fts_chunk_ids=[2],
             vec_weight=0.3,
@@ -206,7 +206,7 @@ class TestRrfTopN:
     def test_chunks_missing_from_path_map_are_dropped(self) -> None:
         """Stale FTS hits (chunk deleted after corpus snapshot) must
         not appear in the output."""
-        top = _rrf_top5_paths(
+        top = _rrf_fuse(
             vec_chunk_ids=[1, 2],
             fts_chunk_ids=[99],  # 99 absent from id_to_path
             vec_weight=0.5,
@@ -727,6 +727,53 @@ class TestEvaluateModelBatched:
         # Either 0.0 (not in top-10) or some partial credit via FTS. As
         # long as it's clearly below 1.0, the truncation is working.
         assert out.ndcg_at_10 < 1.0
+
+    def test_ndcg_never_exceeds_one_with_multi_chunk_docs(
+        self, tmp_path: Path, torch_st_stubs: Any
+    ) -> None:
+        """When a relevant doc has multiple chunks that both land in
+        the batched top-10, the evaluator must not double-count it.
+        Regression guard for the 'duplicate paths in ranked_paths'
+        bug: without dedup, NDCG can exceed 1.0, which is impossible.
+        """
+        from vstash.retrain_batch import evaluate_model_batched
+
+        # Doc /target has TWO chunks. Both chunks live in the same doc
+        # path, so if a query hits both, NDCG must stay <= 1.0 because
+        # only one document is relevant.
+        store = _mk_store(
+            str(tmp_path / "dupe.db"),
+            [
+                ("/target", "T", "alpha beta target one"),
+                ("/target", "T", "alpha beta target two"),
+                ("/noise", "N", "completely unrelated filler"),
+            ],
+        )
+        torch_st_stubs.set_encode(
+            {
+                "alpha beta target one": [1.0, 0.0],
+                "alpha beta target two": [0.99, 0.01],  # very close to query
+                "completely unrelated filler": [0.0, 1.0],
+                "find alpha target": [1.0, 0.0],
+            }
+        )
+        try:
+            out = evaluate_model_batched(
+                store,
+                "dummy",
+                eval_queries=[{"query": "find alpha target", "relevant_paths": ["/target"]}],
+                noise_sample_size=1,
+            )
+        finally:
+            store.close()
+
+        assert out.n_queries == 1
+        # Cap is the key invariant: impossible to exceed 1.0.
+        assert out.ndcg_at_10 <= 1.0, (
+            f"NDCG@10={out.ndcg_at_10} exceeds 1.0, duplicate-path dedup regressed"
+        )
+        # Relevant doc was rank 1 via one of its chunks.
+        assert out.ndcg_at_10 == pytest.approx(1.0)
 
     def test_raises_without_torch(self, tmp_path: Path) -> None:
         from vstash.retrain_batch import evaluate_model_batched
