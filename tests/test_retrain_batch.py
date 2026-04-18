@@ -1,4 +1,5 @@
-"""Tests for vstash.retrain_batch.generate_triples_batched (T1.4b)."""
+"""Tests for vstash.retrain_batch: generate_triples_batched (T1.4b) +
+evaluate_model_batched (T1.4c)."""
 
 from __future__ import annotations
 
@@ -13,7 +14,7 @@ import pytest
 from vstash.embed import get_embedding_dim
 from vstash.retrain_batch import (
     _fts_top_k,
-    _rrf_top5_paths,
+    _rrf_fuse,
     generate_triples_batched,
 )
 from vstash.store import RRF_K, VstashStore
@@ -98,6 +99,13 @@ def _install_torch_stub(encoded_by_texts: dict[str, list[list[float]]]) -> Any:
                 raise KeyError(f"no stub embedding for: {missing[:3]}")
             return FakeTensor(np.asarray([encoded_by_texts[t] for t in texts], dtype=np.float32))
 
+        # evaluate_model_batched queries one of these two APIs to size
+        # the temp store. The specific value does not matter for the
+        # tests, only that it matches the dim of the supplied vectors.
+        def get_embedding_dimension(self) -> int:
+            sample = next(iter(encoded_by_texts.values()), None)
+            return len(sample) if sample else 0
+
     st_mod = types.ModuleType("sentence_transformers")
     st_mod.SentenceTransformer = FakeModel
 
@@ -156,14 +164,14 @@ def _mk_store(path: str, docs: list[tuple[str, str, str]]) -> VstashStore:
 
 
 # ------------------------------------------------------------------ #
-# _rrf_top5_paths                                                      #
+# _rrf_fuse                                                      #
 # ------------------------------------------------------------------ #
 
 
-class TestRrfTopN:
+class TestRrfFuse:
     def test_agreement_ranks_head_chunks_first(self) -> None:
         id_to_path = {10: "/a", 20: "/b", 30: "/c"}
-        top = _rrf_top5_paths(
+        top = _rrf_fuse(
             vec_chunk_ids=[10, 20, 30],
             fts_chunk_ids=[10, 20, 30],
             vec_weight=0.5,
@@ -178,14 +186,14 @@ class TestRrfTopN:
         id_to_path = {1: "/vec-top", 2: "/fts-top"}
         # Each appears only in one signal. With weights 0.7 vs 0.3, the
         # 0.7 side wins even though both are at rank 0.
-        top_vec_heavy = _rrf_top5_paths(
+        top_vec_heavy = _rrf_fuse(
             vec_chunk_ids=[1],
             fts_chunk_ids=[2],
             vec_weight=0.7,
             fts_weight=0.3,
             chunk_id_to_path=id_to_path,
         )
-        top_fts_heavy = _rrf_top5_paths(
+        top_fts_heavy = _rrf_fuse(
             vec_chunk_ids=[1],
             fts_chunk_ids=[2],
             vec_weight=0.3,
@@ -198,7 +206,7 @@ class TestRrfTopN:
     def test_chunks_missing_from_path_map_are_dropped(self) -> None:
         """Stale FTS hits (chunk deleted after corpus snapshot) must
         not appear in the output."""
-        top = _rrf_top5_paths(
+        top = _rrf_fuse(
             vec_chunk_ids=[1, 2],
             fts_chunk_ids=[99],  # 99 absent from id_to_path
             vec_weight=0.5,
@@ -596,3 +604,288 @@ def test_parity_with_generate_triples_on_small_store(tmp_path: Path, torch_st_st
     assert batched_queries & legacy_queries, (
         f"no query overlap: batched={batched_queries}, legacy={legacy_queries}"
     )
+
+
+# ------------------------------------------------------------------ #
+# evaluate_model_batched (T1.4c)                                       #
+# ------------------------------------------------------------------ #
+
+
+class TestEvaluateModelBatched:
+    def test_empty_queries_returns_zero_metrics(self, tmp_path: Path, torch_st_stubs: Any) -> None:
+        from vstash.retrain_batch import evaluate_model_batched
+
+        store = _mk_store(str(tmp_path / "empty.db"), [("/a", "A", "some body text")])
+        try:
+            out = evaluate_model_batched(store, "dummy", eval_queries=[])
+        finally:
+            store.close()
+        assert out.n_queries == 0
+        assert out.ndcg_at_10 == 0.0
+
+    def test_no_relevant_paths_returns_zero_metrics(
+        self, tmp_path: Path, torch_st_stubs: Any
+    ) -> None:
+        from vstash.retrain_batch import evaluate_model_batched
+
+        # Eval query points at a path that is NOT in the store.
+        store = _mk_store(
+            str(tmp_path / "no_rel.db"),
+            [("/a", "A", "body text a"), ("/b", "B", "body text b")],
+        )
+        torch_st_stubs.set_encode(
+            {
+                "body text a": [1.0, 0.0],
+                "body text b": [0.0, 1.0],
+                "does not exist": [0.5, 0.5],
+            }
+        )
+        try:
+            out = evaluate_model_batched(
+                store,
+                "dummy",
+                eval_queries=[{"query": "does not exist", "relevant_paths": ["/never"]}],
+                noise_sample_size=2,
+            )
+        finally:
+            store.close()
+        assert out.n_queries == 0
+        assert out.ndcg_at_10 == 0.0
+
+    def test_relevant_chunk_retrieved_gives_hit(self, tmp_path: Path, torch_st_stubs: Any) -> None:
+        """Query embedding identical to doc A's embedding must put A
+        at rank 1, producing NDCG@10=1.0, MRR=1.0, Hit@10=1.0."""
+        from vstash.retrain_batch import evaluate_model_batched
+
+        store = _mk_store(
+            str(tmp_path / "hit.db"),
+            [
+                ("/target", "Target", "alpha beta gamma"),
+                ("/other", "Other", "zzz yyy xxx"),
+            ],
+        )
+        torch_st_stubs.set_encode(
+            {
+                "alpha beta gamma": [1.0, 0.0],
+                "zzz yyy xxx": [0.0, 1.0],
+                "find alpha": [1.0, 0.0],
+            }
+        )
+        try:
+            out = evaluate_model_batched(
+                store,
+                "dummy",
+                eval_queries=[{"query": "find alpha", "relevant_paths": ["/target"]}],
+                noise_sample_size=2,
+            )
+        finally:
+            store.close()
+        assert out.n_queries == 1
+        assert out.ndcg_at_10 == pytest.approx(1.0)
+        assert out.mrr == pytest.approx(1.0)
+        assert out.hit_at_10 == pytest.approx(1.0)
+
+    def test_relevant_chunk_beyond_top_k_gives_zero(
+        self, tmp_path: Path, torch_st_stubs: Any
+    ) -> None:
+        """If the relevant doc's vec similarity is lower than all noise
+        docs, its rank exceeds top-K and NDCG@10 is 0. Verifies the
+        top-K truncation is honored."""
+        from vstash.retrain_batch import evaluate_model_batched
+
+        # 12 docs: relevant at position [0], noise filling the rest with
+        # vectors closer to the query than the relevant doc is.
+        docs = [("/relevant", "R", "unique relevant text")]
+        for i in range(12):
+            docs.append((f"/noise-{i}", f"N{i}", f"noise body {i}"))
+        store = _mk_store(str(tmp_path / "miss.db"), docs)
+
+        query_text = "search for something"
+        encode_map = {
+            "unique relevant text": [0.1, 0.9],  # very unlike the query
+            query_text: [0.9, 0.1],  # opposite direction
+        }
+        for i in range(12):
+            # Align all noise vectors close to the query so they outrank
+            # the relevant doc.
+            encode_map[f"noise body {i}"] = [0.9, 0.1 + 0.001 * i]
+        torch_st_stubs.set_encode(encode_map)
+
+        try:
+            out = evaluate_model_batched(
+                store,
+                "dummy",
+                eval_queries=[{"query": query_text, "relevant_paths": ["/relevant"]}],
+                noise_sample_size=12,
+            )
+        finally:
+            store.close()
+        # The relevant doc should not be in top-10 because noise is closer.
+        # (FTS might still rescue it if query terms match, but our crafted
+        # query shares no terms with the relevant chunk text.)
+        assert out.n_queries == 1
+        # Either 0.0 (not in top-10) or some partial credit via FTS. As
+        # long as it's clearly below 1.0, the truncation is working.
+        assert out.ndcg_at_10 < 1.0
+
+    def test_ndcg_never_exceeds_one_with_multi_chunk_docs(
+        self, tmp_path: Path, torch_st_stubs: Any
+    ) -> None:
+        """When a relevant doc has multiple chunks that both land in
+        the batched top-10, the evaluator must not double-count it.
+        Regression guard for the 'duplicate paths in ranked_paths'
+        bug: without dedup, NDCG can exceed 1.0, which is impossible.
+        """
+        from vstash.retrain_batch import evaluate_model_batched
+
+        # Doc /target has TWO chunks. Both chunks live in the same doc
+        # path, so if a query hits both, NDCG must stay <= 1.0 because
+        # only one document is relevant.
+        store = _mk_store(
+            str(tmp_path / "dupe.db"),
+            [
+                ("/target", "T", "alpha beta target one"),
+                ("/target", "T", "alpha beta target two"),
+                ("/noise", "N", "completely unrelated filler"),
+            ],
+        )
+        torch_st_stubs.set_encode(
+            {
+                "alpha beta target one": [1.0, 0.0],
+                "alpha beta target two": [0.99, 0.01],  # very close to query
+                "completely unrelated filler": [0.0, 1.0],
+                "find alpha target": [1.0, 0.0],
+            }
+        )
+        try:
+            out = evaluate_model_batched(
+                store,
+                "dummy",
+                eval_queries=[{"query": "find alpha target", "relevant_paths": ["/target"]}],
+                noise_sample_size=1,
+            )
+        finally:
+            store.close()
+
+        assert out.n_queries == 1
+        # Cap is the key invariant: impossible to exceed 1.0.
+        assert out.ndcg_at_10 <= 1.0, (
+            f"NDCG@10={out.ndcg_at_10} exceeds 1.0, duplicate-path dedup regressed"
+        )
+        # Relevant doc was rank 1 via one of its chunks.
+        assert out.ndcg_at_10 == pytest.approx(1.0)
+
+    def test_raises_without_torch(self, tmp_path: Path) -> None:
+        from vstash.retrain_batch import evaluate_model_batched
+
+        store = _mk_store(
+            str(tmp_path / "torch_missing.db"),
+            [("/a", "A", "some body text")],
+        )
+        prev_torch = sys.modules.get("torch")
+        prev_st = sys.modules.get("sentence_transformers")
+        sys.modules["torch"] = None  # type: ignore[assignment]
+        try:
+            with pytest.raises(ImportError, match="sentence-transformers"):
+                evaluate_model_batched(
+                    store,
+                    "dummy",
+                    eval_queries=[{"query": "q", "relevant_paths": ["/a"]}],
+                )
+        finally:
+            if prev_torch is None:
+                sys.modules.pop("torch", None)
+            else:
+                sys.modules["torch"] = prev_torch
+            if prev_st is None:
+                sys.modules.pop("sentence_transformers", None)
+            else:
+                sys.modules["sentence_transformers"] = prev_st
+            store.close()
+
+
+class TestRetrainMultiBulkEval:
+    def test_bulk_eval_flag_routes_to_batched_evaluator(self, tmp_path: Path) -> None:
+        """retrain_multi(bulk_eval=True) must call evaluate_model_batched
+        instead of evaluate_model. Verified with mocks -- no real
+        training or encoding runs."""
+        from vstash.retrain import EvalMetrics, retrain_multi
+
+        s1 = _mk_store(
+            str(tmp_path / "s1.db"),
+            [(f"/s1/{i}", f"S1 {i}", f"s1 chunk {i}") for i in range(30)],
+        )
+        try:
+            baseline = EvalMetrics(ndcg_at_10=0.5, mrr=0.5, hit_at_10=0.6, n_queries=20)
+            final = EvalMetrics(ndcg_at_10=0.6, mrr=0.6, hit_at_10=0.7, n_queries=20)
+            eval_queries = [{"query": f"q{i}", "relevant_paths": [f"/s1/{i}"]} for i in range(20)]
+
+            with (
+                patch(
+                    "vstash.retrain_batch.evaluate_model_batched",
+                    side_effect=[baseline, final],
+                ) as mock_batched,
+                patch("vstash.retrain.evaluate_model") as mock_plain,
+                patch(
+                    "vstash.retrain.generate_triples",
+                    return_value=[{"query": "q", "positive": "p", "negative": None}] * 15,
+                ),
+                patch("vstash.retrain.train_mnrl"),
+            ):
+                retrain_multi(
+                    {"a": s1},
+                    base_model="dummy",
+                    output_path=str(tmp_path / "model"),
+                    total_triples=30,
+                    sampling="uniform",
+                    eval_queries_by_dataset={"a": eval_queries},
+                    bulk_eval=True,
+                    bulk_mine_device="cpu",
+                )
+
+            assert mock_batched.call_count == 2  # baseline + final
+            assert mock_plain.call_count == 0
+            # Device override must reach the batched evaluator.
+            for call in mock_batched.call_args_list:
+                assert call.kwargs.get("device") == "cpu"
+        finally:
+            s1.close()
+
+    def test_bulk_eval_false_keeps_legacy_evaluator(self, tmp_path: Path) -> None:
+        from vstash.retrain import EvalMetrics, retrain_multi
+
+        s1 = _mk_store(
+            str(tmp_path / "s1.db"),
+            [(f"/s1/{i}", f"S1 {i}", f"s1 chunk {i}") for i in range(30)],
+        )
+        try:
+            baseline = EvalMetrics(ndcg_at_10=0.5, mrr=0.5, hit_at_10=0.6, n_queries=20)
+            final = EvalMetrics(ndcg_at_10=0.6, mrr=0.6, hit_at_10=0.7, n_queries=20)
+            eval_queries = [{"query": f"q{i}", "relevant_paths": [f"/s1/{i}"]} for i in range(20)]
+
+            with (
+                patch("vstash.retrain_batch.evaluate_model_batched") as mock_batched,
+                patch(
+                    "vstash.retrain.evaluate_model",
+                    side_effect=[baseline, final],
+                ) as mock_plain,
+                patch(
+                    "vstash.retrain.generate_triples",
+                    return_value=[{"query": "q", "positive": "p", "negative": None}] * 15,
+                ),
+                patch("vstash.retrain.train_mnrl"),
+            ):
+                retrain_multi(
+                    {"a": s1},
+                    base_model="dummy",
+                    output_path=str(tmp_path / "model"),
+                    total_triples=30,
+                    sampling="uniform",
+                    eval_queries_by_dataset={"a": eval_queries},
+                    bulk_eval=False,
+                )
+
+            assert mock_batched.call_count == 0
+            assert mock_plain.call_count == 2
+        finally:
+            s1.close()

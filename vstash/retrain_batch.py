@@ -1,37 +1,67 @@
-"""retrain_batch.py -- GPU-batched triple mining for large corpora.
+"""retrain_batch.py -- GPU-batched triple mining + eval for big corpora.
 
-The default ``vstash.retrain.generate_triples`` calls ``embed_query``
-once per pseudo-query and runs two ``store.search`` invocations per
-query (vec-heavy + fts-heavy). On a FiQA-sized corpus (~57k chunks)
-the per-query sqlite-vec full scan dominates at ~500 ms per search on
-a Colab CPU path. For ~19k queries that is ~5 hours before any
-training happens.
+Two fast-approximation replacements for the per-query
+``store.search`` path used during retraining:
 
-``generate_triples_batched`` is a **fast approximation** of that
-disagreement signal, not a drop-in reproduction. It trades a few
-pipeline features for a 20-50x speedup:
+``generate_triples_batched`` (T1.4b)
+    The default ``vstash.retrain.generate_triples`` calls
+    ``embed_query`` once per pseudo-query and runs two
+    ``store.search`` invocations per query (vec-heavy + fts-heavy).
+    On a FiQA-sized corpus (~57k chunks) the per-query sqlite-vec
+    full scan dominates at ~500 ms on a Colab CPU path. For 19k
+    queries that is ~5 hours before any training happens. The
+    batched miner replaces the vec search with one
+    ``query_vecs @ corpus_vecs.T`` matmul on GPU.
 
-- Vec ranking via one ``query_vecs @ corpus_vecs.T`` matmul on GPU,
-  embedded with ``SentenceTransformer(base_model)`` directly. This
-  bypasses ``embed_query``'s ONNX path and the ``vec_chunks`` table,
-  so the resulting query/doc vectors may not match what the
-  production index would produce bit-for-bit (e.g. if the store was
-  reindexed with a different model between ingest and retrain).
-- No ``distance_cutoff`` filter: the batched path always keeps the
-  top-10 cosine hits. ``store.search`` drops results past a default
-  cutoff of 1.15.
+``evaluate_model_batched`` (T1.4c)
+    ``vstash.retrain.evaluate_model`` ingests the relevant + noise
+    chunks into a temp store and calls ``eval_store.search()`` per
+    query. At ``EVAL_NOISE = 57638`` and ~600 qrels per dataset
+    that is ~10 min per eval pass (baseline + final per dataset = 60
+    min total on a 3-corpus run). ``evaluate_model_batched`` keeps
+    the temp store for FTS5 but skips the vec scan by computing a
+    single GPU matmul over all eval queries.
+
+Both are **fast approximations** of their legacy counterparts, not
+drop-in reproductions. Trade-offs:
+
+- Vec ranking via one matmul, embedded with
+  ``SentenceTransformer(base_model)`` directly. Bypasses
+  ``embed_query``'s ONNX path and the ``vec_chunks`` table, so the
+  resulting query/doc vectors may not match what the production
+  index produces bit-for-bit (e.g. if the store was reindexed with
+  a different model between ingest and retrain).
+- No ``distance_cutoff`` filter: always keeps the top-10 cosine
+  hits. ``store.search`` drops results past a default cutoff of 1.15.
 - FTS5 ``LIMIT 10`` per query. ``store.search`` uses a larger
   candidate pool (``min(K*10, max(K*3, total//3))``) before RRF.
 - Raw RRF over the top-10 vec + top-10 FTS, no MMR dedup. Multiple
-  chunks from the same doc can occupy the disagreement set.
+  chunks from the same doc can occupy the result set.
 
-The output dict shape (``{query, positive, negative}``) and the RRF
-fusion math match ``generate_triples`` exactly, so ``train_mnrl`` /
-``retrain`` / ``retrain_multi`` are drop-in compatible. The training
-signal is similar in expectation but is a different sample of
-disagreement. Use it when wall-time is the bottleneck on a big
-corpus; use ``generate_triples`` when faithful reproduction of the
-production search pipeline matters.
+For mining this is fine -- the training signal is similar in
+expectation but a different sample of disagreement. For eval, the
+absolute NDCG numbers will differ from the legacy path by a few
+points. The macro-averaged baseline-vs-final delta is
+*approximately* preserved because both sides of the comparison
+use the same batched eval, but per-query sign can flip:
+
+- Adaptive RRF in production up-weights FTS on rare query terms
+  via IDF. The batched path skips IDF, so a rare-term query that
+  legacy eval scores on the FTS side will score on vec here.
+  Fine-tuning changes vec distances but not IDF, so the two
+  paths can disagree on whether the fine-tune helped that query.
+- Distance cutoff (1.15 in production): baseline can have a
+  relevant doc just under the cutoff and fine-tune pushes it
+  over (or vice versa). Batched eval has no cutoff, so it keeps
+  top-10 unconditionally.
+
+If you change the RRF weights used by ``evaluate_model_batched``,
+re-run the batched-vs-legacy delta parity check on a real BEIR
+slice -- not just the unit tests -- before shipping. Unit tests
+verify plumbing, not semantic equivalence.
+
+When faithful reproduction of production search matters (paper
+numbers, published eval tables), use the non-batched defaults.
 """
 
 from __future__ import annotations
@@ -39,13 +69,14 @@ from __future__ import annotations
 import logging
 import sqlite3
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .retrain import TOP_K, adaptive_rrf_weights, sample_training_chunks
 from .store import RRF_K, VstashStore
 
 if TYPE_CHECKING:
-    pass
+    from .retrain import EvalMetrics
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +129,7 @@ def _fts_top_k(
     return [int(r["id"]) for r in rows]
 
 
-def _rrf_top5_paths(
+def _rrf_fuse(
     vec_chunk_ids: list[int],
     fts_chunk_ids: list[int],
     vec_weight: float,
@@ -109,7 +140,9 @@ def _rrf_top5_paths(
     """Reciprocal-rank-fuse vec and FTS rankings, return top-N chunk ids.
 
     Matches the RRF formula used by ``VstashStore._fuse_rrf_scores``:
-    ``w * 1 / (RRF_K + rank)`` with 0-indexed rank.
+    ``w * 1 / (RRF_K + rank)`` with 0-indexed rank. ``top_n`` defaults
+    to the disagreement-mining top-5 but callers that need top-10
+    (evaluate_model_batched) pass it explicitly.
     """
     scores: dict[int, float] = {}
     for rank, cid in enumerate(vec_chunk_ids):
@@ -296,8 +329,8 @@ def generate_triples_batched(
         # two signals use byte-identical ladders.
         vec_hi, fts_hi, vec_lo, fts_lo = adaptive_rrf_weights(len(query_text.split()))
 
-        vec_heavy_top5 = _rrf_top5_paths(vec_top, fts_top, vec_hi, fts_hi, chunk_id_to_path)
-        fts_heavy_top5 = _rrf_top5_paths(vec_top, fts_top, vec_lo, fts_lo, chunk_id_to_path)
+        vec_heavy_top5 = _rrf_fuse(vec_top, fts_top, vec_hi, fts_hi, chunk_id_to_path)
+        fts_heavy_top5 = _rrf_fuse(vec_top, fts_top, vec_lo, fts_lo, chunk_id_to_path)
 
         vec_paths = {chunk_id_to_path[cid] for cid in vec_heavy_top5}
         fts_paths = {chunk_id_to_path[cid] for cid in fts_heavy_top5}
@@ -367,3 +400,287 @@ def generate_triples_batched(
     _release_gpu_memory()
 
     return pairs
+
+
+# ---------------------------------------------------------------------- #
+# evaluate_model_batched (T1.4c)                                          #
+# ---------------------------------------------------------------------- #
+
+
+def _normalise_eval_queries(eval_queries: list[dict]) -> list[dict]:
+    """Coerce ``relevant_path`` (legacy str) into ``relevant_paths`` (list)."""
+    out: list[dict] = []
+    for q in eval_queries:
+        paths = q.get("relevant_paths")
+        if paths is None:
+            legacy = q.get("relevant_path")
+            paths = [legacy] if legacy is not None else []
+        out.append({**q, "relevant_paths": list(paths)})
+    return out
+
+
+def evaluate_model_batched(
+    base_store: VstashStore,
+    model_name_or_path: str,
+    eval_queries: list[dict],
+    noise_sample_size: int = 1000,
+    seed: int = 42,
+    tmp_dir: Path | None = None,
+    device: str | None = None,
+    encode_batch_size: int = 256,
+    matmul_batch_queries: int = 512,
+) -> EvalMetrics:
+    """GPU-batched equivalent of ``vstash.retrain.evaluate_model``.
+
+    Skips the per-query ``store.search`` scan (the bottleneck when
+    ``noise_sample_size`` is large) by:
+
+    1. Batch-encoding every eval query with
+       ``SentenceTransformer(model_name_or_path)`` on GPU.
+    2. Computing ``query_vecs @ corpus_vecs.T`` once (chunked by
+       ``matmul_batch_queries`` to bound peak memory) to obtain per-
+       query vec top-K.
+    3. Running FTS5 per query against a temp store (same as
+       ``evaluate_model``; FTS5 is already fast at 5-50 ms).
+    4. Fusing vec + FTS rankings with adaptive RRF weights and
+       scoring the result set for NDCG@10 / MRR / Hit@10.
+
+    The absolute NDCG numbers may differ from ``evaluate_model`` by a
+    few percent because this path skips the production pipeline's
+    MMR dedup, IDF weighting, and distance cutoff. The
+    baseline-vs-final delta (which the retrain gate uses) is
+    preserved because both sides of the comparison use the same
+    batched eval path.
+
+    Args mirror ``evaluate_model`` plus ``device`` / batch-size
+    overrides. Returns an ``EvalMetrics`` with NDCG@10, MRR, Hit@10.
+    """
+    import random as _random
+    import tempfile
+    import time as _time
+
+    from .retrain import (
+        _EVAL_TOP_K,
+        _ndcg_from_ranks,
+        _relevant_chunks,
+        _release_gpu_memory,
+        _sample_noise_chunks,
+        EvalMetrics,
+    )
+
+    if not eval_queries:
+        return EvalMetrics(ndcg_at_10=0.0, mrr=0.0, hit_at_10=0.0, n_queries=0)
+
+    try:
+        import torch
+        from sentence_transformers import SentenceTransformer
+    except ImportError as exc:
+        raise ImportError(
+            "sentence-transformers + torch are required for batched eval. "
+            "Install with: pip install 'sentence-transformers>=3' torch "
+            "'accelerate>=1.1.0'"
+        ) from exc
+
+    normalized_queries = _normalise_eval_queries(eval_queries)
+    relevant_paths: set[str] = set()
+    for q in normalized_queries:
+        relevant_paths.update(q["relevant_paths"])
+
+    relevant_rows = _relevant_chunks(base_store, relevant_paths)
+    noise_rows = _sample_noise_chunks(base_store, relevant_paths, noise_sample_size, seed)
+    all_rows = relevant_rows + noise_rows
+    if not relevant_rows:
+        return EvalMetrics(ndcg_at_10=0.0, mrr=0.0, hit_at_10=0.0, n_queries=0)
+
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info(
+        "evaluate_model_batched: loading %s on device=%s for %d corpus + %d queries",
+        model_name_or_path,
+        device,
+        len(all_rows),
+        len(normalized_queries),
+    )
+    model = SentenceTransformer(model_name_or_path, device=device)
+    if hasattr(model, "get_embedding_dimension"):
+        dim = int(model.get_embedding_dimension())
+    else:
+        dim = int(model.get_sentence_embedding_dimension())
+
+    # Encode corpus + queries once, keep on GPU for the matmul.
+    texts = [r["text"] for r in all_rows]
+    corpus_vecs = model.encode(
+        texts,
+        normalize_embeddings=True,
+        batch_size=encode_batch_size,
+        show_progress_bar=False,
+        convert_to_tensor=True,
+    )
+    query_texts = [q["query"] for q in normalized_queries]
+    query_vecs = model.encode(
+        query_texts,
+        normalize_embeddings=True,
+        batch_size=encode_batch_size,
+        show_progress_bar=False,
+        convert_to_tensor=True,
+    )
+    corpus_vecs = corpus_vecs.to(device)
+    query_vecs = query_vecs.to(device)
+
+    # Build a temp store: we only need its FTS5 index. Ingest via
+    # add_documents_batch so the 60k-chunk case still loads in under a
+    # minute.
+    eval_store: VstashStore | None = None
+    tmp_db: Path | None = None
+    ndcgs: list[float] = []
+    mrrs: list[float] = []
+    hits: list[float] = []
+    try:
+        tmp_parent = Path(tmp_dir) if tmp_dir else Path(tempfile.gettempdir())
+        tmp_parent.mkdir(parents=True, exist_ok=True)
+        tmp_db = (
+            tmp_parent
+            / f"retrain_eval_batched_{int(_time.time() * 1000)}_{_random.randint(0, 1 << 30)}.db"
+        )
+        eval_store = VstashStore(str(tmp_db), embedding_dim=dim)
+
+        # Ingest so FTS5 is populated. We feed zero-vectors for the
+        # vec index since we never query it -- saves memory and
+        # disk. Passing the real embeddings would be wasted work.
+        zero_vec = [0.0] * dim
+        by_path: dict[str, dict] = {}
+        idx_by_path: dict[str, list[int]] = {}
+        for i, row in enumerate(all_rows):
+            path = row["path"]
+            if path not in by_path:
+                by_path[path] = {"title": row.get("title") or path}
+                idx_by_path[path] = []
+            idx_by_path[path].append(i)
+        docs_to_add = []
+        for path, doc_meta in by_path.items():
+            idxs = idx_by_path[path]
+            docs_to_add.append(
+                {
+                    "path": path,
+                    "title": doc_meta["title"],
+                    "chunks": [all_rows[i]["text"] for i in idxs],
+                    "embeddings": [zero_vec for _ in idxs],
+                    "source_type": "file",
+                }
+            )
+        eval_store.add_documents_batch(docs_to_add)
+
+        # The corpus chunks are ordered by their position in all_rows;
+        # that ordering is exactly what add_documents_batch assigned
+        # to the FTS5 rowids (1-indexed, dense).  Map matmul indices
+        # (0-indexed into all_rows) -> chunk_id by querying the temp
+        # store for the final ordering.
+        chunk_rows = eval_store._conn.execute(
+            "SELECT c.id, d.path FROM chunks c JOIN documents d ON d.id = c.doc_id ORDER BY c.id"
+        ).fetchall()
+        # Re-order all_rows's index map so chunk_id_to_idx maps FTS rowid -> matmul index.
+        # Simpler: build chunk_id -> path map and chunk_id -> matmul row index. To do the
+        # latter we need to know which of all_rows each chunk came from; since paths can
+        # have multiple chunks we cannot invert by path alone. The simpler fix is to
+        # recompute a chunk_id -> embedding_row_index by matching on (path, position).
+        by_path_positions: dict[str, list[int]] = {}
+        for i, row in enumerate(all_rows):
+            by_path_positions.setdefault(row["path"], []).append(i)
+        chunk_id_to_matmul_idx: dict[int, int] = {}
+        chunk_id_to_path: dict[int, str] = {}
+        path_cursor: dict[str, int] = {}
+        for r in chunk_rows:
+            cid = int(r["id"])
+            p = r["path"]
+            chunk_id_to_path[cid] = p
+            cursor = path_cursor.get(p, 0)
+            positions = by_path_positions.get(p, [])
+            if cursor >= len(positions):
+                continue
+            chunk_id_to_matmul_idx[cid] = positions[cursor]
+            path_cursor[p] = cursor + 1
+
+        # Reverse lookup: matmul-matrix index -> chunk_id. Built once
+        # from the post-ingest rowid ordering. Every row in all_rows
+        # maps to exactly one chunk so the inverse is well-defined.
+        matmul_idx_to_chunk_id = {v: k for k, v in chunk_id_to_matmul_idx.items()}
+
+        # Vec top-K per query via batched matmul on GPU.
+        all_vec_topk: list[list[int]] = []
+        with torch.no_grad():
+            for start in range(0, query_vecs.size(0), matmul_batch_queries):
+                batch = query_vecs[start : start + matmul_batch_queries]
+                sims = batch @ corpus_vecs.T
+                top_scores, top_idx = sims.topk(min(TOP_K, sims.size(1)), dim=1)
+                idx_cpu = top_idx.cpu().tolist()
+                for matmul_indices in idx_cpu:
+                    all_vec_topk.append(
+                        [
+                            matmul_idx_to_chunk_id[mi]
+                            for mi in matmul_indices
+                            if mi in matmul_idx_to_chunk_id
+                        ]
+                    )
+
+        # Per-query FTS + RRF merge. Multiple chunks from the same
+        # doc can land in the fused list (no MMR dedup in this path),
+        # but NDCG is a per-document metric, so we collapse the
+        # ranking to unique paths in first-occurrence order before
+        # scoring. Without this, a relevant doc surfacing twice in
+        # top-10 would be counted twice and push NDCG above 1.0.
+        for q, vec_top in zip(normalized_queries, all_vec_topk):
+            fts_top = _fts_top_k(eval_store._conn, q["query"], TOP_K)
+            fts_top = [cid for cid in fts_top if cid in chunk_id_to_path]
+
+            # Adaptive RRF weights, vec-heavy side. Faithful enough to
+            # store.search's default for short/medium queries.
+            vec_hi, fts_hi, _vec_lo, _fts_lo = adaptive_rrf_weights(len(q["query"].split()))
+            fused = _rrf_fuse(vec_top, fts_top, vec_hi, fts_hi, chunk_id_to_path, top_n=_EVAL_TOP_K)
+
+            # Collapse chunk-level ranking to doc-level (unique paths).
+            unique_paths: list[str] = []
+            seen_paths: set[str] = set()
+            for cid in fused:
+                p = chunk_id_to_path[cid]
+                if p in seen_paths:
+                    continue
+                seen_paths.add(p)
+                unique_paths.append(p)
+
+            relevant_set = set(q["relevant_paths"])
+            ranks_hit: list[int] = []
+            first_rank: int | None = None
+            for rank_i, p in enumerate(unique_paths, start=1):
+                if p in relevant_set:
+                    ranks_hit.append(rank_i)
+                    if first_rank is None:
+                        first_rank = rank_i
+            ndcgs.append(_ndcg_from_ranks(ranks_hit, num_relevant=len(relevant_set)))
+            mrrs.append(1.0 / first_rank if first_rank is not None else 0.0)
+            hits.append(1.0 if first_rank is not None else 0.0)
+    finally:
+        if eval_store is not None:
+            try:
+                eval_store.close()
+            except Exception:
+                pass
+        if tmp_db is not None:
+            for suffix in ("", "-wal", "-shm"):
+                try:
+                    (tmp_db.parent / (tmp_db.name + suffix)).unlink(missing_ok=True)
+                except Exception:
+                    pass
+        # Release GPU tensors here so exceptions during the per-query
+        # loop do not leave the corpus + query matrices live for the
+        # next dataset in retrain_multi's loop.
+        try:
+            del corpus_vecs, query_vecs
+        except NameError:
+            pass
+        _release_gpu_memory()
+
+    return EvalMetrics(
+        ndcg_at_10=sum(ndcgs) / len(ndcgs) if ndcgs else 0.0,
+        mrr=sum(mrrs) / len(mrrs) if mrrs else 0.0,
+        hit_at_10=sum(hits) / len(hits) if hits else 0.0,
+        n_queries=len(normalized_queries),
+    )

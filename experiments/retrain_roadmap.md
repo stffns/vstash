@@ -185,6 +185,23 @@ default for multi-corpus, optional `max_seq_length`, plus a
 `_release_gpu_memory()` hook between baseline eval and training.
 Drops the T4 OOM observed on the first overnight Colab run.
 
+### T1.4c Batched GPU eval
+
+[LANDED on feat/retrain-t14c-batched-eval] Follow-up to T1.4b.
+Once triple mining became fast, `evaluate_model`'s per-query
+`eval_store.search()` scan became the new bottleneck: at
+`eval_noise_size=57638` and ~600 qrels per dataset, baseline + final
+eval on a 3-corpus run took ~60 minutes on Colab T4.
+`evaluate_model_batched()` in `retrain_batch.py` keeps the temp
+store for FTS5 but replaces the vec scan with one
+`query_vecs @ corpus_vecs.T` matmul over all eval queries, dropping
+total eval to ~2 minutes.
+`retrain_multi(..., bulk_eval=True)` + CLI `--bulk-eval` route the
+baseline + final eval calls to the batched evaluator. 9 new tests
+under `tests/test_retrain_batch.py`. Typical end-to-end runtime on
+the 3-corpus BEIR notebook with `bulk_mine=True + bulk_eval=True`:
+~20-25 min (was ~3 hours pre-T1.4b, then ~90 min post-T1.4b).
+
 ### T1.4b Batched GPU triple mining
 
 [LANDED on feat/retrain-t14b-batched-mining] New module
