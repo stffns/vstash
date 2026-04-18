@@ -684,3 +684,279 @@ def evaluate_model_batched(
         hit_at_10=sum(hits) / len(hits) if hits else 0.0,
         n_queries=len(normalized_queries),
     )
+
+
+# ---------------------------------------------------------------------- #
+# T1.5: labeled-query training pair mining                                 #
+# ---------------------------------------------------------------------- #
+#
+# The default ``generate_triples`` / ``generate_triples_batched`` use
+# ``chunk[:200]`` as a pseudo-query. That is a statement, not a question,
+# and MNRL trained on statement-as-query damages question-based
+# retrieval (SciFact/FiQA cratered -5/-9% in the first T1.4 Colab run,
+# NFCorpus was flat -- the two that regressed are question datasets).
+#
+# ``generate_labeled_triples_batched`` reproduces the v5 training recipe
+# from ``experiments/rrf_training_pairs.py``:
+#
+# - Training query text comes from a ``labeled_queries`` list (typically
+#   BEIR ``queries.jsonl`` filtered to queries with qrels).
+# - Positive = first chunk of the gold document (from ``relevant_paths``).
+# - Fixed RRF weights 0.95/0.05 for both searches (vec-heavy and
+#   fts-heavy), matching v5's ``rrf_training_pairs``.
+# - Emits multiple triples per query: one per (gold_path, hard_neg_path)
+#   pair, where hard_neg_path is drawn from both vec-only and fts-only
+#   disagreement candidates.
+#
+# Output shape is still ``{query, positive, negative}`` so train_mnrl
+# is drop-in compatible.
+
+
+_LABELED_TRAIN_WEIGHTS_VEC_HEAVY = (0.95, 0.05)
+_LABELED_TRAIN_WEIGHTS_FTS_HEAVY = (0.05, 0.95)
+
+
+def generate_labeled_triples_batched(
+    store: VstashStore,
+    base_model: str,
+    labeled_queries: list[dict],
+    max_queries: int | None = None,
+    device: str | None = None,
+    encode_batch_size: int = 256,
+    matmul_batch_queries: int = 512,
+) -> list[dict]:
+    """Mine training triples using real labeled queries (T1.5).
+
+    Reproduces the v5 flow from ``experiments/rrf_training_pairs.py``:
+
+    - Training query text = ``q["query"]`` (typically a BEIR
+      ``queries.jsonl`` entry).
+    - Positive = first chunk of any gold doc in ``q["relevant_paths"]``.
+    - Hard negatives mined from vec-heavy / fts-heavy top-K disagreement
+      using fixed weights 0.95/0.05 (matching v5).
+    - Emits ``|gold| * (|vec_only_neg| + |fts_only_neg|)`` triples per
+      query. Triple count can be >> number of queries.
+
+    Args:
+        store: Source corpus.
+        base_model: HF model name for batched encode.
+        labeled_queries: List of ``{query, relevant_paths}`` dicts. The
+            ``relevant_paths`` list must contain paths that exist in
+            the store. Queries whose gold paths are all absent are
+            skipped.
+        max_queries: Optional cap on queries processed. ``None`` uses
+            all entries. Useful for smoke runs.
+        device: ``"cuda" | "cpu" | None``.
+        encode_batch_size: SentenceTransformer encode batch.
+        matmul_batch_queries: Per-matmul query chunk size.
+
+    Returns:
+        List of ``{query, positive, negative}`` dicts, drop-in
+        compatible with ``train_mnrl``.
+
+    Raises:
+        ImportError: If sentence-transformers / torch are not installed.
+        ValueError: If ``labeled_queries`` is empty.
+    """
+    try:
+        import torch
+        from sentence_transformers import SentenceTransformer
+    except ImportError as exc:
+        raise ImportError(
+            "sentence-transformers + torch are required for labeled "
+            "triple mining. Install with: "
+            "pip install 'sentence-transformers>=3' torch 'accelerate>=1.1.0'"
+        ) from exc
+
+    if not labeled_queries:
+        raise ValueError("labeled_queries must contain at least one query.")
+
+    # Normalize + cap.
+    queries_normalized: list[dict] = []
+    for q in labeled_queries:
+        paths = q.get("relevant_paths")
+        if paths is None:
+            legacy = q.get("relevant_path")
+            paths = [legacy] if legacy is not None else []
+        if not q.get("query") or not paths:
+            continue
+        queries_normalized.append({**q, "relevant_paths": list(paths)})
+
+    if max_queries is not None:
+        queries_normalized = queries_normalized[:max_queries]
+    if not queries_normalized:
+        return []
+
+    # Fetch corpus once.
+    corpus_rows = _fetch_corpus_rows(store)
+    if not corpus_rows:
+        return []
+    corpus_ids = [int(r["id"]) for r in corpus_rows]
+    corpus_texts = [r["text"] for r in corpus_rows]
+    corpus_paths = [r["path"] for r in corpus_rows]
+    chunk_id_to_path = {cid: corpus_paths[i] for i, cid in enumerate(corpus_ids)}
+    chunk_id_to_text = {cid: corpus_texts[i] for i, cid in enumerate(corpus_ids)}
+
+    # path -> first chunk_id (smallest id, which in vstash corresponds
+    # to the first chunk of the doc by ingest order / seq=0). v5 uses
+    # ``doc_texts[path][:512]`` for both positive and negative; we use
+    # the first chunk's full text as its analog.
+    path_to_first_chunk_id: dict[str, int] = {}
+    for cid in corpus_ids:
+        p = chunk_id_to_path[cid]
+        if p not in path_to_first_chunk_id:
+            path_to_first_chunk_id[p] = cid
+
+    # Drop queries whose gold paths are all absent from the store.
+    filtered: list[dict] = []
+    for q in queries_normalized:
+        valid_golds = [p for p in q["relevant_paths"] if p in path_to_first_chunk_id]
+        if valid_golds:
+            filtered.append({**q, "relevant_paths": valid_golds})
+    if not filtered:
+        return []
+
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info(
+        "generate_labeled_triples_batched: %s on device=%s, %d queries over %d corpus chunks",
+        base_model,
+        device,
+        len(filtered),
+        len(corpus_texts),
+    )
+    model = SentenceTransformer(base_model, device=device)
+
+    # Encode corpus + queries once.
+    t0 = time.perf_counter()
+    corpus_vecs = model.encode(
+        corpus_texts,
+        normalize_embeddings=True,
+        batch_size=encode_batch_size,
+        show_progress_bar=False,
+        convert_to_tensor=True,
+    )
+    logger.info("Encoded %d corpus chunks in %.1fs", len(corpus_texts), time.perf_counter() - t0)
+    t0 = time.perf_counter()
+    query_vecs = model.encode(
+        [q["query"] for q in filtered],
+        normalize_embeddings=True,
+        batch_size=encode_batch_size,
+        show_progress_bar=False,
+        convert_to_tensor=True,
+    )
+    logger.info("Encoded %d labeled queries in %.1fs", len(filtered), time.perf_counter() - t0)
+    corpus_vecs = corpus_vecs.to(device)
+    query_vecs = query_vecs.to(device)
+
+    # Vec top-K per query via batched matmul.
+    all_vec_topk: list[list[int]] = []
+    t0 = time.perf_counter()
+    with torch.no_grad():
+        for start in range(0, query_vecs.size(0), matmul_batch_queries):
+            batch = query_vecs[start : start + matmul_batch_queries]
+            sims = batch @ corpus_vecs.T
+            top_scores, top_idx = sims.topk(min(TOP_K, sims.size(1)), dim=1)
+            idx_cpu = top_idx.cpu().tolist()
+            for matmul_indices in idx_cpu:
+                all_vec_topk.append([corpus_ids[i] for i in matmul_indices])
+    logger.info("Matmul top-K for %d queries in %.1fs", len(filtered), time.perf_counter() - t0)
+
+    # Per-query FTS + triple mining (v5 recipe: one triple per
+    # gold * hard_neg combination, no MMR dedup, fixed weights).
+    pairs: list[dict] = []
+    total_disagreements = 0
+    try:
+        for q, vec_top in zip(filtered, all_vec_topk):
+            qtext = q["query"]
+            gold_paths = set(q["relevant_paths"])
+
+            # FTS top-K over the main corpus (not a temp store -- we
+            # are mining from the production corpus).
+            fts_top = _fts_top_k(store._conn, qtext, TOP_K)
+            fts_top = [cid for cid in fts_top if cid in chunk_id_to_path]
+
+            # Convert to paths (keep order, preserve first occurrence).
+            vec_paths_ordered: list[str] = []
+            vec_seen: set[str] = set()
+            for cid in vec_top:
+                p = chunk_id_to_path[cid]
+                if p not in vec_seen:
+                    vec_seen.add(p)
+                    vec_paths_ordered.append(p)
+
+            fts_paths_ordered: list[str] = []
+            fts_seen: set[str] = set()
+            for cid in fts_top:
+                p = chunk_id_to_path[cid]
+                if p not in fts_seen:
+                    fts_seen.add(p)
+                    fts_paths_ordered.append(p)
+
+            vec_set = set(vec_paths_ordered)
+            fts_set = set(fts_paths_ordered)
+            if vec_set != fts_set:
+                total_disagreements += 1
+
+            # Hard negs from each side, excluding gold paths.
+            vec_only_neg = [
+                p for p in vec_paths_ordered if p not in fts_set and p not in gold_paths
+            ]
+            fts_only_neg = [
+                p for p in fts_paths_ordered if p not in vec_set and p not in gold_paths
+            ]
+
+            for gold_path in gold_paths:
+                gold_cid = path_to_first_chunk_id.get(gold_path)
+                if gold_cid is None:
+                    continue
+                positive_text = chunk_id_to_text[gold_cid]
+                if not positive_text or positive_text == qtext:
+                    continue
+
+                for neg_path in vec_only_neg:
+                    neg_cid = path_to_first_chunk_id.get(neg_path)
+                    if neg_cid is None:
+                        continue
+                    neg_text = chunk_id_to_text[neg_cid]
+                    if not neg_text:
+                        continue
+                    pairs.append(
+                        {
+                            "query": qtext,
+                            "positive": positive_text,
+                            "negative": neg_text,
+                        }
+                    )
+
+                for neg_path in fts_only_neg:
+                    neg_cid = path_to_first_chunk_id.get(neg_path)
+                    if neg_cid is None:
+                        continue
+                    neg_text = chunk_id_to_text[neg_cid]
+                    if not neg_text:
+                        continue
+                    pairs.append(
+                        {
+                            "query": qtext,
+                            "positive": positive_text,
+                            "negative": neg_text,
+                        }
+                    )
+
+        logger.info(
+            "Mined %d labeled triples from %d queries (%d disagreements, %.0f%%)",
+            len(pairs),
+            len(filtered),
+            total_disagreements,
+            total_disagreements / len(filtered) * 100 if filtered else 0,
+        )
+    finally:
+        try:
+            del corpus_vecs, query_vecs
+        except NameError:
+            pass
+        from .retrain import _release_gpu_memory
+
+        _release_gpu_memory()
+
+    return pairs

@@ -185,6 +185,34 @@ default for multi-corpus, optional `max_seq_length`, plus a
 `_release_gpu_memory()` hook between baseline eval and training.
 Drops the T4 OOM observed on the first overnight Colab run.
 
+### T1.5 Labeled-query training pair mining
+
+[LANDED on feat/retrain-t15-labeled-training-queries] First Colab run
+of T1.4+b+c on 2026-04-18 gated out at macro NDCG@10 -5.15% (SciFact
+-5.8%, NFCorpus -0.19%, FiQA -9.47%). Root cause: chunk-prefix pseudo-
+queries are statements, not questions, and MNRL trained on statement-
+as-query damages question-based retrieval. The two datasets that
+regressed are both question-based (SciFact, FiQA); NFCorpus (keyword)
+was flat.
+
+Comparison vs v5 notebook (`experiments/retrain_v5_hard_neg.ipynb` +
+`experiments/rrf_training_pairs.py`) showed v5 uses real BEIR queries
+as training text, gold doc first chunks as positives, multiple hard
+negs per (query, gold) pair, and fixed 0.95/0.05 RRF weights.
+
+T1.5 adds `generate_labeled_triples_batched()` that reproduces the
+v5 recipe. `retrain_multi(..., training_queries_by_dataset=...)`
+routes datasets with labeled queries to the new path; datasets
+missing from the map fall back to chunk-prefix. 7 new tests under
+`tests/test_retrain_batch.py`. Notebook Cell 5 now passes
+`training_queries_by_dataset=eval_queries_by_dataset` so the same
+qrels feed both training and eval, matching v5.
+
+Next regression run with T1.5: target NFCorpus > +10%, SciFact > +2%,
+macro positive. If those land, the paper claims reproduce and
+chunk-prefix can be deprecated or documented as a weaker fallback for
+users without labeled queries.
+
 ### T1.4c Batched GPU eval
 
 [LANDED on feat/retrain-t14c-batched-eval] Follow-up to T1.4b.
