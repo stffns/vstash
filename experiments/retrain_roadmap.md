@@ -438,20 +438,28 @@ The full living backlog lives in `experiments/hypotheses.md`.
 Retrain-side highlights below so this doc still works as the
 standalone roadmap:
 
-### H-R3. Hard-negative margin filter [LANDED in PR #245]
+### H-R3. Hard-negative margin filter [INFRA LANDED, HYPOTHESIS NEGATIVE]
 
-`generate_labeled_triples_batched` accepts `margin_min` and
-`margin_max`; drops `(gold, hard_neg)` pairs whose cosine margin
-falls outside the band. Per-query gather + matmul on the
-device-resident corpus vectors; no second corpus pass. Threaded
-through `retrain_multi` and CLI `--margin-min / --margin-max`. 5
-unit tests, 129 retrain tests total. Ablation notebook at
-`experiments/retrain_t1_5_hr3_ablation.ipynb` with 4 arms
-(baseline + 3 margin configs) shares BEIR stores across arms.
+Infrastructure shipped in PR #245 (`margin_min` / `margin_max` on
+`generate_labeled_triples_batched`, threaded through
+`retrain_multi` + CLI). Default-off, opt-in, zero cost when unused.
 
-Target: close the NFCorpus gap vs v5 without regressing SciFact or
-FiQA. Judge by final absolute NDCG@10, not delta% (eval pipeline
-shift caveat).
+**Ablation outcome (2026-04-19).** arm_a (`margin_min=0.05`,
+no upper bound) macro **+1.65%** vs baseline **+4.14%** --
+regression of -2.49pp. 53% of pairs dropped, training starved.
+Pivot away from H-R3 as the NFCorpus-gap solution.
+
+**Diagnosis.** On the base bge-small, cos(q, gold) typically sits
+at 0.85-0.92 and cos(q, hard_neg) at 0.80-0.88, so margins are
+intrinsically small (0.02-0.08). `margin_min=0.05` cuts the
+actual hard-neg signal, not noise. Filter assumption holds only
+for an already-trained model where cos(q, gold) saturates near
+1.0. Keep the infra for continual-retrain (T2.6) and reranker
+(T2.4) use cases where it applies cleanly.
+
+**Next lever for NFCorpus gap**: H-R9 in `experiments/hypotheses.md`
+(lower sampling temperature and/or larger total_triples). 0.5-day
+Colab sweep, no code changes required.
 
 ### H-R7. Seed determinism [LANDED in PR #243]
 

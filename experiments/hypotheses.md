@@ -88,44 +88,42 @@ amplified the distribution mismatch. Only revisit after T1.5 validates.
 
 ---
 
-### H-R3. Hard-negative margin filter [IMPLEMENTED, awaits Colab]
+### H-R3. Hard-negative margin filter [INFRA LANDED, HYPOTHESIS NEGATIVE]
 
-**Statement.** Labeled miner emits every (gold, hard_neg) pair the RRF
-surface turns up. Some hard negs are too close to the gold (ambiguous,
-probably relevant), some too far (too easy, low-signal). Filtering by
-cosine-margin ``cos(q,gold) - cos(q,hard_neg)`` removes both tails.
+**Infra status.** `generate_labeled_triples_batched` accepts
+`margin_min` / `margin_max` (both None = legacy, default).
+Threaded through `retrain_multi` + CLI `--margin-min / --margin-max`.
+5 unit tests + ablation notebook shipped in PR #245. The
+infrastructure stays because it is zero-cost when off and may be
+useful later (continual retrain T2.6 starting from a trained
+checkpoint, where cos(q, gold) is near 1.0 and the filter
+assumptions hold).
 
-**Status.** `generate_labeled_triples_batched` now accepts
-`margin_min` / `margin_max` (both None = legacy behaviour). Per-query
-gold + neg cosines are computed via a single gather + matmul on the
-already-device-resident corpus_vecs, so the cost is negligible. Logs
-kept/dropped ratios and warns when < 30% survive.
+**Ablation result (2026-04-19, arm_a only before the kernel
+disconnected).** Baseline macro +4.14% vs arm_a (`margin_min=0.05`,
+no upper bound) macro **+1.65%**. Regression of -2.49pp at macro.
+Total pairs collapsed from 28490 to 15235 (53% dropped), starving
+training.
 
-Threaded through `retrain_multi(..., margin_min, margin_max, ...)` and
-CLI flags `--margin-min` / `--margin-max` on `vstash retrain-multi`.
-5 new tests cover the filter: default-off invariant, min-only drops
-too-close, max-only drops too-easy, band drops both tails, aggressive
-cutoff warning.
+**Interpretation.** On a base (not yet fine-tuned) bge-small, the
+margin distribution on labeled queries is concentrated in the
+low-margin region: typical `cos(q, gold)` sits around 0.85-0.92 and
+hard_neg around 0.80-0.88, giving margins 0.02-0.08. Cutting
+anything below 0.05 removes exactly the hard-negative signal MNRL
+needs. The filter assumption ("margins < 0.05 mean neg is
+ambiguous / probably relevant") is correct for an already-trained
+model where cos(q, gold) saturates near 1.0, but not for the base
+model where margins are intrinsically small.
 
-**Why now (2026-04-19).** The T1.5 Colab validation came in at +5.00%
-macro NDCG@10 (SciFact +5.41%, FiQA +7.37%, **NFCorpus only +2.22%**
-vs v5's +18.3%). NFCorpus's deep gap vs v5 is the top suspect for a
-hard-negative quality problem: every query has 50+ gold docs so the
-miner emits 100s of (gold, hard_neg) pairs per query, and the
-downsample keeps them uniformly -- margin filtering is the right
-first lever.
+**Takeaway.** The infra is reusable for trained-model paths (T2.6
+continual retrain, T2.4 cross-encoder hard-neg filtering). For the
+NFCorpus gap vs v5, the diagnosis moves to H-R9: corpus balance
+(lower temperature) or training volume (larger total_triples). See
+H-R9 below.
 
-**Test plan on next Colab.**
-  - baseline: T1.5 no filter (current, +5.00% macro, +2.22% NFCorpus)
-  - arm A: `--margin-min 0.05` only (drop ambiguous)
-  - arm B: `--margin-min 0.05 --margin-max 0.30` (full band)
-  - arm C: tighter `--margin-min 0.10 --margin-max 0.35`
-  - target: NFCorpus > +5% on at least one arm without regressing
-    SciFact or FiQA
-
-**Files.** `vstash/retrain_batch.py` (generate_labeled_triples_batched),
-`vstash/retrain.py` (retrain_multi), `vstash/cli.py` (retrain-multi),
-`tests/test_retrain_batch.py`.
+**Files.** `vstash/retrain_batch.py`, `vstash/retrain.py`,
+`vstash/cli.py`, `tests/test_retrain_batch.py`,
+`experiments/retrain_t1_5_hr3_ablation.ipynb`.
 
 ---
 
@@ -212,6 +210,47 @@ still passing.
 
 **Files.** `vstash/retrain.py`, `vstash/cli.py`, `tests/test_retrain.py`,
 `tests/test_retrain_multi.py`.
+
+---
+
+### H-R9. Close NFCorpus gap via corpus balance (temperature + triples)
+
+**Statement.** After H-R3's negative result on 2026-04-19, the
+leading explanation for the NFCorpus gap (final abs 0.3677 vs v5's
+0.409) is not hard-neg quality but corpus balance and training
+volume. v5 trained 76k pairs total; we trained 28k. At
+temperature=0.5, NFCorpus received 4856 pairs (17% of our budget);
+at temperature=0.3 it would get ~26%, and at temperature=0
+(uniform) it would get 33%. Separately, doubling `total_triples` to
+60k scales every dataset's contribution proportionally.
+
+**Test (cheap three-arm ablation).**
+
+- arm_t03: `--sampling-temperature 0.3`, total_triples=30000. Same
+  volume, different balance. Isolates temperature effect.
+- arm_uniform: `--sampling-strategy uniform`, total_triples=30000.
+  Maximum NFCorpus share. Upper bound on the balance lever.
+- arm_vol: temperature=0.5, total_triples=60000. Same balance,
+  more volume. Isolates volume effect.
+
+Target: NFCorpus final absolute NDCG@10 > 0.38 on at least one
+arm, without regressing SciFact (stay above 0.775) or FiQA (stay
+above 0.45). Arms are ~30 min each on T4 = ~1.5h total.
+
+**Files.** No code change; pure CLI-driven ablation against the
+current H-R3 branch / develop.
+
+**Effort.** 0.5 day notebook + 1.5h Colab.
+
+**Risk.** Low. Pure hyperparameter sweep, no code to regress.
+
+**Follow-ups if this closes the gap.**
+
+- Publish `Stffens/bge-small-rrf-v3` trained with the winning
+  config.
+- Update README + paper with new numbers.
+- Document the temperature recommendation per corpus size in the
+  retrain-multi help.
 
 ---
 
