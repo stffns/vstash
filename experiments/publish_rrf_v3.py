@@ -46,6 +46,7 @@ import argparse
 import os
 import shutil
 import sys
+import urllib.request
 from pathlib import Path
 
 
@@ -62,6 +63,65 @@ _WEIGHT_CANDIDATES = {
 }
 
 
+def _ensure_bert_config(model_dir: Path) -> None:
+    """Make sure ``config.json`` with ``model_type`` lives at the root.
+
+    sentence-transformers >= 5 sometimes saves the BERT config under
+    a subdirectory (``0_Transformer/config.json``) rather than the
+    root. When that happens, HF's ``AutoConfig.from_pretrained`` on
+    the published repo can't find the ``model_type`` key and the
+    model fails to load with::
+
+        ValueError: Unrecognized model in <repo>. Should have a
+        `model_type` key in its config.json
+
+    Caught empirically on 2026-04-19 during the v2/v3 head-to-head
+    run. This helper detects the situation and either promotes the
+    nested config to the root, or pulls the base model's config
+    from HF as a last resort (safe because v3-style fine-tunes
+    share the base architecture exactly).
+    """
+    import json
+
+    root_config = model_dir / "config.json"
+    if root_config.is_file():
+        try:
+            data = json.loads(root_config.read_text())
+        except json.JSONDecodeError:
+            data = {}
+        if data.get("model_type"):
+            return  # valid config already present
+
+    # Option 1: sentence-transformers saved the transformer under
+    # ``0_Transformer/`` (or a similarly-numbered module dir).
+    for sub in sorted(model_dir.iterdir()):
+        if sub.is_dir() and (sub / "config.json").is_file():
+            candidate = sub / "config.json"
+            try:
+                data = json.loads(candidate.read_text())
+            except json.JSONDecodeError:
+                continue
+            if data.get("model_type"):
+                shutil.copy2(candidate, root_config)
+                print(f"promoted {candidate} -> {root_config}")
+                return
+
+    # Option 2: pull the base model's config from HF. Safe for
+    # v3-style fine-tunes because they preserve the architecture.
+    try:
+        base_url = "https://huggingface.co/BAAI/bge-small-en-v1.5/raw/main/config.json"
+        urllib.request.urlretrieve(base_url, str(root_config))
+        print(
+            f"fetched {base_url} -> {root_config} (fallback; model_dir "
+            "had no root or nested config.json with model_type)"
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise FileNotFoundError(
+            f"{model_dir} has no usable config.json anywhere, and the "
+            f"base-model fallback download failed: {exc}"
+        ) from exc
+
+
 def _validate_model_dir(model_dir: Path) -> None:
     missing = [f for f in _REQUIRED_FILES if not (model_dir / f).is_file()]
     if missing:
@@ -74,6 +134,10 @@ def _validate_model_dir(model_dir: Path) -> None:
         raise FileNotFoundError(
             f"{model_dir} has no recognised weights file. Expected one of: {_WEIGHT_CANDIDATES}."
         )
+    # HF AutoConfig needs ``model_type`` at the root-level config.json
+    # to recognise the architecture. Newer sentence-transformers may
+    # save it in a numbered subdir only; promote / fetch as needed.
+    _ensure_bert_config(model_dir)
     meta_path = model_dir / "training_meta.json"
     if not meta_path.is_file():
         print(
