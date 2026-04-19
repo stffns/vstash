@@ -462,8 +462,11 @@ def evaluate_model_batched(
     import time as _time
 
     from .retrain import (
+        _EVAL_NDCG_SHALLOW_K,
+        _EVAL_RECALL_K,
         _EVAL_TOP_K,
         _ndcg_from_ranks,
+        _recall_at_k,
         _relevant_chunks,
         _release_gpu_memory,
         _sample_noise_chunks,
@@ -533,9 +536,11 @@ def evaluate_model_batched(
     # minute.
     eval_store: VstashStore | None = None
     tmp_db: Path | None = None
-    ndcgs: list[float] = []
+    ndcgs_10: list[float] = []
+    ndcgs_3: list[float] = []
     mrrs: list[float] = []
     hits: list[float] = []
+    recalls_100: list[float] = []
     try:
         tmp_parent = Path(tmp_dir) if tmp_dir else Path(tempfile.gettempdir())
         tmp_parent.mkdir(parents=True, exist_ok=True)
@@ -606,13 +611,18 @@ def evaluate_model_batched(
         # maps to exactly one chunk so the inverse is well-defined.
         matmul_idx_to_chunk_id = {v: k for k, v in chunk_id_to_matmul_idx.items()}
 
-        # Vec top-K per query via batched matmul on GPU.
+        # Vec top-K per query via batched matmul on GPU. Pull RECALL_K
+        # candidates so the same ranking supports NDCG@10 / NDCG@3 /
+        # Recall@100 in one pass. After doc-level deduplication the
+        # fused list is still almost always >= 10 unique paths, so
+        # NDCG@10 is unaffected; the extra candidates only feed
+        # Recall@100.
         all_vec_topk: list[list[int]] = []
         with torch.no_grad():
             for start in range(0, query_vecs.size(0), matmul_batch_queries):
                 batch = query_vecs[start : start + matmul_batch_queries]
                 sims = batch @ corpus_vecs.T
-                top_scores, top_idx = sims.topk(min(TOP_K, sims.size(1)), dim=1)
+                top_scores, top_idx = sims.topk(min(_EVAL_RECALL_K, sims.size(1)), dim=1)
                 idx_cpu = top_idx.cpu().tolist()
                 for matmul_indices in idx_cpu:
                     all_vec_topk.append(
@@ -630,13 +640,15 @@ def evaluate_model_batched(
         # scoring. Without this, a relevant doc surfacing twice in
         # top-10 would be counted twice and push NDCG above 1.0.
         for q, vec_top in zip(normalized_queries, all_vec_topk):
-            fts_top = _fts_top_k(eval_store._conn, q["query"], TOP_K)
+            fts_top = _fts_top_k(eval_store._conn, q["query"], _EVAL_RECALL_K)
             fts_top = [cid for cid in fts_top if cid in chunk_id_to_path]
 
             # Adaptive RRF weights, vec-heavy side. Faithful enough to
             # store.search's default for short/medium queries.
             vec_hi, fts_hi, _vec_lo, _fts_lo = adaptive_rrf_weights(len(q["query"].split()))
-            fused = _rrf_fuse(vec_top, fts_top, vec_hi, fts_hi, chunk_id_to_path, top_n=_EVAL_TOP_K)
+            fused = _rrf_fuse(
+                vec_top, fts_top, vec_hi, fts_hi, chunk_id_to_path, top_n=_EVAL_RECALL_K
+            )
 
             # Collapse chunk-level ranking to doc-level (unique paths).
             unique_paths: list[str] = []
@@ -654,11 +666,16 @@ def evaluate_model_batched(
             for rank_i, p in enumerate(unique_paths, start=1):
                 if p in relevant_set:
                     ranks_hit.append(rank_i)
-                    if first_rank is None:
+                    if first_rank is None and rank_i <= _EVAL_TOP_K:
                         first_rank = rank_i
-            ndcgs.append(_ndcg_from_ranks(ranks_hit, num_relevant=len(relevant_set)))
+            num_rel = len(relevant_set)
+            ndcgs_10.append(_ndcg_from_ranks(ranks_hit, num_relevant=num_rel, k=_EVAL_TOP_K))
+            ndcgs_3.append(
+                _ndcg_from_ranks(ranks_hit, num_relevant=num_rel, k=_EVAL_NDCG_SHALLOW_K)
+            )
             mrrs.append(1.0 / first_rank if first_rank is not None else 0.0)
             hits.append(1.0 if first_rank is not None else 0.0)
+            recalls_100.append(_recall_at_k(ranks_hit, num_relevant=num_rel, k=_EVAL_RECALL_K))
     finally:
         if eval_store is not None:
             try:
@@ -680,11 +697,14 @@ def evaluate_model_batched(
             pass
         _release_gpu_memory()
 
+    n = len(normalized_queries)
     return EvalMetrics(
-        ndcg_at_10=sum(ndcgs) / len(ndcgs) if ndcgs else 0.0,
+        ndcg_at_10=sum(ndcgs_10) / len(ndcgs_10) if ndcgs_10 else 0.0,
         mrr=sum(mrrs) / len(mrrs) if mrrs else 0.0,
         hit_at_10=sum(hits) / len(hits) if hits else 0.0,
-        n_queries=len(normalized_queries),
+        n_queries=n,
+        ndcg_at_3=sum(ndcgs_3) / len(ndcgs_3) if ndcgs_3 else 0.0,
+        recall_at_100=sum(recalls_100) / len(recalls_100) if recalls_100 else 0.0,
     )
 
 

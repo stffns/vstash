@@ -126,6 +126,9 @@ def _install_st_torch_stubs() -> tuple[types.ModuleType, types.ModuleType, types
     torch_data.DataLoader = MagicMock(return_value=[MagicMock()] * 5)
     torch_utils.data = torch_data
     torch_mod.utils = torch_utils
+    torch_mod.manual_seed = MagicMock()
+    torch_mod.cuda = None
+    torch_mod.Generator = MagicMock(return_value=MagicMock(manual_seed=MagicMock()))
 
     sys.modules["sentence_transformers"] = st_mod
     sys.modules["sentence_transformers.losses"] = st_losses

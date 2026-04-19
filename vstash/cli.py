@@ -1532,6 +1532,13 @@ def retrain(
         help="Model name override for synthesis (defaults to the configured "
         "inference backend's model).",
     ),
+    seed: int = typer.Option(
+        42,
+        "--seed",
+        help="Deterministic seed. Controls held-out split, triple sampling, "
+        "torch dropout, and DataLoader shuffle, so two runs with the same "
+        "inputs and seed produce identical models.",
+    ),
 ) -> None:
     """Fine-tune the embedding model using your own data.
 
@@ -1608,6 +1615,7 @@ def retrain(
         eval_noise_size=eval_noise_size,
         min_gain=min_gain,
         skip_eval=no_eval,
+        seed=seed,
         synthesize_queries=synthesize,
         synth_n=synth_n,
         synth_cache=synth_cache,
@@ -1627,14 +1635,18 @@ def retrain(
     if result.baseline is not None and result.final is not None:
         console.print()
         console.print("[bold]Eval results[/bold]")
-        console.print(f"  Queries:         {result.baseline.n_queries}")
+        console.print(f"  Queries:          {result.baseline.n_queries}")
         console.print(f"  Baseline NDCG@10: {result.baseline.ndcg_at_10:.4f}")
         console.print(f"  Final NDCG@10:    {result.final.ndcg_at_10:.4f}")
         delta = result.delta_ndcg
         color = "green" if delta >= 0 else "red"
         console.print(f"  Delta NDCG@10:    [{color}]{delta:+.4f}[/{color}]")
-        console.print(f"  Baseline MRR:    {result.baseline.mrr:.4f}")
-        console.print(f"  Final MRR:       {result.final.mrr:.4f}")
+        console.print(f"  Baseline NDCG@3:  {result.baseline.ndcg_at_3:.4f}")
+        console.print(f"  Final NDCG@3:     {result.final.ndcg_at_3:.4f}")
+        console.print(f"  Baseline MRR:     {result.baseline.mrr:.4f}")
+        console.print(f"  Final MRR:        {result.final.mrr:.4f}")
+        console.print(f"  Baseline Recall@100: {result.baseline.recall_at_100:.4f}")
+        console.print(f"  Final Recall@100:    {result.final.recall_at_100:.4f}")
 
     if result.gated_out:
         console.print()
@@ -1773,6 +1785,13 @@ def retrain_multi_cmd(
         "--bulk-mine-device",
         help="Device override for --bulk-mine / --bulk-eval ('cuda' or "
         "'cpu'). Leave unset to auto-detect.",
+    ),
+    seed: int = typer.Option(
+        42,
+        "--seed",
+        help="Deterministic seed. Derived per-dataset via SHA-256 so each "
+        "corpus gets its own stable RNG, and then threaded into train_mnrl "
+        "so DataLoader shuffles and torch dropout are reproducible.",
     ),
 ) -> None:
     """Fine-tune the embedding model over multiple corpora with balanced sampling.
@@ -1919,6 +1938,7 @@ def retrain_multi_cmd(
             min_gain=min_gain,
             per_dataset_gate=per_dataset_gate,
             skip_eval=no_eval,
+            seed=seed,
             bulk_mine=bulk_mine,
             bulk_mine_device=bulk_mine_device,
             bulk_eval=bulk_eval,
@@ -1938,7 +1958,7 @@ def retrain_multi_cmd(
 
     if result.per_dataset_baseline and result.per_dataset_final:
         console.print()
-        console.print("[bold]Eval results (per dataset)[/bold]")
+        console.print("[bold]Eval results (per dataset, NDCG@10)[/bold]")
         for name in result.per_dataset_baseline:
             base = result.per_dataset_baseline[name]
             final = result.per_dataset_final.get(name)
@@ -1957,6 +1977,36 @@ def retrain_multi_cmd(
             f"final={result.macro_final_ndcg:.4f}  "
             f"delta=[{macro_color}]{result.macro_delta_ndcg:+.4f}[/{macro_color}][/bold]"
         )
+
+        console.print()
+        console.print("[bold]Head quality + candidate health (per dataset)[/bold]")
+        head_table = Table(show_header=True, header_style="bold cyan", border_style="dim")
+        head_table.add_column("dataset", style="magenta")
+        head_table.add_column("NDCG@3 base", justify="right")
+        head_table.add_column("NDCG@3 final", justify="right")
+        head_table.add_column("delta", justify="right")
+        head_table.add_column("Recall@100 base", justify="right")
+        head_table.add_column("Recall@100 final", justify="right")
+        head_table.add_column("delta", justify="right")
+        for name in result.per_dataset_baseline:
+            base = result.per_dataset_baseline[name]
+            final = result.per_dataset_final.get(name)
+            if final is None or base.n_queries == 0:
+                continue
+            d3 = final.ndcg_at_3 - base.ndcg_at_3
+            dr = final.recall_at_100 - base.recall_at_100
+            c3 = "green" if d3 >= 0 else "red"
+            cr = "green" if dr >= 0 else "red"
+            head_table.add_row(
+                name,
+                f"{base.ndcg_at_3:.4f}",
+                f"{final.ndcg_at_3:.4f}",
+                f"[{c3}]{d3:+.4f}[/{c3}]",
+                f"{base.recall_at_100:.4f}",
+                f"{final.recall_at_100:.4f}",
+                f"[{cr}]{dr:+.4f}[/{cr}]",
+            )
+        console.print(head_table)
 
     if result.gated_out:
         console.print()

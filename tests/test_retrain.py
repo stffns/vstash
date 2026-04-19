@@ -16,6 +16,7 @@ from vstash.retrain import (
     EvalMetrics,
     _ndcg_at_k,
     _ndcg_from_ranks,
+    _recall_at_k,
     evaluate_model,
     generate_triples,
     qrels_to_eval_queries,
@@ -49,6 +50,12 @@ def _install_st_torch_stubs() -> tuple[types.ModuleType, types.ModuleType, types
     torch_data.DataLoader = MagicMock(return_value=[MagicMock()] * 5)
     torch_utils.data = torch_data
     torch_mod.utils = torch_utils
+    # train_mnrl now seeds torch + passes a Generator to DataLoader for
+    # reproducibility (H-R7). Stub the bits it touches so the helper
+    # can run under the fake torch module.
+    torch_mod.manual_seed = MagicMock()
+    torch_mod.cuda = None  # trips the `cuda is None` guard in train_mnrl
+    torch_mod.Generator = MagicMock(return_value=MagicMock(manual_seed=MagicMock()))
 
     sys.modules["sentence_transformers"] = st_mod
     sys.modules["sentence_transformers.losses"] = st_losses
@@ -431,6 +438,94 @@ class TestTrainMNRL:
         assert out.is_dir()
         assert (out / "training_meta.json").is_file()
 
+    def test_seeds_torch_and_passes_generator_to_dataloader(
+        self, tmp_path: Path, st_stubs: Any
+    ) -> None:
+        """H-R7: train_mnrl seeds torch RNGs and hands a seeded Generator
+        to DataLoader so per-epoch shuffles are reproducible across runs.
+        """
+        st_mod, _, torch_data = st_stubs
+        st_mod.SentenceTransformer.return_value = MagicMock()
+
+        torch_mod = sys.modules["torch"]
+        torch_mod.manual_seed.reset_mock()
+        torch_mod.Generator.reset_mock()
+
+        train_mnrl(
+            pairs=[{"query": "q", "positive": "p"}] * 5,
+            base_model="d",
+            output_path=str(tmp_path / "m"),
+            seed=1337,
+        )
+
+        torch_mod.manual_seed.assert_called_once_with(1337)
+        # Generator was constructed and seeded.
+        assert torch_mod.Generator.called, "Generator() must be instantiated"
+        gen_instance = torch_mod.Generator.return_value
+        gen_instance.manual_seed.assert_called_once_with(1337)
+        # DataLoader received the generator kwarg.
+        call_kwargs = torch_data.DataLoader.call_args.kwargs
+        assert call_kwargs.get("generator") is gen_instance
+        assert call_kwargs.get("shuffle") is True
+
+    def test_records_seed_in_training_meta(self, tmp_path: Path, st_stubs: Any) -> None:
+        """H-R7: seed lands in training_meta.json so rerunning is trivial."""
+        st_mod, _, _ = st_stubs
+        st_mod.SentenceTransformer.return_value = MagicMock()
+
+        out = tmp_path / "seed-meta"
+        train_mnrl(
+            pairs=[{"query": "q", "positive": "p", "negative": "n"}] * 3,
+            base_model="d",
+            output_path=str(out),
+            seed=7,
+        )
+        meta = json.loads((out / "training_meta.json").read_text())
+        assert meta["seed"] == 7
+
+    def test_same_seed_produces_identical_example_ordering(
+        self, tmp_path: Path, st_stubs: Any
+    ) -> None:
+        """Two train_mnrl calls with the same seed + inputs must pre-shuffle
+        examples into the same order. The pre-shuffle guarantees the initial
+        ordering is reproducible even without a working torch.Generator.
+        """
+        st_mod, _, _ = st_stubs
+        st_mod.SentenceTransformer.return_value = MagicMock()
+
+        pairs = [{"query": f"q{i}", "positive": f"p{i}", "negative": f"n{i}"} for i in range(20)]
+
+        def _ordering(seed: int) -> list[str]:
+            st_mod.InputExample.reset_mock()
+            # InputExample(side_effect=...) returns a MagicMock with `.texts`.
+            # Its call order records the pre-shuffle order because we then
+            # pass shuffled examples to DataLoader.
+            train_mnrl(
+                pairs=pairs,
+                base_model="d",
+                output_path=str(tmp_path / f"m-{seed}-{id(seed)}"),
+                seed=seed,
+            )
+            # Recover the order examples were POPPED INTO DataLoader by
+            # reading the argv passed to it. DataLoader is a MagicMock;
+            # its first positional arg is the examples list (already
+            # shuffled in place by the pre-shuffle step in train_mnrl).
+            torch_mod = sys.modules["torch"]
+            dl_call = torch_mod.utils.data.DataLoader.call_args
+            examples_arg = dl_call.args[0]
+            return [ex.texts[0] for ex in examples_arg]
+
+        order_a = _ordering(42)
+        order_b = _ordering(42)
+        order_c = _ordering(99)
+
+        assert order_a == order_b, "same seed must produce identical ordering"
+        assert order_a != order_c, (
+            "different seeds must produce different ordering on a non-trivial input"
+        )
+        # Sanity: we saw every example (ordering is a permutation).
+        assert sorted(order_a) == sorted(f"q{i}" for i in range(20))
+
     def test_expands_tilde_in_output_path(self, tmp_path: Path, st_stubs: Any) -> None:
         """``output_path`` with a leading ``~`` expands to the user's home."""
         st_mod, _, _ = st_stubs
@@ -498,6 +593,57 @@ class TestNdcgFromRanks:
         # 20 relevant total but k=10 -> IDCG counts only the first 10 slots.
         perfect_at_k = _ndcg_from_ranks(list(range(1, 11)), num_relevant=20, k=10)
         assert perfect_at_k == pytest.approx(1.0)
+
+    def test_k_3_ignores_deeper_hits(self) -> None:
+        # Hit at rank 5 is ignored when k=3; rank 1 carries alone.
+        # DCG = 1/log2(2) = 1.0; IDCG = same (1 relevant, 1 slot useful).
+        assert _ndcg_from_ranks([1, 5], num_relevant=1, k=3) == pytest.approx(1.0)
+        # Only a rank-5 hit with k=3 yields zero.
+        assert _ndcg_from_ranks([5], num_relevant=1, k=3) == 0.0
+
+
+class TestRecallAtK:
+    """Recall@k is a per-query ``hits / num_relevant`` in [0, 1]."""
+
+    def test_all_relevant_found_in_topk_is_one(self) -> None:
+        assert _recall_at_k([3, 17, 42], num_relevant=3, k=100) == pytest.approx(1.0)
+
+    def test_partial_recall(self) -> None:
+        # 2 of 4 relevant docs land in top-100.
+        assert _recall_at_k([10, 90], num_relevant=4, k=100) == pytest.approx(0.5)
+
+    def test_hits_beyond_k_are_ignored(self) -> None:
+        # Rank 150 is past k=100 and must not count.
+        assert _recall_at_k([5, 150], num_relevant=2, k=100) == pytest.approx(0.5)
+
+    def test_zero_relevant_is_zero(self) -> None:
+        assert _recall_at_k([], num_relevant=0, k=100) == 0.0
+
+    def test_no_hits_is_zero(self) -> None:
+        assert _recall_at_k([], num_relevant=5, k=100) == 0.0
+
+
+class TestEvalMetricsShape:
+    """EvalMetrics surfaces NDCG@3 and Recall@100 on as_dict()."""
+
+    def test_new_fields_default_to_zero_when_unset(self) -> None:
+        # Preserves existing 4-arg positional construction.
+        m = EvalMetrics(0.5, 0.4, 0.6, 10)
+        assert m.ndcg_at_3 == 0.0
+        assert m.recall_at_100 == 0.0
+
+    def test_as_dict_includes_new_fields(self) -> None:
+        m = EvalMetrics(
+            ndcg_at_10=0.7,
+            mrr=0.6,
+            hit_at_10=0.8,
+            n_queries=20,
+            ndcg_at_3=0.55,
+            recall_at_100=0.92,
+        )
+        d = m.as_dict()
+        assert d["ndcg_at_3"] == pytest.approx(0.55)
+        assert d["recall_at_100"] == pytest.approx(0.92)
 
 
 class TestQrelsToEvalQueries:
@@ -780,6 +926,90 @@ class TestEvaluateModel:
         assert metrics.n_queries == 1
         assert metrics.ndcg_at_10 == pytest.approx(1.0)
         assert metrics.hit_at_10 == pytest.approx(1.0)
+
+    def test_multi_chunk_relevant_doc_does_not_inflate_ndcg(
+        self, populated_store: VstashStore
+    ) -> None:
+        """A relevant doc with multiple chunks in top-k must be counted
+        once: ranks are document-level, not chunk-level. Without the
+        dedup, NDCG of a perfect retrieval could exceed 1.0 when a
+        single relevant doc surfaces 2+ chunks.
+        """
+        dim = populated_store.embedding_dim
+        rows = populated_store._conn.execute(
+            "SELECT c.text, d.path FROM chunks c JOIN documents d ON d.id = c.doc_id"
+        ).fetchall()
+        paths = sorted({r["path"] for r in rows})
+        assert len(paths) >= 2, "fixture must have >= 2 paths for this test"
+        # All chunks of a doc get that doc's basis vector. The query
+        # vector equals the target doc's basis so every chunk of the
+        # relevant doc surfaces before any other doc.
+        path_vec: dict[str, list[float]] = {}
+        for i, p in enumerate(paths):
+            v = [0.0] * dim
+            v[i] = 1.0
+            path_vec[p] = v
+        target_path = next(p for p in paths if sum(1 for r in rows if r["path"] == p) >= 2)
+        mapping = {r["text"][:60]: path_vec[r["path"]] for r in rows}
+        mapping["MULTI_CHUNK_QUERY"] = path_vec[target_path]
+        eval_queries = [
+            {
+                "query": "MULTI_CHUNK_QUERY",
+                "relevant_paths": [target_path],
+            }
+        ]
+
+        fake_model = _install_fake_st_model(dim, mapping)
+        with patch("vstash.retrain._load_sentence_transformer", return_value=fake_model):
+            metrics = evaluate_model(
+                populated_store,
+                model_name_or_path="fake",
+                eval_queries=eval_queries,
+                noise_sample_size=0,
+            )
+
+        # Exactly one relevant doc, retrieved at doc-rank 1 -> NDCG@10 = 1.0.
+        # Pre-fix: NDCG would be > 1.0 because multiple ranks from the same
+        # doc get counted against IDCG=1.0.
+        assert metrics.ndcg_at_10 <= 1.0
+        assert metrics.ndcg_at_10 == pytest.approx(1.0)
+        assert metrics.ndcg_at_3 <= 1.0
+        assert metrics.recall_at_100 <= 1.0
+        assert metrics.recall_at_100 == pytest.approx(1.0)
+        assert metrics.hit_at_10 == pytest.approx(1.0)
+
+    def test_perfect_retrieval_populates_ndcg3_and_recall100(
+        self, populated_store: VstashStore
+    ) -> None:
+        """With every relevant doc at rank 1, NDCG@3 and Recall@100 are 1.0."""
+        dim = populated_store.embedding_dim
+        rows = populated_store._conn.execute(
+            "SELECT c.text, d.path FROM chunks c JOIN documents d ON d.id = c.doc_id"
+        ).fetchall()
+        paths = sorted({r["path"] for r in rows})
+        path_vec: dict[str, list[float]] = {}
+        for i, p in enumerate(paths):
+            v = [0.0] * dim
+            v[i] = 1.0
+            path_vec[p] = v
+        mapping = {r["text"][:60]: path_vec[r["path"]] for r in rows}
+        eval_queries = [{"query": r["text"][:200], "relevant_path": r["path"]} for r in rows]
+
+        fake_model = _install_fake_st_model(dim, mapping)
+        with patch("vstash.retrain._load_sentence_transformer", return_value=fake_model):
+            metrics = evaluate_model(
+                populated_store,
+                model_name_or_path="fake",
+                eval_queries=eval_queries,
+                noise_sample_size=0,
+            )
+
+        assert metrics.ndcg_at_3 == pytest.approx(1.0)
+        assert metrics.recall_at_100 == pytest.approx(1.0)
+        # Regression guard: the new fields must round-trip through as_dict.
+        d = metrics.as_dict()
+        assert "ndcg_at_3" in d
+        assert "recall_at_100" in d
 
     def test_accepts_legacy_relevant_path_field(self, populated_store: VstashStore) -> None:
         """Queries with the legacy 'relevant_path' (singular) key still work."""

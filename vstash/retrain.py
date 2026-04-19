@@ -37,6 +37,8 @@ logger = logging.getLogger(__name__)
 
 TOP_K = 10
 _EVAL_TOP_K = 10
+_EVAL_NDCG_SHALLOW_K = 3
+_EVAL_RECALL_K = 100
 _EVAL_MAX_QUERIES = 200
 _EVAL_MIN_QUERIES = 20
 _EVAL_NOISE_DEFAULT = 1000
@@ -269,6 +271,7 @@ def train_mnrl(
     batch_size: int = 64,
     use_amp: bool = True,
     max_seq_length: int | None = None,
+    seed: int = 42,
 ) -> str:
     """Fine-tune an embedding model using MNRL on disagreement pairs.
 
@@ -291,6 +294,15 @@ def train_mnrl(
             training. ``None`` keeps the model's default (512 for
             bge-small). Lower values (256 or 128) further reduce memory
             when most chunks are short.
+        seed: Controls training-time randomness. Seeds
+            ``torch.manual_seed`` + ``torch.cuda.manual_seed_all``
+            globally (the dropout + optimizer init path), pre-shuffles
+            ``examples`` with a ``random.Random(seed)`` so the initial
+            order is reproducible, and passes a seeded
+            ``torch.Generator`` to ``DataLoader`` so per-epoch
+            reshuffles are also reproducible. Two back-to-back
+            ``train_mnrl`` calls with the same inputs and seed produce
+            identical gradient steps.
 
     Returns:
         Path to the saved model.
@@ -322,18 +334,45 @@ def train_mnrl(
             examples.append(InputExample(texts=[p["query"], p["positive"], p["negative"]]))
         else:
             examples.append(InputExample(texts=[p["query"], p["positive"]]))
-    loader = DataLoader(examples, shuffle=True, batch_size=batch_size)
+
+    # Reproducibility: seed every RNG training touches. Pre-shuffle the
+    # examples with Python's RNG so even the initial order is stable,
+    # then hand DataLoader a seeded torch.Generator so per-epoch
+    # reshuffles are reproducible too. Global torch.manual_seed covers
+    # dropout + optimizer init inside model.fit.
+    rng = random.Random(seed)
+    rng.shuffle(examples)
+
+    import torch as _torch
+
+    _torch.manual_seed(seed)
+    cuda = getattr(_torch, "cuda", None)
+    if cuda is not None and getattr(cuda, "is_available", lambda: False)():
+        cuda.manual_seed_all(seed)
+
+    loader_kwargs: dict = {"batch_size": batch_size, "shuffle": True}
+    generator_factory = getattr(_torch, "Generator", None)
+    if generator_factory is not None:
+        gen = generator_factory()
+        # Some generators (CPU/CUDA variants) expose manual_seed; guard
+        # defensively so test stubs without the method do not crash.
+        seed_method = getattr(gen, "manual_seed", None)
+        if callable(seed_method):
+            seed_method(seed)
+        loader_kwargs["generator"] = gen
+    loader = DataLoader(examples, **loader_kwargs)
     loss = losses.MultipleNegativesRankingLoss(model)
 
     warmup_steps = min(50, len(loader) // 5)
     logger.info(
-        "Training: %d pairs, %d epochs, batch=%d, lr=%s, amp=%s, max_seq_length=%s",
+        "Training: %d pairs, %d epochs, batch=%d, lr=%s, amp=%s, max_seq_length=%s, seed=%d",
         len(pairs),
         epochs,
         batch_size,
         lr,
         use_amp,
         max_seq_length,
+        seed,
     )
 
     t0 = time.perf_counter()
@@ -359,6 +398,7 @@ def train_mnrl(
         "lr": lr,
         "use_amp": use_amp,
         "max_seq_length": max_seq_length,
+        "seed": seed,
         "training_time_s": round(elapsed, 1),
     }
     (Path(output) / "training_meta.json").write_text(json.dumps(meta, indent=2))
@@ -434,12 +474,23 @@ def _promote_candidate(candidate_path: Path, final_path: Path) -> None:
 
 @dataclass(frozen=True)
 class EvalMetrics:
-    """Honest retrieval metrics on a held-out query set."""
+    """Honest retrieval metrics on a held-out query set.
+
+    ``ndcg_at_10`` stays the headline number driving the retrain gate.
+    ``ndcg_at_3`` tracks strict head quality (first three positions)
+    and is more sensitive to reranker wins. ``recall_at_100`` measures
+    candidate-set health, which is the input a downstream reranker
+    (T2.4) actually sees. The two new fields default to ``0.0`` so
+    existing positional call sites (``EvalMetrics(0.0, 0.0, 0.0, 0)``)
+    keep working unchanged.
+    """
 
     ndcg_at_10: float
     mrr: float
     hit_at_10: float
     n_queries: int
+    ndcg_at_3: float = 0.0
+    recall_at_100: float = 0.0
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -697,6 +748,35 @@ def _ndcg_from_ranks(
     return dcg / idcg
 
 
+def _recall_at_k(
+    ranks_in_topk: list[int],
+    num_relevant: int,
+    k: int = _EVAL_RECALL_K,
+) -> float:
+    """Fraction of relevant docs that appear in the top-k ranked list.
+
+    Args:
+        ranks_in_topk: 1-indexed ranks at which relevant docs appeared
+            in the full ranked list. Ranks beyond ``k`` are ignored.
+        num_relevant: Total number of relevant docs for this query. The
+            denominator so per-query recall stays comparable across
+            queries with different relevant-doc counts.
+        k: Cutoff.
+
+    Returns:
+        Recall@k in [0, 1].
+    """
+    if num_relevant <= 0:
+        return 0.0
+    # Clamp by ``num_relevant`` so callers that pass duplicate ranks
+    # (e.g., chunk-level lists where the same doc appears twice) cannot
+    # push recall above 1.0. The doc-level callers in this module
+    # already dedupe, but _recall_at_k is a public helper and defensive
+    # clamping is cheap.
+    hits = min(num_relevant, sum(1 for r in ranks_in_topk if 1 <= r <= k))
+    return hits / num_relevant
+
+
 def _load_sentence_transformer(model_name: str):
     """Import + load a SentenceTransformer. Raises ImportError with install hint."""
     try:
@@ -732,7 +812,7 @@ def evaluate_model(
         tmp_dir: Where to create the temp db. Defaults to system temp.
 
     Returns:
-        EvalMetrics with NDCG@10, MRR, Hit@10.
+        EvalMetrics with NDCG@10, NDCG@3, MRR, Hit@10, Recall@100.
 
     Raises:
         ImportError: If sentence-transformers is not installed.
@@ -827,33 +907,65 @@ def evaluate_model(
             show_progress_bar=False,
         )
 
-        # Score each query via production search (RRF with adaptive weights).
-        ndcgs: list[float] = []
+        # Score each query via production search (RRF with adaptive
+        # weights). Pull top-100 so we can compute Recall@100 in the
+        # same pass; NDCG@10 / NDCG@3 / MRR / Hit@10 truncate internally
+        # via the rank cutoff in their helpers.
+        #
+        # NDCG and Recall are *document-level* metrics, but
+        # ``eval_store.search`` returns chunk-level SearchResults. Long
+        # relevant documents can legitimately produce multiple chunks in
+        # the top-k (MMR penalises intra-doc duplication but does not
+        # guarantee one-per-path). Counting the same relevant doc
+        # twice would inflate NDCG above 1.0 and break Recall
+        # calibration. Collapse the ranking to unique paths in
+        # first-occurrence order before scoring, matching the
+        # doc-level dedup in ``evaluate_model_batched``.
+        ndcgs_10: list[float] = []
+        ndcgs_3: list[float] = []
         mrrs: list[float] = []
         hits: list[float] = []
+        recalls_100: list[float] = []
         for q, q_vec in zip(normalized_queries, q_vecs):
             results = eval_store.search(
                 query_embedding=list(map(float, q_vec)),
                 query_text=q["query"],
-                top_k=_EVAL_TOP_K,
+                top_k=_EVAL_RECALL_K,
             )
             relevant_set = set(q["relevant_paths"])
+
+            unique_paths: list[str] = []
+            seen_paths: set[str] = set()
+            for r in results:
+                if r.path in seen_paths:
+                    continue
+                seen_paths.add(r.path)
+                unique_paths.append(r.path)
+
             ranks_hit: list[int] = []
             first_rank: int | None = None
-            for i, r in enumerate(results, start=1):
-                if r.path in relevant_set:
-                    ranks_hit.append(i)
-                    if first_rank is None:
-                        first_rank = i
-            ndcgs.append(_ndcg_from_ranks(ranks_hit, num_relevant=len(relevant_set)))
+            for rank_i, path in enumerate(unique_paths, start=1):
+                if path in relevant_set:
+                    ranks_hit.append(rank_i)
+                    if first_rank is None and rank_i <= _EVAL_TOP_K:
+                        first_rank = rank_i
+            num_rel = len(relevant_set)
+            ndcgs_10.append(_ndcg_from_ranks(ranks_hit, num_relevant=num_rel, k=_EVAL_TOP_K))
+            ndcgs_3.append(
+                _ndcg_from_ranks(ranks_hit, num_relevant=num_rel, k=_EVAL_NDCG_SHALLOW_K)
+            )
             mrrs.append(1.0 / first_rank if first_rank is not None else 0.0)
             hits.append(1.0 if first_rank is not None else 0.0)
+            recalls_100.append(_recall_at_k(ranks_hit, num_relevant=num_rel, k=_EVAL_RECALL_K))
 
+        n = len(normalized_queries)
         return EvalMetrics(
-            ndcg_at_10=sum(ndcgs) / len(ndcgs),
-            mrr=sum(mrrs) / len(mrrs),
-            hit_at_10=sum(hits) / len(hits),
-            n_queries=len(normalized_queries),
+            ndcg_at_10=sum(ndcgs_10) / n,
+            mrr=sum(mrrs) / n,
+            hit_at_10=sum(hits) / n,
+            n_queries=n,
+            ndcg_at_3=sum(ndcgs_3) / n,
+            recall_at_100=sum(recalls_100) / n,
         )
     finally:
         if eval_store is not None:
@@ -969,6 +1081,7 @@ def retrain(
             batch_size=batch_size,
             use_amp=use_amp,
             max_seq_length=max_seq_length,
+            seed=seed,
         )
         return RetrainResult(
             output_path=final_path_str,
@@ -1102,6 +1215,7 @@ def retrain(
         batch_size=batch_size,
         use_amp=use_amp,
         max_seq_length=max_seq_length,
+        seed=seed,
     )
 
     _release_gpu_memory()
@@ -1634,6 +1748,7 @@ def retrain_multi(
         batch_size=batch_size,
         use_amp=use_amp,
         max_seq_length=max_seq_length,
+        seed=seed,
     )
 
     _release_gpu_memory()
