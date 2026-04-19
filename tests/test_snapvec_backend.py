@@ -171,3 +171,101 @@ class TestSnapvecDimMismatch:
         assert store2._snap.dim == 64
         assert len(store2._snap) == 0  # rebuilt empty
         store2.close()
+
+
+class TestSnapvecDeferredSave:
+    """Flat snapvec now defers ``_save_snapvec`` to ``close()``. These
+    tests lock in the contract and the crash-recovery path that
+    rebuilds ``.snpv`` from ``vec_chunks`` when the deferred write
+    never happened."""
+
+    def test_add_document_does_not_write_snpv_before_close(self, snap_store, tmp_path):
+        """Writing through ``add_document`` does not touch the .snpv
+        file on disk until ``close()``. Regression guard for the
+        O(N^2) per-doc-ingest bug (2026-04-19)."""
+        db_path = tmp_path / "snap_test.db"
+        snpv_path = db_path.with_suffix(".snpv")
+        # Empty store just got its initial empty .snpv written.
+        initial_mtime = snpv_path.stat().st_mtime if snpv_path.exists() else None
+
+        for i in range(20):
+            snap_store.add_document(
+                path=f"/defer/doc{i}.md",
+                title=f"doc{i}",
+                chunks=[f"chunk text {i}"],
+                embeddings=[np.random.default_rng(i).standard_normal(DIM).tolist()],
+            )
+
+        # The ONLY expected write to .snpv during add_document is the
+        # initial empty-index save inside ``_init_snapvec``. After that
+        # every add_document must set ``_snap_dirty`` and not touch disk.
+        assert snap_store._snap_dirty is True
+        if initial_mtime is not None:
+            assert snpv_path.stat().st_mtime == initial_mtime, (
+                "flat snapvec must not rewrite .snpv on every add_document; "
+                "expected a single deferred flush via _checkpoint_snapvec / close()"
+            )
+
+        # Explicit checkpoint flushes dirty state to disk.
+        snap_store._checkpoint_snapvec()
+        assert snap_store._snap_dirty is False
+        assert snpv_path.exists()
+
+    def test_close_flushes_pending_writes(self, tmp_path):
+        """``close()`` must call ``_checkpoint_snapvec`` so that a
+        clean shutdown persists every in-memory vector."""
+        db = str(tmp_path / "close_flush.db")
+        store = VstashStore(db, embedding_dim=DIM, vector_backend="snapvec", snapvec_bits=4)
+        for i in range(10):
+            store.add_document(
+                path=f"/flush/doc{i}.md",
+                title=f"doc{i}",
+                chunks=[f"flush chunk {i}"],
+                embeddings=[np.random.default_rng(i).standard_normal(DIM).tolist()],
+            )
+        assert store._snap_dirty is True
+        store.close()
+
+        # Reopen and verify all 10 docs survived.
+        reopened = VstashStore(db, embedding_dim=DIM, vector_backend="snapvec", snapvec_bits=4)
+        assert len(reopened._snap) == 10
+        reopened.close()
+
+    def test_crash_recovery_rebuilds_from_vec_chunks(self, tmp_path):
+        """Simulate a crash between ``add_document`` and ``close()`` by
+        intentionally skipping ``_checkpoint_snapvec`` on the first
+        handle. On next open, ``_init_snapvec`` must detect the
+        staleness (snap len < vec_chunks count) and rebuild the flat
+        index from ``vec_chunks`` so no vectors are silently lost."""
+        db = str(tmp_path / "crash_recovery.db")
+        store = VstashStore(db, embedding_dim=DIM, vector_backend="snapvec", snapvec_bits=4)
+        for i in range(15):
+            store.add_document(
+                path=f"/crash/doc{i}.md",
+                title=f"doc{i}",
+                chunks=[f"crash chunk {i}"],
+                embeddings=[np.random.default_rng(i).standard_normal(DIM).tolist()],
+            )
+        # "Crash": close the sqlite connection but NEVER flush the
+        # deferred .snpv. The on-disk .snpv is the initial empty one
+        # that got written at _init_snapvec time.
+        store._conn.close()
+        # Avoid any further finalisation on this handle.
+        store._snap = None
+
+        # Reopen and verify recovery.
+        recovered = VstashStore(db, embedding_dim=DIM, vector_backend="snapvec", snapvec_bits=4)
+        assert recovered._snap is not None
+        # All 15 vectors must be back in the in-memory index, populated
+        # by _rebuild_snapvec_from_vec_chunks.
+        assert len(recovered._snap) == 15
+        recovered.close()
+
+    def test_rebuild_helper_is_idempotent(self, populated_snap_store, tmp_path):
+        """Calling ``_rebuild_snapvec_from_vec_chunks`` twice in a row
+        produces the same state."""
+        populated_snap_store._checkpoint_snapvec()
+        first = populated_snap_store._rebuild_snapvec_from_vec_chunks()
+        second = populated_snap_store._rebuild_snapvec_from_vec_chunks()
+        assert first == second
+        assert first > 0
