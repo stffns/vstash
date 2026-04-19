@@ -1532,6 +1532,13 @@ def retrain(
         help="Model name override for synthesis (defaults to the configured "
         "inference backend's model).",
     ),
+    seed: int = typer.Option(
+        42,
+        "--seed",
+        help="Deterministic seed. Controls held-out split, triple sampling, "
+        "torch dropout, and DataLoader shuffle, so two runs with the same "
+        "inputs and seed produce identical models.",
+    ),
 ) -> None:
     """Fine-tune the embedding model using your own data.
 
@@ -1608,6 +1615,7 @@ def retrain(
         eval_noise_size=eval_noise_size,
         min_gain=min_gain,
         skip_eval=no_eval,
+        seed=seed,
         synthesize_queries=synthesize,
         synth_n=synth_n,
         synth_cache=synth_cache,
@@ -1778,6 +1786,13 @@ def retrain_multi_cmd(
         help="Device override for --bulk-mine / --bulk-eval ('cuda' or "
         "'cpu'). Leave unset to auto-detect.",
     ),
+    seed: int = typer.Option(
+        42,
+        "--seed",
+        help="Deterministic seed. Derived per-dataset via SHA-256 so each "
+        "corpus gets its own stable RNG, and then threaded into train_mnrl "
+        "so DataLoader shuffles and torch dropout are reproducible.",
+    ),
 ) -> None:
     """Fine-tune the embedding model over multiple corpora with balanced sampling.
 
@@ -1923,6 +1938,7 @@ def retrain_multi_cmd(
             min_gain=min_gain,
             per_dataset_gate=per_dataset_gate,
             skip_eval=no_eval,
+            seed=seed,
             bulk_mine=bulk_mine,
             bulk_mine_device=bulk_mine_device,
             bulk_eval=bulk_eval,

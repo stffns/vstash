@@ -271,6 +271,7 @@ def train_mnrl(
     batch_size: int = 64,
     use_amp: bool = True,
     max_seq_length: int | None = None,
+    seed: int = 42,
 ) -> str:
     """Fine-tune an embedding model using MNRL on disagreement pairs.
 
@@ -293,6 +294,15 @@ def train_mnrl(
             training. ``None`` keeps the model's default (512 for
             bge-small). Lower values (256 or 128) further reduce memory
             when most chunks are short.
+        seed: Controls training-time randomness. Seeds
+            ``torch.manual_seed`` + ``torch.cuda.manual_seed_all``
+            globally (the dropout + optimizer init path), pre-shuffles
+            ``examples`` with a ``random.Random(seed)`` so the initial
+            order is reproducible, and passes a seeded
+            ``torch.Generator`` to ``DataLoader`` so per-epoch
+            reshuffles are also reproducible. Two back-to-back
+            ``train_mnrl`` calls with the same inputs and seed produce
+            identical gradient steps.
 
     Returns:
         Path to the saved model.
@@ -324,18 +334,45 @@ def train_mnrl(
             examples.append(InputExample(texts=[p["query"], p["positive"], p["negative"]]))
         else:
             examples.append(InputExample(texts=[p["query"], p["positive"]]))
-    loader = DataLoader(examples, shuffle=True, batch_size=batch_size)
+
+    # Reproducibility: seed every RNG training touches. Pre-shuffle the
+    # examples with Python's RNG so even the initial order is stable,
+    # then hand DataLoader a seeded torch.Generator so per-epoch
+    # reshuffles are reproducible too. Global torch.manual_seed covers
+    # dropout + optimizer init inside model.fit.
+    rng = random.Random(seed)
+    rng.shuffle(examples)
+
+    import torch as _torch
+
+    _torch.manual_seed(seed)
+    cuda = getattr(_torch, "cuda", None)
+    if cuda is not None and getattr(cuda, "is_available", lambda: False)():
+        cuda.manual_seed_all(seed)
+
+    loader_kwargs: dict = {"batch_size": batch_size, "shuffle": True}
+    generator_factory = getattr(_torch, "Generator", None)
+    if generator_factory is not None:
+        gen = generator_factory()
+        # Some generators (CPU/CUDA variants) expose manual_seed; guard
+        # defensively so test stubs without the method do not crash.
+        seed_method = getattr(gen, "manual_seed", None)
+        if callable(seed_method):
+            seed_method(seed)
+        loader_kwargs["generator"] = gen
+    loader = DataLoader(examples, **loader_kwargs)
     loss = losses.MultipleNegativesRankingLoss(model)
 
     warmup_steps = min(50, len(loader) // 5)
     logger.info(
-        "Training: %d pairs, %d epochs, batch=%d, lr=%s, amp=%s, max_seq_length=%s",
+        "Training: %d pairs, %d epochs, batch=%d, lr=%s, amp=%s, max_seq_length=%s, seed=%d",
         len(pairs),
         epochs,
         batch_size,
         lr,
         use_amp,
         max_seq_length,
+        seed,
     )
 
     t0 = time.perf_counter()
@@ -361,6 +398,7 @@ def train_mnrl(
         "lr": lr,
         "use_amp": use_amp,
         "max_seq_length": max_seq_length,
+        "seed": seed,
         "training_time_s": round(elapsed, 1),
     }
     (Path(output) / "training_meta.json").write_text(json.dumps(meta, indent=2))
@@ -1019,6 +1057,7 @@ def retrain(
             batch_size=batch_size,
             use_amp=use_amp,
             max_seq_length=max_seq_length,
+            seed=seed,
         )
         return RetrainResult(
             output_path=final_path_str,
@@ -1152,6 +1191,7 @@ def retrain(
         batch_size=batch_size,
         use_amp=use_amp,
         max_seq_length=max_seq_length,
+        seed=seed,
     )
 
     _release_gpu_memory()
@@ -1684,6 +1724,7 @@ def retrain_multi(
         batch_size=batch_size,
         use_amp=use_amp,
         max_seq_length=max_seq_length,
+        seed=seed,
     )
 
     _release_gpu_memory()

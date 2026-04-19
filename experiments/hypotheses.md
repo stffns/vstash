@@ -149,22 +149,25 @@ legacy one only after 1 release cycle.
 
 ---
 
-### H-R7. Seed audit + global `--seed` flag
+### H-R7. Seed audit + global `--seed` flag [IMPLEMENTED, not yet merged]
 
-**Statement.** `_derive_seed()` uses a SHA-256 hash of a label but there is
-no single user-facing seed. Reproducibility across Colab runs needs every
-RNG (triple sampling, noise sampling, DataLoader shuffle, torch CUDA) to
-derive from the same root.
+**Statement.** Every RNG that retrain training touches is now seeded from
+a single user-controllable root. `train_mnrl` pre-shuffles examples with
+`random.Random(seed)` (stable initial order), calls `torch.manual_seed` +
+`torch.cuda.manual_seed_all` (covers dropout + optimizer init), and
+passes a seeded `torch.Generator` to `DataLoader` (reproducible
+per-epoch reshuffles). `retrain()` and `retrain_multi()` thread the
+seed into `train_mnrl` on every call site. CLI `--seed` flag on both
+`retrain` and `retrain-multi`. `training_meta.json` records the seed.
 
-**Test.** Two back-to-back runs of `retrain_multi` with `--seed 42` produce
-identical `training_meta.json` triple counts and identical baseline eval
-numbers. Worth owning before we start running ablations that compare runs.
+**Status.** Implemented. 3 new tests cover `torch.manual_seed` call,
+`Generator` threading into `DataLoader`, same-seed deterministic
+example ordering, and `training_meta.json` round-trip. Test stubs
+extended in `test_retrain.py` and `test_retrain_multi.py`. 965+ tests
+still passing.
 
-**Files.** `vstash/retrain.py` (seed plumbing), `vstash/cli.py`.
-
-**Effort.** 1 day.
-
-**Risk.** Low. Reproducibility only, no behavioral change.
+**Files.** `vstash/retrain.py`, `vstash/cli.py`, `tests/test_retrain.py`,
+`tests/test_retrain_multi.py`.
 
 ---
 

@@ -50,6 +50,12 @@ def _install_st_torch_stubs() -> tuple[types.ModuleType, types.ModuleType, types
     torch_data.DataLoader = MagicMock(return_value=[MagicMock()] * 5)
     torch_utils.data = torch_data
     torch_mod.utils = torch_utils
+    # train_mnrl now seeds torch + passes a Generator to DataLoader for
+    # reproducibility (H-R7). Stub the bits it touches so the helper
+    # can run under the fake torch module.
+    torch_mod.manual_seed = MagicMock()
+    torch_mod.cuda = None  # trips the `cuda is None` guard in train_mnrl
+    torch_mod.Generator = MagicMock(return_value=MagicMock(manual_seed=MagicMock()))
 
     sys.modules["sentence_transformers"] = st_mod
     sys.modules["sentence_transformers.losses"] = st_losses
@@ -431,6 +437,94 @@ class TestTrainMNRL:
         )
         assert out.is_dir()
         assert (out / "training_meta.json").is_file()
+
+    def test_seeds_torch_and_passes_generator_to_dataloader(
+        self, tmp_path: Path, st_stubs: Any
+    ) -> None:
+        """H-R7: train_mnrl seeds torch RNGs and hands a seeded Generator
+        to DataLoader so per-epoch shuffles are reproducible across runs.
+        """
+        st_mod, _, torch_data = st_stubs
+        st_mod.SentenceTransformer.return_value = MagicMock()
+
+        torch_mod = sys.modules["torch"]
+        torch_mod.manual_seed.reset_mock()
+        torch_mod.Generator.reset_mock()
+
+        train_mnrl(
+            pairs=[{"query": "q", "positive": "p"}] * 5,
+            base_model="d",
+            output_path=str(tmp_path / "m"),
+            seed=1337,
+        )
+
+        torch_mod.manual_seed.assert_called_once_with(1337)
+        # Generator was constructed and seeded.
+        assert torch_mod.Generator.called, "Generator() must be instantiated"
+        gen_instance = torch_mod.Generator.return_value
+        gen_instance.manual_seed.assert_called_once_with(1337)
+        # DataLoader received the generator kwarg.
+        call_kwargs = torch_data.DataLoader.call_args.kwargs
+        assert call_kwargs.get("generator") is gen_instance
+        assert call_kwargs.get("shuffle") is True
+
+    def test_records_seed_in_training_meta(self, tmp_path: Path, st_stubs: Any) -> None:
+        """H-R7: seed lands in training_meta.json so rerunning is trivial."""
+        st_mod, _, _ = st_stubs
+        st_mod.SentenceTransformer.return_value = MagicMock()
+
+        out = tmp_path / "seed-meta"
+        train_mnrl(
+            pairs=[{"query": "q", "positive": "p", "negative": "n"}] * 3,
+            base_model="d",
+            output_path=str(out),
+            seed=7,
+        )
+        meta = json.loads((out / "training_meta.json").read_text())
+        assert meta["seed"] == 7
+
+    def test_same_seed_produces_identical_example_ordering(
+        self, tmp_path: Path, st_stubs: Any
+    ) -> None:
+        """Two train_mnrl calls with the same seed + inputs must pre-shuffle
+        examples into the same order. The pre-shuffle guarantees the initial
+        ordering is reproducible even without a working torch.Generator.
+        """
+        st_mod, _, _ = st_stubs
+        st_mod.SentenceTransformer.return_value = MagicMock()
+
+        pairs = [{"query": f"q{i}", "positive": f"p{i}", "negative": f"n{i}"} for i in range(20)]
+
+        def _ordering(seed: int) -> list[str]:
+            st_mod.InputExample.reset_mock()
+            # InputExample(side_effect=...) returns a MagicMock with `.texts`.
+            # Its call order records the pre-shuffle order because we then
+            # pass shuffled examples to DataLoader.
+            train_mnrl(
+                pairs=pairs,
+                base_model="d",
+                output_path=str(tmp_path / f"m-{seed}-{id(seed)}"),
+                seed=seed,
+            )
+            # Recover the order examples were POPPED INTO DataLoader by
+            # reading the argv passed to it. DataLoader is a MagicMock;
+            # its first positional arg is the examples list (already
+            # shuffled in place by the pre-shuffle step in train_mnrl).
+            torch_mod = sys.modules["torch"]
+            dl_call = torch_mod.utils.data.DataLoader.call_args
+            examples_arg = dl_call.args[0]
+            return [ex.texts[0] for ex in examples_arg]
+
+        order_a = _ordering(42)
+        order_b = _ordering(42)
+        order_c = _ordering(99)
+
+        assert order_a == order_b, "same seed must produce identical ordering"
+        assert order_a != order_c, (
+            "different seeds must produce different ordering on a non-trivial input"
+        )
+        # Sanity: we saw every example (ordering is a permutation).
+        assert sorted(order_a) == sorted(f"q{i}" for i in range(20))
 
     def test_expands_tilde_in_output_path(self, tmp_path: Path, st_stubs: Any) -> None:
         """``output_path`` with a leading ``~`` expands to the user's home."""
