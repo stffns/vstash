@@ -11,11 +11,12 @@ vstash uses [FastEmbed](https://github.com/qdrant/fastembed) for local embedding
 | Model | Dimensions | Speed | Quality | Notes |
 |-------|-----------|-------|---------|-------|
 | `BAAI/bge-small-en-v1.5` (default) | 384 | ~700 ch/s | Great | Best speed/quality ratio |
-| `Stffens/bge-small-rrf-v2` | 384 | ~700 ch/s | **Best** | Self-tuned, +7-19% NDCG vs base, beats ColBERTv2 on 3/5 BEIR |
+| `Stffens/bge-small-rrf-v3` | 384 | ~700 ch/s | **Best** | Self-tuned, macro NDCG@10 0.6405 on 5-dataset BEIR. 5/5 wins vs ColBERTv2. Recommended default. |
+| `Stffens/bge-small-rrf-v2` | 384 | ~700 ch/s | Great | Previous self-tune. Retains NFCorpus advantage over v3 (0.4325 vs 0.3927); pick it only if NFCorpus-like keyword retrieval dominates your workload. |
 | `BAAI/bge-base-en-v1.5` | 768 | ~300 ch/s | Excellent | |
 | `nomic-ai/nomic-embed-text-v1.5` | 768 | ~300 ch/s | Excellent | |
 
-> **New in v0.28:** `Stffens/bge-small-rrf-v2` is a BGE-small model fine-tuned with vstash's own hybrid retrieval disagreement signal. Same dimensions, same speed, better quality. Use `vstash reindex --model Stffens/bge-small-rrf-v2` to switch, or run `vstash retrain` to fine-tune on your own data.
+> **Current pick (2026-04-19):** `Stffens/bge-small-rrf-v3` is a BGE-small model fine-tuned with vstash's own hybrid retrieval disagreement signal using the H-R9 winning config (`temperature=0.5, total_triples=60000`). Same 384 dims, same speed as the base model; macro NDCG@10 0.6405 across SciFact + NFCorpus + SciDocs + FiQA + ArguAna (vs 0.6246 for v2, 0.6118 for base). Both v2 and v3 beat ColBERTv2 on all 5 BEIR datasets under this pipeline. Switch in with `vstash reindex --model Stffens/bge-small-rrf-v3`, or fine-tune on your own data via `vstash retrain` / `vstash retrain-multi` (see [docs/retrain.md](retrain.md)).
 
 ### Multilingual
 

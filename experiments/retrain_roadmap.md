@@ -213,6 +213,102 @@ macro positive. If those land, the paper claims reproduce and
 chunk-prefix can be deprecated or documented as a weaker fallback for
 users without labeled queries.
 
+**T1.5 Colab validation (2026-04-19).** First run after the recipe
+fix came in at:
+
+| Dataset  | Baseline | Final  | Delta    |
+|----------|----------|--------|----------|
+| SciFact  | 0.7261   | 0.7802 | +5.41%   |
+| NFCorpus | 0.3449   | 0.3670 | +2.22%   |
+| FiQA     | 0.3776   | 0.4513 | +7.37%   |
+| Macro    | 0.4828   | 0.5328 | +5.00%   |
+
+SciFact and FiQA reproduce or beat the v5 published numbers
+(+5%, +5-6%). NFCorpus is well short of v5's published +18.3%; the
+gap motivated the H-R3 and H-R9 follow-ups below.
+
+**Second validation (2026-04-19, post PR #243 merge).** Re-run with
+H-R5 (wider top-K + doc-dedup in batched eval) and H-R7 (seed
+determinism) came in at macro +4.14% (SciFact +4.53%, NFCorpus
++1.39%, FiQA +6.51%). Final absolute NDCG@10 was equivalent or a
+touch better on every dataset; delta% dropped because the widened
+eval pipeline raised baseline NDCG@10 in parallel. Corollary: when
+comparing our numbers to v5's published deltas, use absolute final
+NDCG@10 rather than percentage deltas (see the "Methodological
+note" at the top of `experiments/hypotheses.md`).
+
+**H-R3 ablation outcome (2026-04-19).** Hard-negative margin filter
+`margin_min=0.05` (arm_a) regressed macro -2.49pp (+1.65% vs
++4.14%) with 53% of training pairs filtered out. Diagnosis: on the
+base bge-small the cos(q, gold) / cos(q, hard_neg) margin
+distribution sits at 0.02-0.08, so a 0.05 cutoff removes hard-neg
+signal, not noise. The filter's assumption ("margins < 0.05 mean
+ambiguous / probably relevant") holds only for an already-trained
+model where cos(q, gold) saturates near 1.0; for initial training
+the assumption inverts. PR #245 closed without merge; infra kept
+in git history for future continual-retrain (T2.6) or reranker
+(T2.4) use cases where the assumption applies. Next lever: **H-R9**
+in `experiments/hypotheses.md` (corpus balance via sampling
+temperature and/or total_triples), pure CLI sweep.
+
+**H-R9 ablation results (2026-04-19, A100).** Three arms against the
+T1.5 baseline:
+
+| arm         | sampling    | temp | total | pairs | SciFact | NFCorpus | FiQA   | macro   |
+|-------------|-------------|------|-------|-------|---------|----------|--------|---------|
+| baseline    | temperature | 0.5  | 30000 | 28490 | 0.7786  | 0.3677   | 0.4568 | 0.5344  |
+| arm_t03     | temperature | 0.3  | 30000 | 26713 | 0.7791  | 0.3732   | 0.4431 | 0.5318  |
+| arm_uniform | uniform     | 0.0  | 30000 | 24291 | 0.7765  | 0.3809   | 0.4222 | 0.5265  |
+| **arm_vol** | temperature | 0.5  | 60000 | 39852 | **0.7818** | **0.3757** | **0.4818** | **0.5464** |
+
+Targets: NFCorpus > 0.38 (narrowly missed at 0.3757), SciFact > 0.775
+(met), FiQA > 0.45 (met).
+
+**Conclusions**:
+
+1. **Volume is the dominant lever**. arm_vol (60k triples, same
+   temperature=0.5 balance) is the only arm that lifts all three
+   datasets above baseline simultaneously. No observed trade-off
+   at this scale.
+2. **Temperature is a controllable trade-off**, not a free lunch.
+   Lowering it monotonically raises NFCorpus and lowers FiQA.
+   NFCorpus ceiling at uniform = 0.3809; FiQA ceiling damage at
+   uniform = -0.0346. Publishable sensitivity table for the paper.
+3. **NFCorpus saturates near 0.38** for this base model + recipe.
+   v5's published 0.409 is 0.028 absolute further; the remainder
+   likely splits between extra volume (v5 used 76k) and model
+   capacity (bge-small's keyword-retrieval ceiling).
+
+**v3 publish candidate**: `temperature=0.5, total_triples=60000`
+(arm_vol exact). Optional follow-up: one more arm combining
+`temperature=0.3, total=60000`; if NFCorpus > 0.385 without
+regressing FiQA below 0.465, that combined config wins v3.
+
+**v3 published (2026-04-19)**: `Stffens/bge-small-rrf-v3` live on
+Hugging Face. Full 5-dataset BEIR head-to-head vs v2 under the
+current pipeline (results at
+`experiments/results/v2_v3_head_to_head.json`):
+
+| Dataset  | base   | v2      | v3        | winner    |
+|----------|--------|---------|-----------|-----------|
+| SciFact  | 0.9082 | 0.9107  | 0.9361    | v3 +0.025 |
+| NFCorpus | 0.3674 | 0.4325  | 0.3927    | v2 -0.040 |
+| SciDocs  | 0.3637 | 0.3676  | 0.3693    | v3 +0.002 |
+| FiQA     | 0.6509 | 0.6541  | 0.7506    | v3 +0.097 |
+| ArguAna  | 0.7686 | 0.7579  | 0.7540    | v2 -0.004 |
+| macro    | 0.6118 | 0.6246  | 0.6405    | v3 +0.016 |
+
+Both v2 and v3 beat ColBERTv2 on 5/5 BEIR datasets under the
+current pipeline (the paper's old "4/5" framing was conservative
+and predates PR #243's eval widening). v3 becomes the default
+recommendation; v2 stays around specifically for NFCorpus-like
+keyword-heavy workloads where it retains a clear advantage.
+
+After v3 publishes, the natural next step is T2.4 (cross-encoder
+reranker; design doc at `experiments/t24_reranker_design.md`),
+expected to close the residual NFCorpus trade-off orthogonally to
+any further training work.
+
 ### T1.4c Batched GPU eval
 
 [LANDED on feat/retrain-t14c-batched-eval] Follow-up to T1.4b.

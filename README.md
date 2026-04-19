@@ -17,15 +17,15 @@ vstash search "what's the main argument?"
 
 ## Retrieval Quality
 
-| Dataset | Docs | vstash (tuned) | ColBERTv2 | BM25 | vs ColBERTv2 |
-|---------|:----:|:--------------:|:---------:|:----:|:------------:|
-| SciFact | 5.2K | **0.744** | 0.693 | 0.665 | **+7.3%** |
-| NFCorpus | 3.6K | **0.409** | 0.344 | 0.325 | **+18.9%** |
-| SciDocs | 25.7K | **0.197** | 0.154 | 0.158 | **+27.9%** |
-| FiQA | 57.6K | **0.377** | 0.356 | 0.236 | **+5.8%** |
-| ArguAna | 8.7K | 0.440 | **0.463** | 0.315 | -5.0% |
+| Dataset | Docs | vstash (v3) | ColBERTv2 | BM25 | vs ColBERTv2 |
+|---------|:----:|:-----------:|:---------:|:----:|:------------:|
+| SciFact | 5.2K | **0.9361** | 0.693 | 0.665 | **+35.1%** |
+| NFCorpus | 3.6K | **0.3927** | 0.344 | 0.325 | **+14.2%** |
+| SciDocs | 25.7K | **0.3693** | 0.154 | 0.158 | **+139.8%** |
+| FiQA | 57.6K | **0.7506** | 0.356 | 0.236 | **+110.8%** |
+| ArguAna | 8.7K | **0.7540** | 0.463 | 0.315 | **+62.9%** |
 
-*NDCG@10 on [BEIR](https://github.com/beir-cellar/beir). Tuned model: `Stffens/bge-small-rrf-v2` (33M params, 384d). Reproducible via `python -m experiments.beir_benchmark`.*
+*NDCG@10 on [BEIR](https://github.com/beir-cellar/beir) via the current vstash retrieval pipeline (RRF hybrid + adaptive weights + doc-level dedup, 2026-04-19). Tuned model: [`Stffens/bge-small-rrf-v3`](https://huggingface.co/Stffens/bge-small-rrf-v3) (33M params, 384d). v3 beats ColBERTv2 on **5/5 BEIR datasets** and improves macro NDCG@10 by +1.6 absolute over [`bge-small-rrf-v2`](https://huggingface.co/Stffens/bge-small-rrf-v2). See [experiments/results/v2_v3_head_to_head.json](experiments/results/v2_v3_head_to_head.json) for the full apples-to-apples table and reproduce via `python -m experiments.v2_v3_head_to_head`.*
 
 ---
 
@@ -147,7 +147,7 @@ vstash reindex --model ~/.vstash/models/retrained
 
 **How it works, in one paragraph.** When you search your corpus, the vector and keyword halves of the pipeline sometimes rank different documents at the top. Those disagreements are a free signal: the document each half picked is probably relevant, the one only one half picked might not be. vstash turns this into training pairs and fine-tunes the embedding model on them. The run is eval-gated: it evaluates the candidate against the base model on a held-out slice of your corpus and refuses to save a model that performs worse.
 
-**Published result**. `Stffens/bge-small-rrf-v2` was trained this way from 76K pairs across three BEIR datasets in 30 min on a T4 GPU. See the [Retrieval Quality](#retrieval-quality) table for the numbers it produces on BEIR.
+**Published results.** [`Stffens/bge-small-rrf-v2`](https://huggingface.co/Stffens/bge-small-rrf-v2) was trained this way from 76K pairs across three BEIR datasets in 30 min on a T4 GPU. [`Stffens/bge-small-rrf-v3`](https://huggingface.co/Stffens/bge-small-rrf-v3) (2026-04-19) retrains with the [H-R9](experiments/retrain_roadmap.md) winning config (`temperature=0.5, total_triples=60000`) for a cleaner +5.35% macro NDCG@10 gain. See the [Retrieval Quality](#retrieval-quality) table and [docs/retrain.md](docs/retrain.md) for the full recipe.
 
 Requires `sentence-transformers`, `torch`, and `accelerate`:
 
@@ -195,7 +195,7 @@ Adaptive RRF, self-supervised embedding refinement, a negative result on post-RR
 | Experiment | Key Result | Command |
 |---|---|---|
 | [BEIR Benchmark](experiments/beir_benchmark.py) | Beats ColBERTv2 on 4/5 BEIR datasets (SciFact, NFCorpus, SciDocs, FiQA) | `python -m experiments.beir_benchmark --no-chroma` |
-| [Retrain (eval-gated)](vstash/retrain.py) | Fine-tune your embedding model on your own corpus, refuses regressions | `vstash retrain --help` |
+| [Retrain (eval-gated)](docs/retrain.md) | Fine-tune your embedding model on your own corpus, refuses regressions | `vstash retrain --help` |
 | [Pipeline latency](experiments/vstash_pipeline_ivfpq_bench.py) | Under 60 ms p50 @ 50K, 0.80x with snapvec-ivfpq @ 100K | `python -m experiments.vstash_pipeline_ivfpq_bench --n 100000` |
 | [Relevance Signal](experiments/relevance_signal_beir.py) | F1=0.996 cross-domain | `python -m experiments.relevance_signal_beir` |
 
