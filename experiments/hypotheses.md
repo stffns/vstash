@@ -63,25 +63,44 @@ amplified the distribution mismatch. Only revisit after T1.5 validates.
 
 ---
 
-### H-R3. Hard-negative margin filter
+### H-R3. Hard-negative margin filter [IMPLEMENTED, awaits Colab]
 
 **Statement.** Labeled miner emits every (gold, hard_neg) pair the RRF
-surface turns up. Some hard negs are *too* close to the gold (ambiguous,
-hurt training) or *too* far (easy, contribute nothing). Filtering by
-cosine-margin `(gold - hard_neg)` in a target band [0.05, 0.30] should
-improve training quality.
+surface turns up. Some hard negs are too close to the gold (ambiguous,
+probably relevant), some too far (too easy, low-signal). Filtering by
+cosine-margin ``cos(q,gold) - cos(q,hard_neg)`` removes both tails.
 
-**Test.** Ablation on the T1.5 notebook with margin bands
-{no-filter, [0.05,0.30], [0.10,0.40]}. Target: +0.5-1% macro NDCG@10 vs
-no-filter at the same triple budget.
+**Status.** `generate_labeled_triples_batched` now accepts
+`margin_min` / `margin_max` (both None = legacy behaviour). Per-query
+gold + neg cosines are computed via a single gather + matmul on the
+already-device-resident corpus_vecs, so the cost is negligible. Logs
+kept/dropped ratios and warns when < 30% survive.
 
-**Files.** `vstash/retrain_batch.py:721-988`
-(`generate_labeled_triples_batched`).
+Threaded through `retrain_multi(..., margin_min, margin_max, ...)` and
+CLI flags `--margin-min` / `--margin-max` on `vstash retrain-multi`.
+5 new tests cover the filter: default-off invariant, min-only drops
+too-close, max-only drops too-easy, band drops both tails, aggressive
+cutoff warning.
 
-**Effort.** 2 days.
+**Why now (2026-04-19).** The T1.5 Colab validation came in at +5.00%
+macro NDCG@10 (SciFact +5.41%, FiQA +7.37%, **NFCorpus only +2.22%**
+vs v5's +18.3%). NFCorpus's deep gap vs v5 is the top suspect for a
+hard-negative quality problem: every query has 50+ gold docs so the
+miner emits 100s of (gold, hard_neg) pairs per query, and the
+downsample keeps them uniformly -- margin filtering is the right
+first lever.
 
-**Risk.** Filter removes too many triples, training underfits. Mitigate by
-logging kept-vs-dropped ratio and bailing when < 30% kept.
+**Test plan on next Colab.**
+  - baseline: T1.5 no filter (current, +5.00% macro, +2.22% NFCorpus)
+  - arm A: `--margin-min 0.05` only (drop ambiguous)
+  - arm B: `--margin-min 0.05 --margin-max 0.30` (full band)
+  - arm C: tighter `--margin-min 0.10 --margin-max 0.35`
+  - target: NFCorpus > +5% on at least one arm without regressing
+    SciFact or FiQA
+
+**Files.** `vstash/retrain_batch.py` (generate_labeled_triples_batched),
+`vstash/retrain.py` (retrain_multi), `vstash/cli.py` (retrain-multi),
+`tests/test_retrain_batch.py`.
 
 ---
 

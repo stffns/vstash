@@ -1793,6 +1793,22 @@ def retrain_multi_cmd(
         "corpus gets its own stable RNG, and then threaded into train_mnrl "
         "so DataLoader shuffles and torch dropout are reproducible.",
     ),
+    margin_min: float | None = typer.Option(
+        None,
+        "--margin-min",
+        help="Hard-negative margin filter (H-R3). Drop triples with "
+        "cos(q,gold) - cos(q,neg) below this threshold. Typical 0.05; "
+        "filters ambiguous hard negatives that are likely relevant. "
+        "Only applies to the labeled-query training path.",
+    ),
+    margin_max: float | None = typer.Option(
+        None,
+        "--margin-max",
+        help="Hard-negative margin filter (H-R3). Drop triples with "
+        "cos(q,gold) - cos(q,neg) above this threshold. Typical 0.30; "
+        "filters too-easy hard negatives that contribute little "
+        "gradient signal. Only applies to the labeled-query path.",
+    ),
 ) -> None:
     """Fine-tune the embedding model over multiple corpora with balanced sampling.
 
@@ -1942,6 +1958,8 @@ def retrain_multi_cmd(
             bulk_mine=bulk_mine,
             bulk_mine_device=bulk_mine_device,
             bulk_eval=bulk_eval,
+            margin_min=margin_min,
+            margin_max=margin_max,
             cfg=cfg,
         )
     finally:

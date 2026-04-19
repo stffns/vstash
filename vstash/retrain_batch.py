@@ -746,6 +746,8 @@ def generate_labeled_triples_batched(
     device: str | None = None,
     encode_batch_size: int = 256,
     matmul_batch_queries: int = 512,
+    margin_min: float | None = None,
+    margin_max: float | None = None,
 ) -> list[dict]:
     """Mine training triples using real labeled queries (T1.5).
 
@@ -759,6 +761,14 @@ def generate_labeled_triples_batched(
     - Emits ``|gold| * (|vec_only_neg| + |fts_only_neg|)`` triples per
       query. Triple count can be >> number of queries.
 
+    Optional margin filter (H-R3, 2026-04-19). Some (gold, hard_neg)
+    pairs have too-close margins (hard_neg is probably another relevant
+    doc, teaching the model to push real positives apart), and some are
+    too far (hard_neg is easy, contributes little gradient). Bounding
+    the cosine margin ``cos(query, gold) - cos(query, hard_neg)`` to
+    ``[margin_min, margin_max]`` removes both tails. Defaults ``None``
+    keep the legacy behaviour (no filter).
+
     Args:
         store: Source corpus.
         base_model: HF model name for batched encode.
@@ -771,6 +781,12 @@ def generate_labeled_triples_batched(
         device: ``"cuda" | "cpu" | None``.
         encode_batch_size: SentenceTransformer encode batch.
         matmul_batch_queries: Per-matmul query chunk size.
+        margin_min: Drop triples with ``cos(q,gold) - cos(q,neg) <
+            margin_min``. Typical: ``0.05`` (treats negatives closer
+            than 0.05 to gold as probably relevant).
+        margin_max: Drop triples with ``cos(q,gold) - cos(q,neg) >
+            margin_max``. Typical: ``0.30`` (treats very-easy
+            negatives as low-signal).
 
     Returns:
         List of ``{query, positive, negative}`` dicts, drop-in
@@ -818,6 +834,11 @@ def generate_labeled_triples_batched(
     corpus_paths = [r["path"] for r in corpus_rows]
     chunk_id_to_path = {cid: corpus_paths[i] for i, cid in enumerate(corpus_ids)}
     chunk_id_to_text = {cid: corpus_texts[i] for i, cid in enumerate(corpus_ids)}
+    # Inverse for the H-R3 margin filter: chunk_id -> row index into
+    # corpus_vecs. Used below to gather gold + neg embeddings per query
+    # and compute cosine margins without a second matmul over the full
+    # corpus.
+    chunk_id_to_corpus_idx = {cid: i for i, cid in enumerate(corpus_ids)}
 
     # path -> first chunk_id selected by explicit (seq, id) ordering,
     # not just autoincrement id. ``chunks`` has an explicit ``seq``
@@ -903,8 +924,12 @@ def generate_labeled_triples_batched(
     vec_lo, fts_lo = _LABELED_TRAIN_WEIGHTS_FTS_HEAVY
     pairs: list[dict] = []
     total_disagreements = 0
+    margin_filter_on = margin_min is not None or margin_max is not None
+    kept_by_margin = 0
+    dropped_too_close = 0
+    dropped_too_easy = 0
     try:
-        for q, vec_top in zip(filtered, all_vec_topk):
+        for q_idx, (q, vec_top) in enumerate(zip(filtered, all_vec_topk)):
             qtext = q["query"]
             gold_paths = set(q["relevant_paths"])
 
@@ -950,6 +975,35 @@ def generate_labeled_triples_batched(
                 p for p in fts_paths_ordered if p not in vec_set and p not in gold_paths
             ]
 
+            # H-R3 margin filter: precompute cosine(query, chunk) for
+            # every gold + neg path of this query in one gather +
+            # matmul. Vectors are L2-normalised so dot product is
+            # cosine similarity. Skipped entirely when the filter is
+            # off, so legacy callers pay nothing.
+            cid_to_cos: dict[int, float] = {}
+            if margin_filter_on:
+                needed_cids: list[int] = []
+                for p in gold_paths:
+                    cid = path_to_first_chunk_id.get(p)
+                    if cid is not None and cid in chunk_id_to_corpus_idx:
+                        needed_cids.append(cid)
+                for p in vec_only_neg:
+                    cid = path_to_first_chunk_id.get(p)
+                    if cid is not None and cid in chunk_id_to_corpus_idx:
+                        needed_cids.append(cid)
+                for p in fts_only_neg:
+                    cid = path_to_first_chunk_id.get(p)
+                    if cid is not None and cid in chunk_id_to_corpus_idx:
+                        needed_cids.append(cid)
+                if needed_cids:
+                    needed_indices = torch.tensor(
+                        [chunk_id_to_corpus_idx[c] for c in needed_cids], device=device
+                    )
+                    with torch.no_grad():
+                        gathered = corpus_vecs[needed_indices]
+                        sims = (gathered @ query_vecs[q_idx]).cpu().tolist()
+                    cid_to_cos = dict(zip(needed_cids, sims))
+
             for gold_path in gold_paths:
                 gold_cid = path_to_first_chunk_id.get(gold_path)
                 if gold_cid is None:
@@ -958,6 +1012,29 @@ def generate_labeled_triples_batched(
                 positive_text = (chunk_id_to_text[gold_cid] or "")[:512]
                 if not positive_text or positive_text == qtext:
                     continue
+                gold_cos = cid_to_cos.get(gold_cid) if margin_filter_on else None
+
+                def _maybe_keep(neg_cid: int | None) -> bool:
+                    """Return True when the (gold, neg) margin is in
+                    ``[margin_min, margin_max]``. Stats closures
+                    below update the kept/dropped counters."""
+                    nonlocal kept_by_margin, dropped_too_close, dropped_too_easy
+                    if not margin_filter_on:
+                        return True
+                    if gold_cos is None or neg_cid is None:
+                        return True  # missing sim -> do not filter
+                    neg_cos = cid_to_cos.get(neg_cid)
+                    if neg_cos is None:
+                        return True
+                    margin = gold_cos - neg_cos
+                    if margin_min is not None and margin < margin_min:
+                        dropped_too_close += 1
+                        return False
+                    if margin_max is not None and margin > margin_max:
+                        dropped_too_easy += 1
+                        return False
+                    kept_by_margin += 1
+                    return True
 
                 for neg_path in vec_only_neg:
                     neg_cid = path_to_first_chunk_id.get(neg_path)
@@ -965,6 +1042,8 @@ def generate_labeled_triples_batched(
                         continue
                     neg_text = (chunk_id_to_text[neg_cid] or "")[:512]
                     if not neg_text:
+                        continue
+                    if not _maybe_keep(neg_cid):
                         continue
                     pairs.append(
                         {
@@ -981,6 +1060,8 @@ def generate_labeled_triples_batched(
                     neg_text = (chunk_id_to_text[neg_cid] or "")[:512]
                     if not neg_text:
                         continue
+                    if not _maybe_keep(neg_cid):
+                        continue
                     pairs.append(
                         {
                             "query": qtext,
@@ -996,6 +1077,26 @@ def generate_labeled_triples_batched(
             total_disagreements,
             total_disagreements / len(filtered) * 100 if filtered else 0,
         )
+        if margin_filter_on:
+            total_considered = kept_by_margin + dropped_too_close + dropped_too_easy
+            kept_pct = (kept_by_margin / total_considered * 100) if total_considered > 0 else 0.0
+            logger.info(
+                "Margin filter [%.2f, %.2f]: kept %d, dropped %d too-close + %d too-easy "
+                "(%.0f%% of considered triples survived)",
+                margin_min if margin_min is not None else float("-inf"),
+                margin_max if margin_max is not None else float("inf"),
+                kept_by_margin,
+                dropped_too_close,
+                dropped_too_easy,
+                kept_pct,
+            )
+            if total_considered > 0 and kept_pct < 30.0:
+                logger.warning(
+                    "Margin filter kept only %.0f%% of (gold, neg) pairs. "
+                    "Consider widening the band -- aggressive filtering may "
+                    "starve training of signal.",
+                    kept_pct,
+                )
     finally:
         try:
             del corpus_vecs, query_vecs

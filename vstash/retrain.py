@@ -1436,6 +1436,8 @@ def retrain_multi(
     bulk_mine_device: str | None = None,
     bulk_eval: bool = False,
     training_queries_by_dataset: dict[str, list[dict]] | None = None,
+    margin_min: float | None = None,
+    margin_max: float | None = None,
     cfg: "VstashConfig | None" = None,
 ) -> MultiRetrainResult:
     """Fine-tune an embedding model over N corpora with balanced sampling.
@@ -1608,6 +1610,8 @@ def retrain_multi(
                 labeled_queries=training_by_ds[name],
                 max_queries=n_queries,
                 device=bulk_mine_device,
+                margin_min=margin_min,
+                margin_max=margin_max,
             )
             # The labeled miner emits one triple per (gold, hard_neg)
             # pair so output can vastly exceed the per-dataset budget.

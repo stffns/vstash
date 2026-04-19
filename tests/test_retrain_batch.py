@@ -38,7 +38,14 @@ def _install_torch_stub(encoded_by_texts: dict[str, list[list[float]]]) -> Any:
 
     class FakeTensor:
         def __init__(self, arr: np.ndarray) -> None:
-            self.arr = np.asarray(arr, dtype=np.float32)
+            # Preserve dtype when the caller already passed an ndarray
+            # (e.g., np.argsort returning int64, _fake_tensor wrapping
+            # a float sim list). Force float32 only for raw Python
+            # lists/tuples where no dtype was implied.
+            if isinstance(arr, np.ndarray):
+                self.arr = arr
+            else:
+                self.arr = np.asarray(arr, dtype=np.float32)
 
         def to(self, device: str) -> "FakeTensor":
             return self
@@ -66,9 +73,19 @@ def _install_torch_stub(encoded_by_texts: dict[str, list[list[float]]]) -> Any:
             return self
 
         def tolist(self) -> list:
-            return self.arr.astype(int).tolist()
+            # Integer tensors (topk indices, explicit torch.tensor int
+            # cast) return ints; float tensors (cosine sims from the
+            # margin filter gather) return floats. The old behaviour
+            # force-cast everything to int which broke the H-R3 flow.
+            if np.issubdtype(self.arr.dtype, np.integer):
+                return self.arr.astype(int).tolist()
+            return self.arr.tolist()
 
         def __getitem__(self, item) -> "FakeTensor":
+            # Unwrap FakeTensor index (used by corpus_vecs[needed_indices]
+            # in the H-R3 margin gather).
+            if isinstance(item, FakeTensor):
+                return FakeTensor(self.arr[item.arr])
             return FakeTensor(self.arr[item])
 
     class FakeCuda:
@@ -87,6 +104,16 @@ def _install_torch_stub(encoded_by_texts: dict[str, list[list[float]]]) -> Any:
             return None
 
     torch_mod.no_grad = lambda: FakeNoGrad()
+
+    # ``generate_labeled_triples_batched`` with the H-R3 margin filter
+    # calls ``torch.tensor(indices, device=...)`` to gather corpus
+    # embeddings. The stub returns a FakeTensor whose numpy dtype
+    # matches the input, so int lists -> int64 (indexing) and float
+    # lists -> float (arithmetic).
+    def _fake_tensor(data: Any, device: Any = None, dtype: Any = None) -> FakeTensor:
+        return FakeTensor(np.asarray(data))
+
+    torch_mod.tensor = _fake_tensor
 
     class FakeModel:
         def __init__(self, model_name: str, device: str | None = None) -> None:
@@ -1178,6 +1205,223 @@ class TestGenerateLabeledTriplesBatched:
             else:
                 sys.modules["sentence_transformers"] = prev_st
             store.close()
+
+    def _margin_fixture(
+        self, tmp_path: Path, torch_st_stubs: Any, name: str
+    ) -> tuple[VstashStore, str, list[dict], dict[str, str]]:
+        """Build a 1-gold + 3-neg corpus with controlled cosine margins.
+
+        All vectors are unit length so ``cos(q, x) == q . x``. Query
+        and gold align exactly (margin reference = 1.0); the three
+        negatives sit at 0.95, 0.80, 0.20 cosine to the query so
+        margins become 0.05 / 0.20 / 0.80.
+
+        Returns ``(store, qtext, queries, path_to_text)`` so the
+        per-test monkeypatch on ``_rrf_fuse`` can control exactly
+        which paths land in vec-heavy vs fts-heavy rankings.
+        """
+        import numpy as _np
+
+        v_q = [1.0, 0.0, 0.0]
+        v_gold = [1.0, 0.0, 0.0]
+        v_neg_close = [0.95, float(_np.sqrt(1.0 - 0.95**2)), 0.0]
+        v_neg_mid = [0.80, float(_np.sqrt(1.0 - 0.80**2)), 0.0]
+        v_neg_easy = [0.20, float(_np.sqrt(1.0 - 0.20**2)), 0.0]
+
+        path_to_text = {
+            "/gold": "gold body text",
+            "/neg_close": "close neg body",
+            "/neg_mid": "mid neg body",
+            "/neg_easy": "easy neg body",
+        }
+        docs = [(p, p.strip("/"), t) for p, t in path_to_text.items()]
+        store = _mk_store(str(tmp_path / f"{name}.db"), docs)
+        qtext = "find gold doc"
+        torch_st_stubs.set_encode(
+            {
+                qtext: v_q,
+                "gold body text": v_gold,
+                "close neg body": v_neg_close,
+                "mid neg body": v_neg_mid,
+                "easy neg body": v_neg_easy,
+            }
+        )
+        queries = [{"query": qtext, "relevant_paths": ["/gold"]}]
+        return store, qtext, queries, path_to_text
+
+    def _install_rrf_stub(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        store: VstashStore,
+        path_to_text: dict[str, str],
+    ) -> None:
+        """Replace _rrf_fuse so vec-heavy returns all 4 paths and
+        fts-heavy returns only {gold, neg_close}. That pushes neg_mid
+        and neg_easy into vec_only_neg regardless of the underlying
+        corpus size or FTS5 matcher behaviour.
+        """
+        import vstash.retrain_batch as rb
+
+        # chunk_id lookup: map path -> chunk_id via the populated store.
+        rows = store._conn.execute(
+            "SELECT c.id, d.path FROM chunks c JOIN documents d ON d.id = c.doc_id"
+        ).fetchall()
+        path_to_cid = {r["path"]: int(r["id"]) for r in rows}
+        vec_heavy_cids = [
+            path_to_cid[p]
+            for p in ["/gold", "/neg_close", "/neg_mid", "/neg_easy"]
+            if p in path_to_cid
+        ]
+        fts_heavy_cids = [path_to_cid[p] for p in ["/gold", "/neg_close"] if p in path_to_cid]
+
+        calls = {"count": 0}
+
+        def _fake_rrf_fuse(
+            vec_chunk_ids: list[int],
+            fts_chunk_ids: list[int],
+            vec_weight: float,
+            fts_weight: float,
+            chunk_id_to_path: dict[int, str],
+            top_n: int = 5,
+        ) -> list[int]:
+            calls["count"] += 1
+            # First call is vec-heavy (0.95 vec), second is fts-heavy.
+            if vec_weight > fts_weight:
+                return list(vec_heavy_cids)
+            return list(fts_heavy_cids)
+
+        monkeypatch.setattr(rb, "_rrf_fuse", _fake_rrf_fuse)
+
+    def test_margin_filter_default_is_off(
+        self, tmp_path: Path, torch_st_stubs: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without --margin-min/--margin-max, the filter is inert and
+        every (gold, hard_neg) disagreement pair is emitted."""
+        from vstash.retrain_batch import generate_labeled_triples_batched
+
+        store, _qtext, queries, path_to_text = self._margin_fixture(
+            tmp_path, torch_st_stubs, "mf_off"
+        )
+        self._install_rrf_stub(monkeypatch, store, path_to_text)
+        try:
+            pairs = generate_labeled_triples_batched(store, "dummy", labeled_queries=queries)
+        finally:
+            store.close()
+
+        neg_texts = {p["negative"] for p in pairs}
+        # vec_only_neg = {neg_mid, neg_easy} under the stubbed RRF.
+        assert neg_texts == {"mid neg body", "easy neg body"}
+
+    def test_margin_filter_min_drops_too_close_negatives(
+        self, tmp_path: Path, torch_st_stubs: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With ``margin_min=0.50``, the 0.20-margin neg_mid is below
+        the cutoff and gets dropped; only neg_easy (margin 0.80)
+        survives."""
+        from vstash.retrain_batch import generate_labeled_triples_batched
+
+        store, _qtext, queries, path_to_text = self._margin_fixture(
+            tmp_path, torch_st_stubs, "mf_min"
+        )
+        self._install_rrf_stub(monkeypatch, store, path_to_text)
+        try:
+            pairs = generate_labeled_triples_batched(
+                store, "dummy", labeled_queries=queries, margin_min=0.50
+            )
+        finally:
+            store.close()
+
+        neg_texts = {p["negative"] for p in pairs}
+        assert "mid neg body" not in neg_texts, (
+            "neg_mid (margin 0.20) must be dropped by margin_min=0.50"
+        )
+        assert neg_texts == {"easy neg body"}
+
+    def test_margin_filter_max_drops_too_easy_negatives(
+        self, tmp_path: Path, torch_st_stubs: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With ``margin_max=0.50``, the 0.80-margin neg_easy is
+        "too easy" and dropped; only neg_mid survives."""
+        from vstash.retrain_batch import generate_labeled_triples_batched
+
+        store, _qtext, queries, path_to_text = self._margin_fixture(
+            tmp_path, torch_st_stubs, "mf_max"
+        )
+        self._install_rrf_stub(monkeypatch, store, path_to_text)
+        try:
+            pairs = generate_labeled_triples_batched(
+                store, "dummy", labeled_queries=queries, margin_max=0.50
+            )
+        finally:
+            store.close()
+
+        neg_texts = {p["negative"] for p in pairs}
+        assert "easy neg body" not in neg_texts, (
+            "neg_easy (margin 0.80) must be dropped by margin_max=0.50"
+        )
+        assert neg_texts == {"mid neg body"}
+
+    def test_margin_filter_band_drops_both_tails(
+        self, tmp_path: Path, torch_st_stubs: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Band [0.50, 0.70] drops both vec_only negs: neg_mid is
+        below the lower bound, neg_easy is above the upper bound.
+        Triple count falls to 0 -- exactly what the H-R3 warning is
+        meant to surface."""
+        from vstash.retrain_batch import generate_labeled_triples_batched
+
+        store, _qtext, queries, path_to_text = self._margin_fixture(
+            tmp_path, torch_st_stubs, "mf_band"
+        )
+        self._install_rrf_stub(monkeypatch, store, path_to_text)
+        try:
+            pairs = generate_labeled_triples_batched(
+                store,
+                "dummy",
+                labeled_queries=queries,
+                margin_min=0.50,
+                margin_max=0.70,
+            )
+        finally:
+            store.close()
+
+        # neg_mid has margin 0.20 (< 0.50) and neg_easy has margin
+        # 0.80 (> 0.70); both are filtered out.
+        assert pairs == []
+
+    def test_margin_filter_warns_on_aggressive_cutoff(
+        self,
+        tmp_path: Path,
+        torch_st_stubs: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """When the filter rejects >70% of (gold, neg) pairs, log a
+        warning so users can diagnose a starved training set before
+        the eval gate catches it."""
+        from vstash.retrain_batch import generate_labeled_triples_batched
+
+        store, _qtext, queries, path_to_text = self._margin_fixture(
+            tmp_path, torch_st_stubs, "mf_warn"
+        )
+        self._install_rrf_stub(monkeypatch, store, path_to_text)
+        try:
+            with caplog.at_level("WARNING", logger="vstash.retrain_batch"):
+                generate_labeled_triples_batched(
+                    store,
+                    "dummy",
+                    labeled_queries=queries,
+                    # Impossible band; keeps nothing.
+                    margin_min=2.0,
+                    margin_max=3.0,
+                )
+        finally:
+            store.close()
+
+        assert any(
+            "kept only" in rec.getMessage() and "starve" in rec.getMessage()
+            for rec in caplog.records
+        ), "expected aggressive-filter warning"
 
 
 class TestRetrainMultiLabeledQueries:
