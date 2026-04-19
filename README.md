@@ -195,7 +195,7 @@ Adaptive RRF, self-supervised embedding refinement, a negative result on post-RR
 | Experiment | Key Result | Command |
 |---|---|---|
 | [BEIR Benchmark](experiments/beir_benchmark.py) | Beats ColBERTv2 on 4/5 BEIR datasets (SciFact, NFCorpus, SciDocs, FiQA) | `python -m experiments.beir_benchmark --no-chroma` |
-| [Retrain (eval-gated)](vstash/retrain.py) | Fine-tune your embedding model on your own corpus, refuses regressions | `vstash retrain --help` |
+| [Retrain (eval-gated)](docs/retrain.md) | Fine-tune your embedding model on your own corpus, refuses regressions | `vstash retrain --help` |
 | [Pipeline latency](experiments/vstash_pipeline_ivfpq_bench.py) | Under 60 ms p50 @ 50K, 0.80x with snapvec-ivfpq @ 100K | `python -m experiments.vstash_pipeline_ivfpq_bench --n 100000` |
 | [Relevance Signal](experiments/relevance_signal_beir.py) | F1=0.996 cross-domain | `python -m experiments.relevance_signal_beir` |
 
