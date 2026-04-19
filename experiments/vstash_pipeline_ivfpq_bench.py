@@ -97,8 +97,24 @@ def build_corpus(target_n: int) -> tuple[list[str], list[str], list[list[float]]
         vec_parts.append(pad_vecs[:take])
 
     if len(ids) < target_n:
-        total = len(ids)
-        raise RuntimeError(f"target_n={target_n} too large; SciFact + {_PAD_DATASETS} = {total}")
+        # Run out of real BEIR datasets (total ~99k). For scale-up
+        # benchmarks (N >= 500k / 1M) we pad with synthetic
+        # L2-normalised Gaussian vectors. NDCG is still measurable
+        # because the real SciFact corpus (and its relevant docs)
+        # stays at the front of the list; the synthetic tail acts as
+        # distractor noise the retrieval system has to reject.
+        missing = target_n - len(ids)
+        print(
+            f"    synthetic padding: {missing} random unit-norm vectors "
+            f"(real BEIR corpora exhausted at N={len(ids)})"
+        )
+        rng = np.random.default_rng(seed=0xBEEF)
+        dim = vec_parts[0].shape[1]
+        raw = rng.standard_normal((missing, dim)).astype(np.float32)
+        raw /= np.linalg.norm(raw, axis=1, keepdims=True).clip(min=1e-12)
+        ids.extend(f"synth_{i}" for i in range(missing))
+        texts.extend(f"synthetic distractor document number {i}" for i in range(missing))
+        vec_parts.append(raw)
 
     vecs = np.concatenate(vec_parts, axis=0).tolist()
     return ids, texts, vecs
@@ -111,7 +127,7 @@ def ingest(
     vecs: list[list[float]],
     vector_backend: str,
     dim: int,
-) -> None:
+) -> float:
     """Ingest into a fresh store using ``vector_backend``.
 
     Per-backend ingest matters because ``snapvec`` flat populates its
@@ -145,8 +161,10 @@ def ingest(
         for doc_id, text, emb in zip(ids, texts, vecs)
     ]
     store.add_documents_batch(docs)
-    print(f"    ingest done in {time.perf_counter() - t0:.1f}s  ({len(docs)} docs)")
+    elapsed = time.perf_counter() - t0
+    print(f"    ingest done in {elapsed:.1f}s  ({len(docs)} docs)")
     store.close()
+    return elapsed
 
 
 def evaluate(
@@ -167,14 +185,13 @@ def evaluate(
     store = VstashStore(db_path, **kwargs)
 
     # fit is idempotent/checked inside; only runs when requested
+    fit_s: float | None = None
     if backend == "snapvec-ivfpq" and not store._snap.fitted:
         print("    running fit_ivfpq ...")
         t0 = time.perf_counter()
         info = store.fit_ivfpq()
-        print(
-            f"    fit done in {time.perf_counter() - t0:.1f}s "
-            f"(nlist={info['nlist']}, n={info['n_indexed']})"
-        )
+        fit_s = time.perf_counter() - t0
+        print(f"    fit done in {fit_s:.1f}s (nlist={info['nlist']}, n={info['n_indexed']})")
 
     ndcgs, latencies = [], []
     for qid, qtext in queries.items():
@@ -197,6 +214,7 @@ def evaluate(
         "latency_p50_ms": round(statistics.median(latencies), 2),
         "latency_p95_ms": round(statistics.quantiles(latencies, n=20, method="inclusive")[-1], 2),
         "latency_mean_ms": round(statistics.mean(latencies), 2),
+        "fit_seconds": round(fit_s, 2) if fit_s is not None else None,
     }
 
 
@@ -264,11 +282,11 @@ def main() -> None:
         for backend in args.backends:
             bdb = str(Path(td) / f"{backend}.db")
             print(f"\n[2/3] ingesting {backend} into {bdb} ...")
-            ingest(bdb, ids, texts, vecs, vector_backend=backend, dim=dim)
+            ingest_s = ingest(bdb, ids, texts, vecs, vector_backend=backend, dim=dim)
             print(f"\n[3/3] evaluating {backend} ...")
-            per_backend[backend] = evaluate(
-                bdb, backend, queries, qrels, {}, model=args.model, dim=dim
-            )
+            stats = evaluate(bdb, backend, queries, qrels, {}, model=args.model, dim=dim)
+            stats["ingest_seconds"] = round(ingest_s, 2)
+            per_backend[backend] = stats
 
     out_path = args.output or f"experiments/results/pipeline_ivfpq_bench_n{args.n}.json"
     out = Path(out_path)
@@ -292,11 +310,14 @@ def main() -> None:
         ("latency p50 (ms)", "latency_p50_ms"),
         ("latency p95 (ms)", "latency_p95_ms"),
         ("latency mean (ms)", "latency_mean_ms"),
+        ("ingest (s)", "ingest_seconds"),
+        ("fit (s)", "fit_seconds"),
     ]
     for label, key in metric_keys:
         row = f"{label:<24}"
         for b in args.backends:
-            row += f"{per_backend[b][key]:>16}"
+            val = per_backend[b].get(key)
+            row += f"{'-' if val is None else val:>16}"
         print(row)
     print(f"\nwrote {out}")
 
