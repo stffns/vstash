@@ -16,6 +16,7 @@ from vstash.retrain import (
     EvalMetrics,
     _ndcg_at_k,
     _ndcg_from_ranks,
+    _recall_at_k,
     evaluate_model,
     generate_triples,
     qrels_to_eval_queries,
@@ -499,6 +500,57 @@ class TestNdcgFromRanks:
         perfect_at_k = _ndcg_from_ranks(list(range(1, 11)), num_relevant=20, k=10)
         assert perfect_at_k == pytest.approx(1.0)
 
+    def test_k_3_ignores_deeper_hits(self) -> None:
+        # Hit at rank 5 is ignored when k=3; rank 1 carries alone.
+        # DCG = 1/log2(2) = 1.0; IDCG = same (1 relevant, 1 slot useful).
+        assert _ndcg_from_ranks([1, 5], num_relevant=1, k=3) == pytest.approx(1.0)
+        # Only a rank-5 hit with k=3 yields zero.
+        assert _ndcg_from_ranks([5], num_relevant=1, k=3) == 0.0
+
+
+class TestRecallAtK:
+    """Recall@k is a per-query ``hits / num_relevant`` in [0, 1]."""
+
+    def test_all_relevant_found_in_topk_is_one(self) -> None:
+        assert _recall_at_k([3, 17, 42], num_relevant=3, k=100) == pytest.approx(1.0)
+
+    def test_partial_recall(self) -> None:
+        # 2 of 4 relevant docs land in top-100.
+        assert _recall_at_k([10, 90], num_relevant=4, k=100) == pytest.approx(0.5)
+
+    def test_hits_beyond_k_are_ignored(self) -> None:
+        # Rank 150 is past k=100 and must not count.
+        assert _recall_at_k([5, 150], num_relevant=2, k=100) == pytest.approx(0.5)
+
+    def test_zero_relevant_is_zero(self) -> None:
+        assert _recall_at_k([], num_relevant=0, k=100) == 0.0
+
+    def test_no_hits_is_zero(self) -> None:
+        assert _recall_at_k([], num_relevant=5, k=100) == 0.0
+
+
+class TestEvalMetricsShape:
+    """EvalMetrics surfaces NDCG@3 and Recall@100 on as_dict()."""
+
+    def test_new_fields_default_to_zero_when_unset(self) -> None:
+        # Preserves existing 4-arg positional construction.
+        m = EvalMetrics(0.5, 0.4, 0.6, 10)
+        assert m.ndcg_at_3 == 0.0
+        assert m.recall_at_100 == 0.0
+
+    def test_as_dict_includes_new_fields(self) -> None:
+        m = EvalMetrics(
+            ndcg_at_10=0.7,
+            mrr=0.6,
+            hit_at_10=0.8,
+            n_queries=20,
+            ndcg_at_3=0.55,
+            recall_at_100=0.92,
+        )
+        d = m.as_dict()
+        assert d["ndcg_at_3"] == pytest.approx(0.55)
+        assert d["recall_at_100"] == pytest.approx(0.92)
+
 
 class TestQrelsToEvalQueries:
     """BEIR-style qrels must convert cleanly to the eval_queries format."""
@@ -780,6 +832,39 @@ class TestEvaluateModel:
         assert metrics.n_queries == 1
         assert metrics.ndcg_at_10 == pytest.approx(1.0)
         assert metrics.hit_at_10 == pytest.approx(1.0)
+
+    def test_perfect_retrieval_populates_ndcg3_and_recall100(
+        self, populated_store: VstashStore
+    ) -> None:
+        """With every relevant doc at rank 1, NDCG@3 and Recall@100 are 1.0."""
+        dim = populated_store.embedding_dim
+        rows = populated_store._conn.execute(
+            "SELECT c.text, d.path FROM chunks c JOIN documents d ON d.id = c.doc_id"
+        ).fetchall()
+        paths = sorted({r["path"] for r in rows})
+        path_vec: dict[str, list[float]] = {}
+        for i, p in enumerate(paths):
+            v = [0.0] * dim
+            v[i] = 1.0
+            path_vec[p] = v
+        mapping = {r["text"][:60]: path_vec[r["path"]] for r in rows}
+        eval_queries = [{"query": r["text"][:200], "relevant_path": r["path"]} for r in rows]
+
+        fake_model = _install_fake_st_model(dim, mapping)
+        with patch("vstash.retrain._load_sentence_transformer", return_value=fake_model):
+            metrics = evaluate_model(
+                populated_store,
+                model_name_or_path="fake",
+                eval_queries=eval_queries,
+                noise_sample_size=0,
+            )
+
+        assert metrics.ndcg_at_3 == pytest.approx(1.0)
+        assert metrics.recall_at_100 == pytest.approx(1.0)
+        # Regression guard: the new fields must round-trip through as_dict.
+        d = metrics.as_dict()
+        assert "ndcg_at_3" in d
+        assert "recall_at_100" in d
 
     def test_accepts_legacy_relevant_path_field(self, populated_store: VstashStore) -> None:
         """Queries with the legacy 'relevant_path' (singular) key still work."""

@@ -37,6 +37,8 @@ logger = logging.getLogger(__name__)
 
 TOP_K = 10
 _EVAL_TOP_K = 10
+_EVAL_NDCG_SHALLOW_K = 3
+_EVAL_RECALL_K = 100
 _EVAL_MAX_QUERIES = 200
 _EVAL_MIN_QUERIES = 20
 _EVAL_NOISE_DEFAULT = 1000
@@ -434,12 +436,23 @@ def _promote_candidate(candidate_path: Path, final_path: Path) -> None:
 
 @dataclass(frozen=True)
 class EvalMetrics:
-    """Honest retrieval metrics on a held-out query set."""
+    """Honest retrieval metrics on a held-out query set.
+
+    ``ndcg_at_10`` stays the headline number driving the retrain gate.
+    ``ndcg_at_3`` tracks strict head quality (first three positions)
+    and is more sensitive to reranker wins. ``recall_at_100`` measures
+    candidate-set health, which is the input a downstream reranker
+    (T2.4) actually sees. The two new fields default to ``0.0`` so
+    existing positional call sites (``EvalMetrics(0.0, 0.0, 0.0, 0)``)
+    keep working unchanged.
+    """
 
     ndcg_at_10: float
     mrr: float
     hit_at_10: float
     n_queries: int
+    ndcg_at_3: float = 0.0
+    recall_at_100: float = 0.0
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -697,6 +710,30 @@ def _ndcg_from_ranks(
     return dcg / idcg
 
 
+def _recall_at_k(
+    ranks_in_topk: list[int],
+    num_relevant: int,
+    k: int = _EVAL_RECALL_K,
+) -> float:
+    """Fraction of relevant docs that appear in the top-k ranked list.
+
+    Args:
+        ranks_in_topk: 1-indexed ranks at which relevant docs appeared
+            in the full ranked list. Ranks beyond ``k`` are ignored.
+        num_relevant: Total number of relevant docs for this query. The
+            denominator so per-query recall stays comparable across
+            queries with different relevant-doc counts.
+        k: Cutoff.
+
+    Returns:
+        Recall@k in [0, 1].
+    """
+    if num_relevant <= 0:
+        return 0.0
+    hits = sum(1 for r in ranks_in_topk if 1 <= r <= k)
+    return hits / num_relevant
+
+
 def _load_sentence_transformer(model_name: str):
     """Import + load a SentenceTransformer. Raises ImportError with install hint."""
     try:
@@ -732,7 +769,7 @@ def evaluate_model(
         tmp_dir: Where to create the temp db. Defaults to system temp.
 
     Returns:
-        EvalMetrics with NDCG@10, MRR, Hit@10.
+        EvalMetrics with NDCG@10, NDCG@3, MRR, Hit@10, Recall@100.
 
     Raises:
         ImportError: If sentence-transformers is not installed.
@@ -827,15 +864,20 @@ def evaluate_model(
             show_progress_bar=False,
         )
 
-        # Score each query via production search (RRF with adaptive weights).
-        ndcgs: list[float] = []
+        # Score each query via production search (RRF with adaptive
+        # weights). Pull top-100 so we can compute Recall@100 in the
+        # same pass; NDCG@10 / NDCG@3 / MRR / Hit@10 truncate internally
+        # via the rank cutoff in their helpers.
+        ndcgs_10: list[float] = []
+        ndcgs_3: list[float] = []
         mrrs: list[float] = []
         hits: list[float] = []
+        recalls_100: list[float] = []
         for q, q_vec in zip(normalized_queries, q_vecs):
             results = eval_store.search(
                 query_embedding=list(map(float, q_vec)),
                 query_text=q["query"],
-                top_k=_EVAL_TOP_K,
+                top_k=_EVAL_RECALL_K,
             )
             relevant_set = set(q["relevant_paths"])
             ranks_hit: list[int] = []
@@ -843,17 +885,25 @@ def evaluate_model(
             for i, r in enumerate(results, start=1):
                 if r.path in relevant_set:
                     ranks_hit.append(i)
-                    if first_rank is None:
+                    if first_rank is None and i <= _EVAL_TOP_K:
                         first_rank = i
-            ndcgs.append(_ndcg_from_ranks(ranks_hit, num_relevant=len(relevant_set)))
+            num_rel = len(relevant_set)
+            ndcgs_10.append(_ndcg_from_ranks(ranks_hit, num_relevant=num_rel, k=_EVAL_TOP_K))
+            ndcgs_3.append(
+                _ndcg_from_ranks(ranks_hit, num_relevant=num_rel, k=_EVAL_NDCG_SHALLOW_K)
+            )
             mrrs.append(1.0 / first_rank if first_rank is not None else 0.0)
             hits.append(1.0 if first_rank is not None else 0.0)
+            recalls_100.append(_recall_at_k(ranks_hit, num_relevant=num_rel, k=_EVAL_RECALL_K))
 
+        n = len(normalized_queries)
         return EvalMetrics(
-            ndcg_at_10=sum(ndcgs) / len(ndcgs),
-            mrr=sum(mrrs) / len(mrrs),
-            hit_at_10=sum(hits) / len(hits),
-            n_queries=len(normalized_queries),
+            ndcg_at_10=sum(ndcgs_10) / n,
+            mrr=sum(mrrs) / n,
+            hit_at_10=sum(hits) / n,
+            n_queries=n,
+            ndcg_at_3=sum(ndcgs_3) / n,
+            recall_at_100=sum(recalls_100) / n,
         )
     finally:
         if eval_store is not None:

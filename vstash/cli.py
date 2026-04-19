@@ -1627,14 +1627,18 @@ def retrain(
     if result.baseline is not None and result.final is not None:
         console.print()
         console.print("[bold]Eval results[/bold]")
-        console.print(f"  Queries:         {result.baseline.n_queries}")
+        console.print(f"  Queries:          {result.baseline.n_queries}")
         console.print(f"  Baseline NDCG@10: {result.baseline.ndcg_at_10:.4f}")
         console.print(f"  Final NDCG@10:    {result.final.ndcg_at_10:.4f}")
         delta = result.delta_ndcg
         color = "green" if delta >= 0 else "red"
         console.print(f"  Delta NDCG@10:    [{color}]{delta:+.4f}[/{color}]")
-        console.print(f"  Baseline MRR:    {result.baseline.mrr:.4f}")
-        console.print(f"  Final MRR:       {result.final.mrr:.4f}")
+        console.print(f"  Baseline NDCG@3:  {result.baseline.ndcg_at_3:.4f}")
+        console.print(f"  Final NDCG@3:     {result.final.ndcg_at_3:.4f}")
+        console.print(f"  Baseline MRR:     {result.baseline.mrr:.4f}")
+        console.print(f"  Final MRR:        {result.final.mrr:.4f}")
+        console.print(f"  Baseline Recall@100: {result.baseline.recall_at_100:.4f}")
+        console.print(f"  Final Recall@100:    {result.final.recall_at_100:.4f}")
 
     if result.gated_out:
         console.print()
@@ -1938,7 +1942,7 @@ def retrain_multi_cmd(
 
     if result.per_dataset_baseline and result.per_dataset_final:
         console.print()
-        console.print("[bold]Eval results (per dataset)[/bold]")
+        console.print("[bold]Eval results (per dataset, NDCG@10)[/bold]")
         for name in result.per_dataset_baseline:
             base = result.per_dataset_baseline[name]
             final = result.per_dataset_final.get(name)
@@ -1957,6 +1961,26 @@ def retrain_multi_cmd(
             f"final={result.macro_final_ndcg:.4f}  "
             f"delta=[{macro_color}]{result.macro_delta_ndcg:+.4f}[/{macro_color}][/bold]"
         )
+
+        console.print()
+        console.print("[bold]Head quality + candidate health (per dataset)[/bold]")
+        console.print(f"  {'dataset':<20} {'NDCG@3':>16}  {'Recall@100':>18}")
+        for name in result.per_dataset_baseline:
+            base = result.per_dataset_baseline[name]
+            final = result.per_dataset_final.get(name)
+            if final is None or base.n_queries == 0:
+                continue
+            d3 = final.ndcg_at_3 - base.ndcg_at_3
+            dr = final.recall_at_100 - base.recall_at_100
+            c3 = "green" if d3 >= 0 else "red"
+            cr = "green" if dr >= 0 else "red"
+            console.print(
+                f"  {name:<20} "
+                f"{base.ndcg_at_3:.4f}->{final.ndcg_at_3:.4f} "
+                f"([{c3}]{d3:+.4f}[/{c3}])  "
+                f"{base.recall_at_100:.4f}->{final.recall_at_100:.4f} "
+                f"([{cr}]{dr:+.4f}[/{cr}])"
+            )
 
     if result.gated_out:
         console.print()
