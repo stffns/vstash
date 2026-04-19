@@ -39,7 +39,7 @@ from experiments.snapvec_backends_bench import embed_dataset
 from vstash.embed import embed_query
 from vstash.store import VstashStore
 
-MODEL = "BAAI/bge-small-en-v1.5"
+MODEL = "BAAI/bge-small-en-v1.5"  # overridable via --model
 DIM = 384
 TOP_K = 10
 
@@ -168,9 +168,25 @@ def evaluate(
     }
 
 
+_ALL_BACKENDS = ("sqlite-vec", "snapvec", "snapvec-ivfpq")
+
+
 def main() -> None:
+    global MODEL
     parser = argparse.ArgumentParser()
     parser.add_argument("--n", type=int, default=50_000, help="target corpus size (chunks)")
+    parser.add_argument(
+        "--model",
+        default=MODEL,
+        help="Embedding model (HF name or local path). Default: BAAI/bge-small-en-v1.5.",
+    )
+    parser.add_argument(
+        "--backends",
+        nargs="+",
+        default=list(_ALL_BACKENDS),
+        choices=list(_ALL_BACKENDS),
+        help="Which vector backends to bench. Default: all three.",
+    )
     parser.add_argument(
         "--output",
         default=None,
@@ -179,7 +195,11 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    print(f"=== vstash full-pipeline benchmark, N={args.n} ===")
+    MODEL = args.model
+    print(
+        f"=== vstash full-pipeline benchmark, N={args.n}, model={args.model}, "
+        f"backends={args.backends} ==="
+    )
     print("\n[1/3] building corpus ...")
     ids, texts, vecs = build_corpus(args.n)
     print(f"    {len(ids)} docs ready")
@@ -190,47 +210,49 @@ def main() -> None:
 
     with tempfile.TemporaryDirectory() as td:
         base_db = str(Path(td) / "base.db")
-        ivfpq_db = str(Path(td) / "ivfpq.db")
-
         print(f"\n[2/3] ingesting into {base_db} ...")
         ingest(base_db, ids, texts, vecs)
 
-        # Copy the ingested DB so both backends see identical chunks
-        shutil.copy2(base_db, ivfpq_db)
-        for ext in ("-wal", "-shm"):
-            src = Path(base_db + ext)
-            if src.exists():
-                shutil.copy2(src, ivfpq_db + ext)
-
+        # Each backend reopens a fresh copy of the ingested store so
+        # backends never see each other's state (snapvec-ivfpq stores
+        # its fitted index inside the db and would otherwise persist
+        # across runs).
         print("\n[3/3] evaluating ...")
-        print("  sqlite-vec baseline ...")
-        base_stats = evaluate(base_db, "sqlite-vec", queries, qrels, {})
-
-        print("  snapvec-ivfpq ...")
-        ivfpq_stats = evaluate(ivfpq_db, "snapvec-ivfpq", queries, qrels, {})
+        per_backend: dict[str, dict] = {}
+        for backend in args.backends:
+            bdb = str(Path(td) / f"{backend}.db")
+            shutil.copy2(base_db, bdb)
+            for ext in ("-wal", "-shm"):
+                src = Path(base_db + ext)
+                if src.exists():
+                    shutil.copy2(src, bdb + ext)
+            print(f"  {backend} ...")
+            per_backend[backend] = evaluate(bdb, backend, queries, qrels, {})
 
     out_path = args.output or f"experiments/results/pipeline_ivfpq_bench_n{args.n}.json"
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
-    results = {"n": args.n, "model": MODEL, "base": base_stats, "ivfpq": ivfpq_stats}
+    results = {"n": args.n, "model": args.model, "backends": per_backend}
     with open(out, "w") as f:
         json.dump(results, f, indent=2)
 
-    print("\n" + "=" * 72)
-    print(f"{'metric':<24}{'sqlite-vec':>16}{'snapvec-ivfpq':>16}{'delta':>14}")
-    print("-" * 72)
-    rows = [
-        ("NDCG@10", base_stats["ndcg_at_10"], ivfpq_stats["ndcg_at_10"]),
-        ("latency p50 (ms)", base_stats["latency_p50_ms"], ivfpq_stats["latency_p50_ms"]),
-        ("latency p95 (ms)", base_stats["latency_p95_ms"], ivfpq_stats["latency_p95_ms"]),
-        ("latency mean (ms)", base_stats["latency_mean_ms"], ivfpq_stats["latency_mean_ms"]),
+    # Printable table. Pick the first backend as the reference
+    # column so the "delta" column stays meaningful for >=2 backends.
+    print("\n" + "=" * (24 + 16 * len(args.backends)))
+    header = f"{'metric':<24}" + "".join(f"{b:>16}" for b in args.backends)
+    print(header)
+    print("-" * len(header))
+    metric_keys = [
+        ("NDCG@10", "ndcg_at_10"),
+        ("latency p50 (ms)", "latency_p50_ms"),
+        ("latency p95 (ms)", "latency_p95_ms"),
+        ("latency mean (ms)", "latency_mean_ms"),
     ]
-    for name, a, b in rows:
-        if "latency" in name and a > 0:
-            delta = f"{b / a:.2f}x"
-        else:
-            delta = f"{b - a:+.4f}"
-        print(f"{name:<24}{a:>16}{b:>16}{delta:>14}")
+    for label, key in metric_keys:
+        row = f"{label:<24}"
+        for b in args.backends:
+            row += f"{per_backend[b][key]:>16}"
+        print(row)
     print(f"\nwrote {out}")
 
 
