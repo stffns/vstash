@@ -20,7 +20,11 @@ trained model then runs on CPU like any other embedding model.
   queries (BEIR qrels etc.).
 
 Published fine-tunes produced with this flow live on Hugging Face
-under the `Stffens` namespace (`bge-small-rrf-v1`, `-v2`, ...).
+under the `Stffens` namespace. **Current recommended model:
+[`Stffens/bge-small-rrf-v3`](https://huggingface.co/Stffens/bge-small-rrf-v3)**
+(2026-04-19, `temperature=0.5 + total_triples=60000`, +5.35% macro
+NDCG@10 on BEIR vs base). Previous releases
+(`bge-small-rrf-v1`, `-v2`) remain valid.
 
 ---
 
@@ -320,8 +324,9 @@ Change these only if you know why. Specifically:
   content or skip this step and use the published
   `Stffens/bge-small-rrf-v2` directly.
 - **Your corpus is already in the published model's training
-  mix** (SciFact, NFCorpus, FiQA as BEIR datasets). No
-  additional gain expected.
+  mix** (SciFact, NFCorpus, FiQA as BEIR datasets). Use
+  `Stffens/bge-small-rrf-v3` directly -- no additional gain
+  expected from retraining.
 - **You rely on strict cross-lingual retrieval.** The MNRL signal
   is based on monolingual disagreement; fine-tuning can hurt
   cross-lingual NDCG. Consider a multilingual model instead
@@ -401,5 +406,7 @@ rather than noise.
   above.
 - `vstash/retrain.py`, `vstash/retrain_batch.py`,
   `vstash/retrain_synth.py` -- source.
-- `Stffens/bge-small-rrf-v2` on Hugging Face -- current published
-  fine-tune.
+- `Stffens/bge-small-rrf-v3` on Hugging Face -- current recommended
+  fine-tune (2026-04-19, H-R9 winning config).
+- `Stffens/bge-small-rrf-v2` on Hugging Face -- previous fine-tune,
+  still valid.

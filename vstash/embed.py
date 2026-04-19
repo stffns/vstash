@@ -39,8 +39,12 @@ KNOWN_DIMS: dict[str, int] = {
     "BAAI/bge-large-en-v1.5": 1024,
     "nomic-ai/nomic-embed-text-v1.5": 768,
     # RRF-tuned: BGE-small fine-tuned with hybrid retrieval disagreement signal.
+    # v3 (2026-04-19): H-R9 winning config, temperature=0.5 + total_triples=60000.
+    # +5.35% macro NDCG@10 on SciFact+NFCorpus+FiQA vs base bge-small.
     # v2: MNRL + explicit hard negatives. +7.4% SciFact, +19.5% NFCorpus vs base.
-    # Loaded via custom HF ONNX backend (not FastEmbed). Use via vstash reindex.
+    # Loaded via SentenceTransformer (v3) / custom HF ONNX backend (v1/v2).
+    # Use via ``vstash reindex --model Stffens/bge-small-rrf-v3``.
+    "Stffens/bge-small-rrf-v3": 384,
     "Stffens/bge-small-rrf-v2": 384,
     "stffens/bge-small-rrf-v1": 384,  # legacy v1
     # Multilingual models (FastEmbed-supported)

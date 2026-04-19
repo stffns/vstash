@@ -25,7 +25,7 @@ vstash search "what's the main argument?"
 | FiQA | 57.6K | **0.377** | 0.356 | 0.236 | **+5.8%** |
 | ArguAna | 8.7K | 0.440 | **0.463** | 0.315 | -5.0% |
 
-*NDCG@10 on [BEIR](https://github.com/beir-cellar/beir). Tuned model: `Stffens/bge-small-rrf-v2` (33M params, 384d). Reproducible via `python -m experiments.beir_benchmark`.*
+*NDCG@10 on [BEIR](https://github.com/beir-cellar/beir). Tuned model: `Stffens/bge-small-rrf-v2` (33M params, 384d). [`Stffens/bge-small-rrf-v3`](https://huggingface.co/Stffens/bge-small-rrf-v3) (2026-04-19 update) retrains with 2x volume and lifts macro NDCG@10 another +5.35%. Reproducible via `python -m experiments.beir_benchmark`.*
 
 ---
 
@@ -147,7 +147,7 @@ vstash reindex --model ~/.vstash/models/retrained
 
 **How it works, in one paragraph.** When you search your corpus, the vector and keyword halves of the pipeline sometimes rank different documents at the top. Those disagreements are a free signal: the document each half picked is probably relevant, the one only one half picked might not be. vstash turns this into training pairs and fine-tunes the embedding model on them. The run is eval-gated: it evaluates the candidate against the base model on a held-out slice of your corpus and refuses to save a model that performs worse.
 
-**Published result**. `Stffens/bge-small-rrf-v2` was trained this way from 76K pairs across three BEIR datasets in 30 min on a T4 GPU. See the [Retrieval Quality](#retrieval-quality) table for the numbers it produces on BEIR.
+**Published results.** [`Stffens/bge-small-rrf-v2`](https://huggingface.co/Stffens/bge-small-rrf-v2) was trained this way from 76K pairs across three BEIR datasets in 30 min on a T4 GPU. [`Stffens/bge-small-rrf-v3`](https://huggingface.co/Stffens/bge-small-rrf-v3) (2026-04-19) retrains with the [H-R9](experiments/retrain_roadmap.md) winning config (`temperature=0.5, total_triples=60000`) for a cleaner +5.35% macro NDCG@10 gain. See the [Retrieval Quality](#retrieval-quality) table and [docs/retrain.md](docs/retrain.md) for the full recipe.
 
 Requires `sentence-transformers`, `torch`, and `accelerate`:
 
