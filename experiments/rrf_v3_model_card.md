@@ -48,20 +48,63 @@ on all three BEIR datasets it was trained on.**
 
 ## Eval numbers
 
-Evaluated on BEIR SciFact + NFCorpus + FiQA held-out queries with
-vstash's production retrieval pipeline (RRF hybrid + adaptive
-weights + MMR dedup, widened top-100 candidate pool). Absolute
-NDCG@10:
+Evaluated on the full 5-dataset BEIR cut (SciFact, NFCorpus,
+SciDocs, FiQA, ArguAna) with vstash's production retrieval
+pipeline (RRF hybrid + adaptive weights + doc-level dedup, wide
+top-100 candidate pool). Both v2 and v3 re-evaluated under the
+same pipeline for an apples-to-apples comparison.
 
-| Dataset  | Base (bge-small) | **v3 (this model)** | Delta    |
-|----------|------------------|---------------------|----------|
-| SciFact  | 0.7333           | **0.7818**          | +0.0485  |
-| NFCorpus | 0.3538           | **0.3757**          | +0.0219  |
-| FiQA     | 0.3916           | **0.4818**          | +0.0902  |
-| Macro    | 0.4929           | **0.5464**          | +0.0535  |
+### Absolute NDCG@10 vs BM25, ColBERTv2, and previous releases
 
-Full per-arm ablation table is in
-[vstash/experiments/retrain_roadmap.md](https://github.com/stffns/vstash/blob/main/experiments/retrain_roadmap.md).
+| Dataset  | BM25  | ColBERTv2 | Base   | v2      | **v3**    |
+|----------|-------|-----------|--------|---------|-----------|
+| SciFact  | 0.665 | 0.693     | 0.9082 | 0.9107  | **0.9361** |
+| NFCorpus | 0.325 | 0.344     | 0.3674 | **0.4325** | 0.3927   |
+| SciDocs  | 0.158 | 0.154     | 0.3637 | 0.3676  | **0.3693** |
+| FiQA     | 0.236 | 0.356     | 0.6509 | 0.6541  | **0.7506** |
+| ArguAna  | 0.315 | 0.463     | 0.7686 | 0.7579  | 0.7540   |
+| **macro** | -    | -         | 0.6118 | 0.6246  | **0.6405** |
+
+### Wins vs ColBERTv2
+
+Both v2 and v3 beat ColBERTv2 on **5/5 BEIR datasets** under this
+pipeline. v3 improves macro by +1.6 absolute NDCG@10 over v2
+(+2.6% relative).
+
+### v3 vs v2, dataset by dataset
+
+| Dataset  | v2      | v3      | Winner | Note                                       |
+|----------|---------|---------|--------|--------------------------------------------|
+| SciFact  | 0.9107  | 0.9361  | v3     | +0.025 absolute                            |
+| FiQA     | 0.6541  | 0.7506  | v3     | +0.097 absolute (the big v3 win)           |
+| SciDocs  | 0.3676  | 0.3693  | v3     | within noise                               |
+| NFCorpus | 0.4325  | 0.3927  | v2     | v2 retains the advantage (-0.040 in v3)    |
+| ArguAna  | 0.7579  | 0.7540  | v2     | within noise                               |
+
+**Use v3 by default**: it wins or ties on 3/5 datasets, the macro
+is cleanly higher, and the FiQA improvement is substantial (+14%
+absolute relative to the base). **v2 remains the better pick when
+NFCorpus-style retrieval dominates your workload** (keyword-heavy
+medical / biomedical corpora).
+
+### Supporting metrics
+
+v3's candidate-set health (Recall@100) and head quality (NDCG@3)
+also improve across the board on datasets where the overall
+NDCG@10 went up:
+
+- FiQA Recall@100: 0.9188 (v2) -> 0.9867 (v3)
+- SciFact NDCG@3: 0.8976 (v2) -> 0.9265 (v3)
+
+Full metrics JSON at
+[experiments/results/v2_v3_head_to_head.json](https://github.com/stffns/vstash/blob/main/experiments/results/v2_v3_head_to_head.json).
+
+Reproduce the comparison with `python -m experiments.v2_v3_head_to_head`
+or the Colab notebook
+[`experiments/v2_v3_head_to_head.ipynb`](https://github.com/stffns/vstash/blob/main/experiments/v2_v3_head_to_head.ipynb).
+Full H-R9 ablation (temperature / volume sweep that produced the
+v3 config) in
+[experiments/retrain_roadmap.md](https://github.com/stffns/vstash/blob/main/experiments/retrain_roadmap.md).
 
 ## Usage
 

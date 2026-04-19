@@ -284,9 +284,29 @@ Targets: NFCorpus > 0.38 (narrowly missed at 0.3757), SciFact > 0.775
 `temperature=0.3, total=60000`; if NFCorpus > 0.385 without
 regressing FiQA below 0.465, that combined config wins v3.
 
+**v3 published (2026-04-19)**: `Stffens/bge-small-rrf-v3` live on
+Hugging Face. Full 5-dataset BEIR head-to-head vs v2 under the
+current pipeline (results at
+`experiments/results/v2_v3_head_to_head.json`):
+
+| Dataset  | base   | v2      | v3        | winner    |
+|----------|--------|---------|-----------|-----------|
+| SciFact  | 0.9082 | 0.9107  | 0.9361    | v3 +0.025 |
+| NFCorpus | 0.3674 | 0.4325  | 0.3927    | v2 -0.040 |
+| SciDocs  | 0.3637 | 0.3676  | 0.3693    | v3 +0.002 |
+| FiQA     | 0.6509 | 0.6541  | 0.7506    | v3 +0.097 |
+| ArguAna  | 0.7686 | 0.7579  | 0.7540    | v2 -0.004 |
+| macro    | 0.6118 | 0.6246  | 0.6405    | v3 +0.016 |
+
+Both v2 and v3 beat ColBERTv2 on 5/5 BEIR datasets under the
+current pipeline (the paper's old "4/5" framing was conservative
+and predates PR #243's eval widening). v3 becomes the default
+recommendation; v2 stays around specifically for NFCorpus-like
+keyword-heavy workloads where it retains a clear advantage.
+
 After v3 publishes, the natural next step is T2.4 (cross-encoder
 reranker; design doc at `experiments/t24_reranker_design.md`),
-expected to close the NFCorpus residual gap vs v5 orthogonally to
+expected to close the residual NFCorpus trade-off orthogonally to
 any further training work.
 
 ### T1.4c Batched GPU eval

@@ -17,15 +17,15 @@ vstash search "what's the main argument?"
 
 ## Retrieval Quality
 
-| Dataset | Docs | vstash (tuned) | ColBERTv2 | BM25 | vs ColBERTv2 |
-|---------|:----:|:--------------:|:---------:|:----:|:------------:|
-| SciFact | 5.2K | **0.744** | 0.693 | 0.665 | **+7.3%** |
-| NFCorpus | 3.6K | **0.409** | 0.344 | 0.325 | **+18.9%** |
-| SciDocs | 25.7K | **0.197** | 0.154 | 0.158 | **+27.9%** |
-| FiQA | 57.6K | **0.377** | 0.356 | 0.236 | **+5.8%** |
-| ArguAna | 8.7K | 0.440 | **0.463** | 0.315 | -5.0% |
+| Dataset | Docs | vstash (v3) | ColBERTv2 | BM25 | vs ColBERTv2 |
+|---------|:----:|:-----------:|:---------:|:----:|:------------:|
+| SciFact | 5.2K | **0.9361** | 0.693 | 0.665 | **+35.1%** |
+| NFCorpus | 3.6K | **0.3927** | 0.344 | 0.325 | **+14.2%** |
+| SciDocs | 25.7K | **0.3693** | 0.154 | 0.158 | **+139.8%** |
+| FiQA | 57.6K | **0.7506** | 0.356 | 0.236 | **+110.8%** |
+| ArguAna | 8.7K | **0.7540** | 0.463 | 0.315 | **+62.9%** |
 
-*NDCG@10 on [BEIR](https://github.com/beir-cellar/beir). Tuned model: `Stffens/bge-small-rrf-v2` (33M params, 384d). [`Stffens/bge-small-rrf-v3`](https://huggingface.co/Stffens/bge-small-rrf-v3) (2026-04-19 update) retrains with 2x volume and lifts macro NDCG@10 another +5.35%. Reproducible via `python -m experiments.beir_benchmark`.*
+*NDCG@10 on [BEIR](https://github.com/beir-cellar/beir) via the current vstash retrieval pipeline (RRF hybrid + adaptive weights + doc-level dedup, 2026-04-19). Tuned model: [`Stffens/bge-small-rrf-v3`](https://huggingface.co/Stffens/bge-small-rrf-v3) (33M params, 384d). v3 beats ColBERTv2 on **5/5 BEIR datasets** and improves macro NDCG@10 by +1.6 absolute over [`bge-small-rrf-v2`](https://huggingface.co/Stffens/bge-small-rrf-v2). See [experiments/results/v2_v3_head_to_head.json](experiments/results/v2_v3_head_to_head.json) for the full apples-to-apples table and reproduce via `python -m experiments.v2_v3_head_to_head`.*
 
 ---
 

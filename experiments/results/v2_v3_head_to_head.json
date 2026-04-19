@@ -1,0 +1,23 @@
+{
+  "base": {
+    "scifact":  {"ndcg_at_10": 0.9082, "ndcg_at_3": 0.8816, "recall_at_100": 1.0000, "mrr": 0.8857, "hit_at_10": 0.9833, "n_queries": 300},
+    "nfcorpus": {"ndcg_at_10": 0.3674, "ndcg_at_3": 0.4404, "recall_at_100": 0.3235, "mrr": 0.5711, "hit_at_10": 0.7307, "n_queries": 323},
+    "scidocs":  {"ndcg_at_10": 0.3637, "ndcg_at_3": 0.3689, "recall_at_100": 0.6606, "mrr": 0.5551, "hit_at_10": 0.8060, "n_queries": 1000},
+    "fiqa":     {"ndcg_at_10": 0.6509, "ndcg_at_3": 0.6060, "recall_at_100": 0.9202, "mrr": 0.7264, "hit_at_10": 0.8827, "n_queries": 648},
+    "arguana":  {"ndcg_at_10": 0.7686, "ndcg_at_3": 0.7184, "recall_at_100": 0.9957, "mrr": 0.7048, "hit_at_10": 0.9630, "n_queries": 1406}
+  },
+  "v2": {
+    "scifact":  {"ndcg_at_10": 0.9107, "ndcg_at_3": 0.8976, "recall_at_100": 1.0000, "mrr": 0.8915, "hit_at_10": 0.9733, "n_queries": 300},
+    "nfcorpus": {"ndcg_at_10": 0.4325, "ndcg_at_3": 0.5014, "recall_at_100": 0.4459, "mrr": 0.6379, "hit_at_10": 0.7678, "n_queries": 323},
+    "scidocs":  {"ndcg_at_10": 0.3676, "ndcg_at_3": 0.3692, "recall_at_100": 0.6760, "mrr": 0.5582, "hit_at_10": 0.7930, "n_queries": 1000},
+    "fiqa":     {"ndcg_at_10": 0.6541, "ndcg_at_3": 0.6061, "recall_at_100": 0.9188, "mrr": 0.7322, "hit_at_10": 0.8843, "n_queries": 648},
+    "arguana":  {"ndcg_at_10": 0.7579, "ndcg_at_3": 0.7010, "recall_at_100": 0.9943, "mrr": 0.6896, "hit_at_10": 0.9673, "n_queries": 1406}
+  },
+  "v3": {
+    "scifact":  {"ndcg_at_10": 0.9361, "ndcg_at_3": 0.9265, "recall_at_100": 1.0000, "mrr": 0.9224, "hit_at_10": 0.9833, "n_queries": 300},
+    "nfcorpus": {"ndcg_at_10": 0.3927, "ndcg_at_3": 0.4614, "recall_at_100": 0.3643, "mrr": 0.5933, "hit_at_10": 0.7307, "n_queries": 323},
+    "scidocs":  {"ndcg_at_10": 0.3693, "ndcg_at_3": 0.3681, "recall_at_100": 0.6770, "mrr": 0.5545, "hit_at_10": 0.8060, "n_queries": 1000},
+    "fiqa":     {"ndcg_at_10": 0.7506, "ndcg_at_3": 0.6893, "recall_at_100": 0.9867, "mrr": 0.8051, "hit_at_10": 0.9429, "n_queries": 648},
+    "arguana":  {"ndcg_at_10": 0.7540, "ndcg_at_3": 0.6942, "recall_at_100": 0.9943, "mrr": 0.6848, "hit_at_10": 0.9673, "n_queries": 1406}
+  }
+}
