@@ -53,7 +53,12 @@ from vstash.store import VstashStore
 DEFAULT_MODEL = "Stffens/bge-small-rrf-v3"
 DEFAULT_DATASETS = ("scifact", "nfcorpus", "scidocs", "fiqa", "arguana")
 DEFAULT_BACKENDS = ("sqlite-vec", "snapvec", "snapvec-ivfpq")
+# Pull top-100 per query so NDCG@10 / Recall@10 / Recall@100 can all
+# come from a single ranked list (Recall@100 is the "candidate set
+# health" metric a downstream reranker would depend on).
+RANK_K = 100
 TOP_K = 10
+SHALLOW_K = 3
 
 # ColBERTv2 + BM25 reference numbers, pinned from the paper's
 # Section 7.3 table. Match the README's Retrieval Quality framing.
@@ -129,6 +134,19 @@ def _ndcg_at_k(ranked_ids: list[str], qrel: dict[str, int], k: int) -> float:
     return _dcg(gains, k) / idcg if idcg > 0 else 0.0
 
 
+def _recall_at_k(ranked_ids: list[str], qrel: dict[str, int], k: int) -> float:
+    """Fraction of relevant docs that land in the top-k.
+
+    Clamped to 1.0 (never > 1 even when the ranked list has the same
+    relevant doc under multiple rowids, which cannot happen here but
+    is defensive)."""
+    relevant_total = sum(1 for rel in qrel.values() if rel > 0)
+    if relevant_total == 0:
+        return 0.0
+    hit = sum(1 for d in ranked_ids[:k] if qrel.get(d, 0) > 0)
+    return min(1.0, hit / relevant_total)
+
+
 def _evaluate_backend(
     dataset: str,
     backend: str,
@@ -174,17 +192,24 @@ def _evaluate_backend(
         store.fit_ivfpq()
         fit_s = time.perf_counter() - t0
 
-    ndcgs: list[float] = []
+    ndcgs_10: list[float] = []
+    ndcgs_3: list[float] = []
+    recalls_10: list[float] = []
+    recalls_100: list[float] = []
     latencies: list[float] = []
     for qid, qtext in queries.items():
         if qid not in qrels:
             continue
         q_vec = embed_query(qtext, model)
         t0 = time.perf_counter()
-        results = store.search(q_vec, qtext, top_k=TOP_K)
+        # Pull RANK_K so all four metrics come from one ranked list.
+        results = store.search(q_vec, qtext, top_k=RANK_K)
         latencies.append((time.perf_counter() - t0) * 1000)
         ranked = [Path(r.path).name for r in results]
-        ndcgs.append(_ndcg_at_k(ranked, qrels[qid], TOP_K))
+        ndcgs_10.append(_ndcg_at_k(ranked, qrels[qid], TOP_K))
+        ndcgs_3.append(_ndcg_at_k(ranked, qrels[qid], SHALLOW_K))
+        recalls_10.append(_recall_at_k(ranked, qrels[qid], TOP_K))
+        recalls_100.append(_recall_at_k(ranked, qrels[qid], RANK_K))
 
     store.close()
     for suffix in ("", "-wal", "-shm", ".snpv"):
@@ -195,9 +220,15 @@ def _evaluate_backend(
             except OSError:
                 pass
 
+    def _avg(xs: list[float]) -> float:
+        return round(statistics.mean(xs), 4) if xs else 0.0
+
     return {
         "n_queries": len(latencies),
-        "ndcg_at_10": round(statistics.mean(ndcgs), 4) if ndcgs else 0.0,
+        "ndcg_at_10": _avg(ndcgs_10),
+        "ndcg_at_3": _avg(ndcgs_3),
+        "recall_at_10": _avg(recalls_10),
+        "recall_at_100": _avg(recalls_100),
         "latency_p50_ms": round(statistics.median(latencies), 2) if latencies else 0.0,
         "latency_p95_ms": round(
             statistics.quantiles(latencies, n=20, method="inclusive")[-1]
@@ -249,9 +280,23 @@ def _print_table(results: dict, backends: list[str], datasets: list[str]) -> Non
         total = len(won) + len(lost)
         print(f"| {b} | {len(won)} / {total} | {', '.join(won) or '-'} |")
 
-    print("\n### Latency + timings per (backend, dataset)\n")
-    print("| Dataset | Backend | NDCG@10 | p50 ms | mean ms | ingest s | fit s |")
-    print("|---|---|---|---|---|---|---|")
+    print("\n### Recall@100 per (backend, dataset) -- candidate-set health\n")
+    header_cols = ["Dataset"] + backends
+    print("| " + " | ".join(header_cols) + " |")
+    print("|" + "|".join(["---"] * len(header_cols)) + "|")
+    for ds in datasets:
+        cells = [ds]
+        for b in backends:
+            v = results.get(b, {}).get(ds, {}).get("recall_at_100")
+            cells.append(f"{v:.4f}" if v is not None else "-")
+        print("| " + " | ".join(cells) + " |")
+
+    print("\n### Full metrics per (backend, dataset)\n")
+    print(
+        "| Dataset | Backend | NDCG@10 | NDCG@3 | Recall@10 | Recall@100 | "
+        "p50 ms | mean ms | ingest s | fit s |"
+    )
+    print("|---|---|---|---|---|---|---|---|---|---|")
     for ds in datasets:
         for b in backends:
             r = results.get(b, {}).get(ds, {})
@@ -260,6 +305,9 @@ def _print_table(results: dict, backends: list[str], datasets: list[str]) -> Non
             print(
                 f"| {ds} | {b} | "
                 f"{r.get('ndcg_at_10', 0):.4f} | "
+                f"{r.get('ndcg_at_3', 0):.4f} | "
+                f"{r.get('recall_at_10', 0):.4f} | "
+                f"{r.get('recall_at_100', 0):.4f} | "
                 f"{r.get('latency_p50_ms', 0):.2f} | "
                 f"{r.get('latency_mean_ms', 0):.2f} | "
                 f"{r.get('ingest_seconds', 0):.2f} | "
