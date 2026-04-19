@@ -1980,7 +1980,14 @@ def retrain_multi_cmd(
 
         console.print()
         console.print("[bold]Head quality + candidate health (per dataset)[/bold]")
-        console.print(f"  {'dataset':<20} {'NDCG@3':>16}  {'Recall@100':>18}")
+        head_table = Table(show_header=True, header_style="bold cyan", border_style="dim")
+        head_table.add_column("dataset", style="magenta")
+        head_table.add_column("NDCG@3 base", justify="right")
+        head_table.add_column("NDCG@3 final", justify="right")
+        head_table.add_column("delta", justify="right")
+        head_table.add_column("Recall@100 base", justify="right")
+        head_table.add_column("Recall@100 final", justify="right")
+        head_table.add_column("delta", justify="right")
         for name in result.per_dataset_baseline:
             base = result.per_dataset_baseline[name]
             final = result.per_dataset_final.get(name)
@@ -1990,13 +1997,16 @@ def retrain_multi_cmd(
             dr = final.recall_at_100 - base.recall_at_100
             c3 = "green" if d3 >= 0 else "red"
             cr = "green" if dr >= 0 else "red"
-            console.print(
-                f"  {name:<20} "
-                f"{base.ndcg_at_3:.4f}->{final.ndcg_at_3:.4f} "
-                f"([{c3}]{d3:+.4f}[/{c3}])  "
-                f"{base.recall_at_100:.4f}->{final.recall_at_100:.4f} "
-                f"([{cr}]{dr:+.4f}[/{cr}])"
+            head_table.add_row(
+                name,
+                f"{base.ndcg_at_3:.4f}",
+                f"{final.ndcg_at_3:.4f}",
+                f"[{c3}]{d3:+.4f}[/{c3}]",
+                f"{base.recall_at_100:.4f}",
+                f"{final.recall_at_100:.4f}",
+                f"[{cr}]{dr:+.4f}[/{cr}]",
             )
+        console.print(head_table)
 
     if result.gated_out:
         console.print()

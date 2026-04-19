@@ -927,6 +927,57 @@ class TestEvaluateModel:
         assert metrics.ndcg_at_10 == pytest.approx(1.0)
         assert metrics.hit_at_10 == pytest.approx(1.0)
 
+    def test_multi_chunk_relevant_doc_does_not_inflate_ndcg(
+        self, populated_store: VstashStore
+    ) -> None:
+        """A relevant doc with multiple chunks in top-k must be counted
+        once: ranks are document-level, not chunk-level. Without the
+        dedup, NDCG of a perfect retrieval could exceed 1.0 when a
+        single relevant doc surfaces 2+ chunks.
+        """
+        dim = populated_store.embedding_dim
+        rows = populated_store._conn.execute(
+            "SELECT c.text, d.path FROM chunks c JOIN documents d ON d.id = c.doc_id"
+        ).fetchall()
+        paths = sorted({r["path"] for r in rows})
+        assert len(paths) >= 2, "fixture must have >= 2 paths for this test"
+        # All chunks of a doc get that doc's basis vector. The query
+        # vector equals the target doc's basis so every chunk of the
+        # relevant doc surfaces before any other doc.
+        path_vec: dict[str, list[float]] = {}
+        for i, p in enumerate(paths):
+            v = [0.0] * dim
+            v[i] = 1.0
+            path_vec[p] = v
+        target_path = next(p for p in paths if sum(1 for r in rows if r["path"] == p) >= 2)
+        mapping = {r["text"][:60]: path_vec[r["path"]] for r in rows}
+        mapping["MULTI_CHUNK_QUERY"] = path_vec[target_path]
+        eval_queries = [
+            {
+                "query": "MULTI_CHUNK_QUERY",
+                "relevant_paths": [target_path],
+            }
+        ]
+
+        fake_model = _install_fake_st_model(dim, mapping)
+        with patch("vstash.retrain._load_sentence_transformer", return_value=fake_model):
+            metrics = evaluate_model(
+                populated_store,
+                model_name_or_path="fake",
+                eval_queries=eval_queries,
+                noise_sample_size=0,
+            )
+
+        # Exactly one relevant doc, retrieved at doc-rank 1 -> NDCG@10 = 1.0.
+        # Pre-fix: NDCG would be > 1.0 because multiple ranks from the same
+        # doc get counted against IDCG=1.0.
+        assert metrics.ndcg_at_10 <= 1.0
+        assert metrics.ndcg_at_10 == pytest.approx(1.0)
+        assert metrics.ndcg_at_3 <= 1.0
+        assert metrics.recall_at_100 <= 1.0
+        assert metrics.recall_at_100 == pytest.approx(1.0)
+        assert metrics.hit_at_10 == pytest.approx(1.0)
+
     def test_perfect_retrieval_populates_ndcg3_and_recall100(
         self, populated_store: VstashStore
     ) -> None:

@@ -768,7 +768,12 @@ def _recall_at_k(
     """
     if num_relevant <= 0:
         return 0.0
-    hits = sum(1 for r in ranks_in_topk if 1 <= r <= k)
+    # Clamp by ``num_relevant`` so callers that pass duplicate ranks
+    # (e.g., chunk-level lists where the same doc appears twice) cannot
+    # push recall above 1.0. The doc-level callers in this module
+    # already dedupe, but _recall_at_k is a public helper and defensive
+    # clamping is cheap.
+    hits = min(num_relevant, sum(1 for r in ranks_in_topk if 1 <= r <= k))
     return hits / num_relevant
 
 
@@ -906,6 +911,16 @@ def evaluate_model(
         # weights). Pull top-100 so we can compute Recall@100 in the
         # same pass; NDCG@10 / NDCG@3 / MRR / Hit@10 truncate internally
         # via the rank cutoff in their helpers.
+        #
+        # NDCG and Recall are *document-level* metrics, but
+        # ``eval_store.search`` returns chunk-level SearchResults. Long
+        # relevant documents can legitimately produce multiple chunks in
+        # the top-k (MMR penalises intra-doc duplication but does not
+        # guarantee one-per-path). Counting the same relevant doc
+        # twice would inflate NDCG above 1.0 and break Recall
+        # calibration. Collapse the ranking to unique paths in
+        # first-occurrence order before scoring, matching the
+        # doc-level dedup in ``evaluate_model_batched``.
         ndcgs_10: list[float] = []
         ndcgs_3: list[float] = []
         mrrs: list[float] = []
@@ -918,13 +933,22 @@ def evaluate_model(
                 top_k=_EVAL_RECALL_K,
             )
             relevant_set = set(q["relevant_paths"])
+
+            unique_paths: list[str] = []
+            seen_paths: set[str] = set()
+            for r in results:
+                if r.path in seen_paths:
+                    continue
+                seen_paths.add(r.path)
+                unique_paths.append(r.path)
+
             ranks_hit: list[int] = []
             first_rank: int | None = None
-            for i, r in enumerate(results, start=1):
-                if r.path in relevant_set:
-                    ranks_hit.append(i)
-                    if first_rank is None and i <= _EVAL_TOP_K:
-                        first_rank = i
+            for rank_i, path in enumerate(unique_paths, start=1):
+                if path in relevant_set:
+                    ranks_hit.append(rank_i)
+                    if first_rank is None and rank_i <= _EVAL_TOP_K:
+                        first_rank = rank_i
             num_rel = len(relevant_set)
             ndcgs_10.append(_ndcg_from_ranks(ranks_hit, num_relevant=num_rel, k=_EVAL_TOP_K))
             ndcgs_3.append(
