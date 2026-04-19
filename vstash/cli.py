@@ -1812,20 +1812,26 @@ def retrain_multi_cmd(
 ) -> None:
     """Fine-tune the embedding model over multiple corpora with balanced sampling.
 
-    Wrapper around ``vstash.retrain.retrain_multi``. Give it one or more
-    vstash stores (each one a separate corpus) plus the current
-    profile's store; retrain-multi computes a per-dataset triple budget,
-    generates (query, positive, hard_neg) triples from each corpus,
-    shuffles them globally, and fine-tunes a single embedding model.
+    Two common use cases:
+
+    1. Multi-domain personal retrieval: you have separate vstash stores
+       for papers, blog posts, code, etc., and you want one tuned
+       embedding model that works across all of them. Temperature
+       sampling keeps the largest corpus from swamping the training
+       signal.
+    2. Paper / benchmark reproduction: point --store at BEIR datasets
+       with labelled qrels to replicate the v5 recipe behind
+       ``Stffens/bge-small-rrf-v2``.
 
     Per-dataset NDCG@10 is reported before and after. The macro-average
     gate (or --per-dataset-gate) prevents a regressed model from being
     promoted over your current one.
 
-    Example:
+    Example (multi-domain):
         vstash retrain-multi \\
-            --store nfcorpus=/data/vstash-nfcorpus.db \\
-            --store fiqa=/data/vstash-fiqa.db \\
+            --store papers=/data/vstash-papers.db \\
+            --store code=/data/vstash-code.db \\
+            --store notes=/data/vstash-notes.db \\
             --sampling-strategy temperature \\
             --sampling-temperature 0.5 \\
             --total-triples 30000 \\

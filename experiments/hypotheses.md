@@ -190,6 +190,41 @@ still passing.
 
 ---
 
+### H-R8. Expose labeled queries + margin filter on single-corpus `retrain`
+
+**Statement.** Today the two most powerful levers of the retrain stack
+(labeled-query training pairs from real qrels, plus the H-R3 margin
+filter) live only on `retrain-multi`. That forces any single-corpus
+user who happens to have qrels (e.g., a team that built an eval set
+over their private corpus) to wrap their one store in a trivial
+one-element dict just to hit the batched labeled miner. API-shaped
+gap surfaced during the 2026-04-19 framing review.
+
+**Design.** Add `training_queries: list[dict] | None = None`,
+`margin_min`, `margin_max`, `bulk_mine`, `bulk_mine_device` to
+`vstash.retrain.retrain(...)`. When `training_queries` is set, route
+through `generate_labeled_triples_batched` (same path
+`retrain_multi` uses with `training_queries_by_dataset`). CLI
+exposes `--training-queries path/to/qrels.jsonl`,
+`--margin-min`, `--margin-max`, `--bulk-mine`.
+
+**Test.** Re-run the corpus test suite; add an end-to-end unit test
+that feeds a 20-query labeled set into `retrain()` and asserts the
+labeled miner was called. Optional Colab: convert one BEIR dataset
+to a single-store retrain with labeled queries, confirm the delta
+matches the equivalent single-dataset `retrain-multi` call within
+noise.
+
+**Files.** `vstash/retrain.py` (retrain signature), `vstash/cli.py`
+(retrain command), `tests/test_retrain.py`.
+
+**Effort.** 1 day.
+
+**Risk.** Low. Purely additive to an existing entrypoint; defaults
+preserve the current single-corpus flow byte-for-byte.
+
+---
+
 ## Store / search
 
 ### H-S1. Persist IDF cache to a `store_idf` table

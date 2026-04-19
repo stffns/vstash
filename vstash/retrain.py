@@ -1442,11 +1442,22 @@ def retrain_multi(
 ) -> MultiRetrainResult:
     """Fine-tune an embedding model over N corpora with balanced sampling.
 
-    Extracts the v5-notebook training flow that produced
-    ``Stffens/bge-small-rrf-v2`` into a first-class API: compute a
-    per-dataset triple budget via ``compute_triple_budget``, generate
-    triples from each store with shared disagreement mining, globally
-    shuffle, train one model on the union, and evaluate per-dataset.
+    Two common use cases:
+
+    1. **Multi-domain personal retrieval.** You ingested papers, blog
+       posts, and code into separate vstash stores; temperature
+       sampling keeps the largest corpus from dominating the gradient
+       budget. Balanced per-dataset eval + macro-average gate
+       prevents a fine-tune that regresses any one domain.
+    2. **Paper / benchmark reproduction.** Point ``stores`` at BEIR
+       datasets, pass labelled ``training_queries_by_dataset``, and
+       the flow reproduces the v5-notebook recipe that produced
+       ``Stffens/bge-small-rrf-v2``.
+
+    Under the hood: compute a per-dataset triple budget via
+    ``compute_triple_budget``, generate triples from each store with
+    shared disagreement mining, globally shuffle, train one model on
+    the union, and evaluate per-dataset.
 
     Args:
         stores: Mapping ``{alias: VstashStore}`` or a list (aliases
