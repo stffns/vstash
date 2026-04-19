@@ -22,9 +22,56 @@ trained model then runs on CPU like any other embedding model.
 Published fine-tunes produced with this flow live on Hugging Face
 under the `Stffens` namespace. **Current recommended model:
 [`Stffens/bge-small-rrf-v3`](https://huggingface.co/Stffens/bge-small-rrf-v3)**
-(2026-04-19, `temperature=0.5 + total_triples=60000`, +5.35% macro
-NDCG@10 on BEIR vs base). Previous releases
-(`bge-small-rrf-v1`, `-v2`) remain valid.
+(2026-04-19, `temperature=0.5 + total_triples=60000`). Previous
+releases (`bge-small-rrf-v1`, `-v2`) remain valid.
+
+---
+
+## Track record
+
+Retrain is not a one-off experiment. Each release is gated by an
+honest NDCG@10 eval, validated on BEIR, and improves on the prior
+version under apples-to-apples evaluation:
+
+| Model       | Training recipe                                               | 5-dataset BEIR macro NDCG@10 | vs ColBERTv2 | Key signal                                    |
+|-------------|---------------------------------------------------------------|------------------------------|--------------|-----------------------------------------------|
+| base        | `BAAI/bge-small-en-v1.5` (no fine-tune)                       | 0.6118                       | 5/5          | reference                                     |
+| rrf-v1      | Chunk-prefix disagreement, 1 hard neg per query               | (superseded)                 | 5/5          | first validation of the self-supervised idea  |
+| rrf-v2      | Labeled queries + 76k triples, notebook + ad-hoc scripts      | 0.6246 (+0.013 vs base)       | 5/5          | first "paper-grade" result, still the NFCorpus specialist |
+| **rrf-v3**  | `retrain-multi` CLI, 60k target, `temperature=0.5`, eval gate | **0.6405** (+0.029 vs base)  | **5/5**      | +0.016 macro over v2, +0.097 FiQA, +0.025 SciFact |
+
+Each jump rests on validated infrastructure that also landed in the
+codebase, not just the numbers:
+
+- **v1 -> v2**: self-supervised pipeline moved from one-off scripts
+  to `retrain`/`retrain-multi` entrypoints. Multi-dataset training
+  (SciFact + NFCorpus + FiQA) and labeled-query mining arrived as
+  a first-class API.
+- **v2 -> v3**: the H-R9 ablation (temperature sweep + volume
+  sweep) empirically chose the new defaults. H-R7 added seeded
+  determinism so any re-run is reproducible; H-R5 added NDCG@3 and
+  Recall@100 so regressions in head-quality and candidate-set
+  health are visible before the user hits them. The published
+  model ships under the same 33M / 384d footprint as v2.
+
+Not every idea wins. Hypothesis H-R3 (hard-negative margin filter)
+regressed macro NDCG@10 by -2.49pp in the 2026-04-19 arm_a
+ablation: the infra was built, the eval gate caught the regression,
+the branch was closed without merging. The retrain pipeline's job
+is to refuse bad models, and it does.
+
+Next steps that make this feature even stronger are queued:
+
+- **T2.4 cross-encoder reranker** (design doc in
+  `experiments/t24_reranker_design.md`): +3-8 NDCG@10 orthogonal
+  to any embedding fine-tune. Expected to close v3's residual
+  NFCorpus gap vs v2 and push every dataset further.
+- **H-R8**: expose labeled queries + margin filter on single-corpus
+  `retrain` so users with qrels over their own private store do
+  not need to wrap their store in a dict.
+- **T2.5 GISTEmbedLoss**: teacher-guided hard-negative filtering;
+  drop-in replacement for MNRL where the assumption finally
+  applies.
 
 ---
 

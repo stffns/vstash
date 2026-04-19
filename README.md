@@ -5,7 +5,7 @@
 [![python](https://img.shields.io/badge/python-3.10+-blue)]()
 [![tests](https://img.shields.io/badge/tests-900+_passing-brightgreen)]()
 
-**Local document memory with hybrid retrieval.** Single SQLite file. Zero cloud dependencies for search. Beats ColBERTv2 on SciFact, NFCorpus, SciDocs, and FiQA ([BEIR](https://github.com/beir-cellar/beir), 4 of 5 datasets). Under 60 ms p50 at 50K chunks.
+**Local document memory with hybrid retrieval.** Single SQLite file. Zero cloud dependencies for search. Beats ColBERTv2 on **5/5 [BEIR](https://github.com/beir-cellar/beir) datasets** with the tuned [`bge-small-rrf-v3`](https://huggingface.co/Stffens/bge-small-rrf-v3) model. Under 60 ms p50 at 50K chunks on an Apple Silicon laptop.
 
 ```bash
 pip install vstash
@@ -17,15 +17,15 @@ vstash search "what's the main argument?"
 
 ## Retrieval Quality
 
-| Dataset | Docs | vstash (v3) | ColBERTv2 | BM25 | vs ColBERTv2 |
-|---------|:----:|:-----------:|:---------:|:----:|:------------:|
-| SciFact | 5.2K | **0.9361** | 0.693 | 0.665 | **+35.1%** |
-| NFCorpus | 3.6K | **0.3927** | 0.344 | 0.325 | **+14.2%** |
-| SciDocs | 25.7K | **0.3693** | 0.154 | 0.158 | **+139.8%** |
-| FiQA | 57.6K | **0.7506** | 0.356 | 0.236 | **+110.8%** |
-| ArguAna | 8.7K | **0.7540** | 0.463 | 0.315 | **+62.9%** |
+| Dataset | Docs | vstash (v3) | ColBERTv2 | BM25 | Δ vs ColBERTv2 |
+|---------|:----:|:-----------:|:---------:|:----:|:--------------:|
+| SciFact | 5.2K | **0.9361** | 0.693 | 0.665 | **+0.243** |
+| NFCorpus | 3.6K | **0.3927** | 0.344 | 0.325 | **+0.049** |
+| SciDocs | 25.7K | **0.3693** | 0.154 | 0.158 | **+0.215** |
+| FiQA | 57.6K | **0.7506** | 0.356 | 0.236 | **+0.395** |
+| ArguAna | 8.7K | **0.7540** | 0.463 | 0.315 | **+0.291** |
 
-*NDCG@10 on [BEIR](https://github.com/beir-cellar/beir) via the current vstash retrieval pipeline (RRF hybrid + adaptive weights + doc-level dedup, 2026-04-19). Tuned model: [`Stffens/bge-small-rrf-v3`](https://huggingface.co/Stffens/bge-small-rrf-v3) (33M params, 384d). v3 beats ColBERTv2 on **5/5 BEIR datasets** and improves macro NDCG@10 by +1.6 absolute over [`bge-small-rrf-v2`](https://huggingface.co/Stffens/bge-small-rrf-v2). See [experiments/results/v2_v3_head_to_head.json](experiments/results/v2_v3_head_to_head.json) for the full apples-to-apples table and reproduce via `python -m experiments.v2_v3_head_to_head`.*
+*Absolute NDCG@10 on [BEIR](https://github.com/beir-cellar/beir) via the full production retrieval pipeline (RRF hybrid + adaptive weights + MMR dedup + IDF, 2026-04-19). Tuned model: [`Stffens/bge-small-rrf-v3`](https://huggingface.co/Stffens/bge-small-rrf-v3) (33M params, 384d). v3 beats ColBERTv2 on **5/5 BEIR datasets** and improves macro NDCG@10 by +0.016 absolute over [`bge-small-rrf-v2`](https://huggingface.co/Stffens/bge-small-rrf-v2) (0.6405 vs 0.6246). Training-time eval uses a batched path that skips MMR/IDF for speed; absolute NDCG@10 differs by a few percent vs the production numbers above, but baseline-vs-final deltas are preserved. See [experiments/results/v2_v3_head_to_head.json](experiments/results/v2_v3_head_to_head.json) for the full table (reproduce via `python -m experiments.v2_v3_head_to_head`) and the methodological note in [experiments/hypotheses.md](experiments/hypotheses.md) for the pipeline-shift caveat.*
 
 ---
 
@@ -147,7 +147,17 @@ vstash reindex --model ~/.vstash/models/retrained
 
 **How it works, in one paragraph.** When you search your corpus, the vector and keyword halves of the pipeline sometimes rank different documents at the top. Those disagreements are a free signal: the document each half picked is probably relevant, the one only one half picked might not be. vstash turns this into training pairs and fine-tunes the embedding model on them. The run is eval-gated: it evaluates the candidate against the base model on a held-out slice of your corpus and refuses to save a model that performs worse.
 
-**Published results.** [`Stffens/bge-small-rrf-v2`](https://huggingface.co/Stffens/bge-small-rrf-v2) was trained this way from 76K pairs across three BEIR datasets in 30 min on a T4 GPU. [`Stffens/bge-small-rrf-v3`](https://huggingface.co/Stffens/bge-small-rrf-v3) (2026-04-19) retrains with the [H-R9](experiments/retrain_roadmap.md) winning config (`temperature=0.5, total_triples=60000`) for a cleaner +5.35% macro NDCG@10 gain. See the [Retrieval Quality](#retrieval-quality) table and [docs/retrain.md](docs/retrain.md) for the full recipe.
+**The feature is maturing fast.** Each release tightens the recipe, lifts the measured numbers, and adds infrastructure that keeps the next iteration honest:
+
+| Release | Training recipe | 5-dataset BEIR macro NDCG@10 | What landed alongside |
+|---------|-----------------|------------------------------|------------------------|
+| base `bge-small` | no fine-tune | 0.6118 | reference |
+| [`rrf-v2`](https://huggingface.co/Stffens/bge-small-rrf-v2) | 76k triples, ad-hoc scripts | 0.6246 | first paper-grade result; still the NFCorpus specialist |
+| [`rrf-v3`](https://huggingface.co/Stffens/bge-small-rrf-v3) | 60k triples via `retrain-multi` CLI, `temperature=0.5`, eval gate | **0.6405** | H-R9 ablation picked the config empirically; H-R7 seeded RNGs make it reproducible; H-R5 reports NDCG@3 + Recall@100 so regressions are visible before they ship |
+
+Both v2 and v3 beat ColBERTv2 on **5/5 BEIR datasets** under the current pipeline. v3 improves macro by +0.016 over v2 (+2.6% relative), with the largest per-dataset gain on FiQA (+0.097 absolute). The eval gate also catches losers: hypothesis H-R3 (hard-negative margin filter) regressed macro -2.49pp, the candidate was refused, the branch was closed without merging. **The pipeline's job is to refuse bad models, and it does.**
+
+See the [Retrieval Quality](#retrieval-quality) table, [docs/retrain.md](docs/retrain.md) for the full recipe and per-version breakdown, and [experiments/results/v2_v3_head_to_head.json](experiments/results/v2_v3_head_to_head.json) for reproducible numbers.
 
 Requires `sentence-transformers`, `torch`, and `accelerate`:
 
@@ -196,7 +206,7 @@ Adaptive RRF, self-supervised embedding refinement, a negative result on post-RR
 |---|---|---|
 | [BEIR Benchmark](experiments/beir_benchmark.py) | Beats ColBERTv2 on 4/5 BEIR datasets (SciFact, NFCorpus, SciDocs, FiQA) | `python -m experiments.beir_benchmark --no-chroma` |
 | [Retrain (eval-gated)](docs/retrain.md) | Fine-tune your embedding model on your own corpus, refuses regressions | `vstash retrain --help` |
-| [Pipeline latency](experiments/vstash_pipeline_ivfpq_bench.py) | Under 60 ms p50 @ 50K, 0.80x with snapvec-ivfpq @ 100K | `python -m experiments.vstash_pipeline_ivfpq_bench --n 100000` |
+| [Pipeline latency](experiments/vstash_pipeline_ivfpq_bench.py) | Under 60 ms p50 @ 50K, 0.80x with snapvec-ivfpq @ 100K (Apple Silicon laptop) | `python -m experiments.vstash_pipeline_ivfpq_bench --n 100000` |
 | [Relevance Signal](experiments/relevance_signal_beir.py) | F1=0.996 cross-domain | `python -m experiments.relevance_signal_beir` |
 
 ---
