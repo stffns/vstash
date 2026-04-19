@@ -1158,6 +1158,15 @@ class VstashStore:
         with self._write_lock:
             self._conn.execute("BEGIN IMMEDIATE")
             pending_fts: list[tuple[int, str]] = []
+            # Coalesce every doc's vectors and rowids into one buffer so
+            # we hand ``SnapIndex.add_batch`` a single (N, dim) array at
+            # the end. Its internal ``np.vstack`` is O(total_size + new)
+            # per call, so calling it N times with size-1 inputs during
+            # the loop would be O(N^2) memory copies (measured: 500k
+            # docs via the old path took ~11 minutes of pure RAM
+            # memcpy). One final batch drops the cost to O(N).
+            pending_snap_rowids: list[int] = []
+            pending_snap_vecs: list[np.ndarray] = []
             try:
                 now_iso = datetime.now(timezone.utc).isoformat()
 
@@ -1236,9 +1245,22 @@ class VstashStore:
                         )
 
                     if self._snap is not None:
-                        snap_vecs = np.array(embeddings, dtype=np.float32)
-                        self._snap.add_batch(rowids, snap_vecs)
-                        self._snap_dirty = True
+                        pending_snap_rowids.extend(rowids)
+                        pending_snap_vecs.append(
+                            np.asarray(embeddings, dtype=np.float32)
+                        )
+
+                # ONE coalesced add_batch for the whole transaction's
+                # worth of vectors instead of one per document. Avoids
+                # the quadratic np.vstack inside SnapIndex.add_batch.
+                if self._snap is not None and pending_snap_rowids:
+                    all_snap_vecs = (
+                        pending_snap_vecs[0]
+                        if len(pending_snap_vecs) == 1
+                        else np.concatenate(pending_snap_vecs, axis=0)
+                    )
+                    self._snap.add_batch(pending_snap_rowids, all_snap_vecs)
+                    self._snap_dirty = True
 
                 self._conn.commit()
                 if pending_fts:
