@@ -26,7 +26,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import shutil
 import statistics
 import tempfile
 import time
@@ -40,7 +39,6 @@ from vstash.embed import embed_query
 from vstash.store import VstashStore
 
 MODEL = "BAAI/bge-small-en-v1.5"  # overridable via --model
-DIM = 384
 TOP_K = 10
 
 
@@ -106,28 +104,62 @@ def build_corpus(target_n: int) -> tuple[list[str], list[str], list[list[float]]
     return ids, texts, vecs
 
 
-def ingest(db_path: str, ids: list[str], texts: list[str], vecs: list[list[float]]) -> None:
-    store = VstashStore(db_path, embedding_dim=DIM, vector_backend="sqlite-vec")
+def ingest(
+    db_path: str,
+    ids: list[str],
+    texts: list[str],
+    vecs: list[list[float]],
+    vector_backend: str,
+    dim: int,
+) -> None:
+    """Ingest into a fresh store using ``vector_backend``.
+
+    Per-backend ingest matters because ``snapvec`` flat populates its
+    ``.snpv`` index during the write path (no ``fit_snapvec`` post-
+    ingest step analogous to ``fit_ivfpq``). Copying a
+    sqlite-vec-ingested db and reopening with ``vector_backend="snapvec"``
+    does NOT build the flat index and silently falls back to sqlite-vec
+    semantics (caught in PR #249 review).
+
+    We ingest via ``add_documents_batch`` instead of a per-doc
+    ``add_document`` loop. The per-doc loop is O(N^2) on disk I/O
+    for the flat ``snapvec`` backend: ``_save_snapvec`` is called
+    after every commit and rewrites the entire ``.snpv`` file, so
+    at N=100k it writes ~1 TB over the run (~40 minutes wall-clock
+    on NVMe). ``add_documents_batch`` calls ``_save_snapvec`` once
+    after the whole batch, which is the intended code path at
+    scale. Not a benchmark artefact -- any real vstash user
+    ingesting tens of thousands of docs with the flat snapvec
+    backend via per-doc add_document is hitting the same wall.
+    """
+    store = VstashStore(db_path, embedding_dim=dim, vector_backend=vector_backend)
     t0 = time.perf_counter()
-    for i, (doc_id, text, emb) in enumerate(zip(ids, texts, vecs)):
-        store.add_document(
-            path=f"bench/{doc_id}",
-            title=doc_id,
-            chunks=[text],
-            embeddings=[emb],
-            source_type="text",
-        )
-        if (i + 1) % 5000 == 0:
-            print(f"    ingested {i + 1}/{len(ids)}")
-    print(f"    ingest done in {time.perf_counter() - t0:.1f}s")
+    docs = [
+        {
+            "path": f"bench/{doc_id}",
+            "title": doc_id,
+            "chunks": [text],
+            "embeddings": [emb],
+            "source_type": "text",
+        }
+        for doc_id, text, emb in zip(ids, texts, vecs)
+    ]
+    store.add_documents_batch(docs)
+    print(f"    ingest done in {time.perf_counter() - t0:.1f}s  ({len(docs)} docs)")
     store.close()
 
 
 def evaluate(
-    db_path: str, backend: str, queries: dict, qrels: dict, doc_id_to_path: dict[str, str]
+    db_path: str,
+    backend: str,
+    queries: dict,
+    qrels: dict,
+    doc_id_to_path: dict[str, str],
+    model: str,
+    dim: int,
 ) -> dict:
     kwargs = {
-        "embedding_dim": DIM,
+        "embedding_dim": dim,
         "vector_backend": backend,
     }
     if backend == "snapvec-ivfpq":
@@ -148,7 +180,7 @@ def evaluate(
     for qid, qtext in queries.items():
         if qid not in qrels:
             continue
-        qe = embed_query(qtext, MODEL)
+        qe = embed_query(qtext, model)
         t0 = time.perf_counter()
         results = store.search(qe, qtext, top_k=TOP_K)
         elapsed_ms = (time.perf_counter() - t0) * 1000
@@ -172,7 +204,8 @@ _ALL_BACKENDS = ("sqlite-vec", "snapvec", "snapvec-ivfpq")
 
 
 def main() -> None:
-    global MODEL
+    from vstash.embed import get_embedding_dim
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--n", type=int, default=50_000, help="target corpus size (chunks)")
     parser.add_argument(
@@ -195,49 +228,61 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    MODEL = args.model
+    dim = get_embedding_dim(args.model)
     print(
-        f"=== vstash full-pipeline benchmark, N={args.n}, model={args.model}, "
+        f"=== vstash full-pipeline benchmark, N={args.n}, model={args.model}, dim={dim}, "
         f"backends={args.backends} ==="
     )
     print("\n[1/3] building corpus ...")
     ids, texts, vecs = build_corpus(args.n)
     print(f"    {len(ids)} docs ready")
 
+    # Guard against model/corpus dim mismatch. ``build_corpus`` pulls
+    # embeddings from ``embed_dataset`` which is pinned to
+    # ``BAAI/bge-small-en-v1.5`` (384d). Mixing a different model would
+    # silently feed wrong-dimensional vectors to the store, not worth
+    # the confusion.
+    if vecs and len(vecs[0]) != dim:
+        raise RuntimeError(
+            f"Corpus embeddings are {len(vecs[0])}d but --model resolves to {dim}d. "
+            f"The cached embeddings in experiments/snapvec_backends_bench live only for "
+            f"BAAI/bge-small-en-v1.5 right now; passing --model with a different dim "
+            f"is not yet supported. Stick to 384d models."
+        )
+
     sci_cache = download_beir("scifact")
     _, queries, qrels = load_beir(sci_cache)
     print(f"    {len(queries)} queries, {len(qrels)} qrels")
 
+    # Per-backend ingest. snapvec flat populates its .snpv index at
+    # ingest time, so each backend needs its own from-scratch ingest
+    # (copying a sqlite-vec-ingested db silently falls back to
+    # sqlite-vec semantics for the snapvec column, caught in PR #249
+    # review).
     with tempfile.TemporaryDirectory() as td:
-        base_db = str(Path(td) / "base.db")
-        print(f"\n[2/3] ingesting into {base_db} ...")
-        ingest(base_db, ids, texts, vecs)
-
-        # Each backend reopens a fresh copy of the ingested store so
-        # backends never see each other's state (snapvec-ivfpq stores
-        # its fitted index inside the db and would otherwise persist
-        # across runs).
-        print("\n[3/3] evaluating ...")
         per_backend: dict[str, dict] = {}
         for backend in args.backends:
             bdb = str(Path(td) / f"{backend}.db")
-            shutil.copy2(base_db, bdb)
-            for ext in ("-wal", "-shm"):
-                src = Path(base_db + ext)
-                if src.exists():
-                    shutil.copy2(src, bdb + ext)
-            print(f"  {backend} ...")
-            per_backend[backend] = evaluate(bdb, backend, queries, qrels, {})
+            print(f"\n[2/3] ingesting {backend} into {bdb} ...")
+            ingest(bdb, ids, texts, vecs, vector_backend=backend, dim=dim)
+            print(f"\n[3/3] evaluating {backend} ...")
+            per_backend[backend] = evaluate(
+                bdb, backend, queries, qrels, {}, model=args.model, dim=dim
+            )
 
     out_path = args.output or f"experiments/results/pipeline_ivfpq_bench_n{args.n}.json"
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
-    results = {"n": args.n, "model": args.model, "backends": per_backend}
+    results = {
+        "n": args.n,
+        "model": args.model,
+        "dim": dim,
+        "backends": per_backend,
+    }
     with open(out, "w") as f:
         json.dump(results, f, indent=2)
 
-    # Printable table. Pick the first backend as the reference
-    # column so the "delta" column stays meaningful for >=2 backends.
+    # Printable table.
     print("\n" + "=" * (24 + 16 * len(args.backends)))
     header = f"{'metric':<24}" + "".join(f"{b:>16}" for b in args.backends)
     print(header)
