@@ -474,7 +474,13 @@ class VstashStore:
         }
 
     def _init_snapvec(self) -> None:
-        """Load or create the SnapIndex for the snapvec backend."""
+        """Load or create the SnapIndex for the snapvec backend.
+
+        If the on-disk ``.snpv`` is out of sync with ``vec_chunks``
+        (e.g. a process crashed between ``add_document`` and
+        ``close()`` with deferred save active), rebuild the flat
+        index from ``vec_chunks``, which is the source of truth.
+        """
         if not _HAS_SNAPVEC:
             logger.warning(
                 "snapvec backend requested but snapvec is not installed. "
@@ -484,10 +490,17 @@ class VstashStore:
             return
 
         path = self._snapvec_path
+        # ``loaded_clean`` == True when we have a SnapIndex whose on-disk
+        # dim matches ``self.embedding_dim``. Only in that case is the
+        # stale-vs-fresh comparison against ``vec_chunks`` meaningful. If
+        # dim mismatched or the file was corrupt, we already reset to an
+        # empty index and the user needs ``vstash reindex`` to rebuild
+        # with the new model; shoving old-dim vectors through the flat
+        # crash-recovery path would crash with a shape mismatch.
+        loaded_clean = False
         if path.exists():
             try:
                 self._snap = SnapIndex.load(str(path))
-                # Verify dimension match
                 if self._snap.dim != self.embedding_dim:
                     logger.warning(
                         "SnapIndex dim=%d != embedding_dim=%d. Rebuilding index.",
@@ -495,7 +508,9 @@ class VstashStore:
                         self.embedding_dim,
                     )
                     self._snap = SnapIndex(dim=self.embedding_dim, bits=self._snapvec_bits, seed=0)
-                    self._save_snapvec()
+                    self._snap.save(str(self._snapvec_path))
+                else:
+                    loaded_clean = True
             except Exception:
                 logger.warning(
                     "Failed to load SnapIndex from %s — creating empty. "
@@ -504,30 +519,100 @@ class VstashStore:
                     exc_info=True,
                 )
                 self._snap = SnapIndex(dim=self.embedding_dim, bits=self._snapvec_bits, seed=0)
-                self._save_snapvec()
+                self._snap.save(str(self._snapvec_path))
         else:
             self._snap = SnapIndex(dim=self.embedding_dim, bits=self._snapvec_bits, seed=0)
+            # Fresh in-memory index with matching dim; safe to check
+            # staleness and rebuild from vec_chunks if needed (e.g.
+            # user deleted the .snpv companion but kept the .db).
+            loaded_clean = True
+
+        # Staleness check: flat snapvec defers save until close() /
+        # checkpoint, so a crash mid-session can leave ``.snpv`` with
+        # fewer rows than ``vec_chunks``. Detect and rebuild so users
+        # do not silently lose vectors from the last write burst.
+        if loaded_clean and self._vector_backend == "snapvec" and self._snap is not None:
+            try:
+                sqlite_n = int(
+                    self._conn.execute("SELECT COUNT(*) FROM vec_chunks").fetchone()[0]
+                )
+            except sqlite3.Error:
+                sqlite_n = 0
+            snap_n = len(self._snap)
+            if sqlite_n > snap_n:
+                logger.info(
+                    "SnapIndex has %d vectors but vec_chunks has %d. Rebuilding flat "
+                    "snapvec index from SQLite (crash recovery).",
+                    snap_n,
+                    sqlite_n,
+                )
+                self._rebuild_snapvec_from_vec_chunks()
+
+    def _rebuild_snapvec_from_vec_chunks(self, batch_size: int = 10_000) -> int:
+        """Rebuild the flat SnapIndex from ``vec_chunks`` source-of-truth.
+
+        Used for crash recovery when ``_init_snapvec`` detects staleness
+        and as the ``fit_snapvec`` analogue to ``fit_ivfpq``. Returns the
+        number of vectors indexed.
+        """
+        if self._snap is None:
+            raise RuntimeError("snapvec backend not initialised")
+        self._snap = SnapIndex(dim=self.embedding_dim, bits=self._snapvec_bits, seed=0)
+
+        offset = 0
+        total = 0
+        while True:
+            rows = self._conn.execute(
+                "SELECT rowid, embedding FROM vec_chunks ORDER BY rowid "
+                "LIMIT ? OFFSET ?",
+                [batch_size, offset],
+            ).fetchall()
+            if not rows:
+                break
+            rowids = [int(r["rowid"]) for r in rows]
+            vectors = np.asarray(
+                [_deserialize(r["embedding"]) for r in rows], dtype=np.float32
+            )
+            self._snap.add_batch(rowids, vectors)
+            offset += batch_size
+            total += len(rows)
+
+        # Immediately persist the rebuilt index so subsequent opens do
+        # not re-run the rebuild unnecessarily.
+        self._snap.save(str(self._snapvec_path))
+        self._snap_dirty = False
+        logger.info("Rebuilt flat snapvec index with %d vectors", total)
+        return total
 
     def _save_snapvec(self) -> None:
-        """Persist the snapvec index to disk. Called after successful SQLite commit.
+        """Mark the in-memory snapvec index dirty; flush deferred to
+        ``close()`` / ``_checkpoint_snapvec()``.
 
-        Flat SnapIndex is small and cheap to rewrite on every commit.
-        IVFPQ with keep_full_precision=True can be 80+ MB at 100K
-        vectors — rewriting on each add_document would thrash disk.
-        For IVFPQ we mark the index dirty in memory and flush on
-        ``close()`` (or on an explicit checkpoint). SQLite's vec_chunks
-        stays the source of truth, so a crash at worst loses the most
-        recent post-fit adds and the operator can re-run
-        ``vstash snapvec fit`` to rebuild.
+        Historically the flat backend wrote ``.snpv`` on every call
+        (typically one per ``add_document``). That is a full-file
+        rewrite and costs ~1.25 ms/MB on Apple Silicon (memory
+        bandwidth). In tight per-doc ingest loops the OS page cache
+        hides the cost at small N, but once the file grows past the
+        kernel's dirty-page absorption budget (roughly a few tens of
+        MB in practice), every save starts paying real disk I/O and
+        the sum becomes quadratic. Observed on 2026-04-19: a 100k
+        per-doc ingest on flat snapvec took 40+ minutes of pure
+        ``.snpv`` rewrites.
+
+        Fix: mirror the ivfpq pattern and defer the flush for both
+        backends. ``vec_chunks`` is the SQLite source of truth, so a
+        process crash before the deferred flush runs is recoverable
+        via ``_rebuild_snapvec_from_vec_chunks`` (``_init_snapvec``
+        detects the staleness on next open and rebuilds
+        automatically).
+
+        Callers that want a synchronous flush can invoke
+        ``_checkpoint_snapvec()`` directly (``close()`` does this on
+        teardown).
         """
         if self._snap is None:
             return
-        if self._vector_backend == "snapvec-ivfpq":
-            # Defer to close() / explicit checkpoint.
-            self._snap_dirty = True
-            return
-        self._snap.save(str(self._snapvec_path))
-        self._snap_dirty = False
+        self._snap_dirty = True
 
     def _checkpoint_snapvec(self) -> None:
         """Flush the in-memory snapvec index to disk if dirty."""
@@ -4133,10 +4218,13 @@ class VstashStore:
         """
         import contextlib
 
-        # Flush any pending snapvec writes before tearing down.  For the
-        # flat backend this is usually a no-op (_save_snapvec already ran
-        # on every commit); for snapvec-ivfpq it is the primary save
-        # point, so the IVFPQ file only hits disk once per session.
+        # Flush any pending snapvec writes before tearing down. Both
+        # the flat and ivfpq backends now defer ``.snpv`` / ivfpq
+        # writes until here (or an explicit ``_checkpoint_snapvec``
+        # call), so the file hits disk once per session instead of
+        # once per ``add_document``. Crash recovery is handled on
+        # next open by ``_init_snapvec`` comparing the stored index
+        # length against ``vec_chunks`` and rebuilding if stale.
         with contextlib.suppress(Exception):
             self._checkpoint_snapvec()
 
