@@ -46,7 +46,7 @@ from pathlib import Path
 import numpy as np
 
 from experiments.beir_benchmark import download_beir, load_beir
-from vstash.embed import embed_query, get_embedding_dim
+from vstash.embed import get_embedding_dim
 from vstash.store import VstashStore
 
 
@@ -106,9 +106,7 @@ def _embed_corpus(
             return ids, texts, vecs
 
     print(f"  [{dataset}] embedding {len(texts)} docs with {model} ...")
-    from sentence_transformers import SentenceTransformer
-
-    st = SentenceTransformer(model)
+    st = _get_st_model(model)
     vecs = st.encode(
         texts,
         normalize_embeddings=True,
@@ -121,6 +119,53 @@ def _embed_corpus(
     cache_ids.write_text(json.dumps(ids))
     cache_texts.write_text(json.dumps(texts))
     return ids, texts, vecs
+
+
+_ST_CACHE: dict = {}
+
+
+def _get_st_model(model: str):
+    """Cache one SentenceTransformer per (model) so corpus + queries share a
+    single instance. Avoids the MLX v3 legacy-BERT tensor-naming path entirely
+    (``embeddings.LayerNorm.beta/gamma`` isn't auto-mapped by mlx-embeddings)."""
+    if model not in _ST_CACHE:
+        from sentence_transformers import SentenceTransformer
+
+        _ST_CACHE[model] = SentenceTransformer(model)
+    return _ST_CACHE[model]
+
+
+def _embed_queries(
+    dataset: str,
+    model: str,
+    queries: dict[str, str],
+    cache_dir: Path,
+) -> dict[str, np.ndarray]:
+    """Embed all queries once for (dataset, model), cached on disk.
+    Returns qid -> float32 vector (already L2-normalized)."""
+    cache_emb = cache_dir / f"{dataset}__queries__{_slug(model)}.npy"
+    cache_qids = cache_dir / f"{dataset}__query_ids.json"
+
+    qids = list(queries.keys())
+    if cache_emb.exists() and cache_qids.exists():
+        cached_qids = json.loads(cache_qids.read_text())
+        if cached_qids == qids:
+            mat = np.load(cache_emb)
+            return {qid: mat[i] for i, qid in enumerate(qids)}
+
+    print(f"  [{dataset}] embedding {len(qids)} queries ...")
+    st = _get_st_model(model)
+    qtexts = [queries[qid] for qid in qids]
+    mat = st.encode(
+        qtexts,
+        normalize_embeddings=True,
+        batch_size=128,
+        show_progress_bar=True,
+    ).astype(np.float32)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    np.save(cache_emb, mat)
+    cache_qids.write_text(json.dumps(qids))
+    return {qid: mat[i] for i, qid in enumerate(qids)}
 
 
 def _dcg(scores: list[float], k: int) -> float:
@@ -156,6 +201,7 @@ def _evaluate_backend(
     texts: list[str],
     vecs: np.ndarray,
     queries: dict[str, str],
+    query_vecs: dict[str, np.ndarray],
     qrels: dict[str, dict[str, int]],
     tmp_dir: Path,
 ) -> dict:
@@ -200,7 +246,7 @@ def _evaluate_backend(
     for qid, qtext in queries.items():
         if qid not in qrels:
             continue
-        q_vec = embed_query(qtext, model)
+        q_vec = query_vecs[qid].tolist()
         t0 = time.perf_counter()
         # Pull RANK_K so all four metrics come from one ranked list.
         results = store.search(q_vec, qtext, top_k=RANK_K)
@@ -302,6 +348,8 @@ def _print_table(results: dict, backends: list[str], datasets: list[str]) -> Non
             r = results.get(b, {}).get(ds, {})
             if not r:
                 continue
+            fit_s = r.get("fit_seconds")
+            fit_cell = "-" if fit_s is None else f"{fit_s:.2f}"
             print(
                 f"| {ds} | {b} | "
                 f"{r.get('ndcg_at_10', 0):.4f} | "
@@ -311,7 +359,7 @@ def _print_table(results: dict, backends: list[str], datasets: list[str]) -> Non
                 f"{r.get('latency_p50_ms', 0):.2f} | "
                 f"{r.get('latency_mean_ms', 0):.2f} | "
                 f"{r.get('ingest_seconds', 0):.2f} | "
-                f"{'-' if r.get('fit_seconds') is None else r['fit_seconds']:.2f} |"
+                f"{fit_cell} |"
             )
 
 
@@ -358,10 +406,11 @@ def main() -> int:
     )
     args.cache_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Embed corpora once per dataset; reuse across backends.
+    # 1. Embed corpora + queries once per dataset; reuse across backends.
     per_dataset_corpus: dict[str, tuple[list[str], list[str], np.ndarray]] = {}
     per_dataset_queries: dict[str, tuple[dict, dict]] = {}
-    print("\n[1/2] embedding corpora ...")
+    per_dataset_query_vecs: dict[str, dict[str, np.ndarray]] = {}
+    print("\n[1/2] embedding corpora + queries ...")
     for ds in args.datasets:
         ids, texts, vecs = _embed_corpus(ds, args.model, args.cache_dir)
         per_dataset_corpus[ds] = (ids, texts, vecs)
@@ -369,6 +418,7 @@ def main() -> int:
         _, queries, qrels = load_beir(cache)
         per_dataset_queries[ds] = (queries, qrels)
         print(f"  [{ds}] queries={len(queries)} qrels={len(qrels)}")
+        per_dataset_query_vecs[ds] = _embed_queries(ds, args.model, queries, args.cache_dir)
 
     # 2. Per-backend, per-dataset evaluation.
     results: dict[str, dict[str, dict]] = {}
@@ -390,6 +440,7 @@ def main() -> int:
                     texts=texts,
                     vecs=vecs,
                     queries=queries,
+                    query_vecs=per_dataset_query_vecs[ds],
                     qrels=qrels,
                     tmp_dir=tmp_dir,
                 )
