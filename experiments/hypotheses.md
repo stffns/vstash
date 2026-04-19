@@ -37,8 +37,9 @@ Consequence for ablation reading:
   matches or beats v5; the remaining NFCorpus gap is a
   model-quality question (H-R9), not a measurement artefact.
 
-Persisted in the auto-memory as `feedback_eval_pipeline_shift.md`
-so future sessions apply it.
+Keep this caveat in mind when reading the T1.5 / H-R9 tables
+further down this document and in
+`experiments/retrain_roadmap.md`.
 
 ---
 

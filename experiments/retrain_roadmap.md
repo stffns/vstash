@@ -234,8 +234,8 @@ determinism) came in at macro +4.14% (SciFact +4.53%, NFCorpus
 touch better on every dataset; delta% dropped because the widened
 eval pipeline raised baseline NDCG@10 in parallel. Corollary: when
 comparing our numbers to v5's published deltas, use absolute final
-NDCG@10 rather than percentage deltas (see
-`feedback_eval_pipeline_shift.md` in auto-memory).
+NDCG@10 rather than percentage deltas (see the "Methodological
+note" at the top of `experiments/hypotheses.md`).
 
 **H-R3 ablation outcome (2026-04-19).** Hard-negative margin filter
 `margin_min=0.05` (arm_a) regressed macro -2.49pp (+1.65% vs
