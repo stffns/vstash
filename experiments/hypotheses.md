@@ -14,6 +14,32 @@ Each hypothesis is:
 
 Ordered by expected ROI / day. Strike through when shipped. Link the PR.
 
+## Methodological note: eval pipeline shifts absolute baselines
+
+Between the 2026-04-18 and 2026-04-19 retrain runs, PR #243 merged
+changes to `evaluate_model` + `evaluate_model_batched` (widened
+top-K pool from 10 to 100 to support Recall@100, plus reinforced
+doc-level dedup). These are semantically correct but they raise
+absolute baseline NDCG@10 by ~0.01-0.02 per dataset because the
+base model now has a wider candidate pool to surface relevant docs
+from.
+
+Consequence for ablation reading:
+
+- **Delta %** between baseline and final depends on the eval
+  pipeline. Not comparable across PR-#243 pre/post or across
+  independent evaluators.
+- **Final absolute NDCG@10** is a genuine model-quality signal.
+  Prefer this when comparing arms or quoting published numbers.
+- When putting our numbers next to v5's published
+  +5% SciFact / +18.3% NFCorpus, make the pipeline caveat
+  explicit. Our final absolute NDCG@10 on SciFact/FiQA already
+  matches or beats v5; the remaining NFCorpus gap is a
+  model-quality question (H-R9), not a measurement artefact.
+
+Persisted in the auto-memory as `feedback_eval_pipeline_shift.md`
+so future sessions apply it.
+
 ---
 
 ## Retrain (signal quality + training)
@@ -63,25 +89,36 @@ amplified the distribution mismatch. Only revisit after T1.5 validates.
 
 ---
 
-### H-R3. Hard-negative margin filter
+### H-R3. Hard-negative margin filter [TRIED, NEGATIVE; PR #245 CLOSED]
 
-**Statement.** Labeled miner emits every (gold, hard_neg) pair the RRF
-surface turns up. Some hard negs are *too* close to the gold (ambiguous,
-hurt training) or *too* far (easy, contribute nothing). Filtering by
-cosine-margin `(gold - hard_neg)` in a target band [0.05, 0.30] should
-improve training quality.
+**Original statement.** Filter `(gold, hard_neg)` pairs by cosine
+margin to remove ambiguous-close and too-easy tails; expected
++0.5-1% macro NDCG@10.
 
-**Test.** Ablation on the T1.5 notebook with margin bands
-{no-filter, [0.05,0.30], [0.10,0.40]}. Target: +0.5-1% macro NDCG@10 vs
-no-filter at the same triple budget.
+**Outcome (2026-04-19).** Infra was built on PR #245 (`margin_min`
+/ `margin_max` on `generate_labeled_triples_batched`, threaded
+through `retrain_multi` + CLI, 5 unit tests, ablation notebook).
+Ablation arm_a on Colab (`margin_min=0.05`, no upper bound)
+regressed macro -2.49pp (+1.65% vs +4.14%) with 53% of pairs
+filtered out. Arms b/c aborted (kernel disconnect + strong prior
+of further regression).
 
-**Files.** `vstash/retrain_batch.py:721-988`
-(`generate_labeled_triples_batched`).
+**Diagnosis.** On the base bge-small the margin distribution
+`cos(q, gold) - cos(q, hard_neg)` concentrates at 0.02-0.08,
+because both are high-but-not-saturated (gold ~0.85-0.92, neg
+~0.80-0.88). Cutting below 0.05 removes hard-neg signal, not
+noise. The filter's mental model ("margin < 0.05 = neg is
+ambiguous / probably relevant") holds only for an already-trained
+model where `cos(q, gold)` saturates near 1.0.
 
-**Effort.** 2 days.
+**Decision.** PR #245 closed without merge. Infra stays in git
+history on `feat/retrain-hr3-margin-filter` and can be
+cherry-picked when a trained-model path needs it (continual
+retrain T2.6; cross-encoder hard-neg filtering T2.4). Pivot
+NFCorpus gap to H-R9 below.
 
-**Risk.** Filter removes too many triples, training underfits. Mitigate by
-logging kept-vs-dropped ratio and bailing when < 30% kept.
+**Files.** Git log on closed branch
+`feat/retrain-hr3-margin-filter` (not on develop).
 
 ---
 
@@ -168,6 +205,76 @@ still passing.
 
 **Files.** `vstash/retrain.py`, `vstash/cli.py`, `tests/test_retrain.py`,
 `tests/test_retrain_multi.py`.
+
+---
+
+### H-R8. Expose labeled queries + margin filter on single-corpus `retrain`
+
+**Statement.** Today the two most powerful levers of the retrain
+stack (labeled-query training pairs, hard-neg margin filter) live
+only on `retrain-multi`. A single-corpus user with qrels has to
+wrap their one store in a one-element dict to reach the batched
+labeled miner. API-shaped gap.
+
+**Design.** Add `training_queries: list[dict] | None = None`,
+`margin_min`, `margin_max`, `bulk_mine`, `bulk_mine_device` to
+`vstash.retrain.retrain(...)`. When `training_queries` is set,
+route through `generate_labeled_triples_batched`. CLI: add
+`--training-queries path/to/qrels.jsonl`, `--margin-min`,
+`--margin-max`, `--bulk-mine`.
+
+**Test.** Re-run the retrain suite; add a unit test that feeds a
+labeled set into `retrain()` and asserts the labeled miner was
+called.
+
+**Files.** `vstash/retrain.py`, `vstash/cli.py`,
+`tests/test_retrain.py`.
+
+**Effort.** 1 day.
+
+**Risk.** Low. Purely additive to an existing entrypoint; defaults
+preserve the current single-corpus flow byte-for-byte.
+
+---
+
+### H-R9. Close NFCorpus gap via corpus balance (temperature + triples)
+
+**Statement.** After H-R3 ruled out hard-neg quality as the cause
+of the NFCorpus gap, the two remaining suspects are corpus balance
+and training volume. v5 trained 76k pairs total; we trained 28k.
+At `temperature=0.5`, NFCorpus received 4856 pairs (17% of our
+budget); at `temperature=0.3` it would get ~26%, and at
+`sampling=uniform` it would get 33%. Doubling `total_triples` to
+60k scales every dataset's contribution proportionally.
+
+**Test (three-arm Colab ablation, pure CLI).**
+
+- arm_t03: `--sampling-temperature 0.3`, `--total-triples 30000`.
+  Same volume as T1.5 baseline, different balance. Isolates
+  temperature effect.
+- arm_uniform: `--sampling-strategy uniform`,
+  `--total-triples 30000`. Maximum NFCorpus share; upper bound on
+  the balance lever.
+- arm_vol: `--sampling-temperature 0.5`, `--total-triples 60000`.
+  Same balance as baseline, more volume. Isolates volume effect.
+
+Target: NFCorpus final absolute NDCG@10 > 0.38 on at least one
+arm, without regressing SciFact (stay above 0.775) or FiQA
+(stay above 0.45).
+
+**Files.** No code change. Notebook at
+`experiments/retrain_t1_5_hr9_balance_ablation.ipynb`.
+
+**Effort.** 0.5 day notebook + ~1.5h Colab.
+
+**Risk.** Low. Pure hyperparameter sweep; no code to regress.
+
+**Follow-ups if this closes the gap.**
+
+- Publish `Stffens/bge-small-rrf-v3` with the winning config.
+- Update README + paper with new numbers.
+- Document temperature recommendation per corpus size in the
+  `retrain-multi` help.
 
 ---
 

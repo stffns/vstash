@@ -213,6 +213,44 @@ macro positive. If those land, the paper claims reproduce and
 chunk-prefix can be deprecated or documented as a weaker fallback for
 users without labeled queries.
 
+**T1.5 Colab validation (2026-04-19).** First run after the recipe
+fix came in at:
+
+| Dataset  | Baseline | Final  | Delta    |
+|----------|----------|--------|----------|
+| SciFact  | 0.7261   | 0.7802 | +5.41%   |
+| NFCorpus | 0.3449   | 0.3670 | +2.22%   |
+| FiQA     | 0.3776   | 0.4513 | +7.37%   |
+| Macro    | 0.4828   | 0.5328 | +5.00%   |
+
+SciFact and FiQA reproduce or beat the v5 published numbers
+(+5%, +5-6%). NFCorpus is well short of v5's published +18.3%; the
+gap motivated the H-R3 and H-R9 follow-ups below.
+
+**Second validation (2026-04-19, post PR #243 merge).** Re-run with
+H-R5 (wider top-K + doc-dedup in batched eval) and H-R7 (seed
+determinism) came in at macro +4.14% (SciFact +4.53%, NFCorpus
++1.39%, FiQA +6.51%). Final absolute NDCG@10 was equivalent or a
+touch better on every dataset; delta% dropped because the widened
+eval pipeline raised baseline NDCG@10 in parallel. Corollary: when
+comparing our numbers to v5's published deltas, use absolute final
+NDCG@10 rather than percentage deltas (see
+`feedback_eval_pipeline_shift.md` in auto-memory).
+
+**H-R3 ablation outcome (2026-04-19).** Hard-negative margin filter
+`margin_min=0.05` (arm_a) regressed macro -2.49pp (+1.65% vs
++4.14%) with 53% of training pairs filtered out. Diagnosis: on the
+base bge-small the cos(q, gold) / cos(q, hard_neg) margin
+distribution sits at 0.02-0.08, so a 0.05 cutoff removes hard-neg
+signal, not noise. The filter's assumption ("margins < 0.05 mean
+ambiguous / probably relevant") holds only for an already-trained
+model where cos(q, gold) saturates near 1.0; for initial training
+the assumption inverts. PR #245 closed without merge; infra kept
+in git history for future continual-retrain (T2.6) or reranker
+(T2.4) use cases where the assumption applies. Next lever: **H-R9**
+in `experiments/hypotheses.md` (corpus balance via sampling
+temperature and/or total_triples), pure CLI sweep.
+
 ### T1.4c Batched GPU eval
 
 [LANDED on feat/retrain-t14c-batched-eval] Follow-up to T1.4b.
