@@ -1495,6 +1495,22 @@ def retrain_multi(
                 max_queries=n_queries,
                 device=bulk_mine_device,
             )
+            # The labeled miner emits one triple per (gold, hard_neg)
+            # pair so output can vastly exceed the per-dataset budget.
+            # Downsample deterministically so total_triples stays
+            # meaningful and per-dataset balance is preserved.
+            if len(dataset_pairs) > n_queries:
+                generated = len(dataset_pairs)
+                rng = random.Random(per_dataset_seed[name])
+                keep_indices = sorted(rng.sample(range(generated), n_queries))
+                dataset_pairs = [dataset_pairs[i] for i in keep_indices]
+                logger.info(
+                    "Dataset '%s' (labeled-query path): downsampled %d -> %d "
+                    "pairs to respect per-dataset budget.",
+                    name,
+                    generated,
+                    n_queries,
+                )
             per_dataset_pairs[name] = len(dataset_pairs)
             all_pairs.extend(dataset_pairs)
             logger.info(

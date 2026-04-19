@@ -84,13 +84,15 @@ _DISAGREEMENT_TOP = 5
 
 
 def _fetch_corpus_rows(store: VstashStore) -> list[dict]:
-    """Load every chunk's id + text + path for batched embedding.
+    """Load every chunk's id + text + path + seq for batched embedding.
 
     Ordered by chunk id so the returned list aligns with any later
-    index-based lookups.
+    index-based lookups. ``seq`` is included so callers that care
+    about "first chunk of doc" can use the explicit per-doc ordering
+    rather than relying on autoincrement id ordering.
     """
     rows = store._conn.execute(
-        "SELECT c.id, c.text, d.path FROM chunks c "
+        "SELECT c.id, c.text, c.seq, d.path FROM chunks c "
         "JOIN documents d ON d.id = c.doc_id "
         "ORDER BY c.id"
     ).fetchall()
@@ -797,14 +799,20 @@ def generate_labeled_triples_batched(
     chunk_id_to_path = {cid: corpus_paths[i] for i, cid in enumerate(corpus_ids)}
     chunk_id_to_text = {cid: corpus_texts[i] for i, cid in enumerate(corpus_ids)}
 
-    # path -> first chunk_id (smallest id, which in vstash corresponds
-    # to the first chunk of the doc by ingest order / seq=0). v5 uses
-    # ``doc_texts[path][:512]`` for both positive and negative; we use
-    # the first chunk's full text as its analog.
+    # path -> first chunk_id selected by explicit (seq, id) ordering,
+    # not just autoincrement id. ``chunks`` has an explicit ``seq``
+    # column so "first chunk of doc" means seq=0 in the general case.
+    # v5 uses ``doc_texts[path][:512]`` for both positive and negative;
+    # we use the first chunk's text (truncated to 512 chars below).
     path_to_first_chunk_id: dict[str, int] = {}
-    for cid in corpus_ids:
-        p = chunk_id_to_path[cid]
-        if p not in path_to_first_chunk_id:
+    path_to_first_chunk_order: dict[str, tuple[int, int]] = {}
+    for row in corpus_rows:
+        cid = int(row["id"])
+        p = row["path"]
+        seq = int(row.get("seq") or 0)
+        current = path_to_first_chunk_order.get(p)
+        if current is None or (seq, cid) < current:
+            path_to_first_chunk_order[p] = (seq, cid)
             path_to_first_chunk_id[p] = cid
 
     # Drop queries whose gold paths are all absent from the store.
@@ -861,8 +869,18 @@ def generate_labeled_triples_batched(
                 all_vec_topk.append([corpus_ids[i] for i in matmul_indices])
     logger.info("Matmul top-K for %d queries in %.1fs", len(filtered), time.perf_counter() - t0)
 
-    # Per-query FTS + triple mining (v5 recipe: one triple per
-    # gold * hard_neg combination, no MMR dedup, fixed weights).
+    # Per-query FTS + triple mining faithful to the v5 recipe:
+    # - Produce TWO RRF-fused rankings from the raw vec/FTS top-K.
+    #   vec-heavy fuses with weights (0.95, 0.05); fts-heavy with
+    #   (0.05, 0.95). Matches store.search() with adaptive_rrf=False
+    #   in experiments/rrf_training_pairs.py.
+    # - Disagreement = paths in vec-heavy top-K but not in fts-heavy
+    #   (vec_only) and vice versa (fts_only).
+    # - Emit one triple per (gold_path, hard_neg) pair.
+    # - Cap positive/negative text at 512 chars (v5 does the same
+    #   via doc_texts[path][:512]).
+    vec_hi, fts_hi = _LABELED_TRAIN_WEIGHTS_VEC_HEAVY
+    vec_lo, fts_lo = _LABELED_TRAIN_WEIGHTS_FTS_HEAVY
     pairs: list[dict] = []
     total_disagreements = 0
     try:
@@ -870,34 +888,41 @@ def generate_labeled_triples_batched(
             qtext = q["query"]
             gold_paths = set(q["relevant_paths"])
 
-            # FTS top-K over the main corpus (not a temp store -- we
-            # are mining from the production corpus).
+            # FTS top-K over the main corpus (not a temp store).
             fts_top = _fts_top_k(store._conn, qtext, TOP_K)
             fts_top = [cid for cid in fts_top if cid in chunk_id_to_path]
 
-            # Convert to paths (keep order, preserve first occurrence).
-            vec_paths_ordered: list[str] = []
-            vec_seen: set[str] = set()
-            for cid in vec_top:
-                p = chunk_id_to_path[cid]
-                if p not in vec_seen:
-                    vec_seen.add(p)
-                    vec_paths_ordered.append(p)
+            # RRF-fuse the raw vec + FTS rankings with the two v5
+            # weight configs to produce vec-heavy and fts-heavy
+            # hybrid top-K chunk id lists.
+            vec_heavy_fused = _rrf_fuse(
+                vec_top, fts_top, vec_hi, fts_hi, chunk_id_to_path, top_n=TOP_K
+            )
+            fts_heavy_fused = _rrf_fuse(
+                vec_top, fts_top, vec_lo, fts_lo, chunk_id_to_path, top_n=TOP_K
+            )
 
-            fts_paths_ordered: list[str] = []
-            fts_seen: set[str] = set()
-            for cid in fts_top:
-                p = chunk_id_to_path[cid]
-                if p not in fts_seen:
-                    fts_seen.add(p)
-                    fts_paths_ordered.append(p)
+            # Collapse to unique paths (first occurrence wins) on each
+            # fused ranking before disagreement detection.
+            def _unique_paths(chunk_ids: list[int]) -> list[str]:
+                seen: set[str] = set()
+                out: list[str] = []
+                for cid in chunk_ids:
+                    p = chunk_id_to_path[cid]
+                    if p not in seen:
+                        seen.add(p)
+                        out.append(p)
+                return out
+
+            vec_paths_ordered = _unique_paths(vec_heavy_fused)
+            fts_paths_ordered = _unique_paths(fts_heavy_fused)
 
             vec_set = set(vec_paths_ordered)
             fts_set = set(fts_paths_ordered)
             if vec_set != fts_set:
                 total_disagreements += 1
 
-            # Hard negs from each side, excluding gold paths.
+            # Hard negs from each fused side, excluding gold paths.
             vec_only_neg = [
                 p for p in vec_paths_ordered if p not in fts_set and p not in gold_paths
             ]
@@ -909,7 +934,8 @@ def generate_labeled_triples_batched(
                 gold_cid = path_to_first_chunk_id.get(gold_path)
                 if gold_cid is None:
                     continue
-                positive_text = chunk_id_to_text[gold_cid]
+                # v5-parity: cap positive text at 512 chars.
+                positive_text = (chunk_id_to_text[gold_cid] or "")[:512]
                 if not positive_text or positive_text == qtext:
                     continue
 
@@ -917,7 +943,7 @@ def generate_labeled_triples_batched(
                     neg_cid = path_to_first_chunk_id.get(neg_path)
                     if neg_cid is None:
                         continue
-                    neg_text = chunk_id_to_text[neg_cid]
+                    neg_text = (chunk_id_to_text[neg_cid] or "")[:512]
                     if not neg_text:
                         continue
                     pairs.append(
@@ -932,7 +958,7 @@ def generate_labeled_triples_batched(
                     neg_cid = path_to_first_chunk_id.get(neg_path)
                     if neg_cid is None:
                         continue
-                    neg_text = chunk_id_to_text[neg_cid]
+                    neg_text = (chunk_id_to_text[neg_cid] or "")[:512]
                     if not neg_text:
                         continue
                     pairs.append(

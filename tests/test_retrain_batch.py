@@ -938,34 +938,35 @@ class TestGenerateLabeledTriplesBatched:
         assert pairs == []
 
     def test_emits_multiple_triples_per_query(self, tmp_path: Path, torch_st_stubs: Any) -> None:
-        """A query with 1 gold and multiple hard negs in the
-        disagreement set must emit one triple per (gold, hard_neg).
-        Matches the v5 notebook's training pair generation."""
+        """A query with 1 gold and multiple hard negs across the TWO
+        RRF-fused rankings (vec-heavy 0.95/0.05 vs fts-heavy 0.05/0.95)
+        must emit one triple per (gold, hard_neg). Corpus is >TOP_K
+        so the two fused top-10s differ in membership, not just order.
+        """
         from vstash.retrain_batch import generate_labeled_triples_batched
 
-        # Vec-only negs: high cosine to the query vector but share
-        # zero query terms so FTS5 does not surface them.
-        store = _mk_store(
-            str(tmp_path / "multi.db"),
-            [
-                ("/gold", "Gold", "machine learning intro tutorial"),
-                ("/v1", "V1", "xyzzy nonsense filler text"),
-                ("/v2", "V2", "pqrs absolutely different content"),
-                ("/fts_only", "FTS", "machine something unrelated payload"),
-            ],
-        )
-        query_text = "find machine learning basics"
-        # Vec embeddings: query close to gold AND to the two vec-only
-        # negatives (v1, v2). fts_only has orthogonal vec.
-        torch_st_stubs.set_encode(
-            {
-                "machine learning intro tutorial": [1.0, 0.0, 0.0],
-                "xyzzy nonsense filler text": [0.9, 0.1, 0.0],
-                "pqrs absolutely different content": [0.85, 0.15, 0.0],
-                "machine something unrelated payload": [0.0, 0.0, 1.0],
-                query_text: [0.95, 0.05, 0.0],
-            }
-        )
+        # 13 docs: gold + 9 vec-only (high vec, no query keyword) + 3
+        # fts-only (contain the "alpha" keyword, vec orthogonal).
+        docs = [("/gold", "G", "gold body text about subject matter")]
+        for i in range(1, 10):
+            docs.append((f"/v{i}", f"V{i}", f"vecfiller{i} random filler {i}"))
+        for i in range(1, 4):
+            docs.append((f"/f{i}", f"F{i}", f"alpha mention body {i}"))
+        store = _mk_store(str(tmp_path / "multi.db"), docs)
+
+        query_text = "find alpha gold body"
+        encode_map: dict[str, list[float]] = {
+            "gold body text about subject matter": [1.0, 0.0, 0.0],
+            query_text: [0.95, 0.05, 0.0],
+        }
+        # v-docs: descending vec sim 0.93 .. 0.85, no FTS overlap.
+        for i in range(1, 10):
+            encode_map[f"vecfiller{i} random filler {i}"] = [0.94 - 0.01 * i, 0.05 + 0.01 * i, 0.0]
+        # f-docs: orthogonal vec, contain "alpha" so FTS matches.
+        for i in range(1, 4):
+            encode_map[f"alpha mention body {i}"] = [0.0, 0.0, 1.0]
+        torch_st_stubs.set_encode(encode_map)
+
         try:
             pairs = generate_labeled_triples_batched(
                 store,
@@ -975,41 +976,132 @@ class TestGenerateLabeledTriplesBatched:
         finally:
             store.close()
 
-        # Expect at least 2 pairs: gold paired with v1 and v2 (both
-        # ranked high by vec, neither surfaces in FTS for this query).
-        assert len(pairs) >= 2
+        # vec-heavy top-10 is dominated by gold + v-docs; fts-heavy
+        # top-10 promotes f-docs ahead of the weakest v-docs. The
+        # swap yields at least a few vec-only and fts-only hard negs,
+        # so the miner should emit at least 3 triples for the single
+        # gold.
+        assert len(pairs) >= 3, f"expected >=3 pairs from multi-neg mining, got {len(pairs)}"
         for p in pairs:
             assert p["query"] == query_text
-            assert p["positive"] == "machine learning intro tutorial"  # gold text
+            assert p["positive"].startswith("gold body text")
             assert p["negative"] != p["positive"]
-        # Both vec-only negatives should appear among the emitted negs.
-        neg_texts = {p["negative"] for p in pairs}
-        assert "xyzzy nonsense filler text" in neg_texts
-        assert "pqrs absolutely different content" in neg_texts
+
+    def test_uses_rrf_fused_rankings_for_disagreement(
+        self, tmp_path: Path, torch_st_stubs: Any
+    ) -> None:
+        """Regression test for the gemini/copilot review finding: the
+        disagreement must be computed from TWO RRF-fused rankings
+        (vec-heavy 0.95/0.05 vs fts-heavy 0.05/0.95), not from raw
+        vec vs raw FTS top-K. Verified by asserting ``_rrf_fuse`` is
+        called with both weight configs."""
+        from vstash.retrain_batch import (
+            _LABELED_TRAIN_WEIGHTS_FTS_HEAVY,
+            _LABELED_TRAIN_WEIGHTS_VEC_HEAVY,
+            generate_labeled_triples_batched,
+        )
+
+        store = _mk_store(
+            str(tmp_path / "rrf.db"),
+            [
+                ("/gold", "G", "gold document text"),
+                ("/neg", "N", "negative document text"),
+            ],
+        )
+        torch_st_stubs.set_encode(
+            {
+                "gold document text": [1.0, 0.0],
+                "negative document text": [0.0, 1.0],
+                "find gold": [1.0, 0.0],
+            }
+        )
+        try:
+            with patch(
+                "vstash.retrain_batch._rrf_fuse",
+                wraps=__import__("vstash.retrain_batch", fromlist=["_rrf_fuse"])._rrf_fuse,
+            ) as spy:
+                generate_labeled_triples_batched(
+                    store,
+                    "dummy",
+                    labeled_queries=[{"query": "find gold", "relevant_paths": ["/gold"]}],
+                )
+        finally:
+            store.close()
+
+        # Expect at least two calls per query: one vec-heavy, one fts-heavy.
+        call_weights = {(call.args[2], call.args[3]) for call in spy.call_args_list}
+        assert _LABELED_TRAIN_WEIGHTS_VEC_HEAVY in call_weights
+        assert _LABELED_TRAIN_WEIGHTS_FTS_HEAVY in call_weights
+
+    def test_truncates_positive_and_negative_to_512_chars(
+        self, tmp_path: Path, torch_st_stubs: Any
+    ) -> None:
+        """v5 truncates doc text to [:512]. Verify we do the same so
+        VRAM / training time do not balloon on long chunks. Uses a
+        corpus > TOP_K so the two fused rankings disagree on
+        membership and negatives actually appear."""
+        from vstash.retrain_batch import generate_labeled_triples_batched
+
+        long_gold = "G" * 900  # > 512 chars
+        docs = [("/gold", "G", long_gold)]
+        for i in range(1, 10):
+            docs.append((f"/v{i}", f"V{i}", f"vec_text_{i} " + "V" * 800))
+        for i in range(1, 4):
+            docs.append((f"/f{i}", f"F{i}", f"alpha mention {i} " + "F" * 800))
+        store = _mk_store(str(tmp_path / "cap.db"), docs)
+
+        query_text = "find alpha gold body"
+        encode_map: dict[str, list[float]] = {
+            long_gold: [1.0, 0.0, 0.0],
+            query_text: [0.95, 0.05, 0.0],
+        }
+        for i in range(1, 10):
+            text = f"vec_text_{i} " + "V" * 800
+            encode_map[text] = [0.94 - 0.01 * i, 0.05 + 0.01 * i, 0.0]
+        for i in range(1, 4):
+            text = f"alpha mention {i} " + "F" * 800
+            encode_map[text] = [0.0, 0.0, 1.0]
+        torch_st_stubs.set_encode(encode_map)
+
+        try:
+            pairs = generate_labeled_triples_batched(
+                store,
+                "dummy",
+                labeled_queries=[{"query": query_text, "relevant_paths": ["/gold"]}],
+            )
+        finally:
+            store.close()
+
+        assert pairs, "expected at least one pair"
+        for p in pairs:
+            assert len(p["positive"]) <= 512
+            assert len(p["negative"]) <= 512
 
     def test_positive_is_gold_chunk_not_query_source(
         self, tmp_path: Path, torch_st_stubs: Any
     ) -> None:
         """Regression test for the T1.4 bug: the positive must come
         from the gold doc's own text, not from the query string. This
-        is the whole point of T1.5."""
+        is the whole point of T1.5. Uses a corpus > TOP_K so the
+        fused rankings can disagree and negatives exist."""
         from vstash.retrain_batch import generate_labeled_triples_batched
 
-        store = _mk_store(
-            str(tmp_path / "positive.db"),
-            [
-                ("/gold", "G", "the gold document text about topic X"),
-                ("/other", "O", "something else entirely about Y"),
-            ],
-        )
-        query = "what is topic X?"
-        torch_st_stubs.set_encode(
-            {
-                "the gold document text about topic X": [1.0, 0.0],
-                "something else entirely about Y": [0.0, 1.0],
-                query: [0.9, 0.1],
-            }
-        )
+        gold_text = "the gold document text about topic X"
+        docs = [("/gold", "G", gold_text)]
+        for i in range(1, 10):
+            docs.append((f"/v{i}", f"V{i}", f"vecish text {i}"))
+        for i in range(1, 4):
+            docs.append((f"/f{i}", f"F{i}", f"alpha filler {i}"))
+        store = _mk_store(str(tmp_path / "positive.db"), docs)
+
+        query = "what is topic alpha?"
+        encode_map: dict[str, list[float]] = {gold_text: [1.0, 0.0, 0.0], query: [0.9, 0.05, 0.05]}
+        for i in range(1, 10):
+            encode_map[f"vecish text {i}"] = [0.88 - 0.01 * i, 0.1 + 0.01 * i, 0.0]
+        for i in range(1, 4):
+            encode_map[f"alpha filler {i}"] = [0.0, 0.0, 1.0]
+        torch_st_stubs.set_encode(encode_map)
+
         try:
             pairs = generate_labeled_triples_batched(
                 store,
@@ -1022,7 +1114,7 @@ class TestGenerateLabeledTriplesBatched:
         assert pairs, "expected at least one triple"
         for p in pairs:
             # Critical: positive is the gold chunk's text, NOT the query.
-            assert p["positive"] == "the gold document text about topic X"
+            assert p["positive"] == gold_text
             assert p["positive"] != p["query"]
 
     def test_max_queries_caps_input(self, tmp_path: Path, torch_st_stubs: Any) -> None:
