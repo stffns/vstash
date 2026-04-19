@@ -29,17 +29,23 @@ Outputs a Markdown table on stdout plus a JSON file at
 
 from __future__ import annotations
 
+import argparse
 import json
 import random
 import statistics
+import tempfile
 import time
 from pathlib import Path
 
 import numpy as np
 
-from vstash.config import VstashConfig
-from vstash.embed import get_embedding_dim
 from vstash.store import VstashStore
+
+# Default embedding dim matches BAAI/bge-small-en-v1.5 (the project's
+# shipped default). Fixed rather than derived from VstashConfig so the
+# benchmark runs even when the developer's local vstash.toml points at
+# a model not registered in vstash.embed. Override via ``--dim``.
+_DEFAULT_DIM = 384
 
 
 def _make_chunk_row(
@@ -70,8 +76,10 @@ def _populate_store(
     ranked list in a shape _mmr_dedup will accept.
 
     ``dup_ratio`` fraction of chunks share a path with at least one
-    other chunk. The rest get unique paths. Vectors are random
-    normalised 32-bit floats (same shape vstash stores).
+    other chunk. The rest get unique paths. Vectors are raw
+    ``np.random.randn`` 32-bit floats (not L2-normalised); the MMR
+    path computes its own norms internally via ``math.hypot`` and does
+    not assume unit-length inputs.
     """
     n_dup_chunks = int(n_chunks * dup_ratio)
     n_unique_chunks = n_chunks - n_dup_chunks
@@ -80,13 +88,25 @@ def _populate_store(
     # Unique chunks: one path each.
     for i in range(n_unique_chunks):
         paths.append(f"/u/uniq_{i:05d}.md")
-    # Duplicate chunks: cluster them into docs with 2-5 chunks each.
+    # Duplicate chunks: cluster into 2-5 per doc, but make the clusters
+    # sum exactly to ``n_dup_chunks`` so the realised dup ratio matches
+    # the requested one. Fold any leftover remainder of 1 into the
+    # previous cluster; never emit a solo "duplicate" path (that would
+    # silently drop the dup ratio).
+    cluster_sizes: list[int] = []
+    remaining = n_dup_chunks
+    while remaining > 0:
+        if remaining == 1 and cluster_sizes:
+            cluster_sizes[-1] += 1
+            remaining = 0
+            break
+        size = min(rng.randint(2, 5), remaining)
+        cluster_sizes.append(size)
+        remaining -= size
     d = 0
-    while len(paths) < n_chunks:
-        cluster_size = rng.randint(2, 5)
-        for _ in range(cluster_size):
-            if len(paths) < n_chunks:
-                paths.append(f"/d/book_{d:04d}.pdf")
+    for size in cluster_sizes:
+        for _ in range(size):
+            paths.append(f"/d/book_{d:04d}.pdf")
         d += 1
     rng.shuffle(paths)
 
@@ -99,7 +119,10 @@ def _populate_store(
     ranked: list[dict[str, str | int | float]] = []
     for doc_path, indices in by_path.items():
         texts = [f"chunk text {i} for {doc_path}" for i in indices]
-        embeddings = [list(map(float, np.random.randn(dim).astype(np.float32))) for _ in indices]
+        # Batch-generate embeddings via a single np.random.randn call;
+        # converting the array with .tolist() is ~10x faster than the
+        # per-row list(map(float, ...)) pattern at dim=384.
+        embeddings = np.random.randn(len(indices), dim).astype(np.float32).tolist()
         store.add_document(
             path=doc_path,
             title=doc_path,
@@ -110,8 +133,10 @@ def _populate_store(
 
     # Pull the chunk ids the store assigned so rrf scoring can reference
     # real ids (the _mmr_dedup loop fetches vec_chunks by rowid).
+    # Explicit ORDER BY keeps the synthesised RRF ranking deterministic
+    # across SQLite versions / query plans.
     rows = store._conn.execute(
-        "SELECT c.id, d.path FROM chunks c JOIN documents d ON d.id = c.doc_id"
+        "SELECT c.id, d.path FROM chunks c JOIN documents d ON d.id = c.doc_id ORDER BY c.id"
     ).fetchall()
     # Synthesise a descending RRF score so the ranking is meaningful.
     # In reality ``rrf`` collides in ties but the MMR loop's tie-break
@@ -154,13 +179,23 @@ def _bench_cell(
             times.append(dt)
             selected_sizes.append(len(out))
 
+        # Proper 95th percentile via ``statistics.quantiles``. The
+        # naive ``sorted(times)[int(len * 0.95) - 1]`` pick is biased
+        # low for small samples (at repeats=50 it lands on the 47th
+        # value, ~p92). ``method="inclusive"`` matches
+        # ``numpy.percentile`` exactly.
+        p95 = (
+            times[0]
+            if len(times) == 1
+            else statistics.quantiles(times, n=100, method="inclusive")[94]
+        )
         return {
             "n_chunks": n_chunks,
             "top_k": top_k,
             "dup_ratio": dup_ratio,
             "mmr_lambda": mmr_lambda,
             "p50_ms": round(statistics.median(times) * 1000, 3),
-            "p95_ms": round(sorted(times)[int(len(times) * 0.95) - 1] * 1000, 3),
+            "p95_ms": round(p95 * 1000, 3),
             "mean_ms": round(statistics.mean(times) * 1000, 3),
             "selected_size_p50": int(statistics.median(selected_sizes)),
             "repeats": repeats,
@@ -192,11 +227,22 @@ def _print_markdown(results: list[dict[str, float | int]]) -> None:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--dim",
+        type=int,
+        default=_DEFAULT_DIM,
+        help=(
+            f"Embedding dimension. Default {_DEFAULT_DIM} (bge-small). "
+            "Override to match a different model if you want realistic "
+            "inner-product cost at that dim."
+        ),
+    )
+    args = parser.parse_args()
+
     np.random.seed(0x5A4D)
     random.seed(0x5A4D)
-
-    cfg = VstashConfig()
-    dim = get_embedding_dim(cfg.embeddings.model)
+    dim = args.dim
 
     # Realistic grid:
     # - N: production search returns ~100-200 pre-MMR candidates; RAG
@@ -220,28 +266,25 @@ def main() -> None:
         (1000, 100, 0.5, 0.2),  # diversity-heavy at large K
     ]
 
-    tmp_parent = Path("/tmp/vstash_mmr_bench")
-    tmp_parent.mkdir(parents=True, exist_ok=True)
-
+    # ``TemporaryDirectory`` isolates this run from any previous
+    # leftover files and from concurrent runs. Cross-platform: picks
+    # ``/tmp`` on unix, ``%TEMP%`` on Windows.
     results: list[dict[str, float | int]] = []
-    for i, (n, k, dup, lam) in enumerate(grid):
-        tmp_path = tmp_parent / f"bench_{i}.db"
-        for suffix in ("", "-wal", "-shm"):
-            try:
-                (tmp_parent / (tmp_path.name + suffix)).unlink(missing_ok=True)
-            except Exception:
-                pass
-        print(f"-> cell {i + 1}/{len(grid)}: n={n}, k={k}, dup={dup}, lam={lam}")
-        cell = _bench_cell(
-            n_chunks=n,
-            top_k=k,
-            dup_ratio=dup,
-            mmr_lambda=lam,
-            repeats=50,
-            tmp_path=tmp_path,
-            dim=dim,
-        )
-        results.append(cell)
+    with tempfile.TemporaryDirectory(prefix="vstash_mmr_bench_") as tmp_root:
+        tmp_parent = Path(tmp_root)
+        for i, (n, k, dup, lam) in enumerate(grid):
+            tmp_path = tmp_parent / f"bench_{i}.db"
+            print(f"-> cell {i + 1}/{len(grid)}: n={n}, k={k}, dup={dup}, lam={lam}")
+            cell = _bench_cell(
+                n_chunks=n,
+                top_k=k,
+                dup_ratio=dup,
+                mmr_lambda=lam,
+                repeats=50,
+                tmp_path=tmp_path,
+                dim=dim,
+            )
+            results.append(cell)
 
     print()
     _print_markdown(results)
