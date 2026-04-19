@@ -251,6 +251,44 @@ in git history for future continual-retrain (T2.6) or reranker
 in `experiments/hypotheses.md` (corpus balance via sampling
 temperature and/or total_triples), pure CLI sweep.
 
+**H-R9 ablation results (2026-04-19, A100).** Three arms against the
+T1.5 baseline:
+
+| arm         | sampling    | temp | total | pairs | SciFact | NFCorpus | FiQA   | macro   |
+|-------------|-------------|------|-------|-------|---------|----------|--------|---------|
+| baseline    | temperature | 0.5  | 30000 | 28490 | 0.7786  | 0.3677   | 0.4568 | 0.5344  |
+| arm_t03     | temperature | 0.3  | 30000 | 26713 | 0.7791  | 0.3732   | 0.4431 | 0.5318  |
+| arm_uniform | uniform     | 0.0  | 30000 | 24291 | 0.7765  | 0.3809   | 0.4222 | 0.5265  |
+| **arm_vol** | temperature | 0.5  | 60000 | 39852 | **0.7818** | **0.3757** | **0.4818** | **0.5464** |
+
+Targets: NFCorpus > 0.38 (narrowly missed at 0.3757), SciFact > 0.775
+(met), FiQA > 0.45 (met).
+
+**Conclusions**:
+
+1. **Volume is the dominant lever**. arm_vol (60k triples, same
+   temperature=0.5 balance) is the only arm that lifts all three
+   datasets above baseline simultaneously. No observed trade-off
+   at this scale.
+2. **Temperature is a controllable trade-off**, not a free lunch.
+   Lowering it monotonically raises NFCorpus and lowers FiQA.
+   NFCorpus ceiling at uniform = 0.3809; FiQA ceiling damage at
+   uniform = -0.0346. Publishable sensitivity table for the paper.
+3. **NFCorpus saturates near 0.38** for this base model + recipe.
+   v5's published 0.409 is 0.028 absolute further; the remainder
+   likely splits between extra volume (v5 used 76k) and model
+   capacity (bge-small's keyword-retrieval ceiling).
+
+**v3 publish candidate**: `temperature=0.5, total_triples=60000`
+(arm_vol exact). Optional follow-up: one more arm combining
+`temperature=0.3, total=60000`; if NFCorpus > 0.385 without
+regressing FiQA below 0.465, that combined config wins v3.
+
+After v3 publishes, the natural next step is T2.4 (cross-encoder
+reranker; design doc at `experiments/t24_reranker_design.md`),
+expected to close the NFCorpus residual gap vs v5 orthogonally to
+any further training work.
+
 ### T1.4c Batched GPU eval
 
 [LANDED on feat/retrain-t14c-batched-eval] Follow-up to T1.4b.
