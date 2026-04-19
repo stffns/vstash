@@ -147,7 +147,17 @@ vstash reindex --model ~/.vstash/models/retrained
 
 **How it works, in one paragraph.** When you search your corpus, the vector and keyword halves of the pipeline sometimes rank different documents at the top. Those disagreements are a free signal: the document each half picked is probably relevant, the one only one half picked might not be. vstash turns this into training pairs and fine-tunes the embedding model on them. The run is eval-gated: it evaluates the candidate against the base model on a held-out slice of your corpus and refuses to save a model that performs worse.
 
-**Published results.** [`Stffens/bge-small-rrf-v2`](https://huggingface.co/Stffens/bge-small-rrf-v2) was trained this way from 76K pairs across three BEIR datasets in 30 min on a T4 GPU. [`Stffens/bge-small-rrf-v3`](https://huggingface.co/Stffens/bge-small-rrf-v3) (2026-04-19) retrains with the [H-R9](experiments/retrain_roadmap.md) winning config (`temperature=0.5, total_triples=60000`) for a cleaner +5.35% macro NDCG@10 gain. See the [Retrieval Quality](#retrieval-quality) table and [docs/retrain.md](docs/retrain.md) for the full recipe.
+**The feature is maturing fast.** Each release tightens the recipe, lifts the measured numbers, and adds infrastructure that keeps the next iteration honest:
+
+| Release | Training recipe | 5-dataset BEIR macro NDCG@10 | What landed alongside |
+|---------|-----------------|------------------------------|------------------------|
+| base `bge-small` | no fine-tune | 0.6118 | reference |
+| [`rrf-v2`](https://huggingface.co/Stffens/bge-small-rrf-v2) | 76k triples, ad-hoc scripts | 0.6246 | first paper-grade result; still the NFCorpus specialist |
+| [`rrf-v3`](https://huggingface.co/Stffens/bge-small-rrf-v3) | 60k triples via `retrain-multi` CLI, `temperature=0.5`, eval gate | **0.6405** | H-R9 ablation picked the config empirically; H-R7 seeded RNGs make it reproducible; H-R5 reports NDCG@3 + Recall@100 so regressions are visible before they ship |
+
+Both v2 and v3 beat ColBERTv2 on **5/5 BEIR datasets** under the current pipeline. v3 improves macro by +0.016 over v2 (+2.6% relative), with the largest per-dataset gain on FiQA (+0.097 absolute). The eval gate also catches losers: hypothesis H-R3 (hard-negative margin filter) regressed macro -2.49pp, the candidate was refused, the branch was closed without merging. **The pipeline's job is to refuse bad models, and it does.**
+
+See the [Retrieval Quality](#retrieval-quality) table, [docs/retrain.md](docs/retrain.md) for the full recipe and per-version breakdown, and [experiments/results/v2_v3_head_to_head.json](experiments/results/v2_v3_head_to_head.json) for reproducible numbers.
 
 Requires `sentence-transformers`, `torch`, and `accelerate`:
 
