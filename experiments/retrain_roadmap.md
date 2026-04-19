@@ -213,6 +213,35 @@ macro positive. If those land, the paper claims reproduce and
 chunk-prefix can be deprecated or documented as a weaker fallback for
 users without labeled queries.
 
+**T1.5 Colab validation (2026-04-19).** First run after the recipe
+fix came in at:
+
+| Dataset  | Baseline | Final  | Delta    |
+|----------|----------|--------|----------|
+| SciFact  | 0.7261   | 0.7802 | +5.41%   |
+| NFCorpus | 0.3449   | 0.3670 | +2.22%   |
+| FiQA     | 0.3776   | 0.4513 | +7.37%   |
+| Macro    | 0.4828   | 0.5328 | +5.00%   |
+
+SciFact and FiQA reproduce or beat the v5 published numbers
+(+5%, +5-6%). NFCorpus is well short of v5's published +18.3%; the
+gap is the open question that motivated H-R3 (hard-neg margin
+filter) and will likely motivate a H-T14.5 (per-query triple cap /
+temperature re-tuning) if H-R3 does not close it.
+
+**Second validation (2026-04-19, post PR #243 merge).** Re-run with
+H-R5 (NDCG@3 / Recall@100 / wider top-K in batched eval) + H-R7
+(seed determinism) came in at macro +4.14% (SciFact +4.53%,
+NFCorpus +1.39%, FiQA +6.51%). **Final absolute NDCG@10 was
+equivalent or a touch better than the first run on every dataset**
+(SciFact 0.7802 vs 0.7786, NFCorpus 0.3670 vs 0.3677, FiQA 0.4513
+vs 0.4568). Delta% dropped only because the widened eval pipeline
+raised baseline NDCG@10 in parallel. Corollary: when comparing our
+numbers to v5's published deltas, prefer comparing absolute final
+NDCG@10, not percentage deltas (see
+`project_t15_colab_validation.md` + `feedback_eval_pipeline_shift.md`
+in memory).
+
 ### T1.4c Batched GPU eval
 
 [LANDED on feat/retrain-t14c-batched-eval] Follow-up to T1.4b.
@@ -400,6 +429,46 @@ cache, graceful skip on parse failure, timeout per call.
 - Cached runs re-use cache.
 - End-to-end `vstash retrain --synthesize-queries` works on SciFact and
   produces a model with NDCG@10 >= baseline.
+
+---
+
+## Post-T1.5 hypotheses (tracked in `experiments/hypotheses.md`)
+
+The full living backlog lives in `experiments/hypotheses.md`.
+Retrain-side highlights below so this doc still works as the
+standalone roadmap:
+
+### H-R3. Hard-negative margin filter [LANDED in PR #245]
+
+`generate_labeled_triples_batched` accepts `margin_min` and
+`margin_max`; drops `(gold, hard_neg)` pairs whose cosine margin
+falls outside the band. Per-query gather + matmul on the
+device-resident corpus vectors; no second corpus pass. Threaded
+through `retrain_multi` and CLI `--margin-min / --margin-max`. 5
+unit tests, 129 retrain tests total. Ablation notebook at
+`experiments/retrain_t1_5_hr3_ablation.ipynb` with 4 arms
+(baseline + 3 margin configs) shares BEIR stores across arms.
+
+Target: close the NFCorpus gap vs v5 without regressing SciFact or
+FiQA. Judge by final absolute NDCG@10, not delta% (eval pipeline
+shift caveat).
+
+### H-R7. Seed determinism [LANDED in PR #243]
+
+`train_mnrl` pre-shuffles examples with `random.Random(seed)`,
+calls `torch.manual_seed` + `torch.cuda.manual_seed_all`, and hands
+a seeded `torch.Generator` to `DataLoader`. Threaded through
+`retrain`, `retrain_multi`, and CLI `--seed`. `training_meta.json`
+records the seed. Two back-to-back runs with the same seed produce
+identical gradient steps.
+
+### H-R8. Labeled queries + margin filter on single-corpus `retrain` [BACKLOG]
+
+Today both levers live only on `retrain-multi`. A user with qrels
+over a single private store has to wrap it in a one-element dict
+to reach the labeled miner. Add `training_queries` / `margin_min` /
+`margin_max` / `bulk_mine` to `vstash.retrain.retrain(...)` and
+expose the matching CLI flags. 1 day, purely additive.
 
 ---
 

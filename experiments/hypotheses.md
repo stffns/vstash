@@ -14,6 +14,31 @@ Each hypothesis is:
 
 Ordered by expected ROI / day. Strike through when shipped. Link the PR.
 
+## Methodological note: eval pipeline shifts absolute baselines
+
+Between the 2026-04-18 and 2026-04-19 runs, PR #243 merged changes to
+`evaluate_model` + `evaluate_model_batched` (widened top-K pool from
+10 to 100 to support Recall@100, plus reinforced doc-level dedup).
+These are semantically correct but they raise absolute baseline
+NDCG@10 by ~0.01-0.02 per dataset because the base model now has a
+wider candidate pool to surface relevant docs from.
+
+Consequence for ablation reading:
+
+- **Delta %** between baseline and final depends on eval pipeline.
+  Not comparable across PR-#243 pre/post or across independent
+  evaluators.
+- **Final absolute NDCG@10** is a genuine model-quality signal.
+  Prefer this when comparing arms or comparing to published numbers.
+- When quoting v5's published +5% SciFact / +18.3% NFCorpus numbers
+  alongside our own, make clear the pipeline delta. Our final
+  absolute NDCG@10 on SciFact/FiQA already matches or beats v5; the
+  remaining gap on NFCorpus is a model-quality question, not a
+  measurement artefact.
+
+This guidance is persisted in the auto-memory as
+`feedback_eval_pipeline_shift.md` so future sessions apply it.
+
 ---
 
 ## Retrain (signal quality + training)
