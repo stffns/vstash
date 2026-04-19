@@ -889,3 +889,342 @@ class TestRetrainMultiBulkEval:
             assert mock_plain.call_count == 2
         finally:
             s1.close()
+
+
+# ------------------------------------------------------------------ #
+# T1.5: labeled-query training                                         #
+# ------------------------------------------------------------------ #
+
+
+class TestGenerateLabeledTriplesBatched:
+    def test_empty_labeled_queries_raises(self, tmp_path: Path, torch_st_stubs: Any) -> None:
+        from vstash.retrain_batch import generate_labeled_triples_batched
+
+        store = _mk_store(str(tmp_path / "empty.db"), [("/a", "A", "body")])
+        try:
+            with pytest.raises(ValueError, match="at least one query"):
+                generate_labeled_triples_batched(store, "dummy", labeled_queries=[])
+        finally:
+            store.close()
+
+    def test_queries_without_gold_path_are_skipped(
+        self, tmp_path: Path, torch_st_stubs: Any
+    ) -> None:
+        """A query whose relevant_paths point at docs not in the store
+        must be dropped, not emit triples."""
+        from vstash.retrain_batch import generate_labeled_triples_batched
+
+        store = _mk_store(
+            str(tmp_path / "skip.db"),
+            [("/a", "A", "alpha body text"), ("/b", "B", "beta body text")],
+        )
+        torch_st_stubs.set_encode(
+            {
+                "alpha body text": [1.0, 0.0],
+                "beta body text": [0.0, 1.0],
+                "unrelated query": [0.5, 0.5],
+            }
+        )
+        try:
+            pairs = generate_labeled_triples_batched(
+                store,
+                "dummy",
+                labeled_queries=[
+                    {"query": "unrelated query", "relevant_paths": ["/does-not-exist"]}
+                ],
+            )
+        finally:
+            store.close()
+        assert pairs == []
+
+    def test_emits_multiple_triples_per_query(self, tmp_path: Path, torch_st_stubs: Any) -> None:
+        """A query with 1 gold and multiple hard negs across the TWO
+        RRF-fused rankings (vec-heavy 0.95/0.05 vs fts-heavy 0.05/0.95)
+        must emit one triple per (gold, hard_neg). Corpus is >TOP_K
+        so the two fused top-10s differ in membership, not just order.
+        """
+        from vstash.retrain_batch import generate_labeled_triples_batched
+
+        # 13 docs: gold + 9 vec-only (high vec, no query keyword) + 3
+        # fts-only (contain the "alpha" keyword, vec orthogonal).
+        docs = [("/gold", "G", "gold body text about subject matter")]
+        for i in range(1, 10):
+            docs.append((f"/v{i}", f"V{i}", f"vecfiller{i} random filler {i}"))
+        for i in range(1, 4):
+            docs.append((f"/f{i}", f"F{i}", f"alpha mention body {i}"))
+        store = _mk_store(str(tmp_path / "multi.db"), docs)
+
+        query_text = "find alpha gold body"
+        encode_map: dict[str, list[float]] = {
+            "gold body text about subject matter": [1.0, 0.0, 0.0],
+            query_text: [0.95, 0.05, 0.0],
+        }
+        # v-docs: descending vec sim 0.93 .. 0.85, no FTS overlap.
+        for i in range(1, 10):
+            encode_map[f"vecfiller{i} random filler {i}"] = [0.94 - 0.01 * i, 0.05 + 0.01 * i, 0.0]
+        # f-docs: orthogonal vec, contain "alpha" so FTS matches.
+        for i in range(1, 4):
+            encode_map[f"alpha mention body {i}"] = [0.0, 0.0, 1.0]
+        torch_st_stubs.set_encode(encode_map)
+
+        try:
+            pairs = generate_labeled_triples_batched(
+                store,
+                "dummy",
+                labeled_queries=[{"query": query_text, "relevant_paths": ["/gold"]}],
+            )
+        finally:
+            store.close()
+
+        # vec-heavy top-10 is dominated by gold + v-docs; fts-heavy
+        # top-10 promotes f-docs ahead of the weakest v-docs. The
+        # swap yields at least a few vec-only and fts-only hard negs,
+        # so the miner should emit at least 3 triples for the single
+        # gold.
+        assert len(pairs) >= 3, f"expected >=3 pairs from multi-neg mining, got {len(pairs)}"
+        for p in pairs:
+            assert p["query"] == query_text
+            assert p["positive"].startswith("gold body text")
+            assert p["negative"] != p["positive"]
+
+    def test_uses_rrf_fused_rankings_for_disagreement(
+        self, tmp_path: Path, torch_st_stubs: Any
+    ) -> None:
+        """Regression test for the gemini/copilot review finding: the
+        disagreement must be computed from TWO RRF-fused rankings
+        (vec-heavy 0.95/0.05 vs fts-heavy 0.05/0.95), not from raw
+        vec vs raw FTS top-K. Verified by asserting ``_rrf_fuse`` is
+        called with both weight configs."""
+        from vstash.retrain_batch import (
+            _LABELED_TRAIN_WEIGHTS_FTS_HEAVY,
+            _LABELED_TRAIN_WEIGHTS_VEC_HEAVY,
+            generate_labeled_triples_batched,
+        )
+
+        store = _mk_store(
+            str(tmp_path / "rrf.db"),
+            [
+                ("/gold", "G", "gold document text"),
+                ("/neg", "N", "negative document text"),
+            ],
+        )
+        torch_st_stubs.set_encode(
+            {
+                "gold document text": [1.0, 0.0],
+                "negative document text": [0.0, 1.0],
+                "find gold": [1.0, 0.0],
+            }
+        )
+        try:
+            with patch(
+                "vstash.retrain_batch._rrf_fuse",
+                wraps=__import__("vstash.retrain_batch", fromlist=["_rrf_fuse"])._rrf_fuse,
+            ) as spy:
+                generate_labeled_triples_batched(
+                    store,
+                    "dummy",
+                    labeled_queries=[{"query": "find gold", "relevant_paths": ["/gold"]}],
+                )
+        finally:
+            store.close()
+
+        # Expect at least two calls per query: one vec-heavy, one fts-heavy.
+        call_weights = {(call.args[2], call.args[3]) for call in spy.call_args_list}
+        assert _LABELED_TRAIN_WEIGHTS_VEC_HEAVY in call_weights
+        assert _LABELED_TRAIN_WEIGHTS_FTS_HEAVY in call_weights
+
+    def test_truncates_positive_and_negative_to_512_chars(
+        self, tmp_path: Path, torch_st_stubs: Any
+    ) -> None:
+        """v5 truncates doc text to [:512]. Verify we do the same so
+        VRAM / training time do not balloon on long chunks. Uses a
+        corpus > TOP_K so the two fused rankings disagree on
+        membership and negatives actually appear."""
+        from vstash.retrain_batch import generate_labeled_triples_batched
+
+        long_gold = "G" * 900  # > 512 chars
+        docs = [("/gold", "G", long_gold)]
+        for i in range(1, 10):
+            docs.append((f"/v{i}", f"V{i}", f"vec_text_{i} " + "V" * 800))
+        for i in range(1, 4):
+            docs.append((f"/f{i}", f"F{i}", f"alpha mention {i} " + "F" * 800))
+        store = _mk_store(str(tmp_path / "cap.db"), docs)
+
+        query_text = "find alpha gold body"
+        encode_map: dict[str, list[float]] = {
+            long_gold: [1.0, 0.0, 0.0],
+            query_text: [0.95, 0.05, 0.0],
+        }
+        for i in range(1, 10):
+            text = f"vec_text_{i} " + "V" * 800
+            encode_map[text] = [0.94 - 0.01 * i, 0.05 + 0.01 * i, 0.0]
+        for i in range(1, 4):
+            text = f"alpha mention {i} " + "F" * 800
+            encode_map[text] = [0.0, 0.0, 1.0]
+        torch_st_stubs.set_encode(encode_map)
+
+        try:
+            pairs = generate_labeled_triples_batched(
+                store,
+                "dummy",
+                labeled_queries=[{"query": query_text, "relevant_paths": ["/gold"]}],
+            )
+        finally:
+            store.close()
+
+        assert pairs, "expected at least one pair"
+        for p in pairs:
+            assert len(p["positive"]) <= 512
+            assert len(p["negative"]) <= 512
+
+    def test_positive_is_gold_chunk_not_query_source(
+        self, tmp_path: Path, torch_st_stubs: Any
+    ) -> None:
+        """Regression test for the T1.4 bug: the positive must come
+        from the gold doc's own text, not from the query string. This
+        is the whole point of T1.5. Uses a corpus > TOP_K so the
+        fused rankings can disagree and negatives exist."""
+        from vstash.retrain_batch import generate_labeled_triples_batched
+
+        gold_text = "the gold document text about topic X"
+        docs = [("/gold", "G", gold_text)]
+        for i in range(1, 10):
+            docs.append((f"/v{i}", f"V{i}", f"vecish text {i}"))
+        for i in range(1, 4):
+            docs.append((f"/f{i}", f"F{i}", f"alpha filler {i}"))
+        store = _mk_store(str(tmp_path / "positive.db"), docs)
+
+        query = "what is topic alpha?"
+        encode_map: dict[str, list[float]] = {gold_text: [1.0, 0.0, 0.0], query: [0.9, 0.05, 0.05]}
+        for i in range(1, 10):
+            encode_map[f"vecish text {i}"] = [0.88 - 0.01 * i, 0.1 + 0.01 * i, 0.0]
+        for i in range(1, 4):
+            encode_map[f"alpha filler {i}"] = [0.0, 0.0, 1.0]
+        torch_st_stubs.set_encode(encode_map)
+
+        try:
+            pairs = generate_labeled_triples_batched(
+                store,
+                "dummy",
+                labeled_queries=[{"query": query, "relevant_paths": ["/gold"]}],
+            )
+        finally:
+            store.close()
+
+        assert pairs, "expected at least one triple"
+        for p in pairs:
+            # Critical: positive is the gold chunk's text, NOT the query.
+            assert p["positive"] == gold_text
+            assert p["positive"] != p["query"]
+
+    def test_max_queries_caps_input(self, tmp_path: Path, torch_st_stubs: Any) -> None:
+        from vstash.retrain_batch import generate_labeled_triples_batched
+
+        store = _mk_store(
+            str(tmp_path / "cap.db"),
+            [
+                ("/gold1", "G1", "gold one text"),
+                ("/gold2", "G2", "gold two text"),
+                ("/other", "O", "unrelated filler"),
+            ],
+        )
+        torch_st_stubs.set_encode(
+            {
+                "gold one text": [1.0, 0.0],
+                "gold two text": [0.0, 1.0],
+                "unrelated filler": [0.5, -0.5],
+                "find gold one": [1.0, 0.0],
+                "find gold two": [0.0, 1.0],
+            }
+        )
+        labeled = [
+            {"query": "find gold one", "relevant_paths": ["/gold1"]},
+            {"query": "find gold two", "relevant_paths": ["/gold2"]},
+        ]
+        try:
+            # max_queries=1 must keep only the first query.
+            pairs = generate_labeled_triples_batched(
+                store,
+                "dummy",
+                labeled_queries=labeled,
+                max_queries=1,
+            )
+        finally:
+            store.close()
+
+        assert all(p["query"] == "find gold one" for p in pairs)
+
+    def test_raises_without_torch(self, tmp_path: Path) -> None:
+        from vstash.retrain_batch import generate_labeled_triples_batched
+
+        store = _mk_store(str(tmp_path / "torch_missing.db"), [("/a", "A", "body")])
+        prev_torch = sys.modules.get("torch")
+        prev_st = sys.modules.get("sentence_transformers")
+        sys.modules["torch"] = None  # type: ignore[assignment]
+        try:
+            with pytest.raises(ImportError, match="sentence-transformers"):
+                generate_labeled_triples_batched(
+                    store,
+                    "dummy",
+                    labeled_queries=[{"query": "q", "relevant_paths": ["/a"]}],
+                )
+        finally:
+            if prev_torch is None:
+                sys.modules.pop("torch", None)
+            else:
+                sys.modules["torch"] = prev_torch
+            if prev_st is None:
+                sys.modules.pop("sentence_transformers", None)
+            else:
+                sys.modules["sentence_transformers"] = prev_st
+            store.close()
+
+
+class TestRetrainMultiLabeledQueries:
+    def test_training_queries_by_dataset_routes_to_labeled_miner(self, tmp_path: Path) -> None:
+        """retrain_multi(training_queries_by_dataset=...) must call
+        generate_labeled_triples_batched for the datasets with
+        labeled queries, bypassing chunk-prefix sampling."""
+        from vstash.retrain import retrain_multi
+
+        s1 = _mk_store(
+            str(tmp_path / "s1.db"),
+            [(f"/s1/{i}", f"S1 {i}", f"s1 chunk text {i}") for i in range(30)],
+        )
+        s2 = _mk_store(
+            str(tmp_path / "s2.db"),
+            [(f"/s2/{i}", f"S2 {i}", f"s2 chunk text {i}") for i in range(30)],
+        )
+        try:
+            labeled_a = [{"query": f"aq{i}", "relevant_paths": [f"/s1/{i}"]} for i in range(15)]
+            # b has NO labeled queries -> falls back to legacy path.
+
+            with (
+                patch(
+                    "vstash.retrain_batch.generate_labeled_triples_batched",
+                    return_value=[{"query": "q", "positive": "p", "negative": "n"}] * 12,
+                ) as mock_labeled,
+                patch(
+                    "vstash.retrain.generate_triples",
+                    return_value=[{"query": "q", "positive": "p", "negative": None}] * 10,
+                ) as mock_legacy,
+                patch("vstash.retrain.train_mnrl"),
+            ):
+                retrain_multi(
+                    {"a": s1, "b": s2},
+                    base_model="dummy",
+                    output_path=str(tmp_path / "model"),
+                    total_triples=60,
+                    sampling="uniform",
+                    skip_eval=True,
+                    training_queries_by_dataset={"a": labeled_a},
+                )
+
+            # Dataset 'a' routes to labeled miner; 'b' stays on legacy.
+            assert mock_labeled.call_count == 1
+            assert mock_legacy.call_count == 1
+            # Labeled call got the queries forwarded.
+            assert mock_labeled.call_args.kwargs["labeled_queries"] is labeled_a
+        finally:
+            s1.close()
+            s2.close()

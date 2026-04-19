@@ -1321,6 +1321,7 @@ def retrain_multi(
     bulk_mine: bool = False,
     bulk_mine_device: str | None = None,
     bulk_eval: bool = False,
+    training_queries_by_dataset: dict[str, list[dict]] | None = None,
     cfg: "VstashConfig | None" = None,
 ) -> MultiRetrainResult:
     """Fine-tune an embedding model over N corpora with balanced sampling.
@@ -1362,6 +1363,16 @@ def retrain_multi(
         bulk_mine_device: ``"cuda" | "cpu" | None``. ``None`` lets
             the batched miner auto-detect. Ignored when
             ``bulk_mine=False``.
+        training_queries_by_dataset: Optional per-dataset labeled
+            training queries, shape ``{alias: [{query, relevant_paths},
+            ...]}``. When set, the batched miner uses these real
+            queries (and their gold docs as positives) instead of the
+            default chunk-prefix pseudo-queries. Required to reproduce
+            the ``Stffens/bge-small-rrf-v2`` recipe (v5 notebook), which
+            trained on BEIR ``queries.jsonl`` + qrels. Implies
+            ``bulk_mine=True`` because the labeled-query path only
+            exists in ``retrain_batch``. Datasets missing from the map
+            fall back to the legacy chunk-prefix flow.
         bulk_eval: Route baseline + final eval through
             ``retrain_batch.evaluate_model_batched`` which replaces
             the per-query ``eval_store.search`` scan with one GPU
@@ -1460,13 +1471,53 @@ def retrain_multi(
                 store, base_model, queries, per_dataset_seed[name]
             )
 
-    # Triple generation per dataset.
+    # Triple generation per dataset. Datasets with labeled training
+    # queries route through the v5-faithful ``generate_labeled_triples_batched``
+    # path; the rest fall back to chunk-prefix / synth.
     all_pairs: list[dict] = []
     per_dataset_pairs: dict[str, int] = {}
+    training_by_ds = training_queries_by_dataset or {}
     for name, store in stores_dict.items():
         n_queries = budget.get(name, 0)
         if n_queries <= 0:
             per_dataset_pairs[name] = 0
+            continue
+
+        # Labeled-query path: real queries + gold positives. Matches
+        # the v5 recipe that produced Stffens/bge-small-rrf-v2.
+        if name in training_by_ds and training_by_ds[name]:
+            from .retrain_batch import generate_labeled_triples_batched
+
+            dataset_pairs = generate_labeled_triples_batched(
+                store,
+                base_model,
+                labeled_queries=training_by_ds[name],
+                max_queries=n_queries,
+                device=bulk_mine_device,
+            )
+            # The labeled miner emits one triple per (gold, hard_neg)
+            # pair so output can vastly exceed the per-dataset budget.
+            # Downsample deterministically so total_triples stays
+            # meaningful and per-dataset balance is preserved.
+            if len(dataset_pairs) > n_queries:
+                generated = len(dataset_pairs)
+                rng = random.Random(per_dataset_seed[name])
+                keep_indices = sorted(rng.sample(range(generated), n_queries))
+                dataset_pairs = [dataset_pairs[i] for i in keep_indices]
+                logger.info(
+                    "Dataset '%s' (labeled-query path): downsampled %d -> %d "
+                    "pairs to respect per-dataset budget.",
+                    name,
+                    generated,
+                    n_queries,
+                )
+            per_dataset_pairs[name] = len(dataset_pairs)
+            all_pairs.extend(dataset_pairs)
+            logger.info(
+                "Dataset '%s' (labeled-query path): %d training pairs generated.",
+                name,
+                len(dataset_pairs),
+            )
             continue
 
         training_chunks = sample_training_chunks(
