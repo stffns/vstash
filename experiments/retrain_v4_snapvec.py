@@ -57,6 +57,7 @@ from experiments.beir_snapvec_h2h import (
     _get_st_model,
 )
 from vstash import embed as vstash_embed
+from vstash import retrain as vstash_retrain
 from vstash.embed import get_embedding_dim
 from vstash.retrain import (
     evaluate_model,
@@ -64,6 +65,41 @@ from vstash.retrain import (
     sample_training_chunks,
 )
 from vstash.store import VstashStore
+
+
+def _evaluate_on_backend(
+    base_store: VstashStore,
+    model_path: str,
+    eval_queries: list[dict],
+    backend: str,
+    seed: int,
+):
+    """Wrap ``evaluate_model`` so its internal eval_store uses ``backend``.
+
+    ``evaluate_model`` hard-codes ``VstashStore(tmp_db, embedding_dim=dim)``
+    on its internal eval index (``vstash/retrain.py`` line 874). The
+    ``base_store`` we pass is only used for relevant-chunk + noise lookup,
+    not for search. To run a meaningful "v4 on snapvec" cell, we need the
+    eval index itself to use snapvec. We do that by patching the symbol
+    ``vstash.retrain.VstashStore`` with a shim that defaults
+    ``vector_backend=backend`` for the duration of the call, then restore.
+    """
+    original_cls = vstash_retrain.VstashStore
+
+    def _forced(*args, **kwargs):
+        kwargs.setdefault("vector_backend", backend)
+        return original_cls(*args, **kwargs)
+
+    vstash_retrain.VstashStore = _forced
+    try:
+        return evaluate_model(
+            base_store,
+            model_name_or_path=model_path,
+            eval_queries=eval_queries,
+            seed=seed,
+        )
+    finally:
+        vstash_retrain.VstashStore = original_cls
 
 
 def _patch_embed_query_for_finetuned_model() -> None:
@@ -339,12 +375,11 @@ def main() -> int:
             args.models_dir.mkdir(parents=True, exist_ok=True)
 
             # Baseline eval on BOTH backends so the 2x2 is complete.
+            # _evaluate_on_backend forces the backend on evaluate_model's
+            # internal eval index (see helper docstring).
             print("\n[eval] baseline (v3) on sqlite-vec ...")
-            baseline_vec = evaluate_model(
-                store_vec,
-                model_name_or_path=args.model,
-                eval_queries=eval_queries,
-                seed=args.seed,
+            baseline_vec = _evaluate_on_backend(
+                store_vec, args.model, eval_queries, "sqlite-vec", args.seed
             )
             print(
                 f"  baseline/sqlite-vec NDCG@10={baseline_vec.ndcg_at_10:.4f} "
@@ -352,11 +387,8 @@ def main() -> int:
             )
 
             print("[eval] baseline (v3) on snapvec ...")
-            baseline_snap = evaluate_model(
-                store_snap,
-                model_name_or_path=args.model,
-                eval_queries=eval_queries,
-                seed=args.seed,
+            baseline_snap = _evaluate_on_backend(
+                store_snap, args.model, eval_queries, "snapvec", args.seed
             )
             print(
                 f"  baseline/snapvec NDCG@10={baseline_snap.ndcg_at_10:.4f} "
@@ -413,11 +445,8 @@ def main() -> int:
                         end="",
                         flush=True,
                     )
-                    metrics = evaluate_model(
-                        store,
-                        model_name_or_path=path,
-                        eval_queries=eval_queries,
-                        seed=args.seed,
+                    metrics = _evaluate_on_backend(
+                        store, path, eval_queries, backend_tag, args.seed
                     )
                     base_line = baseline_by_backend[backend_tag]
                     delta = metrics.ndcg_at_10 - base_line.ndcg_at_10
