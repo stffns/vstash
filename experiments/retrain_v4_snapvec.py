@@ -127,14 +127,20 @@ def _train_triplet(
     batch_size: int,
     seed: int,
     margin: float,
+    use_amp: bool = True,
+    max_seq_length: int | None = 256,
 ) -> int:
     """TripletLoss wrapper. Filters pairs to those with a non-null
     explicit hard negative (required by TripletLoss) and trains with
     ``sentence_transformers.losses.TripletLoss``.
 
-    Returns the number of triplets actually used (post-filter). The
-    call site should record this so the final report distinguishes
-    "0 pairs, training skipped" from "N pairs trained"."""
+    Memory defaults (``use_amp=True``, ``max_seq_length=256``) are
+    tuned for a 15 GB T4: TripletLoss materialises three forward
+    passes per step (anchor, positive, negative) so peak activation
+    memory is 3x MNRL's at the same batch size. Without AMP + a
+    capped seq length the Colab T4 OOMs at batch=64 on FiQA.
+
+    Returns the number of triplets actually used (post-filter)."""
     from sentence_transformers import InputExample, SentenceTransformer, losses
     from torch.utils.data import DataLoader
     import random as _random
@@ -146,6 +152,8 @@ def _train_triplet(
 
     Path(output_path).mkdir(parents=True, exist_ok=True)
     model = SentenceTransformer(base_model)
+    if max_seq_length is not None:
+        model.max_seq_length = max_seq_length
     examples = [
         InputExample(texts=[p["query"], p["positive"], p["negative"]])
         for p in triplets
@@ -156,6 +164,10 @@ def _train_triplet(
     _torch.manual_seed(seed)
     if _torch.cuda.is_available():
         _torch.cuda.manual_seed_all(seed)
+        # Free anything left over from a previous training / eval
+        # call inside the same process. Colab reuses the GPU across
+        # datasets in Cell 5b's for-loop.
+        _torch.cuda.empty_cache()
 
     loader_kwargs = {"batch_size": batch_size, "shuffle": True}
     gen = _torch.Generator()
@@ -176,6 +188,7 @@ def _train_triplet(
         optimizer_params={"lr": lr},
         output_path=output_path,
         show_progress_bar=True,
+        use_amp=use_amp,
     )
     model.save(output_path)
 
@@ -191,6 +204,8 @@ def _train_triplet(
         "lr": lr,
         "warmup_steps": warmup_steps,
         "seed": seed,
+        "use_amp": use_amp,
+        "max_seq_length": max_seq_length,
     }
     (Path(output_path) / "training_meta.json").write_text(json.dumps(meta, indent=2))
     return len(triplets)
