@@ -133,7 +133,13 @@ def main() -> int:
         tmp_dir = Path(td)
 
         store_vec = _build_store(
-            tmp_dir / f"{args.dataset}_vec.db", "sqlite-vec", dim, ids, texts, vecs
+            tmp_dir / f"{args.dataset}_vec.db",
+            "sqlite-vec",
+            dim,
+            ids,
+            texts,
+            vecs,
+            path_prefix=args.dataset,
         )
         training_chunks = sample_training_chunks(
             store_vec, max_queries=args.max_queries, seed=args.seed
@@ -151,7 +157,13 @@ def main() -> int:
         print(f"  {len(pairs_vec)} pairs in {time.perf_counter() - t0:.1f}s")
 
         store_snap = _build_store(
-            tmp_dir / f"{args.dataset}_snap.db", "snapvec", dim, ids, texts, vecs
+            tmp_dir / f"{args.dataset}_snap.db",
+            "snapvec",
+            dim,
+            ids,
+            texts,
+            vecs,
+            path_prefix=args.dataset,
         )
 
         print("[mine] snapvec flat ...")

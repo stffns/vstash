@@ -95,8 +95,14 @@ def _build_store(
     ids: list[str],
     texts: list[str],
     vecs: np.ndarray,
+    path_prefix: str,
 ) -> VstashStore:
-    """Fresh store of the given backend with the BEIR corpus already ingested."""
+    """Fresh store of the given backend with the BEIR corpus already ingested.
+
+    ``path_prefix`` must match the prefix used by ``_qrels_to_eval_queries``
+    so ``evaluate_model`` can resolve qrels paths to chunks. Earlier versions
+    derived the prefix from ``db_path.stem``, which was unique per backend
+    and therefore never matched the qrels -- NDCG collapsed to 0."""
     for suffix in ("", "-wal", "-shm", ".snpv", ".snpi"):
         p = db_path.with_suffix(db_path.suffix + suffix) if suffix else db_path
         if os.path.exists(p):
@@ -105,7 +111,7 @@ def _build_store(
     store = VstashStore(str(db_path), embedding_dim=dim, vector_backend=backend)
     docs = [
         {
-            "path": f"{db_path.stem}/{doc_id}",
+            "path": f"{path_prefix}/{doc_id}",
             "title": doc_id,
             "chunks": [text],
             "embeddings": [vecs[i].tolist()],
@@ -268,7 +274,13 @@ def main() -> int:
         tmp_dir = Path(td)
 
         store_vec = _build_store(
-            tmp_dir / f"{args.dataset}_vec.db", "sqlite-vec", dim, ids, texts, vecs
+            tmp_dir / f"{args.dataset}_vec.db",
+            "sqlite-vec",
+            dim,
+            ids,
+            texts,
+            vecs,
+            path_prefix=args.dataset,
         )
         # Pre-sample training chunks from sqlite-vec so both backends
         # mine triples from the exact same chunk population (the only
@@ -291,7 +303,13 @@ def main() -> int:
         print(f"  -> {len(pairs_vec)} pairs in {mine_vec_s:.1f}s")
 
         store_snap = _build_store(
-            tmp_dir / f"{args.dataset}_snap.db", "snapvec", dim, ids, texts, vecs
+            tmp_dir / f"{args.dataset}_snap.db",
+            "snapvec",
+            dim,
+            ids,
+            texts,
+            vecs,
+            path_prefix=args.dataset,
         )
 
         print("\n[mine] snapvec flat ...")
