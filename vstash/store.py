@@ -2860,6 +2860,10 @@ class VstashStore:
         # hoist would do (flagged in the #167 review).
         norm_scores = [(s - s_min) / s_range for s in scores]
 
+        # Precompute invariant MMR relevance terms to avoid O(K * N) recalculations
+        relevance_terms = [mmr_lambda * ns for ns in norm_scores]
+        penalty_multiplier = 1.0 - mmr_lambda
+
         # Extract values into fast lists for index-based access
         doc_keys = [str(r["path"]) for r in ranked]
         chunk_embs = [embeddings.get(int(r["id"])) for r in ranked]
@@ -2876,12 +2880,9 @@ class VstashStore:
             best_mmr = -float("inf")
 
             for idx in remaining:
-                norm_score = norm_scores[idx]
-
-                # Diversity penalty: only against same-document selections.
                 max_sim = max_sims[idx]
 
-                mmr_score = mmr_lambda * norm_score - (1 - mmr_lambda) * max_sim
+                mmr_score = relevance_terms[idx] - penalty_multiplier * max_sim
                 if mmr_score > best_mmr:
                     best_mmr = mmr_score
                     best_idx = idx
