@@ -330,7 +330,7 @@ def main() -> int:
             )
             print(
                 f"  baseline/sqlite-vec NDCG@10={baseline_vec.ndcg_at_10:.4f} "
-                f"Recall@10={baseline_vec.recall_at_10:.4f}"
+                f"Recall@100={baseline_vec.recall_at_100:.4f}"
             )
 
             print("[eval] baseline (v3) on snapvec ...")
@@ -342,7 +342,7 @@ def main() -> int:
             )
             print(
                 f"  baseline/snapvec NDCG@10={baseline_snap.ndcg_at_10:.4f} "
-                f"Recall@10={baseline_snap.recall_at_10:.4f}"
+                f"Recall@100={baseline_snap.recall_at_100:.4f}"
             )
 
             report["eval"] = {
