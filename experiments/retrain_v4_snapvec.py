@@ -2,6 +2,14 @@
 retrain_v4_snapvec.py -- B. Train (or diff) a v4 variant whose hard
 negatives were mined via snapvec ANN instead of sqlite-vec exact.
 
+Defaults to ``BAAI/bge-small-en-v1.5`` (base). The retrain line has
+always been documented as base->v1/v2/v3 from scratch (paper Table 4);
+training on top of an already fine-tuned v3 leaves no headroom on
+saturated benchmarks (e.g. SciFact v3 ~= 0.88) and the numbers
+collapse to "tiny regression from catastrophic forgetting". Override
+with ``--model`` if you want to retrain a specific checkpoint on
+purpose.
+
 Key insight. ``generate_triples`` (the non-batched path) calls
 ``store.search()``, which routes through the store's
 ``vector_backend``. Swap the backend to ``snapvec`` and the hard
@@ -65,6 +73,14 @@ from vstash.retrain import (
     sample_training_chunks,
 )
 from vstash.store import VstashStore
+
+
+# Retrain always starts from base; the v3/v5 checkpoints were trained
+# that way and the paper's evolution table measures deltas from base.
+# The shared DEFAULT_MODEL (imported above as ``Stffens/bge-small-rrf-v3``)
+# is the RETRIEVAL-BENCHMARK default used by h2h / sweeps, not the
+# TRAINING default.
+TRAIN_BASE_MODEL = "BAAI/bge-small-en-v1.5"
 
 
 def _evaluate_on_backend(
@@ -318,7 +334,16 @@ def _qrels_to_eval_queries(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", default="scifact")
-    parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument(
+        "--model",
+        default=TRAIN_BASE_MODEL,
+        help=(
+            f"Base model to fine-tune from. Default {TRAIN_BASE_MODEL!r} "
+            "(matches the paper's retrain line: always base -> v1/v2/v3). "
+            "Pass e.g. Stffens/bge-small-rrf-v3 to retrain on top of v3 on "
+            "purpose, but expect diminishing returns on saturated corpora."
+        ),
+    )
     parser.add_argument(
         "--max-queries",
         type=int,
@@ -479,7 +504,7 @@ def main() -> int:
             # Baseline eval on BOTH backends so the 2x2 is complete.
             # _evaluate_on_backend forces the backend on evaluate_model's
             # internal eval index (see helper docstring).
-            print("\n[eval] baseline (v3) on sqlite-vec ...")
+            print("\n[eval] baseline (base) on sqlite-vec ...")
             baseline_vec = _evaluate_on_backend(
                 store_vec, args.model, eval_queries, "sqlite-vec", args.seed
             )
@@ -488,7 +513,7 @@ def main() -> int:
                 f"Recall@100={baseline_vec.recall_at_100:.4f}"
             )
 
-            print("[eval] baseline (v3) on snapvec ...")
+            print("[eval] baseline (base) on snapvec ...")
             baseline_snap = _evaluate_on_backend(
                 store_snap, args.model, eval_queries, "snapvec", args.seed
             )
@@ -597,7 +622,7 @@ def main() -> int:
                 row += " |"
                 print(row)
             print(
-                f"| baseline (v3) | {baseline_vec.ndcg_at_10:.4f} "
+                f"| baseline (base) | {baseline_vec.ndcg_at_10:.4f} "
                 f"| {baseline_snap.ndcg_at_10:.4f} |"
             )
 
