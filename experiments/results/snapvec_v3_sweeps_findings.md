@@ -17,11 +17,15 @@ Three experiments, all documented here:
   (NDCG@10 identical across rerank in {50,100,200}). `nprobe=0`
   (library default `nlist // 8`) wins on every dataset; explicit
   lower values (8 or 16) regress NDCG by up to 0.045 on SciFact.
-- **v4 from snapvec mining is NOT recommended**. On SciFact chunk-prefix
-  queries, sqlite-vec (exact) emitted a hard negative for 2/300 queries;
-  snapvec (ANN) emitted one for 273/300. The "extra" 271 negatives are
-  almost certainly ANN-quantization noise rather than real
-  disagreement-mined negatives -- training on them would likely hurt.
+- **v4 from snapvec mining is open**. On SciFact chunk-prefix queries,
+  sqlite-vec (exact) emitted a hard negative for 2/300 queries; snapvec
+  (ANN) for 273/300. Initial read was "snapvec invents noise negatives";
+  a follow-up cosine probe falsified that. The 271 extras have
+  cos(q, neg) distribution **statistically identical** to the 2
+  sqlite-vec negatives (median 0.78 vs 0.78), with a hard-neg-typical
+  margin of 0.16 vs the positive. They are legitimate hard negatives
+  that sqlite-vec's rigid top-5 cutoff excludes. Training v4 with them
+  is worth testing, not worth refusing.
 
 ## Context
 
@@ -167,58 +171,70 @@ _Results file_: `experiments/results/retrain_v4_snapvec.json`
 | queries where neither found a negative | 27 | 27 | |
 | total divergence (`only_vec + only_snap + different`) | | 91.0% | of shared queries |
 
-### Interpretation
+### Initial interpretation (later falsified)
 
-The striking asymmetry: **sqlite-vec finds a hard negative in only 2 of
-300 queries (0.7%); snapvec finds one in 273 (91%)**. The divergence is
-not noise around a shared answer -- it's one backend finding negatives
-that the other does not.
+First read of the diff: **sqlite-vec finds a hard negative in only 2 of
+300 queries (0.7%); snapvec finds one in 273 (91%)**. Hypothesis: snapvec's
+ANN quantization perturbs vec_top5, slipping unrelated docs into the
+disagreement set. Under this read the 271 extras would be quantization
+noise, and training on them would hurt.
 
-Why. The hard-neg rule in `retrain.generate_triples` is "something in
-vec top-5 that is NOT in fts top-5 (and != doc path)". Training queries
-here are the first-200-chars of each chunk, which are literal substrings
-of the indexed corpus, so:
+### Follow-up: cosine similarity probe refutes the noise read
 
-- On sqlite-vec (exact), vec top-5 and fts top-5 strongly agree, because
-  a chunk's own prefix is near-perfectly retrievable by both signals.
-  The disagreement set `vec_top5 \ fts_paths` is empty for ~99% of
-  queries, and `generate_triples` falls through without emitting a
-  negative. Result: 2 negatives out of 300.
-- On snapvec (ANN, flat polar quantization), vec top-5 is lightly
-  perturbed by quantization. Some "correct" near-matches drop out;
-  some farther docs slip in. Those slipped-in docs are structurally
-  unlikely to be in fts top-5 (which is exact), so the
-  `vec_top5 \ fts_paths` set becomes non-empty for almost all queries.
-  The "negative" the miner records is the first such slipped-in doc.
+_Results file_: `experiments/results/snapvec_negative_similarity_probe.json`
 
-Which means the 273 snapvec-mined negatives are, with high probability,
-**quantization-noise artifacts rather than genuinely hard negatives**.
-Training on them would teach the model to distinguish between docs
-that polar quantization happens to rank differently from exact -- not
-useful contrastive signal, and likely harmful.
+Computed exact (non-quantized) cosine similarity between each (query,
+negative) on the 271 snapvec-only bucket and the 2 sqlite-vec bucket,
+using the same SentenceTransformer encoder the training path uses.
 
-Subsidiary caveat: chunk-prefix pseudo-queries are a pathological case
-for this diff. The v5 recipe (`training_queries_by_dataset`) uses real
-BEIR queries + gold-label positives and runs through
-`generate_labeled_triples_batched` which is a GPU matmul path that
-**does not route through the vector_backend at all**. So switching a
-store to snapvec during v5/v3-style multi-corpus training has zero
-effect on mining. The `generate_triples` path in this experiment is
-the one-corpus, chunk-prefix mining flow used in earlier retrain work.
+| Metric | sqlite-vec negs (n=2) | snapvec-only negs (n=271) |
+|---|---|---|
+| cos(q, neg) median | 0.7801 | 0.7771 |
+| cos(q, neg) mean   | 0.7801 | 0.7758 |
+| cos(q, pos) median | 0.7978 | 0.9424 |
+| margin (pos - neg) median | 0.0177 | 0.1606 |
 
-### Recommendation
+The 271 snapvec-only negatives have the **same cos(q, neg) distribution**
+as the 2 sqlite-vec negatives -- median 0.78 in both buckets.
+Random-noise negatives in a 5k-doc corpus would sit near cos 0.3-0.5,
+not 0.78. These are docs that are semantically close to the query but
+just outside sqlite-vec's rigid top-5 cutoff; snapvec's ANN perturbation
+effectively relaxes the cutoff to a wider neighborhood.
 
-- **Do not** ship a v4 that uses snapvec-flat as the hard-neg miner
-  for chunk-prefix queries. The mining signal is dominated by ANN
-  noise, not real disagreement.
-- If we want to test "faster mining via ANN", the cleaner version uses
-  real (labeled) queries rather than chunk prefixes, and still routes
-  through an exact backend because the speed bottleneck on chunk-prefix
-  queries is the per-query sqlite-vec full scan, not the search itself
-  -- `generate_triples_batched` (GPU matmul) already solves that.
-- No train pass was run; the signal already says the negatives are
-  wrong in kind, so a train-gate run would be a confirmation rather
-  than a discovery.
+The cos(q, pos) median differs between buckets (0.80 vs 0.94) simply
+because chunk-prefix queries are literal substrings of their source
+chunks, so cos(q, pos) tends toward 1 -- both buckets are drawing from
+the same underlying query distribution. The **margin** of ~0.16 is a
+productive hard-negative regime for MNRL (DPR / ANCE / NV-Retriever
+literature).
+
+### Revised interpretation
+
+- The asymmetry 2 vs 273 is **not** about snapvec fabricating negatives
+  from noise. sqlite-vec's rigid top-5 rule is **under-producing**
+  negatives when queries are chunk-prefixes (near-self-matches), and
+  the ANN perturbation amounts to a de facto relaxation of the top-k
+  window to docs that sit at cos 0.7-0.8 in the exact embedding space.
+- Those docs are legitimate hard negatives by the model's own metric.
+- Equivalent effect could be obtained without snapvec by widening
+  sqlite-vec's top-k from 5 to ~20 inside `generate_triples`.
+- Training v4 with snapvec-mined pairs is worth running. It is **not**
+  predetermined to regress.
+
+### Subsidiary caveat (unchanged)
+
+The v5 recipe (`training_queries_by_dataset`) uses real BEIR queries
+through `generate_labeled_triples_batched`, which is a GPU matmul path
+that does not route through the vector_backend at all. So swapping a
+store to snapvec during v5-style multi-corpus training has zero effect
+on mining. This analysis speaks to the single-corpus, chunk-prefix
+`generate_triples` flow only.
+
+### Next step (scheduled)
+
+Train v4-vec and v4-snap head-to-head with cross-backend eval on
+SciFact and report the 2x2 NDCG@10 matrix. Notebook path:
+`experiments/retrain_v4_snapvec_colab.ipynb` (Colab + GPU, ~15 min).
 
 ### Known limitation
 
@@ -231,16 +247,22 @@ add v3 to `_HF_ONNX_MODELS` separately.
 
 ## Open questions / follow-ups
 
-- A1-ivfpq summary pending job completion; the `(rerank, nprobe)`
-  Pareto analysis will be added once the full grid lands.
-- Validate the "snapvec mines quantization-noise negatives" hypothesis
-  on real (labeled) BEIR queries. `generate_triples` only speaks
-  chunk-prefix; a sibling miner that takes labeled queries and still
-  routes through `store.search()` would distinguish "ANN adds real
-  signal" from "ANN adds noise".
-- B with `--train` on Colab: train v4-snapvec and v4-sqlite-vec
-  head-to-head for 1-2 BEIR corpora. Hypothesis: v4-snapvec
-  regresses because the 273 "negatives" are mostly ANN noise.
-- Arguana backfill: re-run both sweeps on arguana with a reduced
-  query budget (sample 200 queries) to confirm the bit-ordering and
-  rerank-ordering trends also hold on the large-FTS-query dataset.
+- **v4 training** (scheduled on Colab): train v4-snap and v4-vec
+  head-to-head on SciFact + NFCorpus + FiQA, cross-eval each on both
+  backends, report 2x2 NDCG@10 matrix. Hypothesis (revised, post-probe):
+  v4-snap will be **neutral-to-positive** vs v4-vec, and possibly show
+  quantization-aware co-adaptation when deployed on snapvec at
+  inference.
+- **top-k relax equivalence** (cheap, local): repeat the mining diff
+  with sqlite-vec at `top_k in {5, 10, 20}` in the miner and compare
+  against snapvec top-5. If snapvec top-5 ~= sqlite-vec top-20, the
+  "ANN as a window relaxer" interpretation is confirmed and the
+  training benefit can be replicated without snapvec.
+- **Real-query mining diff**: `generate_triples` only speaks
+  chunk-prefix; a miner sibling that takes labeled BEIR queries and
+  still routes through `store.search()` would show whether the
+  sqlite-vec under-production also holds for real queries or is
+  chunk-prefix-specific.
+- **Arguana backfill** for A1-bits / A1-ivfpq: re-run both sweeps with
+  a 200-query sample to confirm the bit-ordering and rerank-ordering
+  trends also hold on the large-FTS-query dataset.

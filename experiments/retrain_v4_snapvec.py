@@ -320,31 +320,51 @@ def main() -> int:
 
             args.models_dir.mkdir(parents=True, exist_ok=True)
 
-            print("\n[eval] baseline model ...")
-            baseline = evaluate_model(
+            # Baseline eval on BOTH backends so the 2x2 is complete.
+            print("\n[eval] baseline (v3) on sqlite-vec ...")
+            baseline_vec = evaluate_model(
                 store_vec,
                 model_name_or_path=args.model,
                 eval_queries=eval_queries,
                 seed=args.seed,
             )
             print(
-                f"  baseline NDCG@10={baseline.ndcg_at_10:.4f} "
-                f"Recall@10={baseline.recall_at_10:.4f} n={baseline.n_queries}"
+                f"  baseline/sqlite-vec NDCG@10={baseline_vec.ndcg_at_10:.4f} "
+                f"Recall@10={baseline_vec.recall_at_10:.4f}"
             )
 
-            report["eval"] = {"baseline": baseline.as_dict()}
+            print("[eval] baseline (v3) on snapvec ...")
+            baseline_snap = evaluate_model(
+                store_snap,
+                model_name_or_path=args.model,
+                eval_queries=eval_queries,
+                seed=args.seed,
+            )
+            print(
+                f"  baseline/snapvec NDCG@10={baseline_snap.ndcg_at_10:.4f} "
+                f"Recall@10={baseline_snap.recall_at_10:.4f}"
+            )
 
-            for tag, pairs, store in (
-                ("sqlite-vec", pairs_vec, store_vec),
-                ("snapvec", pairs_snap, store_snap),
-            ):
+            report["eval"] = {
+                "baseline": {
+                    "sqlite-vec": baseline_vec.as_dict(),
+                    "snapvec": baseline_snap.as_dict(),
+                }
+            }
+            baseline_by_backend = {
+                "sqlite-vec": baseline_vec,
+                "snapvec": baseline_snap,
+            }
+
+            trained_models: dict[str, str] = {}
+            for tag, pairs in (("sqlite-vec", pairs_vec), ("snapvec", pairs_snap)):
                 out_dir = args.models_dir / f"{args.dataset}_v4_{tag}"
                 if out_dir.exists():
                     import shutil
 
                     shutil.rmtree(out_dir)
 
-                print(f"\n[train] v4/{tag} ({len(pairs)} pairs) -> {out_dir}")
+                print(f"\n[train] v4-{tag} mined ({len(pairs)} pairs) -> {out_dir}")
                 train_mnrl(
                     pairs,
                     base_model=args.model,
@@ -354,27 +374,50 @@ def main() -> int:
                     batch_size=args.batch_size,
                     seed=args.seed,
                 )
-
-                print(f"[eval] v4/{tag} ...")
-                metrics = evaluate_model(
-                    store,
-                    model_name_or_path=str(out_dir),
-                    eval_queries=eval_queries,
-                    seed=args.seed,
-                )
-                delta = metrics.ndcg_at_10 - baseline.ndcg_at_10
-                print(
-                    f"  v4/{tag} NDCG@10={metrics.ndcg_at_10:.4f}  "
-                    f"delta={delta:+.4f}  "
-                    f"Recall@10={metrics.recall_at_10:.4f}"
-                )
-
-                report["eval"][tag] = {
-                    **metrics.as_dict(),
-                    "delta_ndcg_at_10": round(delta, 5),
+                trained_models[tag] = str(out_dir)
+                report["eval"][f"v4_{tag}"] = {
                     "model_path": str(out_dir),
                     "n_pairs": len(pairs),
                 }
+
+            # 2x2 cross eval: each trained model evaluated on each backend.
+            print("\n### Cross-backend eval (NDCG@10)\n")
+            print("| trained_on \\ eval_on | sqlite-vec | snapvec |")
+            print("|---|---|---|")
+            for tag, path in trained_models.items():
+                row = f"| v4-{tag}"
+                for backend_tag, store in (
+                    ("sqlite-vec", store_vec),
+                    ("snapvec", store_snap),
+                ):
+                    print(
+                        f"  [eval] v4-{tag} on {backend_tag} ...",
+                        end="",
+                        flush=True,
+                    )
+                    metrics = evaluate_model(
+                        store,
+                        model_name_or_path=path,
+                        eval_queries=eval_queries,
+                        seed=args.seed,
+                    )
+                    base_line = baseline_by_backend[backend_tag]
+                    delta = metrics.ndcg_at_10 - base_line.ndcg_at_10
+                    print(
+                        f" NDCG={metrics.ndcg_at_10:.4f} delta={delta:+.4f}",
+                        flush=True,
+                    )
+                    report["eval"][f"v4_{tag}"][f"on_{backend_tag}"] = {
+                        **metrics.as_dict(),
+                        "delta_ndcg_at_10_vs_baseline": round(delta, 5),
+                    }
+                    row += f" | {metrics.ndcg_at_10:.4f} ({delta:+.4f})"
+                row += " |"
+                print(row)
+            print(
+                f"| baseline (v3) | {baseline_vec.ndcg_at_10:.4f} "
+                f"| {baseline_snap.ndcg_at_10:.4f} |"
+            )
 
         store_vec.close()
         store_snap.close()
