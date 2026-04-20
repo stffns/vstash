@@ -1,0 +1,392 @@
+"""
+retrain_v4_snapvec.py -- B. Train (or diff) a v4 variant whose hard
+negatives were mined via snapvec ANN instead of sqlite-vec exact.
+
+Key insight. ``generate_triples`` (the non-batched path) calls
+``store.search()``, which routes through the store's
+``vector_backend``. Swap the backend to ``snapvec`` and the hard
+negatives in each training triple are now ANN-approximate rather
+than the exact k-NN that sqlite-vec returns. The research question:
+does that shift the negatives enough to change the trained model,
+and if so, is the change positive, neutral, or regressive?
+
+Two phases, both optional:
+
+  1. Mine-and-diff (cheap, CPU-only). Ingest BEIR SciFact into
+     two fresh stores -- one sqlite-vec, one snapvec flat --
+     sample the same training chunks with a fixed seed, and run
+     ``generate_triples`` against each store. Compare pair counts,
+     per-query negative overlap, and disagreement rate.
+
+  2. Train-and-gate (GPU recommended). For each backend, call
+     ``train_mnrl`` on its pair set, run the eval harness on the
+     same BEIR qrels, and report delta NDCG@10 vs the base model.
+     The gate decides which (if any) candidate to keep.
+
+Usage:
+
+    # Fast diff, no training (runs in ~30-60 s on Apple Silicon):
+    python -m experiments.retrain_v4_snapvec --dataset scifact
+
+    # Full train + gate (GPU-ish; slow on CPU):
+    python -m experiments.retrain_v4_snapvec --dataset scifact --train
+
+    # Wider: run on nfcorpus + fiqa too. Training uses one model per backend,
+    # so datasets are evaluated independently.
+    python -m experiments.retrain_v4_snapvec --dataset nfcorpus --train
+
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import tempfile
+import time
+from pathlib import Path
+
+import numpy as np
+
+from experiments.beir_benchmark import download_beir, load_beir
+from experiments.beir_snapvec_h2h import (
+    DEFAULT_MODEL,
+    _embed_corpus,
+    _embed_queries,
+    _get_st_model,
+)
+from vstash import embed as vstash_embed
+from vstash.embed import get_embedding_dim
+from vstash.retrain import (
+    evaluate_model,
+    generate_triples,
+    sample_training_chunks,
+)
+from vstash.store import VstashStore
+
+
+def _patch_embed_query_for_finetuned_model() -> None:
+    """Fine-tuned v3 is published as safetensors only and isn't in
+    ``vstash.embed._HF_ONNX_MODELS``. On Apple Silicon the default
+    resolver routes to MLX, which rejects v3's legacy BERT tensor
+    names (``embeddings.LayerNorm.beta/gamma`` etc). Replace
+    ``embed_query`` for the duration of this script with a
+    SentenceTransformer-backed path so generate_triples works.
+    This is intentionally local to the experiment; the library
+    should expose v3 via its own channel separately."""
+
+    def _embed_query_via_st(text: str, model_name: str, backend=None) -> list[float]:
+        st = _get_st_model(model_name)
+        vec = st.encode(text, normalize_embeddings=True)
+        return vec.astype(np.float32).tolist()
+
+    vstash_embed.embed_query = _embed_query_via_st
+    # retrain.py imports the symbol at module load time.
+    from vstash import retrain as vstash_retrain
+
+    vstash_retrain.embed_query = _embed_query_via_st
+
+
+def _build_store(
+    db_path: Path,
+    backend: str,
+    dim: int,
+    ids: list[str],
+    texts: list[str],
+    vecs: np.ndarray,
+) -> VstashStore:
+    """Fresh store of the given backend with the BEIR corpus already ingested."""
+    for suffix in ("", "-wal", "-shm", ".snpv", ".snpi"):
+        p = db_path.with_suffix(db_path.suffix + suffix) if suffix else db_path
+        if os.path.exists(p):
+            os.remove(p)
+
+    store = VstashStore(str(db_path), embedding_dim=dim, vector_backend=backend)
+    docs = [
+        {
+            "path": f"{db_path.stem}/{doc_id}",
+            "title": doc_id,
+            "chunks": [text],
+            "embeddings": [vecs[i].tolist()],
+            "source_type": "text",
+        }
+        for i, (doc_id, text) in enumerate(zip(ids, texts))
+    ]
+    store.add_documents_batch(docs)
+    return store
+
+
+def _pair_key(pair: dict) -> str:
+    """Hash a triple by (query, positive) so sqlite-vec and snapvec
+    pairs sharing the same chunk-prefix query can be joined."""
+    h = hashlib.md5()
+    h.update((pair.get("query") or "").encode())
+    h.update(b"\x00")
+    h.update((pair.get("positive") or "").encode())
+    return h.hexdigest()
+
+
+def _diff_pair_sets(pairs_vec: list[dict], pairs_snap: list[dict]) -> dict:
+    """Compare two triple lists: pair counts, shared-query count,
+    per-query negative overlap."""
+    vec_by_key = {_pair_key(p): p for p in pairs_vec}
+    snap_by_key = {_pair_key(p): p for p in pairs_snap}
+    shared = set(vec_by_key) & set(snap_by_key)
+
+    same_neg = 0
+    diff_neg = 0
+    only_vec_has = 0
+    only_snap_has = 0
+    neither_has_neg = 0
+    for k in shared:
+        v_neg = vec_by_key[k].get("negative")
+        s_neg = snap_by_key[k].get("negative")
+        if v_neg is None and s_neg is None:
+            neither_has_neg += 1
+        elif v_neg is not None and s_neg is None:
+            only_vec_has += 1
+        elif v_neg is None and s_neg is not None:
+            only_snap_has += 1
+        elif v_neg == s_neg:
+            same_neg += 1
+        else:
+            diff_neg += 1
+
+    vec_has_neg = sum(1 for p in pairs_vec if p.get("negative"))
+    snap_has_neg = sum(1 for p in pairs_snap if p.get("negative"))
+
+    return {
+        "n_pairs_vec": len(pairs_vec),
+        "n_pairs_snap": len(pairs_snap),
+        "n_shared_queries": len(shared),
+        "vec_has_negative": vec_has_neg,
+        "snap_has_negative": snap_has_neg,
+        "negative_overlap": {
+            "same": same_neg,
+            "different": diff_neg,
+            "only_vec_has": only_vec_has,
+            "only_snap_has": only_snap_has,
+            "both_missing": neither_has_neg,
+        },
+        "divergence_pct": round(
+            100 * (diff_neg + only_vec_has + only_snap_has) / max(len(shared), 1), 2
+        ),
+    }
+
+
+def _qrels_to_eval_queries(
+    queries: dict[str, str],
+    qrels: dict[str, dict[str, int]],
+    dataset_prefix: str,
+) -> list[dict]:
+    """Convert BEIR qrels + queries into retrain.evaluate_model's format.
+    Paths are prefixed by dataset so they line up with the ingested
+    ``{dataset_prefix}/{doc_id}`` scheme."""
+    out: list[dict] = []
+    for qid, rels in qrels.items():
+        text = queries.get(qid)
+        if not text:
+            continue
+        relevant = [f"{dataset_prefix}/{did}" for did, rel in rels.items() if rel > 0]
+        if not relevant:
+            continue
+        out.append({"query": text, "relevant_paths": relevant})
+    return out
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--dataset", default="scifact")
+    parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument(
+        "--max-queries",
+        type=int,
+        default=1500,
+        help="Training-chunk sample size (shared across both backends).",
+    )
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--train",
+        action="store_true",
+        help="Train one model per backend and evaluate against BEIR qrels.",
+    )
+    parser.add_argument(
+        "--epochs", type=int, default=2, help="MNRL epochs (only when --train)."
+    )
+    parser.add_argument(
+        "--batch-size", type=int, default=32, help="MNRL batch size (only when --train)."
+    )
+    parser.add_argument(
+        "--lr", type=float, default=3e-6, help="MNRL learning rate (only when --train)."
+    )
+    parser.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=Path("experiments/data/beir_snapvec_h2h_cache"),
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path("experiments/results/retrain_v4_snapvec.json"),
+    )
+    parser.add_argument(
+        "--models-dir",
+        type=Path,
+        default=Path("experiments/results/v4_snapvec_models"),
+        help="Directory for trained candidate models (only when --train).",
+    )
+    args = parser.parse_args()
+
+    dim = get_embedding_dim(args.model)
+    print(
+        f"=== retrain v4 (snapvec vs sqlite-vec hard-neg mining) ===\n"
+        f"dataset={args.dataset} model={args.model} dim={dim} "
+        f"max_queries={args.max_queries} train={args.train}"
+    )
+    args.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    _patch_embed_query_for_finetuned_model()
+
+    ids, texts, vecs = _embed_corpus(args.dataset, args.model, args.cache_dir)
+    cache = download_beir(args.dataset)
+    _, queries, qrels = load_beir(cache)
+    print(f"  corpus={len(ids)} queries={len(queries)} qrels={len(qrels)}")
+    _embed_queries(args.dataset, args.model, queries, args.cache_dir)
+
+    eval_queries = _qrels_to_eval_queries(queries, qrels, args.dataset)
+    print(f"  eval_queries={len(eval_queries)}")
+
+    report: dict = {
+        "dataset": args.dataset,
+        "model": args.model,
+        "max_queries": args.max_queries,
+        "seed": args.seed,
+    }
+
+    with tempfile.TemporaryDirectory() as td:
+        tmp_dir = Path(td)
+
+        store_vec = _build_store(
+            tmp_dir / f"{args.dataset}_vec.db", "sqlite-vec", dim, ids, texts, vecs
+        )
+        # Pre-sample training chunks from sqlite-vec so both backends
+        # mine triples from the exact same chunk population (the only
+        # variable is which vector backend answers the search calls).
+        training_chunks = sample_training_chunks(
+            store_vec, max_queries=args.max_queries, seed=args.seed
+        )
+        print(f"  training_chunks={len(training_chunks)}")
+
+        print("\n[mine] sqlite-vec ...")
+        t0 = time.perf_counter()
+        pairs_vec = generate_triples(
+            store_vec,
+            args.model,
+            max_queries=args.max_queries,
+            seed=args.seed,
+            pre_sampled_chunks=training_chunks,
+        )
+        mine_vec_s = time.perf_counter() - t0
+        print(f"  -> {len(pairs_vec)} pairs in {mine_vec_s:.1f}s")
+
+        store_snap = _build_store(
+            tmp_dir / f"{args.dataset}_snap.db", "snapvec", dim, ids, texts, vecs
+        )
+
+        print("\n[mine] snapvec flat ...")
+        t0 = time.perf_counter()
+        pairs_snap = generate_triples(
+            store_snap,
+            args.model,
+            max_queries=args.max_queries,
+            seed=args.seed,
+            pre_sampled_chunks=training_chunks,
+        )
+        mine_snap_s = time.perf_counter() - t0
+        print(f"  -> {len(pairs_snap)} pairs in {mine_snap_s:.1f}s")
+
+        diff = _diff_pair_sets(pairs_vec, pairs_snap)
+        print("\n### Triple mining diff\n")
+        print(json.dumps(diff, indent=2))
+        report["mining"] = {
+            "sqlite-vec": {"n_pairs": len(pairs_vec), "seconds": round(mine_vec_s, 2)},
+            "snapvec": {"n_pairs": len(pairs_snap), "seconds": round(mine_snap_s, 2)},
+            "diff": diff,
+        }
+
+        if args.train:
+            from vstash.retrain import train_mnrl
+
+            args.models_dir.mkdir(parents=True, exist_ok=True)
+
+            print("\n[eval] baseline model ...")
+            baseline = evaluate_model(
+                store_vec,
+                model_name_or_path=args.model,
+                eval_queries=eval_queries,
+                seed=args.seed,
+            )
+            print(
+                f"  baseline NDCG@10={baseline.ndcg_at_10:.4f} "
+                f"Recall@10={baseline.recall_at_10:.4f} n={baseline.n_queries}"
+            )
+
+            report["eval"] = {"baseline": baseline.as_dict()}
+
+            for tag, pairs, store in (
+                ("sqlite-vec", pairs_vec, store_vec),
+                ("snapvec", pairs_snap, store_snap),
+            ):
+                out_dir = args.models_dir / f"{args.dataset}_v4_{tag}"
+                if out_dir.exists():
+                    import shutil
+
+                    shutil.rmtree(out_dir)
+
+                print(f"\n[train] v4/{tag} ({len(pairs)} pairs) -> {out_dir}")
+                train_mnrl(
+                    pairs,
+                    base_model=args.model,
+                    output_path=str(out_dir),
+                    epochs=args.epochs,
+                    lr=args.lr,
+                    batch_size=args.batch_size,
+                    seed=args.seed,
+                )
+
+                print(f"[eval] v4/{tag} ...")
+                metrics = evaluate_model(
+                    store,
+                    model_name_or_path=str(out_dir),
+                    eval_queries=eval_queries,
+                    seed=args.seed,
+                )
+                delta = metrics.ndcg_at_10 - baseline.ndcg_at_10
+                print(
+                    f"  v4/{tag} NDCG@10={metrics.ndcg_at_10:.4f}  "
+                    f"delta={delta:+.4f}  "
+                    f"Recall@10={metrics.recall_at_10:.4f}"
+                )
+
+                report["eval"][tag] = {
+                    **metrics.as_dict(),
+                    "delta_ndcg_at_10": round(delta, 5),
+                    "model_path": str(out_dir),
+                    "n_pairs": len(pairs),
+                }
+
+        store_vec.close()
+        store_snap.close()
+
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(report, indent=2))
+    print(f"\nwrote {args.output}")
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+    sys.exit(main())

@@ -1,0 +1,31 @@
+{
+  "dataset": "scifact",
+  "model": "Stffens/bge-small-rrf-v3",
+  "max_queries": 300,
+  "seed": 42,
+  "mining": {
+    "sqlite-vec": {
+      "n_pairs": 300,
+      "seconds": 23.58
+    },
+    "snapvec": {
+      "n_pairs": 300,
+      "seconds": 13.9
+    },
+    "diff": {
+      "n_pairs_vec": 300,
+      "n_pairs_snap": 300,
+      "n_shared_queries": 300,
+      "vec_has_negative": 2,
+      "snap_has_negative": 273,
+      "negative_overlap": {
+        "same": 0,
+        "different": 2,
+        "only_vec_has": 0,
+        "only_snap_has": 271,
+        "both_missing": 27
+      },
+      "divergence_pct": 91.0
+    }
+  }
+}
