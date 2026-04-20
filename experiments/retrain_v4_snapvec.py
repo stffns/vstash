@@ -102,6 +102,84 @@ def _evaluate_on_backend(
         vstash_retrain.VstashStore = original_cls
 
 
+def _train_triplet(
+    pairs: list[dict],
+    base_model: str,
+    output_path: str,
+    epochs: int,
+    lr: float,
+    batch_size: int,
+    seed: int,
+    margin: float,
+) -> int:
+    """TripletLoss wrapper. Filters pairs to those with a non-null
+    explicit hard negative (required by TripletLoss) and trains with
+    ``sentence_transformers.losses.TripletLoss``.
+
+    Returns the number of triplets actually used (post-filter). The
+    call site should record this so the final report distinguishes
+    "0 pairs, training skipped" from "N pairs trained"."""
+    from sentence_transformers import InputExample, SentenceTransformer, losses
+    from torch.utils.data import DataLoader
+    import random as _random
+    import torch as _torch
+
+    triplets = [p for p in pairs if p.get("negative")]
+    if not triplets:
+        return 0
+
+    Path(output_path).mkdir(parents=True, exist_ok=True)
+    model = SentenceTransformer(base_model)
+    examples = [
+        InputExample(texts=[p["query"], p["positive"], p["negative"]])
+        for p in triplets
+    ]
+
+    rng = _random.Random(seed)
+    rng.shuffle(examples)
+    _torch.manual_seed(seed)
+    if _torch.cuda.is_available():
+        _torch.cuda.manual_seed_all(seed)
+
+    loader_kwargs = {"batch_size": batch_size, "shuffle": True}
+    gen = _torch.Generator()
+    gen.manual_seed(seed)
+    loader_kwargs["generator"] = gen
+    loader = DataLoader(examples, **loader_kwargs)
+
+    loss = losses.TripletLoss(
+        model=model,
+        distance_metric=losses.TripletDistanceMetric.COSINE,
+        triplet_margin=margin,
+    )
+    warmup_steps = min(50, max(1, len(loader) // 5))
+    model.fit(
+        train_objectives=[(loader, loss)],
+        epochs=epochs,
+        warmup_steps=warmup_steps,
+        optimizer_params={"lr": lr},
+        output_path=output_path,
+        show_progress_bar=True,
+    )
+    model.save(output_path)
+
+    meta = {
+        "base_model": base_model,
+        "loss": "triplet",
+        "distance_metric": "cosine",
+        "triplet_margin": margin,
+        "n_pairs_total": len(pairs),
+        "n_triplets_used": len(triplets),
+        "epochs": epochs,
+        "batch_size": batch_size,
+        "lr": lr,
+        "warmup_steps": warmup_steps,
+        "seed": seed,
+    }
+    (Path(output_path) / "training_meta.json").write_text(json.dumps(meta, indent=2))
+    return len(triplets)
+
+
 def _patch_embed_query_for_finetuned_model() -> None:
     """Fine-tuned v3 is published as safetensors only and isn't in
     ``vstash.embed._HF_ONNX_MODELS``. On Apple Silicon the default
@@ -260,7 +338,31 @@ def main() -> int:
         "--batch-size", type=int, default=32, help="MNRL batch size (only when --train)."
     )
     parser.add_argument(
-        "--lr", type=float, default=3e-6, help="MNRL learning rate (only when --train)."
+        "--lr", type=float, default=3e-6, help="Learning rate (only when --train)."
+    )
+    parser.add_argument(
+        "--loss",
+        choices=("mnrl", "triplet"),
+        default="mnrl",
+        help=(
+            "Training loss. 'mnrl' uses MultipleNegativesRankingLoss with "
+            "in-batch negatives (default; matches v3 recipe). 'triplet' "
+            "uses TripletLoss which requires an explicit hard negative per "
+            "example and filters pairs accordingly -- this exposes the "
+            "mining-backend signal that MNRL's in-batch average hides."
+        ),
+    )
+    parser.add_argument(
+        "--triplet-margin",
+        type=float,
+        default=0.3,
+        help=(
+            "Margin for TripletLoss with COSINE distance (only when "
+            "--loss triplet). Default 0.3: cosine distance for L2-normalized "
+            "vectors sits in [0, 2] with same-topic pairs at ~0-0.5 and "
+            "random pairs at ~0.7-1.0; 0.3 asks for d(a,n) >= d(a,p) + 0.3, "
+            "achievable without saturating the loss on easy negatives."
+        ),
     )
     parser.add_argument(
         "--cache-dir",
@@ -408,26 +510,59 @@ def main() -> int:
 
             trained_models: dict[str, str] = {}
             for tag, pairs in (("sqlite-vec", pairs_vec), ("snapvec", pairs_snap)):
-                out_dir = args.models_dir / f"{args.dataset}_v4_{tag}"
+                out_dir = args.models_dir / f"{args.dataset}_v4_{tag}_{args.loss}"
                 if out_dir.exists():
                     import shutil
 
                     shutil.rmtree(out_dir)
 
-                print(f"\n[train] v4-{tag} mined ({len(pairs)} pairs) -> {out_dir}")
-                train_mnrl(
-                    pairs,
-                    base_model=args.model,
-                    output_path=str(out_dir),
-                    epochs=args.epochs,
-                    lr=args.lr,
-                    batch_size=args.batch_size,
-                    seed=args.seed,
-                )
+                if args.loss == "triplet":
+                    n_triplets = _train_triplet(
+                        pairs,
+                        base_model=args.model,
+                        output_path=str(out_dir),
+                        epochs=args.epochs,
+                        lr=args.lr,
+                        batch_size=args.batch_size,
+                        seed=args.seed,
+                        margin=args.triplet_margin,
+                    )
+                    print(
+                        f"\n[train triplet] v4-{tag} ({n_triplets}/{len(pairs)} triplets "
+                        f"usable, margin={args.triplet_margin}) -> {out_dir}"
+                    )
+                    if n_triplets == 0:
+                        print(
+                            f"  [skip] v4-{tag}: no pairs with explicit hard negative; "
+                            f"TripletLoss needs them. Falling back to baseline for this cell."
+                        )
+                        report["eval"][f"v4_{tag}"] = {
+                            "model_path": None,
+                            "n_pairs": len(pairs),
+                            "n_triplets_used": 0,
+                            "skipped": "no explicit hard negatives",
+                        }
+                        continue
+                    effective_pairs = n_triplets
+                else:
+                    print(f"\n[train mnrl] v4-{tag} ({len(pairs)} pairs) -> {out_dir}")
+                    train_mnrl(
+                        pairs,
+                        base_model=args.model,
+                        output_path=str(out_dir),
+                        epochs=args.epochs,
+                        lr=args.lr,
+                        batch_size=args.batch_size,
+                        seed=args.seed,
+                    )
+                    effective_pairs = len(pairs)
+
                 trained_models[tag] = str(out_dir)
                 report["eval"][f"v4_{tag}"] = {
                     "model_path": str(out_dir),
                     "n_pairs": len(pairs),
+                    "n_effective_pairs": effective_pairs,
+                    "loss": args.loss,
                 }
 
             # 2x2 cross eval: each trained model evaluated on each backend.
