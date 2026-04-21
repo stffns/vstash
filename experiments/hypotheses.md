@@ -45,7 +45,7 @@ further down this document and in
 
 ## Retrain (signal quality + training)
 
-### H-R1. Labeled queries should be the default path when qrels exist
+### H-R1. Labeled queries should be the default path when qrels exist [SHIPPED 2026-04-21; PR #257]
 
 **Statement.** `retrain_multi(..., training_queries_by_dataset=...)` currently
 opts in to the v5 recipe. If the user passes eval_queries with BEIR-style
@@ -145,7 +145,7 @@ fire early) and future ablation experiments. Not urgent.
 
 ---
 
-### H-R5. Eval surface: add NDCG@3, Recall@100 [IMPLEMENTED, not yet merged]
+### H-R5. Eval surface: add NDCG@3, Recall@100 [SHIPPED; merged in develop]
 
 **Statement.** `EvalMetrics` now tracks NDCG@10, NDCG@3, MRR, Hit@10,
 Recall@100 (N.B. per-dataset std across `--eval-seed` values is still on
@@ -187,7 +187,7 @@ legacy one only after 1 release cycle.
 
 ---
 
-### H-R7. Seed audit + global `--seed` flag [IMPLEMENTED, not yet merged]
+### H-R7. Seed audit + global `--seed` flag [SHIPPED; merged in develop]
 
 **Statement.** Every RNG that retrain training touches is now seeded from
 a single user-controllable root. `train_mnrl` pre-shuffles examples with
@@ -415,6 +415,55 @@ MNRL at same budget.
 
 **Risk.** Teacher model is 420 MB, needs careful batch sizing on T4 next
 to the student. Fallback path: teacher on CPU.
+
+---
+
+### H-T26. SIGreg (Sketched Isotropic Gaussian Regularization) as an MNRL auxiliary loss [PARKED; speculative, out-of-domain]
+
+**Statement.** LeJEPA (Balestriero + LeCun, arxiv 2511.08544, Nov 2025)
+introduces SIGreg, a regularizer that projects embeddings onto random
+1D directions and forces each marginal to match an isotropic Gaussian
+via the Epps-Pulley statistical test. In SSL pre-training (JEPA +
+ImageNet) SIGreg replaces stop-gradient, teacher-student, negative-
+sampling and whitening. Hypothesis: adding SIGreg as a small auxiliary
+loss to MNRL during vstash retrain would preserve bge-small's
+isotropic latent space, resisting the over-clustering that T1.4
+diagnosed on SciFact-only training and could help transfer to
+distant query distributions (FiQA).
+
+**Test.** Paired ablation on BEIR 3-dataset (T1.5 recipe baseline
+vs baseline + SIGreg). Train one run with ``sigreg_weight=0.0`` and
+one with a small sweep (``[0.01, 0.1, 0.3]``). Success bar: macro
+NDCG@10 +0.5pp over baseline with NFCorpus holding or gaining (no
+FiQA regression).
+
+**Files.** Would touch ``vstash/retrain.py:train_mnrl`` (new loss
+term) + new ``vstash/retrain_sigreg.py`` helper for sliced projection
++ Epps-Pulley test (Python/torch, ~100 LOC, no PyPI package exists
+under this name at 2026-04-21).
+
+**Effort.** 3-5 days: ~1 day implementation, ~1 day
+hyperparam sweep, ~1 day Colab GPU + writeup, + slack.
+
+**Risk / why parked (2026-04-21 investigation).**
+1. Distinct problem. SIGreg targets **SSL collapse prevention** in
+   pre-training. vstash retrain is **supervised contrastive fine-
+   tuning**; MNRL with in-batch negatives already prevents collapse
+   by construction. The core failure mode SIGreg was built for
+   does not apply.
+2. Zero evidence in retrieval. The paper validates on ImageNet SSL
+   only. No MTEB / BEIR / text-retrieval ablation is published.
+3. Misaligned with current bottleneck. H-R9 and experiment B showed
+   vstash's remaining NFCorpus / FiQA gap is a **signal-quality**
+   problem (distribution mismatch). SIGreg optimises **training
+   stability**, which is orthogonal.
+4. Opportunity cost. H-R1 / H-R8 / #157 all have direct evidence
+   of value; SIGreg is pure speculation that costs ~1 week of
+   Colab time to test.
+
+**Revisit condition.** A follow-up paper validates SIGreg on
+MTEB / BEIR fine-tuning. Until then, this is a literature pointer,
+not a queued experiment.
 
 ---
 
