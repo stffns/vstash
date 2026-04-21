@@ -1,8 +1,9 @@
 # snapvec x v3 sweeps + v4 mining diff -- findings
 
-Date: 2026-04-20
+Date: 2026-04-20 / 2026-04-21 (v4 triplet train pass)
 Branch: `experiments/snapvec-v3-sweeps` (stacked on PR #254)
-Model: `Stffens/bge-small-rrf-v3`, BAAI/bge-small pre-training, 384 dim, 33M params
+Retrieval benchmarks (A1-bits, A1-ivfpq): `Stffens/bge-small-rrf-v3`, 384 dim, 33M params
+Retrain line (B): `BAAI/bge-small-en-v1.5` base -> v4
 
 Three experiments, all documented here:
 1. **A1-bits**: flat snapvec `bits` sweep over BEIR 4-dataset (arguana excluded for runtime).
@@ -17,15 +18,27 @@ Three experiments, all documented here:
   (NDCG@10 identical across rerank in {50,100,200}). `nprobe=0`
   (library default `nlist // 8`) wins on every dataset; explicit
   lower values (8 or 16) regress NDCG by up to 0.045 on SciFact.
-- **v4 from snapvec mining is open**. On SciFact chunk-prefix queries,
-  sqlite-vec (exact) emitted a hard negative for 2/300 queries; snapvec
-  (ANN) for 273/300. Initial read was "snapvec invents noise negatives";
-  a follow-up cosine probe falsified that. The 271 extras have
-  cos(q, neg) distribution **statistically identical** to the 2
-  sqlite-vec negatives (median 0.78 vs 0.78), with a hard-neg-typical
-  margin of 0.16 vs the positive. They are legitimate hard negatives
-  that sqlite-vec's rigid top-5 cutoff excludes. Training v4 with them
-  is worth testing, not worth refusing.
+- **v4 from snapvec mining is not viable**. The mining diff showed
+  snapvec surfaces ~6-360x more hard-negative triplets than sqlite-vec
+  at the same training-chunk budget, and a cosine probe falsified the
+  original "ANN noise" read (the extras are legitimate hard negatives
+  at cos 0.78, margin 0.16 -- the typical MNRL-productive regime).
+  Under the actual training pass (base -> v4, 2000 pairs, 3 datasets,
+  both MNRL and TripletLoss), the result is mixed:
+  * MNRL: the explicit hard-neg is 1/batch_size of the denominator and
+    the mining difference collapses to byte-identical v4-vec and
+    v4-snap (gap 0.0000-0.0003 NDCG across all 3 datasets).
+  * TripletLoss: v4-snap moves while v4-vec barely trains (5-331
+    triplets usable for sqlite-vec vs 1800-1900 for snapvec). Result
+    is 2/3 REGRESSIONS (SciFact -0.026, FiQA -0.018 on snapvec eval)
+    and 1/3 small gain (NFCorpus +0.005 on snapvec eval).
+  * Co-adaptation (v4-snap evaluated on snapvec beats v4-snap on
+    sqlite-vec): observed on NFCorpus + FiQA, reversed on SciFact. No
+    clean pattern.
+  Recommendation: **do not ship a v4 that uses snapvec as the
+  hard-neg miner**. The extras mine real hard negatives, but many are
+  near-duplicates that break SciFact-style (self-match) and
+  FiQA-style (colloquial) representations.
 
 ## Context
 
@@ -230,11 +243,100 @@ store to snapvec during v5-style multi-corpus training has zero effect
 on mining. This analysis speaks to the single-corpus, chunk-prefix
 `generate_triples` flow only.
 
-### Next step (scheduled)
+### Train + cross-backend eval (final, 2026-04-21)
 
-Train v4-vec and v4-snap head-to-head with cross-backend eval on
-SciFact and report the 2x2 NDCG@10 matrix. Notebook path:
-`experiments/retrain_v4_snapvec_colab.ipynb` (Colab + GPU, ~15 min).
+Setup: base `BAAI/bge-small-en-v1.5` -> v4 via `generate_triples`
+single-corpus, 2000 training chunks, seed 42. Two loss modes, both
+reported. Same store population across v4-vec and v4-snap within each
+loss; only the vector_backend at mining time differs.
+
+### MNRL results (lr=3e-6, epochs=2, batch=64)
+
+| Dataset | base/vec | base/snap | v4-vec/vec | v4-vec/snap | v4-snap/vec | v4-snap/snap |
+|---|---|---|---|---|---|---|
+| SciFact  | 0.8243 | 0.8342 | 0.8306 (+0.0063) | 0.8348 (+0.0006) | 0.8306 (+0.0063) | 0.8348 (+0.0006) |
+| NFCorpus | 0.3587 | 0.3606 | 0.3597 (+0.0010) | 0.3678 (+0.0072) | 0.3597 (+0.0010) | 0.3675 (+0.0069) |
+| FiQA     | 0.6199 | 0.6255 | 0.6163 (-0.0037) | 0.6237 (-0.0018) | 0.6165 (-0.0035) | 0.6237 (-0.0019) |
+
+v4-vec vs v4-snap gap is 0.0000-0.0003 NDCG in every cell. MNRL
+averages the mining difference to invisible because the explicit
+hard-neg is only 1/64 of the in-batch negative denominator and the
+snapvec extras sit at cos 0.78 which is not much harder than a random
+in-batch negative. **Null result from MNRL** on whether mining method
+matters -- but v4-vec and v4-snap WERE trained on different triplet
+sets (21 vs 1825 explicit hard-negs on SciFact; 331 vs 1894 on FiQA);
+the signal is just invisible through MNRL's averaging.
+
+### TripletLoss results (lr=3e-6, epochs=2, batch=32, margin=0.3, cosine)
+
+| Dataset | base/vec | base/snap | v4-vec/vec | v4-vec/snap | v4-snap/vec | v4-snap/snap | n-trip v4-vec | n-trip v4-snap |
+|---|---|---|---|---|---|---|---|---|
+| SciFact  | 0.8243 | 0.8342 | 0.8265 (+0.0022) | 0.8347 (+0.0005) | **0.8122 (-0.0121)** | **0.8083 (-0.0259)** | 5 | 1808 |
+| NFCorpus | 0.3587 | 0.3606 | 0.3559 (-0.0028) | 0.3613 (+0.0007) | 0.3556 (-0.0031) | **0.3653 (+0.0047)** | 16 | 1823 |
+| FiQA     | 0.6199 | 0.6255 | 0.6153 (-0.0046) | 0.6220 (-0.0036) | **0.5983 (-0.0216)** | **0.6072 (-0.0184)** | 331 | 1894 |
+
+### Reading
+
+- **v4-vec is essentially a noop** (5-331 triplets usable -> 0-22
+  training steps at batch=32 / 2 epochs). Deltas of -0.005 to +0.002
+  are within eval noise.
+- **v4-snap trains meaningfully** (1808-1894 triplets -> ~120 steps
+  per dataset). Effects are real and observable.
+- **v4-snap destroys SciFact + FiQA, marginally helps NFCorpus on
+  snapvec eval**. Specifically:
+  * SciFact snapvec eval: -0.0259 (biggest regression in the whole
+    sweep). Self-match chunk-prefix queries + 1808 "hard" negs at
+    cos 0.78 = margin=0.3 pushes the model to over-separate docs
+    that were legitimately near-duplicates in the base embedding.
+  * FiQA: -0.0184 on snapvec. Same phenomenon as paper's v1/v2
+    TripletLoss warning, in a 5x milder form (paper saw -91%,
+    we see -3% thanks to lr 10x lower).
+  * NFCorpus snapvec eval: +0.0047. Only positive in the whole
+    triplet sweep. Low-absolute NDCG regime (0.36) with room to
+    move; the snapvec-mined negs transfer to claim-style queries
+    without destabilizing.
+- **Co-adaptation signal (v4-snap on snapvec > v4-snap on sqlite-vec,
+  beyond the baseline gap)**: partial.
+  * NFCorpus: v4-snap gains +0.008 more on snapvec eval than on
+    sqlite-vec eval (co-adaptation in the right direction).
+  * FiQA: v4-snap regresses -0.003 more on sqlite-vec eval than on
+    snapvec eval (mild co-adaptation).
+  * SciFact: v4-snap regresses -0.014 MORE on snapvec eval than on
+    sqlite-vec eval (ANTI-co-adaptation).
+  Mixed. No clean pattern supporting the "train with X, deploy with X"
+  story.
+
+### Confound
+
+v4-vec and v4-snap do not have matched training budgets. sqlite-vec's
+rigid top-5 rule under-produces triplets (5-331 vs 1800-1900). A
+cleaner experiment would downsample snapvec triplets to match, or use
+a loss that still trains on pair-only examples. That is deferred --
+the current numbers are enough to argue "do not use snapvec as miner
+for this pipeline".
+
+### Artifacts
+
+- Scripts: `experiments/retrain_v4_snapvec.py`,
+  `experiments/snapvec_negative_similarity_probe.py`.
+- JSONs: `experiments/results/retrain_v4_snapvec_{dataset}.json`
+  (MNRL), `experiments/results/retrain_v4_snapvec_{dataset}_triplet.json`
+  (TripletLoss). `experiments/results/snapvec_negative_similarity_probe.json`
+  (cosine probe).
+- Colab: `experiments/retrain_v4_snapvec_colab.ipynb`.
+
+### Final recommendation for B
+
+- **Do not ship a v4 trained from snapvec-mined hard negatives**.
+  Mining is faster (2x on SciFact), but the resulting triplets train
+  the model into worse NDCG on 2 of 3 BEIR subsets.
+- **Keep using the existing generate_triples -> sqlite-vec path** for
+  single-corpus retrain. The asymmetry of only ~1-20% pairs with a
+  hard-neg is a feature, not a bug, at chunk-prefix scale.
+- **Revisit with labeled-query training** (`retrain_multi` path that
+  bypasses vector_backend via GPU matmul) for any future snapvec-aware
+  retrain work. The single-corpus chunk-prefix flow is the wrong
+  harness for measuring backend impact on training.
 
 ### Known limitation
 
@@ -247,12 +349,13 @@ add v3 to `_HF_ONNX_MODELS` separately.
 
 ## Open questions / follow-ups
 
-- **v4 training** (scheduled on Colab): train v4-snap and v4-vec
-  head-to-head on SciFact + NFCorpus + FiQA, cross-eval each on both
-  backends, report 2x2 NDCG@10 matrix. Hypothesis (revised, post-probe):
-  v4-snap will be **neutral-to-positive** vs v4-vec, and possibly show
-  quantization-aware co-adaptation when deployed on snapvec at
-  inference.
+- **v4 training**: DONE (this doc, Section B). Result: null under MNRL,
+  mixed negative under TripletLoss, recommendation = do not ship.
+- **Matched-budget TripletLoss** (downsample v4-snap triplets to
+  match v4-vec: N=5/16/331). Would remove the "v4-vec is a noop"
+  confound and give a clean per-triplet-quality comparison. Cheap to
+  run (~15 min on T4) but de-prioritized because the current signal
+  is sufficient to land the "do not ship" recommendation.
 - **top-k relax equivalence** (cheap, local): repeat the mining diff
   with sqlite-vec at `top_k in {5, 10, 20}` in the miner and compare
   against snapvec top-5. If snapvec top-5 ~= sqlite-vec top-20, the
