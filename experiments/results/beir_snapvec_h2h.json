@@ -1,0 +1,192 @@
+{
+  "model": "Stffens/bge-small-rrf-v3",
+  "dim": 384,
+  "backends": {
+    "sqlite-vec": {
+      "scifact": {
+        "n_queries": 300,
+        "ndcg_at_10": 0.7721,
+        "ndcg_at_3": 0.7253,
+        "recall_at_10": 0.8942,
+        "recall_at_100": 0.9583,
+        "latency_p50_ms": 15.92,
+        "latency_p95_ms": 24.54,
+        "latency_mean_ms": 16.7,
+        "ingest_seconds": 0.61,
+        "fit_seconds": null
+      },
+      "nfcorpus": {
+        "n_queries": 323,
+        "ndcg_at_10": 0.3775,
+        "ndcg_at_3": 0.4493,
+        "recall_at_10": 0.1772,
+        "recall_at_100": 0.3051,
+        "latency_p50_ms": 7.11,
+        "latency_p95_ms": 12.33,
+        "latency_mean_ms": 8.42,
+        "ingest_seconds": 0.37,
+        "fit_seconds": null
+      },
+      "scidocs": {
+        "n_queries": 1000,
+        "ndcg_at_10": 0.1955,
+        "ndcg_at_3": 0.1921,
+        "recall_at_10": 0.2017,
+        "recall_at_100": 0.3928,
+        "latency_p50_ms": 50.68,
+        "latency_p95_ms": 65.57,
+        "latency_mean_ms": 50.84,
+        "ingest_seconds": 2.61,
+        "fit_seconds": null
+      },
+      "fiqa": {
+        "n_queries": 648,
+        "ndcg_at_10": 0.4652,
+        "ndcg_at_3": 0.4379,
+        "recall_at_10": 0.5345,
+        "recall_at_100": 0.7226,
+        "latency_p50_ms": 109.66,
+        "latency_p95_ms": 149.75,
+        "latency_mean_ms": 110.8,
+        "ingest_seconds": 5.27,
+        "fit_seconds": null
+      },
+      "arguana": {
+        "n_queries": 1406,
+        "ndcg_at_10": 0.4316,
+        "ndcg_at_3": 0.3135,
+        "recall_at_10": 0.8478,
+        "recall_at_100": 0.9893,
+        "latency_p50_ms": 481.76,
+        "latency_p95_ms": 1789.17,
+        "latency_mean_ms": 689.84,
+        "ingest_seconds": 0.82,
+        "fit_seconds": null
+      }
+    },
+    "snapvec": {
+      "scifact": {
+        "n_queries": 300,
+        "ndcg_at_10": 0.7856,
+        "ndcg_at_3": 0.7271,
+        "recall_at_10": 0.9233,
+        "recall_at_100": 0.9967,
+        "latency_p50_ms": 13.3,
+        "latency_p95_ms": 23.32,
+        "latency_mean_ms": 14.41,
+        "ingest_seconds": 0.99,
+        "fit_seconds": null
+      },
+      "nfcorpus": {
+        "n_queries": 323,
+        "ndcg_at_10": 0.3832,
+        "ndcg_at_3": 0.4455,
+        "recall_at_10": 0.1844,
+        "recall_at_100": 0.3551,
+        "latency_p50_ms": 5.46,
+        "latency_p95_ms": 10.82,
+        "latency_mean_ms": 6.75,
+        "ingest_seconds": 0.63,
+        "fit_seconds": null
+      },
+      "scidocs": {
+        "n_queries": 1000,
+        "ndcg_at_10": 0.2072,
+        "ndcg_at_3": 0.193,
+        "recall_at_10": 0.2212,
+        "recall_at_100": 0.4843,
+        "latency_p50_ms": 31.25,
+        "latency_p95_ms": 47.07,
+        "latency_mean_ms": 31.76,
+        "ingest_seconds": 5.52,
+        "fit_seconds": null
+      },
+      "fiqa": {
+        "n_queries": 648,
+        "ndcg_at_10": 0.4892,
+        "ndcg_at_3": 0.4425,
+        "recall_at_10": 0.5766,
+        "recall_at_100": 0.8514,
+        "latency_p50_ms": 63.74,
+        "latency_p95_ms": 104.22,
+        "latency_mean_ms": 64.98,
+        "ingest_seconds": 15.47,
+        "fit_seconds": null
+      },
+      "arguana": {
+        "n_queries": 1406,
+        "ndcg_at_10": 0.433,
+        "ndcg_at_3": 0.3115,
+        "recall_at_10": 0.8542,
+        "recall_at_100": 0.9893,
+        "latency_p50_ms": 474.82,
+        "latency_p95_ms": 1777.94,
+        "latency_mean_ms": 680.49,
+        "ingest_seconds": 1.51,
+        "fit_seconds": null
+      }
+    },
+    "snapvec-ivfpq": {
+      "scifact": {
+        "n_queries": 300,
+        "ndcg_at_10": 0.7507,
+        "ndcg_at_3": 0.7019,
+        "recall_at_10": 0.8637,
+        "recall_at_100": 0.9517,
+        "latency_p50_ms": 10.3,
+        "latency_p95_ms": 19.19,
+        "latency_mean_ms": 11.21,
+        "ingest_seconds": 0.57,
+        "fit_seconds": 6.14
+      },
+      "nfcorpus": {
+        "n_queries": 323,
+        "ndcg_at_10": 0.3493,
+        "ndcg_at_3": 0.4233,
+        "recall_at_10": 0.1624,
+        "recall_at_100": 0.2677,
+        "latency_p50_ms": 2.75,
+        "latency_p95_ms": 7.67,
+        "latency_mean_ms": 3.65,
+        "ingest_seconds": 0.46,
+        "fit_seconds": 4.72
+      },
+      "scidocs": {
+        "n_queries": 1000,
+        "ndcg_at_10": 0.1826,
+        "ndcg_at_3": 0.1836,
+        "recall_at_10": 0.1835,
+        "recall_at_100": 0.3642,
+        "latency_p50_ms": 29.24,
+        "latency_p95_ms": 44.47,
+        "latency_mean_ms": 29.54,
+        "ingest_seconds": 2.74,
+        "fit_seconds": 25.83
+      },
+      "fiqa": {
+        "n_queries": 648,
+        "ndcg_at_10": 0.4242,
+        "ndcg_at_3": 0.4135,
+        "recall_at_10": 0.4576,
+        "recall_at_100": 0.6317,
+        "latency_p50_ms": 60.74,
+        "latency_p95_ms": 100.86,
+        "latency_mean_ms": 62.35,
+        "ingest_seconds": 5.48,
+        "fit_seconds": 52.22
+      },
+      "arguana": {
+        "n_queries": 1406,
+        "ndcg_at_10": 0.4148,
+        "ndcg_at_3": 0.302,
+        "recall_at_10": 0.8193,
+        "recall_at_100": 0.9723,
+        "latency_p50_ms": 470.47,
+        "latency_p95_ms": 1768.02,
+        "latency_mean_ms": 677.6,
+        "ingest_seconds": 0.86,
+        "fit_seconds": 9.37
+      }
+    }
+  }
+}

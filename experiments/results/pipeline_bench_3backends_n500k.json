@@ -1,0 +1,37 @@
+{
+  "n": 500000,
+  "model": "BAAI/bge-small-en-v1.5",
+  "dim": 384,
+  "backends": {
+    "sqlite-vec": {
+      "backend": "sqlite-vec",
+      "n_queries": 300,
+      "ndcg_at_10": 0.6784,
+      "latency_p50_ms": 246.39,
+      "latency_p95_ms": 355.17,
+      "latency_mean_ms": 258.5,
+      "fit_seconds": null,
+      "ingest_seconds": 32.88
+    },
+    "snapvec": {
+      "backend": "snapvec",
+      "n_queries": 300,
+      "ndcg_at_10": 0.6829,
+      "latency_p50_ms": 123.11,
+      "latency_p95_ms": 229.85,
+      "latency_mean_ms": 131.28,
+      "fit_seconds": null,
+      "ingest_seconds": 679.02
+    },
+    "snapvec-ivfpq": {
+      "backend": "snapvec-ivfpq",
+      "n_queries": 300,
+      "ndcg_at_10": 0.6819,
+      "latency_p50_ms": 107.6,
+      "latency_p95_ms": 211.52,
+      "latency_mean_ms": 114.45,
+      "fit_seconds": 65.42,
+      "ingest_seconds": 34.06
+    }
+  }
+}
