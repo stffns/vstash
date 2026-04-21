@@ -122,28 +122,35 @@ class TestAskErrorPaths:
 class TestWhyCommand:
     """Test 'vstash why' command (issue #157 / H-WHY)."""
 
-    def _patch_embed(self, monkeypatch) -> None:
-        """Stub embed_query so tests do not download a real model."""
+    def _patch_embed(self, monkeypatch, populated_store: VstashStore) -> None:
+        """Stub embed_query so tests do not download a real model.
+        Dim is derived from the populated_store fixture instead of
+        hardcoded, so the test remains stable if the default embedding
+        model changes dim."""
         import vstash.cli as cli_mod
 
+        dim = populated_store.embedding_dim
+
         def _fake(query: str, model: str) -> list[float]:
-            # Match populated_store's chunk dim; use a deterministic vector
-            # close to one of the ingested chunks so the trace has content.
-            return [0.3] * 384
+            return [0.3] * dim
 
         monkeypatch.setattr(cli_mod, "embed_query", _fake)
 
-    def test_why_requires_expect_or_expect_chunk_id(self, monkeypatch) -> None:
+    def test_why_requires_expect_or_expect_chunk_id(
+        self, monkeypatch, populated_store: VstashStore
+    ) -> None:
         """vstash why without --expect / --expect-chunk-id errors cleanly."""
-        self._patch_embed(monkeypatch)
+        self._patch_embed(monkeypatch, populated_store)
         result = runner.invoke(app, ["why", "python programming"])
         assert result.exit_code == 1
         assert "--expect" in result.stdout
 
-    def test_why_with_existing_path_prints_trace(self, monkeypatch) -> None:
+    def test_why_with_existing_path_prints_trace(
+        self, monkeypatch, populated_store: VstashStore
+    ) -> None:
         """vstash why <query> --expect <path> prints a pipeline trace
         table and exits with appearance-aware code."""
-        self._patch_embed(monkeypatch)
+        self._patch_embed(monkeypatch, populated_store)
         result = runner.invoke(
             app,
             [
@@ -171,10 +178,12 @@ class TestWhyCommand:
             )
         )
 
-    def test_why_with_unknown_path_errors_gracefully(self, monkeypatch) -> None:
+    def test_why_with_unknown_path_errors_gracefully(
+        self, monkeypatch, populated_store: VstashStore
+    ) -> None:
         """An unknown --expect path surfaces the ValueError from
         miss_analysis as a clean CLI error (not a traceback)."""
-        self._patch_embed(monkeypatch)
+        self._patch_embed(monkeypatch, populated_store)
         result = runner.invoke(
             app,
             ["why", "python", "--expect", "/does/not/exist.md"],
@@ -184,13 +193,15 @@ class TestWhyCommand:
         # it with a red 'x' marker.
         assert "No chunks found" in result.stdout or "not found" in result.stdout.lower()
 
-    def test_why_json_error_path_returns_json(self, monkeypatch) -> None:
+    def test_why_json_error_path_returns_json(
+        self, monkeypatch, populated_store: VstashStore
+    ) -> None:
         """Code-review W1: when --json is set, error outputs must still be
         valid JSON so piped consumers (jq / scripts) do not choke on Rich
         markup text. Mirrors the ``vstash search --miss --json`` contract."""
         import json as _json
 
-        self._patch_embed(monkeypatch)
+        self._patch_embed(monkeypatch, populated_store)
         # Trigger the "no --expect, no --expect-chunk-id" error path.
         result = runner.invoke(app, ["why", "q", "--json"])
         assert result.exit_code == 1
@@ -207,12 +218,14 @@ class TestWhyCommand:
         data = _json.loads(result.stdout)
         assert "error" in data
 
-    def test_why_json_output_is_parseable(self, monkeypatch) -> None:
+    def test_why_json_output_is_parseable(
+        self, monkeypatch, populated_store: VstashStore
+    ) -> None:
         """--json emits a single JSON document matching the MissAnalysis
         schema, suitable for piping into jq or another script."""
         import json as _json
 
-        self._patch_embed(monkeypatch)
+        self._patch_embed(monkeypatch, populated_store)
         result = runner.invoke(
             app,
             ["why", "python", "--expect", "/test/python_guide.md", "--json"],

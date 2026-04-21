@@ -1382,7 +1382,9 @@ def why(
         help="Specific chunk id to track instead of resolving from a path. "
         "Useful when you already have a chunk id from an earlier search.",
     ),
-    top_k: int = typer.Option(5, "--top-k", "-k", help="Top-k window to check against"),
+    top_k: int = typer.Option(
+        0, "--top-k", "-k", help="Top-k window to check against (0 = from config)"
+    ),
     collection: str | None = typer.Option(
         None, "--collection", "-c", help="Restrict to collection"
     ),
@@ -1416,11 +1418,12 @@ def why(
         """Emit an error consistently for both --json and pretty modes.
         Mirrors the pattern in ``vstash search --miss`` so script
         consumers piping ``vstash why --json`` always see JSON, even on
-        the error path."""
+        the error path. ``_safe_exc`` strips Rich markup so paths like
+        ``foo[bar].md`` do not get mangled by the markup parser."""
         if json_out:
             print(_json.dumps({"error": msg}))
         else:
-            console.print(f"[red]x[/red] {msg}")
+            console.print(f"[red]x[/red] {_safe_exc(msg)}")
         return typer.Exit(exit_code)
 
     if expect is None and expect_chunk_id is None:
@@ -1432,15 +1435,30 @@ def why(
     # instead of a cold-start failure that masks the diagnostic.
     cfg, store = _get_store(warm=False, profile=_profile_from_ctx(ctx))
 
+    # Normalize --expect the same way ``vstash search --miss`` and
+    # ``Memory.miss_analysis`` do: http(s)/text URIs pass through,
+    # everything else resolves to an absolute path. Without this,
+    # ``vstash why "q" --expect notes/doc.md`` would lookup the
+    # literal relative string against a DB that stores absolute paths
+    # and always report "No chunks found".
+    expected_path_arg: str | None = None
+    if expect is not None:
+        if expect.startswith(("http://", "https://", "text://")):
+            expected_path_arg = expect
+        else:
+            expected_path_arg = str(Path(expect).resolve(strict=False))
+
+    effective_top_k = top_k or cfg.chunking.top_k
+
     with store:
         try:
             q_embedding = embed_query(query, cfg.embeddings.model)
             analysis = store.miss_analysis(
                 query_embedding=q_embedding,
                 query_text=query,
-                expected_path=expect,
+                expected_path=expected_path_arg,
                 expected_chunk_id=expect_chunk_id,
-                top_k=top_k,
+                top_k=effective_top_k,
                 collection=collection,
                 project=project,
                 layer=layer,
@@ -1460,14 +1478,19 @@ def why(
             raise _why_error(f"embedder error: {exc}") from exc
 
     if json_out:
-        print(_json.dumps(analysis.model_dump(), indent=2, default=str))
-        return
+        # exclude_none strips empty-but-optional fields; indent=2 matches
+        # the search --miss JSON contract. Exit code mirrors pretty-mode
+        # (2 when dropped) so script consumers get reliable CI checks.
+        print(_json.dumps(analysis.model_dump(exclude_none=True), indent=2, default=str))
+        raise typer.Exit(0 if analysis.appeared_in_results else 2)
 
     # Header.
+    # Ranks are 0-indexed internally; display 1-indexed to match ``vstash search``.
     if analysis.appeared_in_results:
+        assert analysis.final_rank is not None
         console.print(
             f"[green]✓[/green] [bold]Expected doc IS in the top-{analysis.top_k_requested}[/bold] "
-            f"(rank {analysis.final_rank})."
+            f"(rank {analysis.final_rank + 1})."
         )
     else:
         console.print(
@@ -1508,7 +1531,7 @@ def why(
         trace_table.add_row(
             stage_cell,
             passed_cell,
-            "-" if v.rank is None else str(v.rank),
+            "-" if v.rank is None else str(v.rank + 1),
             "-" if v.score is None else f"{v.score:.4f}",
             v.detail,
         )
@@ -1525,7 +1548,7 @@ def why(
         top_table.add_column("Score", justify="right")
         for r in analysis.actual_top_k:
             top_table.add_row(
-                str(r.rank), r.path, r.title or "-", f"{r.score:.4f}"
+                str(r.rank + 1), r.path, r.title or "-", f"{r.score:.4f}"
             )
         console.print(top_table)
 
