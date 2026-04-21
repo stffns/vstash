@@ -222,11 +222,29 @@ vstash why "my query" --expect path/to/doc.md --json | jq .suggestions
 # programmatic use.
 ```
 
-**Planned follow-ups for #157** (not yet shipped):
-- Auto-log a lightweight `miss_analysis_hint` into `search_events` when
-  a search returns empty or entirely low-tier results, so `vstash why`
-  can be invoked post-hoc without the caller having re-run the query.
-- `/debug/why` JSON/HTML route on `vstash serve` for a browser-native
+**Auto-logged miss hints** (#157 part 3):
+
+```bash
+# List the most recent auto-logged miss hints (empty / all-low search
+# results) persisted in the DB. ``search_events`` keeps the last 1000
+# rows across runs. Each row is a query that returned nothing or only
+# low-relevance chunks; drill into any of them with
+# `vstash why "<query>" --expect <path>` for the full trace.
+vstash why --recent 10
+
+# JSON for scripting / dashboards:
+vstash why --recent 10 --json | jq '.recent_miss_hints[] | .query'
+```
+
+The hook is on by default. Disable via ``vstash.toml``:
+
+```toml
+[observability]
+auto_miss_hint = false
+```
+
+**Planned follow-up for #157** (not yet shipped):
+- ``/debug/why`` JSON/HTML route on ``vstash serve`` for a browser-native
   debug surface.
 
 **Prometheus alerting suggestion:**

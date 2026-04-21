@@ -296,6 +296,17 @@ class ObservabilityConfig(BaseModel):
             "to effectively disable."
         ),
     )
+    auto_miss_hint: bool = Field(
+        default=True,
+        description=(
+            "Record a lightweight ``miss_hint`` JSON on search_events "
+            "rows when a query returns zero results or a result set "
+            "entirely in the 'low' relevance tier (distance > 0.98). "
+            "Set to false to skip the extra JSON column write per miss. "
+            "The hint is consumed by ``vstash why --recent``. Added in "
+            "issue #157 part 3."
+        ),
+    )
 
 
 class LimitsConfig(BaseModel):
