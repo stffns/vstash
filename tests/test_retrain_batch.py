@@ -624,6 +624,44 @@ class TestRetrainMultiH_R1AutoTrainingQueries:
         finally:
             s1.close()
 
+    def test_labeled_mode_promotes_eval_queries(self, tmp_path: Path) -> None:
+        """training_pair_source='labeled' with eval queries (no explicit
+        training) must promote them like auto -- only the prefix fallback
+        is forbidden under labeled. gemini-code-assist flagged this on
+        PR #257: original code raised ValueError even when eval queries
+        existed, which contradicted the 'requires training OR eval' spec."""
+        from vstash.retrain import retrain_multi
+
+        s1, _s2 = self._stores(tmp_path)
+        eval_qs = {"a": [{"query": "eval-only-labeled", "relevant_paths": ["/s1/0"]}]}
+        try:
+            with (
+                patch(
+                    "vstash.retrain_batch.generate_labeled_triples_batched",
+                    return_value=list(self._labeled_triple),
+                ) as mock_labeled,
+                patch("vstash.retrain.train_mnrl"),
+            ):
+                retrain_multi(
+                    {"a": s1},
+                    base_model="dummy",
+                    output_path=str(tmp_path / "model"),
+                    total_triples=2,
+                    sampling="uniform",
+                    skip_eval=True,
+                    eval_queries_by_dataset=eval_qs,
+                    training_pair_source="labeled",
+                )
+
+            assert mock_labeled.call_count == 1
+            passed = (
+                mock_labeled.call_args_list[0].kwargs.get("labeled_queries")
+                or mock_labeled.call_args_list[0].args[2]
+            )
+            assert passed[0]["query"] == "eval-only-labeled"
+        finally:
+            s1.close()
+
     def test_labeled_mode_errors_when_no_labels(self, tmp_path: Path) -> None:
         """training_pair_source='labeled' must raise when a dataset has
         neither explicit training queries nor eval queries."""

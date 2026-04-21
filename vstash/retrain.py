@@ -1623,11 +1623,15 @@ def retrain_multi(
     eval_training_source = eval_queries_by_dataset or {}
     training_by_ds: dict[str, list[dict]] = {}
     pair_source_by_ds: dict[str, str] = {}
+    # ``labeled`` implies promotion too -- it just forbids the prefix
+    # fallback. Both ``auto`` and ``labeled`` promote eval queries when
+    # present; only ``prefix`` skips the promotion step entirely.
+    auto_promote = training_pair_source in ("auto", "labeled")
     for name in stores_dict:
         if name in explicit_training and explicit_training[name]:
             training_by_ds[name] = explicit_training[name]
             pair_source_by_ds[name] = "explicit"
-        elif training_pair_source == "auto" and name in eval_training_source and eval_training_source[name]:
+        elif auto_promote and name in eval_training_source and eval_training_source[name]:
             training_by_ds[name] = list(eval_training_source[name])
             pair_source_by_ds[name] = "auto-from-eval"
         elif training_pair_source == "labeled":
