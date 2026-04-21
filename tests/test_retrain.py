@@ -1533,6 +1533,41 @@ class TestRetrainH_R8LabeledAutoTrainingQueries:
         )
         assert passed[0]["query"] == "eval-q0"
 
+    def test_explicit_empty_training_queries_respects_intent(
+        self, populated_store: VstashStore, tmp_path: Path, st_stubs: Any
+    ) -> None:
+        """gemini review on PR #259: ``training_queries=[]`` is a user
+        signal ("use labeled path with no queries"), NOT a cue to fall
+        back to prefix. None-vs-empty distinction: the explicit empty
+        list flows into the labeled miner, produces 0 pairs, and the
+        ``< 10 pairs`` gate returns a clean gated_out result -- not a
+        silent chunk-prefix run."""
+        st_mod, _, _ = st_stubs
+        st_mod.SentenceTransformer.return_value = MagicMock()
+
+        with (
+            patch(
+                "vstash.retrain_batch.generate_labeled_triples_batched",
+                return_value=[],
+            ) as mock_labeled,
+            patch("vstash.retrain.generate_triples") as mock_plain,
+            patch("vstash.retrain.train_mnrl") as mock_train,
+            patch("vstash.retrain.split_corpus_for_eval", return_value=(set(), [])),
+        ):
+            result = retrain(
+                populated_store,
+                base_model="dummy",
+                output_path=str(tmp_path / "m"),
+                training_queries=[],  # explicit empty list
+                skip_eval=True,
+            )
+
+        assert mock_labeled.call_count == 1  # labeled path, not prefix
+        assert mock_plain.call_count == 0
+        assert mock_train.call_count == 0  # zero pairs -> no training call
+        assert result.n_pairs == 0
+        assert result.output_path is None  # clean gated_out, not a silent chunk-prefix save
+
     def test_bulk_mine_routes_chunk_prefix_to_batched(
         self, populated_store: VstashStore, tmp_path: Path, st_stubs: Any
     ) -> None:

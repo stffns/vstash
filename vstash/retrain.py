@@ -1071,12 +1071,15 @@ def retrain(
         # eval_queries is not applicable here (skip_eval=True implies
         # no eval), so only the explicit training_queries branch and
         # the prefix/bulk fallbacks fire.
-        if training_pair_source == "labeled" and not training_queries:
+        # Same None-vs-empty distinction as the normal path: an explicit
+        # empty list is a user signal to use the labeled path (and gate
+        # out cleanly on zero pairs), not a cue to fall back to prefix.
+        if training_pair_source == "labeled" and training_queries is None:
             raise ValueError(
                 "training_pair_source='labeled' requires training_queries or "
                 "eval_queries; neither was provided."
             )
-        if training_queries:
+        if training_queries is not None:
             from .retrain_batch import generate_labeled_triples_batched
 
             pairs = generate_labeled_triples_batched(
@@ -1181,6 +1184,12 @@ def retrain(
         # branch silently drops the labels (only checks training_queries,
         # not eval_queries) and the user gets a chunk-prefix run under a
         # flag labeled "auto" -- the exact H-R1 footgun, just relocated.
+        # None vs empty: if user explicitly passed training_queries=[],
+        # honor that -- the recursive skip_eval call will hit the
+        # ``training_queries is not None`` branch, miner will return 0
+        # pairs, and the gate will report the empty-label run. Only
+        # promote from eval_queries when training_queries was NOT
+        # specified (None).
         fallback_training = training_queries
         if (
             fallback_training is None
@@ -1260,8 +1269,15 @@ def retrain(
 
     # H-R8 (2026-04-21): resolve the effective labeled training queries.
     # Mirrors the H-R1 policy on retrain_multi but over a single store.
+    # ``training_queries is not None`` (not falsy): an empty list is a
+    # user-supplied "labeled path, zero queries" signal, distinct from
+    # ``None`` which means "not specified, apply the auto/prefix rules".
+    # An empty list will flow into generate_labeled_triples_batched,
+    # produce zero pairs, and the ``len(pairs) < 10`` gate will raise a
+    # clear "not enough training pairs" error -- respecting intent
+    # instead of silently falling back to chunk-prefix.
     effective_training_queries: list[dict] | None
-    if training_queries:
+    if training_queries is not None:
         effective_training_queries = list(training_queries)
         pair_source = "explicit"
     elif training_pair_source in ("auto", "labeled") and eval_queries:
