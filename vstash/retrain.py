@@ -1001,6 +1001,10 @@ def retrain(
     synth_n: int = 2,
     synth_cache: str | Path | None = None,
     synth_model: str | None = None,
+    training_queries: list[dict] | None = None,
+    training_pair_source: TrainingPairSource = "auto",
+    bulk_mine: bool = False,
+    bulk_mine_device: str | None = None,
     cfg: "VstashConfig | None" = None,
 ) -> RetrainResult:
     """Full eval-gated retrain pipeline.
@@ -1033,6 +1037,26 @@ def retrain(
             pseudo-queries are still derived from the full store (no
             exclusion), which is correct because external eval docs
             typically have no chunk overlap with training.
+        training_queries: Optional explicit labeled training queries,
+            shape ``[{query, relevant_paths}, ...]``. When set, routes
+            through ``generate_labeled_triples_batched`` (v5 recipe).
+            Equivalent to ``training_queries_by_dataset={store: [...]}``
+            on ``retrain_multi``. H-R8 (2026-04-21).
+        training_pair_source: Resolution policy mirroring ``retrain_multi``
+            (H-R1). ``"auto"`` (default) promotes ``eval_queries`` to
+            training when no explicit ``training_queries`` is passed;
+            ``"labeled"`` requires labels and errors if none exist;
+            ``"prefix"`` forces the chunk-prefix path even when eval
+            labels are present. Only USER-SUPPLIED ``eval_queries`` are
+            eligible for auto-promotion (the internal
+            ``split_corpus_for_eval`` output is not, to avoid
+            reintroducing the chunk-prefix signal under a new name).
+        bulk_mine: Route chunk-prefix mining through
+            ``retrain_batch.generate_triples_batched`` (GPU matmul).
+            Ignored when labeled training queries are used (the labeled
+            path is always batched). H-R8.
+        bulk_mine_device: ``"cuda" | "cpu" | None`` override for the
+            batched miners. ``None`` = auto-detect.
 
     Returns:
         RetrainResult with baseline, final, delta, and final path.
@@ -1041,28 +1065,75 @@ def retrain(
     final_path_str = str(Path(output_path).expanduser())
 
     if skip_eval:
-        training_chunks = sample_training_chunks(store, max_queries=max_queries, seed=seed)
-        synth_map: dict[int, list[str]] = {}
-        if synthesize_queries and training_chunks:
-            if cfg is None:
-                raise ValueError("synthesize_queries=True requires the ``cfg`` argument.")
-            from .retrain_synth import synthesize_queries as _synth_queries
-
-            synth_map = _synth_queries(
-                training_chunks,
-                cfg=cfg,
-                n_per_chunk=synth_n,
-                cache_path=synth_cache,
-                model=synth_model,
+        # H-R8: honor labeled-query + bulk_mine flags in the skip-eval
+        # path too, so users can do ``retrain(training_queries=...,
+        # skip_eval=True)`` for a smoke run. Auto-promotion from
+        # eval_queries is not applicable here (skip_eval=True implies
+        # no eval), so only the explicit training_queries branch and
+        # the prefix/bulk fallbacks fire.
+        # Same None-vs-empty distinction as the normal path: an explicit
+        # empty list is a user signal to use the labeled path (and gate
+        # out cleanly on zero pairs), not a cue to fall back to prefix.
+        if training_pair_source == "labeled" and training_queries is None:
+            raise ValueError(
+                "training_pair_source='labeled' requires training_queries or "
+                "eval_queries; neither was provided."
             )
-        pairs = generate_triples(
-            store,
-            base_model,
-            max_queries=max_queries,
-            seed=seed,
-            synthesized_queries=synth_map or None,
-            pre_sampled_chunks=training_chunks,
-        )
+        if training_queries is not None:
+            from .retrain_batch import generate_labeled_triples_batched
+
+            pairs = generate_labeled_triples_batched(
+                store,
+                base_model,
+                labeled_queries=list(training_queries),
+                max_queries=max_queries,
+                device=bulk_mine_device,
+            )
+            if len(pairs) > max_queries:
+                generated = len(pairs)
+                rng = random.Random(seed)
+                keep_indices = sorted(rng.sample(range(generated), max_queries))
+                pairs = [pairs[i] for i in keep_indices]
+        else:
+            training_chunks = sample_training_chunks(
+                store, max_queries=max_queries, seed=seed
+            )
+            synth_map: dict[int, list[str]] = {}
+            if synthesize_queries and training_chunks:
+                if cfg is None:
+                    raise ValueError(
+                        "synthesize_queries=True requires the ``cfg`` argument."
+                    )
+                from .retrain_synth import synthesize_queries as _synth_queries
+
+                synth_map = _synth_queries(
+                    training_chunks,
+                    cfg=cfg,
+                    n_per_chunk=synth_n,
+                    cache_path=synth_cache,
+                    model=synth_model,
+                )
+            if bulk_mine:
+                from .retrain_batch import generate_triples_batched
+
+                pairs = generate_triples_batched(
+                    store,
+                    base_model,
+                    max_queries=max_queries,
+                    seed=seed,
+                    synthesized_queries=synth_map or None,
+                    pre_sampled_chunks=training_chunks,
+                    device=bulk_mine_device,
+                )
+            else:
+                pairs = generate_triples(
+                    store,
+                    base_model,
+                    max_queries=max_queries,
+                    seed=seed,
+                    synthesized_queries=synth_map or None,
+                    pre_sampled_chunks=training_chunks,
+                )
         if not pairs:
             return RetrainResult(
                 output_path=None,
@@ -1107,6 +1178,25 @@ def retrain(
             len(effective_queries),
             _EVAL_MIN_QUERIES,
         )
+        # W1 (code review): when falling back to skip_eval, promote
+        # eval_queries to training_queries BEFORE recursing if the caller
+        # asked for auto/labeled resolution. Otherwise the skip_eval
+        # branch silently drops the labels (only checks training_queries,
+        # not eval_queries) and the user gets a chunk-prefix run under a
+        # flag labeled "auto" -- the exact H-R1 footgun, just relocated.
+        # None vs empty: if user explicitly passed training_queries=[],
+        # honor that -- the recursive skip_eval call will hit the
+        # ``training_queries is not None`` branch, miner will return 0
+        # pairs, and the gate will report the empty-label run. Only
+        # promote from eval_queries when training_queries was NOT
+        # specified (None).
+        fallback_training = training_queries
+        if (
+            fallback_training is None
+            and training_pair_source in ("auto", "labeled")
+            and eval_queries
+        ):
+            fallback_training = list(eval_queries)
         return retrain(
             store,
             base_model=base_model,
@@ -1124,6 +1214,10 @@ def retrain(
             synth_n=synth_n,
             synth_cache=synth_cache,
             synth_model=synth_model,
+            training_queries=fallback_training,
+            training_pair_source=training_pair_source,
+            bulk_mine=bulk_mine,
+            bulk_mine_device=bulk_mine_device,
             cfg=cfg,
         )
 
@@ -1173,15 +1267,100 @@ def retrain(
             len(training_chunks),
         )
 
-    pairs = generate_triples(
-        store,
-        base_model,
-        max_queries=max_queries,
-        seed=seed,
-        exclude_chunk_ids=reserved_ids,
-        synthesized_queries=synth_map or None,
-        pre_sampled_chunks=training_chunks,
-    )
+    # H-R8 (2026-04-21): resolve the effective labeled training queries.
+    # Mirrors the H-R1 policy on retrain_multi but over a single store.
+    # ``training_queries is not None`` (not falsy): an empty list is a
+    # user-supplied "labeled path, zero queries" signal, distinct from
+    # ``None`` which means "not specified, apply the auto/prefix rules".
+    # An empty list will flow into generate_labeled_triples_batched,
+    # produce zero pairs, and the ``len(pairs) < 10`` gate will raise a
+    # clear "not enough training pairs" error -- respecting intent
+    # instead of silently falling back to chunk-prefix.
+    effective_training_queries: list[dict] | None
+    if training_queries is not None:
+        effective_training_queries = list(training_queries)
+        pair_source = "explicit"
+    elif training_pair_source in ("auto", "labeled") and eval_queries:
+        # Only USER-SUPPLIED eval_queries are eligible for auto-promotion;
+        # the split_corpus_for_eval output (used when eval_queries is
+        # None) never is, because those are chunk-prefix pseudo-queries
+        # by construction.
+        effective_training_queries = list(eval_queries)
+        pair_source = "auto-from-eval"
+        logger.warning(
+            "retrain (H-R8, shipped 2026-04-21): auto-promoted "
+            "eval_queries to training queries (%d labeled queries). "
+            "Pass training_pair_source='prefix' to keep the legacy "
+            "chunk-prefix training path.",
+            len(effective_training_queries),
+        )
+    elif training_pair_source == "labeled":
+        raise ValueError(
+            "training_pair_source='labeled' requires training_queries or "
+            "eval_queries; neither was provided."
+        )
+    else:
+        effective_training_queries = None
+        pair_source = "prefix"
+
+    if effective_training_queries is not None:
+        from .retrain_batch import generate_labeled_triples_batched
+
+        # Note: margin_min / margin_max filter args (originally part of
+        # the H-R8 spec) are not threaded yet because the supporting
+        # infrastructure was on PR #245 (H-R3) which closed without
+        # merge. When H-R3 is cherry-picked for a different use case
+        # (continual retrain, cross-encoder reranking), add them to
+        # both generate_labeled_triples_batched and this call site.
+        logger.info(
+            "retrain: labeled-query path (%s) with %d queries",
+            pair_source,
+            len(effective_training_queries),
+        )
+        pairs = generate_labeled_triples_batched(
+            store,
+            base_model,
+            labeled_queries=effective_training_queries,
+            max_queries=max_queries,
+            device=bulk_mine_device,
+        )
+        # Same downsampling convention as retrain_multi: the labeled
+        # miner can emit |gold| * |hard_neg| triples per query, which
+        # may far exceed max_queries. Keep the budget meaningful.
+        if len(pairs) > max_queries:
+            generated = len(pairs)
+            rng = random.Random(seed)
+            keep_indices = sorted(rng.sample(range(generated), max_queries))
+            pairs = [pairs[i] for i in keep_indices]
+            logger.info(
+                "labeled-query path: downsampled %d -> %d pairs to respect max_queries.",
+                generated,
+                max_queries,
+            )
+    elif bulk_mine:
+        from .retrain_batch import generate_triples_batched
+
+        logger.info("retrain: chunk-prefix path via bulk_mine (GPU matmul).")
+        pairs = generate_triples_batched(
+            store,
+            base_model,
+            max_queries=max_queries,
+            seed=seed,
+            exclude_chunk_ids=reserved_ids,
+            synthesized_queries=synth_map or None,
+            pre_sampled_chunks=training_chunks,
+            device=bulk_mine_device,
+        )
+    else:
+        pairs = generate_triples(
+            store,
+            base_model,
+            max_queries=max_queries,
+            seed=seed,
+            exclude_chunk_ids=reserved_ids,
+            synthesized_queries=synth_map or None,
+            pre_sampled_chunks=training_chunks,
+        )
     if len(pairs) < 10:
         logger.warning(
             "Only %d training pairs generated (need >= 10). Skipping training.", len(pairs)
