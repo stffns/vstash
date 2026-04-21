@@ -4015,13 +4015,20 @@ class VstashStore:
 
     def recent_miss_hints(self, limit: int = 10) -> list[dict]:
         """Return the N most recent search_events that carry a miss_hint,
-        newest first. Used by ``vstash why --recent``."""
+        newest first. Used by ``vstash why --recent``.
+
+        Raises ``ValueError`` when ``limit < 1`` so a negative value
+        does not accidentally turn into SQLite's "unlimited" sentinel
+        (``LIMIT -1``)."""
+        limit = int(limit)
+        if limit < 1:
+            raise ValueError(f"limit must be >= 1, got {limit}")
         rows = self._conn.execute(
             "SELECT id, query, best_distance, relevance_tier, result_count, "
             "miss_hint, created_at FROM search_events "
             "WHERE miss_hint IS NOT NULL "
             "ORDER BY id DESC LIMIT ?",
-            [int(limit)],
+            [limit],
         ).fetchall()
         out: list[dict] = []
         for r in rows:

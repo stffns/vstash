@@ -94,10 +94,16 @@ def _build_miss_hint(
     """Return a lightweight miss_hint dict when a search returns empty
     results or an all-low relevance tier, or ``None`` otherwise.
 
-    Issue #157 part 3 (2026-04-21): the hint is persisted on the
-    search_events row by ``record_search_event`` and consumed by
-    ``vstash why --recent`` so a user can drill into recent misses
-    post-hoc without re-running the query from memory.
+    Issue #157 part 3: the hint is persisted on the search_events row
+    by ``record_search_event`` and consumed by ``vstash why --recent``
+    so a user can drill into recent misses post-hoc without re-running
+    the query from memory.
+
+    The hint carries ONLY information that is not already a column on
+    ``search_events`` (``tier``, ``best_distance``, ``result_count``
+    are all stored separately). Keeping the hint dict minimal keeps
+    the JSON blob small and avoids two-sources-of-truth drift when
+    the columns evolve.
 
     The hint is intentionally cheap to compute (no extra SQL, no
     re-embedding) -- full ``miss_analysis`` is deferred to the explicit
@@ -113,11 +119,37 @@ def _build_miss_hint(
         return None
     return {
         "reason": reason,
-        "tier": tier,
-        "best_distance": round(float(best_distance), 4),
-        "result_count": int(result_count),
         "top_k_requested": int(top_k_requested),
     }
+
+
+def _record_miss_event(
+    *,
+    store,
+    cfg,
+    query: str,
+    best_distance: float,
+    tier: str,
+    result_count: int,
+    top_k_requested: int,
+) -> None:
+    """Build + persist a miss_hint search event in one place. Shared
+    between ``vstash ask`` and ``vstash search`` to kill the
+    copy-paste this PR introduced."""
+    hint = _build_miss_hint(
+        cfg_auto_hint=cfg.observability.auto_miss_hint,
+        result_count=result_count,
+        tier=tier,
+        best_distance=best_distance,
+        top_k_requested=top_k_requested,
+    )
+    store.record_search_event(
+        query=query,
+        best_distance=best_distance,
+        relevance_tier=tier,
+        result_count=result_count,
+        miss_hint=hint,
+    )
 
 
 @app.callback()
@@ -361,19 +393,14 @@ def ask(
                 # best_distance=1.0 (max) as the sentinel for "no
                 # vector ever matched" -- federated mode has no single
                 # best_distance and is skipped.
-                hint = _build_miss_hint(
-                    cfg_auto_hint=cfg.observability.auto_miss_hint,
-                    result_count=0,
-                    tier="low",
-                    best_distance=1.0,
-                    top_k_requested=k,
-                )
-                store.record_search_event(
+                _record_miss_event(
+                    store=store,
+                    cfg=cfg,
                     query=query,
                     best_distance=1.0,
-                    relevance_tier="low",
+                    tier="low",
                     result_count=0,
-                    miss_hint=hint,
+                    top_k_requested=k,
                 )
             console.print(
                 "[yellow]No relevant documents found. "
@@ -384,19 +411,14 @@ def ask(
         # Tiered relevance signal (skip for federated — no single best_distance)
         if not all_profiles:
             tier = relevance_tier(store.last_best_distance)
-            hint = _build_miss_hint(
-                cfg_auto_hint=cfg.observability.auto_miss_hint,
-                result_count=len(chunks),
-                tier=tier,
-                best_distance=store.last_best_distance,
-                top_k_requested=k,
-            )
-            store.record_search_event(
+            _record_miss_event(
+                store=store,
+                cfg=cfg,
                 query=query,
                 best_distance=store.last_best_distance,
-                relevance_tier=tier,
+                tier=tier,
                 result_count=len(chunks),
-                miss_hint=hint,
+                top_k_requested=k,
             )
             if tier == "low":
                 console.print(
@@ -616,19 +638,14 @@ def search(
 
         if not chunks:
             if not all_profiles:
-                hint = _build_miss_hint(
-                    cfg_auto_hint=cfg.observability.auto_miss_hint,
-                    result_count=0,
-                    tier="low",
-                    best_distance=1.0,
-                    top_k_requested=k,
-                )
-                store.record_search_event(
+                _record_miss_event(
+                    store=store,
+                    cfg=cfg,
                     query=query,
                     best_distance=1.0,
-                    relevance_tier="low",
+                    tier="low",
                     result_count=0,
-                    miss_hint=hint,
+                    top_k_requested=k,
                 )
             if json_output:
                 print("[]")
@@ -647,19 +664,14 @@ def search(
 
             # Telemetry: record search event for discard rate analysis,
             # attaching a miss_hint when the tier is "low" (issue #157 part 3).
-            hint = _build_miss_hint(
-                cfg_auto_hint=cfg.observability.auto_miss_hint,
-                result_count=len(chunks),
-                tier=tier,
-                best_distance=best_distance,
-                top_k_requested=k,
-            )
-            _event_id = store.record_search_event(
+            _record_miss_event(
+                store=store,
+                cfg=cfg,
                 query=query,
                 best_distance=best_distance,
-                relevance_tier=tier,
+                tier=tier,
                 result_count=len(chunks),
-                miss_hint=hint,
+                top_k_requested=k,
             )
 
         if json_output:
@@ -1527,9 +1539,14 @@ def why(
         return typer.Exit(exit_code)
 
     # --recent mode: dump the N most recent miss_hint rows and exit.
-    # Issue #157 part 3 (2026-04-21): surfaces what the auto-log hook
-    # has captured since the store was opened, so users can see which
-    # queries recently missed without having to remember them.
+    # Issue #157 part 3: surfaces recent miss hints stored in the DB
+    # for this profile (the ``search_events`` table keeps the last
+    # 1000 rows, including prior runs). Users see which queries
+    # recently missed without having to remember them.
+    if recent < 0:
+        raise _why_error(
+            f"--recent must be >= 0 (0 = disabled), got {recent}."
+        )
     if recent > 0:
         _, store = _get_store(warm=False, profile=_profile_from_ctx(ctx))
         with store:

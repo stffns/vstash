@@ -222,13 +222,14 @@ vstash why "my query" --expect path/to/doc.md --json | jq .suggestions
 # programmatic use.
 ```
 
-**Auto-logged miss hints** (#157 part 3, 2026-04-21):
+**Auto-logged miss hints** (#157 part 3):
 
 ```bash
 # List the most recent auto-logged miss hints (empty / all-low search
-# results) captured since the store was opened. Each row is a query
-# that returned nothing or only low-relevance chunks; drill into any
-# of them with `vstash why "<query>" --expect <path>` for full trace.
+# results) persisted in the DB. ``search_events`` keeps the last 1000
+# rows across runs. Each row is a query that returned nothing or only
+# low-relevance chunks; drill into any of them with
+# `vstash why "<query>" --expect <path>` for the full trace.
 vstash why --recent 10
 
 # JSON for scripting / dashboards:

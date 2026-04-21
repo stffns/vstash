@@ -169,7 +169,7 @@ mem.search("meeting notes", added_after="2024-06-01", added_before="2024-12-31")
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `slow_query_ms` | float | `100.0` | Search queries slower than this threshold log to stderr with their query, latency, and result count. Set to 0 to log every query (debug). |
-| `auto_miss_hint` | bool | `true` | When a search returns empty or an all-low-tier result set, persist a lightweight `miss_hint` JSON on the `search_events` row. Consumed by `vstash why --recent` for post-hoc diagnosis. Issue #157 part 3 (2026-04-21). |
+| `auto_miss_hint` | bool | `true` | When a search returns empty or an all-low-tier result set, persist a lightweight `miss_hint` JSON on the `search_events` row. Consumed by `vstash why --recent` for post-hoc diagnosis. Added in issue #157 part 3. |
 
 ---
 

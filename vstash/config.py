@@ -302,9 +302,9 @@ class ObservabilityConfig(BaseModel):
             "Record a lightweight ``miss_hint`` JSON on search_events "
             "rows when a query returns zero results or a result set "
             "entirely in the 'low' relevance tier (distance > 0.98). "
-            "Issue #157 part 3 (2026-04-21). Set to false to skip the "
-            "extra JSON column write per miss. The hint is consumed by "
-            "``vstash why --recent``."
+            "Set to false to skip the extra JSON column write per miss. "
+            "The hint is consumed by ``vstash why --recent``. Added in "
+            "issue #157 part 3."
         ),
     )
 

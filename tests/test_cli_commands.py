@@ -321,6 +321,26 @@ class TestWhyCommand:
         data = _json.loads(result.stdout)
         assert "error" in data
 
+    def test_why_recent_rejects_negative(
+        self, monkeypatch, populated_store: VstashStore
+    ) -> None:
+        """Code-review: ``--recent`` must validate the int. Negative
+        values previously would slip through (and SQLite's ``LIMIT -1``
+        would silently return all rows). Now raises a clean error."""
+        self._patch_embed(monkeypatch, populated_store)
+        result = runner.invoke(app, ["why", "--recent", "-3"])
+        assert result.exit_code == 1
+        assert "--recent" in result.stdout
+
+    def test_recent_miss_hints_rejects_negative_limit(
+        self, populated_store: VstashStore
+    ) -> None:
+        """``VstashStore.recent_miss_hints`` clamps against ``LIMIT -1``."""
+        with pytest.raises(ValueError, match="limit must be"):
+            populated_store.recent_miss_hints(limit=-1)
+        with pytest.raises(ValueError, match="limit must be"):
+            populated_store.recent_miss_hints(limit=0)
+
     def test_why_recent_lists_logged_hints(
         self, monkeypatch, populated_store: VstashStore
     ) -> None:
@@ -380,28 +400,23 @@ class TestWhyCommand:
         self, monkeypatch, tmp_path, sample_config
     ) -> None:
         """With no hints recorded, --recent prints a friendly message,
-        not an error."""
-        # Use a fresh store so the prior tests' seeded rows don't leak.
+        not an error. Uses the pytest ``monkeypatch`` fixture directly
+        so the teardown runs automatically."""
+        from vstash.config import load_config as _lc
         from vstash.embed import get_embedding_dim as _gdim
+        import vstash.cli as cli_mod
 
         dim = _gdim(sample_config.embeddings.model)
         fresh = VstashStore(str(tmp_path / "fresh.db"), embedding_dim=dim)
         try:
-            import vstash.cli as cli_mod
-            from vstash.config import load_config as _lc
-
-            monkeypatch = pytest.MonkeyPatch()
             monkeypatch.setattr(
                 cli_mod,
                 "_get_store",
                 lambda cfg=None, warm=False, profile=None: (_lc(), fresh),
             )
-            try:
-                result = runner.invoke(app, ["why", "--recent", "5"])
-                assert result.exit_code == 0
-                assert "No recent miss_hints" in result.stdout
-            finally:
-                monkeypatch.undo()
+            result = runner.invoke(app, ["why", "--recent", "5"])
+            assert result.exit_code == 0
+            assert "No recent miss_hints" in result.stdout
         finally:
             fresh.close()
 
