@@ -119,6 +119,109 @@ class TestAskErrorPaths:
         empty_store.close()
 
 
+class TestAutoMissHintHook:
+    """#157 part 3 (2026-04-21): ``vstash ask`` and ``vstash search``
+    auto-log a miss_hint to search_events when result_count=0 or tier=low
+    and ``[observability] auto_miss_hint`` is enabled (default)."""
+
+    def _patch_embed(self, monkeypatch, dim: int) -> None:
+        import vstash.cli as cli_mod
+
+        def _fake(query: str, model: str) -> list[float]:
+            # A vector that does NOT match any populated_store chunk so
+            # the search returns empty / low-tier.
+            return [0.99] * dim
+
+        monkeypatch.setattr(cli_mod, "embed_query", _fake)
+
+    def test_record_search_event_persists_hint(
+        self, populated_store: VstashStore
+    ) -> None:
+        """Unit-level check: record_search_event + recent_miss_hints
+        roundtrip a dict through the miss_hint column without data loss."""
+        populated_store.record_search_event(
+            query="unmatchable_xyz",
+            best_distance=1.0,
+            relevance_tier="low",
+            result_count=0,
+            miss_hint={"reason": "empty", "tier": "low",
+                       "best_distance": 1.0, "result_count": 0,
+                       "top_k_requested": 5},
+        )
+        hints = populated_store.recent_miss_hints(limit=5)
+        assert any(h["query"] == "unmatchable_xyz" for h in hints)
+        match = next(h for h in hints if h["query"] == "unmatchable_xyz")
+        assert match["miss_hint"]["reason"] == "empty"
+        assert match["miss_hint"]["tier"] == "low"
+
+    def test_record_search_event_none_hint_stays_null(
+        self, populated_store: VstashStore
+    ) -> None:
+        """When the caller passes miss_hint=None (e.g., auto_miss_hint
+        is disabled) the row is written but recent_miss_hints skips it."""
+        start_ids = {h["id"] for h in populated_store.recent_miss_hints(limit=50)}
+        populated_store.record_search_event(
+            query="no_hint_query",
+            best_distance=0.5,
+            relevance_tier="high",
+            result_count=3,
+            miss_hint=None,
+        )
+        end_hints = populated_store.recent_miss_hints(limit=50)
+        new = [h for h in end_hints if h["id"] not in start_ids]
+        assert new == [], "recent_miss_hints should skip rows with NULL miss_hint"
+
+    def test_build_miss_hint_helper(self) -> None:
+        """``_build_miss_hint`` returns None when auto_hint is off OR
+        when tier is high with results; returns a structured dict for
+        empty / all-low cases."""
+        from vstash.cli import _build_miss_hint
+
+        # Disabled -> None
+        assert (
+            _build_miss_hint(
+                cfg_auto_hint=False,
+                result_count=0,
+                tier="low",
+                best_distance=1.0,
+                top_k_requested=5,
+            )
+            is None
+        )
+        # High tier with results -> None
+        assert (
+            _build_miss_hint(
+                cfg_auto_hint=True,
+                result_count=3,
+                tier="high",
+                best_distance=0.2,
+                top_k_requested=5,
+            )
+            is None
+        )
+        # Empty -> populated
+        hint = _build_miss_hint(
+            cfg_auto_hint=True,
+            result_count=0,
+            tier="low",
+            best_distance=1.0,
+            top_k_requested=5,
+        )
+        assert hint is not None
+        assert hint["reason"] == "empty"
+        assert hint["top_k_requested"] == 5
+        # All-low -> populated
+        hint2 = _build_miss_hint(
+            cfg_auto_hint=True,
+            result_count=3,
+            tier="low",
+            best_distance=0.99,
+            top_k_requested=5,
+        )
+        assert hint2 is not None
+        assert hint2["reason"] == "all_low"
+
+
 class TestWhyCommand:
     """Test 'vstash why' command (issue #157 / H-WHY)."""
 
@@ -217,6 +320,90 @@ class TestWhyCommand:
         assert result.exit_code == 1
         data = _json.loads(result.stdout)
         assert "error" in data
+
+    def test_why_recent_lists_logged_hints(
+        self, monkeypatch, populated_store: VstashStore
+    ) -> None:
+        """#157 part 3 (2026-04-21): ``vstash why --recent N`` lists
+        the N most recent search_events whose auto-logged miss_hint is
+        populated. Seed one synthetic event and assert it surfaces."""
+        # Seed a miss_hint row directly via the store API so the test
+        # does not depend on the search pipeline firing auto-log.
+        populated_store.record_search_event(
+            query="unicorn discovery",
+            best_distance=0.99,
+            relevance_tier="low",
+            result_count=0,
+            miss_hint={
+                "reason": "empty",
+                "tier": "low",
+                "best_distance": 0.99,
+                "result_count": 0,
+                "top_k_requested": 5,
+            },
+        )
+
+        result = runner.invoke(app, ["why", "--recent", "5"])
+        assert result.exit_code == 0
+        assert "unicorn discovery" in result.stdout
+        # Should surface the reason and tier.
+        assert "empty" in result.stdout
+        assert "low" in result.stdout
+
+    def test_why_recent_json_output(
+        self, monkeypatch, populated_store: VstashStore
+    ) -> None:
+        """``vstash why --recent N --json`` emits a parseable JSON object."""
+        import json as _json
+
+        populated_store.record_search_event(
+            query="another miss",
+            best_distance=0.995,
+            relevance_tier="low",
+            result_count=0,
+            miss_hint={"reason": "empty", "tier": "low", "best_distance": 0.995,
+                       "result_count": 0, "top_k_requested": 5},
+        )
+
+        result = runner.invoke(app, ["why", "--recent", "3", "--json"])
+        assert result.exit_code == 0
+        data = _json.loads(result.stdout)
+        assert "recent_miss_hints" in data
+        hints = data["recent_miss_hints"]
+        assert any(h["query"] == "another miss" for h in hints)
+        # Each hint row has the structured blob we expect.
+        for h in hints:
+            assert "miss_hint" in h
+            assert "reason" in h["miss_hint"]
+
+    def test_why_recent_empty_is_friendly(
+        self, monkeypatch, tmp_path, sample_config
+    ) -> None:
+        """With no hints recorded, --recent prints a friendly message,
+        not an error."""
+        # Use a fresh store so the prior tests' seeded rows don't leak.
+        from vstash.embed import get_embedding_dim as _gdim
+
+        dim = _gdim(sample_config.embeddings.model)
+        fresh = VstashStore(str(tmp_path / "fresh.db"), embedding_dim=dim)
+        try:
+            import vstash.cli as cli_mod
+            from vstash.config import load_config as _lc
+
+            monkeypatch = pytest.MonkeyPatch()
+            monkeypatch.setattr(
+                cli_mod,
+                "_get_store",
+                lambda cfg=None, warm=False, profile=None: (_lc(), fresh),
+            )
+            try:
+                result = runner.invoke(app, ["why", "--recent", "5"])
+                assert result.exit_code == 0
+                assert "No recent miss_hints" in result.stdout
+            finally:
+                monkeypatch.undo()
+        finally:
+            fresh.close()
 
     def test_why_json_output_is_parseable(
         self, monkeypatch, populated_store: VstashStore

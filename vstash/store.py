@@ -11,6 +11,7 @@ Single .db file. WAL mode for safe concurrent reads.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import math
 import operator
@@ -758,7 +759,11 @@ class VstashStore:
                 created_at TEXT NOT NULL
             );
 
-            -- Search event telemetry for validating relevance signal
+            -- Search event telemetry for validating relevance signal.
+            -- ``miss_hint`` (issue #157 part 3, 2026-04-21) is a small
+            -- JSON blob populated by ``record_search_event`` when a
+            -- query returned empty / all-low results; consumed by
+            -- ``vstash why --recent`` for post-hoc diagnosis.
             CREATE TABLE IF NOT EXISTS search_events (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 query           TEXT NOT NULL,
@@ -766,7 +771,8 @@ class VstashStore:
                 relevance_tier  TEXT NOT NULL,
                 result_count    INTEGER NOT NULL,
                 dismissed       INTEGER NOT NULL DEFAULT 0,
-                created_at      TEXT NOT NULL
+                created_at      TEXT NOT NULL,
+                miss_hint       TEXT
             );
 
             -- Store metadata: key-value table for tracking what the
@@ -870,6 +876,13 @@ class VstashStore:
             migrations.append("ALTER TABLE documents ADD COLUMN layer TEXT")
         if "tags" not in doc_columns:
             migrations.append("ALTER TABLE documents ADD COLUMN tags TEXT")
+
+        # miss_hint column on search_events (issue #157 part 3, 2026-04-21)
+        event_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(search_events)").fetchall()
+        }
+        if event_columns and "miss_hint" not in event_columns:
+            migrations.append("ALTER TABLE search_events ADD COLUMN miss_hint TEXT")
 
         # Frequency + decay scoring columns on chunks
         chunk_columns = {row[1] for row in conn.execute("PRAGMA table_info(chunks)").fetchall()}
@@ -3965,17 +3978,32 @@ class VstashStore:
         best_distance: float,
         relevance_tier: str,
         result_count: int,
+        miss_hint: dict | None = None,
     ) -> int:
         """Record a search event for discard telemetry.
+
+        Args:
+            query: Raw query text.
+            best_distance: Distance of the top result (smaller = more relevant).
+            relevance_tier: ``"high"`` | ``"medium"`` | ``"low"`` bucket.
+            result_count: Number of rows the caller surfaced to the user.
+            miss_hint: Optional lightweight diagnostic blob, persisted as
+                JSON in the ``miss_hint`` column. Issue #157 part 3
+                (2026-04-21). Typical shape:
+                ``{"reason": "empty" | "all_low", "best_distance": ...,
+                "tier": ..., "result_count": ..., "top_k_requested": ...}``.
+                Consumed by ``vstash why --recent``.
 
         Returns the event ID so it can be marked as dismissed later.
         """
         now_iso = datetime.now(timezone.utc).isoformat()
+        hint_json = json.dumps(miss_hint) if miss_hint is not None else None
         with self._write_lock:
             cursor = self._conn.execute(
                 "INSERT INTO search_events (query, best_distance, relevance_tier, "
-                "result_count, dismissed, created_at) VALUES (?, ?, ?, ?, 0, ?)",
-                [query, best_distance, relevance_tier, result_count, now_iso],
+                "result_count, dismissed, created_at, miss_hint) "
+                "VALUES (?, ?, ?, ?, 0, ?, ?)",
+                [query, best_distance, relevance_tier, result_count, now_iso, hint_json],
             )
             # Prune to keep only the last 1000 entries
             self._conn.execute(
@@ -3984,6 +4012,35 @@ class VstashStore:
             )
             self._conn.commit()
             return cursor.lastrowid  # type: ignore[return-value]
+
+    def recent_miss_hints(self, limit: int = 10) -> list[dict]:
+        """Return the N most recent search_events that carry a miss_hint,
+        newest first. Used by ``vstash why --recent``."""
+        rows = self._conn.execute(
+            "SELECT id, query, best_distance, relevance_tier, result_count, "
+            "miss_hint, created_at FROM search_events "
+            "WHERE miss_hint IS NOT NULL "
+            "ORDER BY id DESC LIMIT ?",
+            [int(limit)],
+        ).fetchall()
+        out: list[dict] = []
+        for r in rows:
+            try:
+                hint = json.loads(r["miss_hint"]) if r["miss_hint"] else {}
+            except (TypeError, ValueError):
+                hint = {}
+            out.append(
+                {
+                    "id": int(r["id"]),
+                    "query": str(r["query"]),
+                    "best_distance": float(r["best_distance"]),
+                    "relevance_tier": str(r["relevance_tier"]),
+                    "result_count": int(r["result_count"]),
+                    "created_at": str(r["created_at"]),
+                    "miss_hint": hint,
+                }
+            )
+        return out
 
     def mark_search_dismissed(self, event_id: int) -> None:
         """Mark a search event as dismissed (user didn't engage with results)."""
