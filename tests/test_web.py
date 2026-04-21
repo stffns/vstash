@@ -393,6 +393,65 @@ class TestDebugWhyEndpoint:
             assert resp.status_code == 400
             assert "No chunks found" in resp.json()["error"]
 
+    def test_expect_relative_path_normalized_to_absolute(self) -> None:
+        """Code review on PR #262: ingest stores absolute paths via
+        ``Path.resolve()``, so ``expect`` must be normalized the same
+        way. Relative paths should reach ``_do_miss_analysis`` as
+        absolute, matching the CLI + SDK behavior."""
+        from vstash.models import MissAnalysis
+        from pathlib import Path
+
+        fake = MissAnalysis(
+            query="q",
+            expected_path="placeholder",
+            top_k_requested=5,
+            appeared_in_results=False,
+        )
+        with (
+            patch(
+                "vstash.web._do_miss_analysis",
+                return_value=fake.model_dump(exclude_none=True),
+            ) as mock_do,
+            self._client_with_debug(debug=True) as c,
+        ):
+            resp = c.get("/debug/why?q=q&expect=notes/doc.md")
+            assert resp.status_code == 200
+            # expected_path arg (2nd positional) must be resolved absolute.
+            passed = mock_do.call_args.args[1]
+            assert passed is not None
+            assert Path(passed).is_absolute(), f"expected absolute, got {passed!r}"
+
+    def test_expect_http_uri_passes_through(self) -> None:
+        """http:// / https:// / text:// URIs stay verbatim, no Path
+        resolution, matching ``vstash search --miss`` and ``vstash why``."""
+        from vstash.models import MissAnalysis
+
+        fake = MissAnalysis(
+            query="q",
+            expected_path="placeholder",
+            top_k_requested=5,
+            appeared_in_results=False,
+        )
+        with (
+            patch(
+                "vstash.web._do_miss_analysis",
+                return_value=fake.model_dump(exclude_none=True),
+            ) as mock_do,
+            self._client_with_debug(debug=True) as c,
+        ):
+            resp = c.get("/debug/why?q=q&expect=https://example.com/doc")
+            assert resp.status_code == 200
+            assert mock_do.call_args.args[1] == "https://example.com/doc"
+
+    def test_expect_whitespace_only_is_treated_as_missing(self) -> None:
+        """``expect=   `` with only whitespace must fall into the
+        'one of expect/expect_chunk_id is required' error, not silently
+        stringify into ``/cwd/   ``."""
+        with self._client_with_debug(debug=True) as c:
+            resp = c.get("/debug/why?q=q&expect=%20%20%20")
+            assert resp.status_code == 400
+            assert "expect" in resp.json()["error"]
+
     def test_unexpected_error_returns_500(self) -> None:
         """Any other exception maps to 500 with a generic message so
         internals do not leak to unauthed callers."""

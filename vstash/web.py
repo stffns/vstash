@@ -434,7 +434,19 @@ async def api_debug_why(request: Request) -> JSONResponse:
     """
     qp = request.query_params
     query = (qp.get("q") or "").strip()
-    expect = qp.get("expect") or None
+    # Normalize ``expect`` the same way the CLI and Memory SDK do:
+    # http(s)/text URIs pass through verbatim, everything else resolves
+    # to an absolute path (ingest stores ``Path(source).resolve()``,
+    # so a caller passing a relative path would otherwise reliably get
+    # "No chunks found" even when the doc exists). ``.strip()`` treats
+    # whitespace-only values as missing.
+    expect_raw = (qp.get("expect") or "").strip()
+    if not expect_raw:
+        expect = None
+    elif expect_raw.startswith(("http://", "https://", "text://")):
+        expect = expect_raw
+    else:
+        expect = str(Path(expect_raw).resolve(strict=False))
     expect_chunk_id_raw = qp.get("expect_chunk_id")
     top_k_raw = qp.get("top_k")
     collection = qp.get("collection") or None
