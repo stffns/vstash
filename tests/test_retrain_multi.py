@@ -456,6 +456,7 @@ def test_eval_queries_by_dataset_skips_internal_split(
             sampling="uniform",
             eval_queries_by_dataset={"small": labeled_small, "medium": labeled_medium},
             min_gain=0.0,
+            training_pair_source="prefix",  # isolate: test exercises eval split, not train path
         )
 
     # Only the "big" dataset (not passed) should trigger split_corpus_for_eval.
