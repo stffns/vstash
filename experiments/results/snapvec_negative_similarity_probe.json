@@ -1,0 +1,125 @@
+{
+  "dataset": "scifact",
+  "model": "Stffens/bge-small-rrf-v3",
+  "max_queries": 300,
+  "n_shared_queries": 300,
+  "bucket_counts": {
+    "both_have_neg": 2,
+    "only_vec_has_neg": 0,
+    "only_snap_has_neg": 271,
+    "neither_has_neg": 27
+  },
+  "cos_query_positive_by_bucket": {
+    "both_have_neg": {
+      "count": 2,
+      "min": 0.7147,
+      "p10": 0.7313,
+      "p25": 0.7562,
+      "median": 0.7978,
+      "p75": 0.8394,
+      "p90": 0.8644,
+      "max": 0.881,
+      "mean": 0.7978
+    },
+    "only_vec_has_neg": {
+      "count": 0
+    },
+    "only_snap_has_neg": {
+      "count": 271,
+      "min": 0.8025,
+      "p10": 0.901,
+      "p25": 0.9219,
+      "median": 0.9424,
+      "p75": 0.9573,
+      "p90": 0.9688,
+      "max": 0.9864,
+      "mean": 0.9369
+    },
+    "neither_has_neg": {
+      "count": 27,
+      "min": 0.8475,
+      "p10": 0.8747,
+      "p25": 0.9094,
+      "median": 0.9389,
+      "p75": 0.9563,
+      "p90": 0.9697,
+      "max": 0.9767,
+      "mean": 0.93
+    }
+  },
+  "cos_query_negative_vec_by_bucket": {
+    "both_have_neg": {
+      "count": 2,
+      "min": 0.7083,
+      "p10": 0.7227,
+      "p25": 0.7442,
+      "median": 0.7801,
+      "p75": 0.8161,
+      "p90": 0.8376,
+      "max": 0.852,
+      "mean": 0.7801
+    },
+    "only_vec_has_neg": {
+      "count": 0
+    }
+  },
+  "cos_query_negative_snap_by_bucket": {
+    "both_have_neg": {
+      "count": 2,
+      "min": 0.7028,
+      "p10": 0.7164,
+      "p25": 0.7368,
+      "median": 0.7709,
+      "p75": 0.805,
+      "p90": 0.8254,
+      "max": 0.8391,
+      "mean": 0.7709
+    },
+    "only_snap_has_neg": {
+      "count": 271,
+      "min": 0.5599,
+      "p10": 0.7102,
+      "p25": 0.7423,
+      "median": 0.7771,
+      "p75": 0.8127,
+      "p90": 0.8389,
+      "max": 0.8918,
+      "mean": 0.7758
+    }
+  },
+  "margin_pos_minus_neg": {
+    "sqlite-vec (all)": {
+      "count": 2,
+      "min": 0.0064,
+      "p10": 0.0086,
+      "p25": 0.012,
+      "median": 0.0177,
+      "p75": 0.0233,
+      "p90": 0.0267,
+      "max": 0.029,
+      "mean": 0.0177
+    },
+    "snapvec (all)": {
+      "count": 273,
+      "min": 0.0119,
+      "p10": 0.0854,
+      "p25": 0.1255,
+      "median": 0.1602,
+      "p75": 0.1955,
+      "p90": 0.2375,
+      "max": 0.314,
+      "mean": 0.1601
+    },
+    "snapvec-only (noise test bucket)": {
+      "count": 271,
+      "min": 0.0216,
+      "p10": 0.0881,
+      "p25": 0.1275,
+      "median": 0.1606,
+      "p75": 0.1957,
+      "p90": 0.2376,
+      "max": 0.314,
+      "mean": 0.1611
+    }
+  }
+}
