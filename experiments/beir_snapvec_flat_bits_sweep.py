@@ -66,10 +66,16 @@ def _evaluate_bits(
     tmp_dir: Path,
 ) -> dict:
     db_path = tmp_dir / f"{dataset}_snapvec_b{bits}.db"
-    for suffix in ("", "-wal", "-shm", ".snpv"):
-        p = db_path.with_suffix(db_path.suffix + suffix) if suffix else db_path
-        if os.path.exists(p):
-            os.remove(p)
+    # SQLite writes ``.db`` + ``.db-wal`` + ``.db-shm`` (extensions append).
+    # Snapvec companion REPLACES the extension: ``foo.db`` -> ``foo.snpv``.
+    for p in (
+        db_path,
+        db_path.with_suffix(db_path.suffix + "-wal"),
+        db_path.with_suffix(db_path.suffix + "-shm"),
+        db_path.with_suffix(".snpv"),
+    ):
+        if p.exists():
+            p.unlink()
 
     store = VstashStore(
         str(db_path),
@@ -117,11 +123,15 @@ def _evaluate_bits(
     if snpv_path.exists():
         snpv_bytes = snpv_path.stat().st_size
 
-    for suffix in ("", "-wal", "-shm", ".snpv"):
-        p = db_path.with_suffix(db_path.suffix + suffix) if suffix else db_path
-        if os.path.exists(p):
+    for p in (
+        db_path,
+        db_path.with_suffix(db_path.suffix + "-wal"),
+        db_path.with_suffix(db_path.suffix + "-shm"),
+        db_path.with_suffix(".snpv"),
+    ):
+        if p.exists():
             try:
-                os.remove(p)
+                p.unlink()
             except OSError:
                 pass
 

@@ -73,10 +73,16 @@ def _evaluate_ivfpq(
     tmp_dir: Path,
 ) -> dict:
     db_path = tmp_dir / f"{dataset}_ivfpq_r{rerank}_p{nprobe}.db"
-    for suffix in ("", "-wal", "-shm", ".snpi"):
-        p = db_path.with_suffix(db_path.suffix + suffix) if suffix else db_path
-        if os.path.exists(p):
-            os.remove(p)
+    # SQLite extensions append to ``.db``; snapvec companion replaces
+    # the extension (``foo.db`` -> ``foo.snpi``).
+    for p in (
+        db_path,
+        db_path.with_suffix(db_path.suffix + "-wal"),
+        db_path.with_suffix(db_path.suffix + "-shm"),
+        db_path.with_suffix(".snpi"),
+    ):
+        if p.exists():
+            p.unlink()
 
     store = VstashStore(
         str(db_path),
@@ -128,11 +134,15 @@ def _evaluate_ivfpq(
         recalls_100.append(_recall_at_k(ranked, qrels[qid], RANK_K))
 
     store.close()
-    for suffix in ("", "-wal", "-shm", ".snpi"):
-        p = db_path.with_suffix(db_path.suffix + suffix) if suffix else db_path
-        if os.path.exists(p):
+    for p in (
+        db_path,
+        db_path.with_suffix(db_path.suffix + "-wal"),
+        db_path.with_suffix(db_path.suffix + "-shm"),
+        db_path.with_suffix(".snpi"),
+    ):
+        if p.exists():
             try:
-                os.remove(p)
+                p.unlink()
             except OSError:
                 pass
 

@@ -51,6 +51,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import tempfile
 import time
 from pathlib import Path
@@ -73,6 +74,30 @@ from vstash.retrain import (
     sample_training_chunks,
 )
 from vstash.store import VstashStore
+
+
+def _sidecar_paths(db_path: Path) -> list[Path]:
+    """Return the full set of files a VstashStore writes for ``db_path``.
+
+    SQLite writes ``.db``, ``.db-wal``, ``.db-shm`` (the db suffix is kept
+    and extensions append). Snapvec companions replace the db extension:
+    ``foo.db`` has ``foo.snpv`` (flat) or ``foo.snpi`` (ivfpq). The earlier
+    cleanup used ``db_path.with_suffix(db_path.suffix + ".snpv")`` which
+    produced ``foo.db.snpv``, missing the real sidecar -- correctness bug
+    caught by the #254/#255 bot review."""
+    return [
+        db_path,
+        db_path.with_suffix(db_path.suffix + "-wal"),
+        db_path.with_suffix(db_path.suffix + "-shm"),
+        db_path.with_suffix(".snpv"),
+        db_path.with_suffix(".snpi"),
+    ]
+
+
+def _remove_sidecars(db_path: Path) -> None:
+    for p in _sidecar_paths(db_path):
+        if p.exists():
+            p.unlink()
 
 
 # Retrain always starts from base; the v3/v5 checkpoints were trained
@@ -248,10 +273,7 @@ def _build_store(
     so ``evaluate_model`` can resolve qrels paths to chunks. Earlier versions
     derived the prefix from ``db_path.stem``, which was unique per backend
     and therefore never matched the qrels -- NDCG collapsed to 0."""
-    for suffix in ("", "-wal", "-shm", ".snpv", ".snpi"):
-        p = db_path.with_suffix(db_path.suffix + suffix) if suffix else db_path
-        if os.path.exists(p):
-            os.remove(p)
+    _remove_sidecars(db_path)
 
     store = VstashStore(str(db_path), embedding_dim=dim, vector_backend=backend)
     docs = [
@@ -552,8 +574,6 @@ def main() -> int:
             for tag, pairs in (("sqlite-vec", pairs_vec), ("snapvec", pairs_snap)):
                 out_dir = args.models_dir / f"{args.dataset}_v4_{tag}_{args.loss}"
                 if out_dir.exists():
-                    import shutil
-
                     shutil.rmtree(out_dir)
 
                 if args.loss == "triplet":
