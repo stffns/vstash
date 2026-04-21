@@ -1401,6 +1401,13 @@ def serve(
         "--warm/--no-warm",
         help="Pre-load embedding model at startup (eliminates first-query cold start)",
     ),
+    debug: bool = typer.Option(
+        False,
+        "--debug/--no-debug",
+        help="Expose the /debug/why route (miss analysis as JSON). Off by "
+        "default because the endpoint echoes arbitrary query text back. "
+        "Intended for local diagnostic use only. Issue #157 part 2.",
+    ),
 ) -> None:
     """Launch the vstash web interface -- a pocket memory agent.
 
@@ -1462,8 +1469,13 @@ def serve(
         )
 
     console.print(f"[bold cyan]vstash[/bold cyan] serving at [link]http://{host}:{port}[/link]")
+    if debug:
+        console.print(
+            "[yellow]! debug mode: /debug/why is exposed. "
+            "Do not use in production.[/yellow]"
+        )
     console.print("[dim]Press Ctrl+C to stop[/dim]")
-    uvicorn.run(create_app(), host=host, port=port, log_level="warning")
+    uvicorn.run(create_app(debug=debug), host=host, port=port, log_level="warning")
 
 
 @app.command()

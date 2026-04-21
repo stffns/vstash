@@ -243,9 +243,20 @@ The hook is on by default. Disable via ``vstash.toml``:
 auto_miss_hint = false
 ```
 
-**Planned follow-up for #157** (not yet shipped):
-- ``/debug/why`` JSON/HTML route on ``vstash serve`` for a browser-native
-  debug surface.
+**Web debug route** (#157 part 2):
+
+```bash
+# Expose /debug/why on vstash serve (off by default):
+vstash serve --debug
+
+# Then:
+curl 'http://127.0.0.1:8585/debug/why?q=rate%20limits&expect=/notes/api-design.md'
+```
+
+Same MissAnalysis payload as ``vstash why --json``, served over HTTP
+so browsers and remote tooling can consume it. Off by default because
+the endpoint echoes arbitrary query text back to the caller; intended
+for local diagnostic use, not production.
 
 **Prometheus alerting suggestion:**
 

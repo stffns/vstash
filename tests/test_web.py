@@ -316,3 +316,93 @@ class TestJsonHelper:
 
         resp = _json({"error": "bad"}, status=400)
         assert resp.status_code == 400
+
+
+class TestDebugWhyEndpoint:
+    """Issue #157 part 2: /debug/why -- miss analysis as JSON, mounted
+    only when ``create_app(debug=True)``."""
+
+    def _client_with_debug(self, debug: bool) -> TestClient:
+        app = create_app(debug=debug)
+        return TestClient(app)
+
+    def test_route_not_mounted_by_default(self) -> None:
+        """Without ``debug=True``, the route returns 404."""
+        with self._client_with_debug(debug=False) as c:
+            resp = c.get("/debug/why?q=hello&expect=/a.md")
+            assert resp.status_code == 404
+
+    def test_route_mounted_when_debug_true(self) -> None:
+        """With ``debug=True``, the route is available and dispatches
+        to ``_do_miss_analysis``."""
+        from vstash.models import MissAnalysis
+
+        fake_analysis = MissAnalysis(
+            query="test",
+            expected_path="/a.md",
+            top_k_requested=5,
+            appeared_in_results=False,
+            dropped_at="vector_search",
+        )
+        with (
+            patch("vstash.web._do_miss_analysis", return_value=fake_analysis.model_dump(exclude_none=True)),
+            self._client_with_debug(debug=True) as c,
+        ):
+            resp = c.get("/debug/why?q=test&expect=/a.md")
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["query"] == "test"
+            assert body["expected_path"] == "/a.md"
+            assert body["dropped_at"] == "vector_search"
+
+    def test_missing_query_returns_400(self) -> None:
+        with self._client_with_debug(debug=True) as c:
+            resp = c.get("/debug/why?expect=/a.md")
+            assert resp.status_code == 400
+            assert "q" in resp.json()["error"]
+
+    def test_missing_expect_returns_400(self) -> None:
+        with self._client_with_debug(debug=True) as c:
+            resp = c.get("/debug/why?q=hello")
+            assert resp.status_code == 400
+            assert "expect" in resp.json()["error"]
+
+    def test_invalid_expect_chunk_id_returns_400(self) -> None:
+        with self._client_with_debug(debug=True) as c:
+            resp = c.get("/debug/why?q=hello&expect_chunk_id=notanint")
+            assert resp.status_code == 400
+            assert "integer" in resp.json()["error"]
+
+    def test_invalid_top_k_returns_400(self) -> None:
+        with self._client_with_debug(debug=True) as c:
+            resp = c.get("/debug/why?q=hello&expect=/a.md&top_k=bad")
+            assert resp.status_code == 400
+            assert "top_k" in resp.json()["error"]
+
+    def test_value_error_from_miss_analysis_returns_400(self) -> None:
+        """A ValueError from the store (e.g. unknown path) surfaces as
+        a clean 400 + JSON error, not a 500."""
+        with (
+            patch(
+                "vstash.web._do_miss_analysis",
+                side_effect=ValueError("No chunks found for path: /missing.md"),
+            ),
+            self._client_with_debug(debug=True) as c,
+        ):
+            resp = c.get("/debug/why?q=hello&expect=/missing.md")
+            assert resp.status_code == 400
+            assert "No chunks found" in resp.json()["error"]
+
+    def test_unexpected_error_returns_500(self) -> None:
+        """Any other exception maps to 500 with a generic message so
+        internals do not leak to unauthed callers."""
+        with (
+            patch(
+                "vstash.web._do_miss_analysis",
+                side_effect=RuntimeError("sensitive path /etc/...")
+            ),
+            self._client_with_debug(debug=True) as c,
+        ):
+            resp = c.get("/debug/why?q=hello&expect=/a.md")
+            assert resp.status_code == 500
+            assert resp.json()["error"] == "internal error"
