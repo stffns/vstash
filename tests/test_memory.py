@@ -800,3 +800,35 @@ class TestDynamicChunkSize:
 
         # Smaller chunk_size should produce more chunks
         assert chunk_count_512 >= chunk_count_4096
+
+
+class TestMemorySearchExactMatch:
+    """#106 (2026-04-21): Memory.search passes exact_match through to
+    the store and respects the case-sensitivity toggle."""
+
+    def test_memory_search_forwards_exact_match(self, tmp_path: Path) -> None:
+        (tmp_path / "a.md").write_text(
+            "# Doc A\n\nThis paragraph mentions RateLimit as a specific identifier."
+        )
+        (tmp_path / "b.md").write_text(
+            "# Doc B\n\nThis paragraph mentions rate limits but nothing code-ish."
+        )
+        with Memory(db=tmp_path / "mem.db") as mem:
+            mem.add(tmp_path / "a.md")
+            mem.add(tmp_path / "b.md")
+
+            # Without filter both docs likely surface via 'rate' / 'limit'.
+            baseline = mem.search("rate limits", top_k=10)
+            assert len(baseline) >= 1
+
+            # Case-sensitive "RateLimit" only matches doc A.
+            strict = mem.search(
+                "rate limits",
+                top_k=10,
+                exact_match="RateLimit",
+                exact_match_case_sensitive=True,
+            )
+            for r in strict:
+                assert "RateLimit" in r.text
+            paths = {r.path for r in strict}
+            assert all(str(tmp_path / "a.md") == p for p in paths) or not paths

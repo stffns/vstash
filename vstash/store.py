@@ -1791,6 +1791,8 @@ class VstashStore:
         added_before: str | None = None,
         mmr_lambda: float = 0.5,
         fts_only: bool = False,
+        exact_match: str | None = None,
+        exact_match_case_sensitive: bool = False,
         _tracer: _PipelineTracer | None = None,
     ) -> list[SearchResult]:
         """Hybrid search: vector (semantic) + FTS5 (keyword) combined with RRF.
@@ -1813,6 +1815,19 @@ class VstashStore:
             collection: If set, restrict search to documents in this collection.
             project: If set, restrict search to documents with this project tag.
             layer: If set, restrict search to documents with this layer tag.
+            exact_match: Optional substring that each returned chunk's
+                ``text`` must contain. Applied as a post-filter after
+                the full pipeline so the upstream candidate pool does
+                NOT know about this constraint -- callers who need a
+                guaranteed top_k under a selective substring should
+                request a larger ``top_k`` and accept that fewer
+                results may come back. Bypasses FTS5 tokenization, so
+                literal strings with punctuation / casing / code
+                identifiers survive (unlike the FTS5 keyword path
+                which stems and lowercases). #106, 2026-04-21.
+            exact_match_case_sensitive: Toggle for the above. Default
+                ``False`` does a casefold comparison which matches
+                typical retrieval-filter UX expectations.
             fts_only: If True, short-circuit the pipeline to FTS5 only (#152):
                 no vector ANN scan, no distance cutoff, no adaptive
                 RRF weight computation. FTS5 hits are still fed
@@ -1845,9 +1860,18 @@ class VstashStore:
         )
 
         # --- Query cache key ---
+        # Skip the cache when an exact_match filter is active; mixing an
+        # arbitrary substring into the cache key would bloat the cache
+        # and produce stale-match hits across similar-but-different
+        # filter strings. Cheap fallthrough for the rare filter use.
         _cache_key: int | None = None
         _cache_max = self._cache_config.query_cache_size
-        if _cache_max > 0 and _tracer is None and not explain:
+        if (
+            _cache_max > 0
+            and _tracer is None
+            and not explain
+            and exact_match is None
+        ):
             _cache_key = self._compute_search_cache_key(
                 query_embedding=query_embedding,
                 query_text=query_text,
@@ -2363,6 +2387,31 @@ class VstashStore:
                 vec_weight=vec_weight,
                 fts_weight=fts_weight,
             )
+
+            # Exact-match text filter (#106). Applied post-pipeline on
+            # the final ranked list: a chunk that otherwise would have
+            # made the top-k is dropped unless its ``text`` contains
+            # ``exact_match`` as a substring. Bypasses FTS5 tokenization
+            # so identifiers / phrases that stem or tokenize differently
+            # than the user typed survive -- e.g. ``exact_match="rate-
+            # limit"`` requires the literal string, not ``rate limit``.
+            #
+            # Case-sensitive opt-in via ``exact_match_case_sensitive``.
+            # Default is case-insensitive which is the usual UX
+            # expectation for retrieval filters.
+            #
+            # Post-filter means the candidate pool upstream was sized
+            # without knowing about this filter, so callers who need a
+            # guaranteed top_k under a selective substring should pass a
+            # larger ``top_k`` (e.g. 3x) or accept a smaller result set.
+            if exact_match:
+                needle = exact_match if exact_match_case_sensitive else exact_match.casefold()
+                filtered: list[SearchResult] = []
+                for r in results:
+                    hay = r.text if exact_match_case_sensitive else r.text.casefold()
+                    if needle in hay:
+                        filtered.append(r)
+                results = filtered
 
             # Stash values the finally block needs to log slow queries
             # with accurate data.

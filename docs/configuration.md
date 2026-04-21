@@ -162,6 +162,25 @@ The `recency_boost` parameter can also be set per-call in `store.search()`, `Mem
 mem.search("meeting notes", added_after="2024-06-01", added_before="2024-12-31")
 ```
 
+### Exact-match substring filter
+
+`exact_match` is a per-call substring post-filter that bypasses FTS5 tokenization. It's applied after the full hybrid pipeline, so candidate pool sizing ignores it — pass a larger `top_k` when the substring is selective.
+
+```python
+# Case-insensitive by default (casefold compare).
+mem.search("policy", exact_match="rate-limit")
+
+# Strict compare for code identifiers / casing-sensitive terms.
+mem.search("api", exact_match="RateLimit", exact_match_case_sensitive=True)
+```
+
+```bash
+vstash search "policy" --exact-match "rate-limit"
+vstash search "api" --exact-match "RateLimit" --exact-match-case-sensitive
+```
+
+Use this when FTS5 stemming / lowercasing would eat a term you care about (code identifiers, punctuation-heavy strings, specific casing). Part of issue #106.
+
 ---
 
 ## `[observability]`
