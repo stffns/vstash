@@ -487,6 +487,249 @@ class TestRetrainMultiBulkMine:
             s1.close()
 
 
+class TestRetrainMultiH_R1AutoTrainingQueries:
+    """H-R1 (2026-04-21): when training_pair_source='auto' (default) and
+    a dataset has eval_queries but no explicit training_queries, reuse
+    eval queries as training queries and route through the labeled-
+    batched miner. Removes the 2026-04-18 footgun where a user passed
+    eval qrels and silently trained on chunk-prefixes."""
+
+    _labeled_triple = [
+        {"query": "q1", "positive": "p1", "negative": "n1"},
+    ]
+
+    def _stores(self, tmp_path: Path) -> tuple[VstashStore, VstashStore]:
+        s1 = _mk_store(
+            str(tmp_path / "s1.db"),
+            [(f"/s1/{i}", f"S1 {i}", f"s1 chunk {i}") for i in range(8)],
+        )
+        s2 = _mk_store(
+            str(tmp_path / "s2.db"),
+            [(f"/s2/{i}", f"S2 {i}", f"s2 chunk {i}") for i in range(8)],
+        )
+        return s1, s2
+
+    def test_auto_promotes_eval_to_training_when_no_explicit(self, tmp_path: Path) -> None:
+        """Given eval_queries_by_dataset and no training_queries_by_dataset,
+        retrain_multi (auto) must call the labeled-batched miner with the
+        eval queries and must NOT call the chunk-prefix miner."""
+        from vstash.retrain import retrain_multi
+
+        s1, s2 = self._stores(tmp_path)
+        eval_qs = {
+            "a": [{"query": "q-a", "relevant_paths": ["/s1/0"]}],
+            "b": [{"query": "q-b", "relevant_paths": ["/s2/0"]}],
+        }
+        try:
+            with (
+                patch(
+                    "vstash.retrain_batch.generate_labeled_triples_batched",
+                    return_value=list(self._labeled_triple),
+                ) as mock_labeled,
+                patch("vstash.retrain_batch.generate_triples_batched") as mock_batched,
+                patch("vstash.retrain.generate_triples") as mock_plain,
+                patch("vstash.retrain.train_mnrl"),
+                patch("vstash.retrain.evaluate_model"),
+            ):
+                retrain_multi(
+                    {"a": s1, "b": s2},
+                    base_model="dummy",
+                    output_path=str(tmp_path / "model"),
+                    total_triples=4,
+                    sampling="uniform",
+                    skip_eval=True,
+                    eval_queries_by_dataset=eval_qs,
+                )
+
+            assert mock_labeled.call_count == 2
+            assert mock_batched.call_count == 0
+            assert mock_plain.call_count == 0
+            labeled_qs_per_call = [
+                c.kwargs.get("labeled_queries") or c.args[2]
+                for c in mock_labeled.call_args_list
+            ]
+            flat = [q["query"] for qs in labeled_qs_per_call for q in qs]
+            assert "q-a" in flat and "q-b" in flat
+        finally:
+            s1.close()
+            s2.close()
+
+    def test_explicit_training_queries_override_auto(self, tmp_path: Path) -> None:
+        """When both eval_queries and explicit training_queries are
+        provided, the explicit set wins and the eval queries are NOT
+        promoted for training."""
+        from vstash.retrain import retrain_multi
+
+        s1, _s2 = self._stores(tmp_path)
+        eval_qs = {"a": [{"query": "eval-only", "relevant_paths": ["/s1/0"]}]}
+        explicit_qs = {"a": [{"query": "train-only", "relevant_paths": ["/s1/1"]}]}
+        try:
+            with (
+                patch(
+                    "vstash.retrain_batch.generate_labeled_triples_batched",
+                    return_value=list(self._labeled_triple),
+                ) as mock_labeled,
+                patch("vstash.retrain.train_mnrl"),
+            ):
+                retrain_multi(
+                    {"a": s1},
+                    base_model="dummy",
+                    output_path=str(tmp_path / "model"),
+                    total_triples=2,
+                    sampling="uniform",
+                    skip_eval=True,
+                    eval_queries_by_dataset=eval_qs,
+                    training_queries_by_dataset=explicit_qs,
+                )
+
+            assert mock_labeled.call_count == 1
+            (call,) = mock_labeled.call_args_list
+            passed = call.kwargs.get("labeled_queries") or call.args[2]
+            assert [q["query"] for q in passed] == ["train-only"]
+        finally:
+            s1.close()
+
+    def test_prefix_mode_forces_chunk_prefix_even_with_eval(self, tmp_path: Path) -> None:
+        """training_pair_source='prefix' must NOT promote eval queries,
+        even when they exist. Opt-in legacy path for users who want
+        chunk-prefix training on a labeled corpus."""
+        from vstash.retrain import retrain_multi
+
+        s1, _s2 = self._stores(tmp_path)
+        eval_qs = {"a": [{"query": "q-a", "relevant_paths": ["/s1/0"]}]}
+        try:
+            with (
+                patch(
+                    "vstash.retrain_batch.generate_labeled_triples_batched",
+                ) as mock_labeled,
+                patch(
+                    "vstash.retrain.generate_triples",
+                    return_value=list(self._labeled_triple),
+                ) as mock_plain,
+                patch("vstash.retrain.train_mnrl"),
+            ):
+                retrain_multi(
+                    {"a": s1},
+                    base_model="dummy",
+                    output_path=str(tmp_path / "model"),
+                    total_triples=2,
+                    sampling="uniform",
+                    skip_eval=True,
+                    eval_queries_by_dataset=eval_qs,
+                    training_pair_source="prefix",
+                )
+
+            assert mock_labeled.call_count == 0
+            assert mock_plain.call_count == 1
+        finally:
+            s1.close()
+
+    def test_labeled_mode_promotes_eval_queries(self, tmp_path: Path) -> None:
+        """training_pair_source='labeled' with eval queries (no explicit
+        training) must promote them like auto -- only the prefix fallback
+        is forbidden under labeled. gemini-code-assist flagged this on
+        PR #257: original code raised ValueError even when eval queries
+        existed, which contradicted the 'requires training OR eval' spec."""
+        from vstash.retrain import retrain_multi
+
+        s1, _s2 = self._stores(tmp_path)
+        eval_qs = {"a": [{"query": "eval-only-labeled", "relevant_paths": ["/s1/0"]}]}
+        try:
+            with (
+                patch(
+                    "vstash.retrain_batch.generate_labeled_triples_batched",
+                    return_value=list(self._labeled_triple),
+                ) as mock_labeled,
+                patch("vstash.retrain.train_mnrl"),
+            ):
+                retrain_multi(
+                    {"a": s1},
+                    base_model="dummy",
+                    output_path=str(tmp_path / "model"),
+                    total_triples=2,
+                    sampling="uniform",
+                    skip_eval=True,
+                    eval_queries_by_dataset=eval_qs,
+                    training_pair_source="labeled",
+                )
+
+            assert mock_labeled.call_count == 1
+            passed = (
+                mock_labeled.call_args_list[0].kwargs.get("labeled_queries")
+                or mock_labeled.call_args_list[0].args[2]
+            )
+            assert passed[0]["query"] == "eval-only-labeled"
+        finally:
+            s1.close()
+
+    def test_labeled_mode_errors_when_no_labels(self, tmp_path: Path) -> None:
+        """training_pair_source='labeled' must raise when a dataset has
+        neither explicit training queries nor eval queries."""
+        from vstash.retrain import retrain_multi
+
+        s1, _s2 = self._stores(tmp_path)
+        try:
+            with pytest.raises(ValueError, match="requires training or eval queries"):
+                retrain_multi(
+                    {"a": s1},
+                    base_model="dummy",
+                    output_path=str(tmp_path / "model"),
+                    total_triples=2,
+                    sampling="uniform",
+                    skip_eval=True,
+                    training_pair_source="labeled",
+                )
+        finally:
+            s1.close()
+
+    def test_mixed_sources_in_one_call(self, tmp_path: Path, caplog: Any) -> None:
+        """One retrain_multi call can resolve different datasets via
+        different sources: explicit training for A, auto-from-eval for
+        B. Both must land on the labeled-batched miner, and the H-R1
+        warning must mention only the auto-promoted dataset."""
+        import logging as _logging
+
+        from vstash.retrain import retrain_multi
+
+        s1, s2 = self._stores(tmp_path)
+        explicit_a = [{"query": "train-a", "relevant_paths": ["/s1/0"]}]
+        eval_b = [{"query": "eval-b", "relevant_paths": ["/s2/0"]}]
+        try:
+            caplog.set_level(_logging.WARNING, logger="vstash.retrain")
+            with (
+                patch(
+                    "vstash.retrain_batch.generate_labeled_triples_batched",
+                    return_value=list(self._labeled_triple),
+                ) as mock_labeled,
+                patch("vstash.retrain.generate_triples") as mock_plain,
+                patch("vstash.retrain.train_mnrl"),
+            ):
+                retrain_multi(
+                    {"a": s1, "b": s2},
+                    base_model="dummy",
+                    output_path=str(tmp_path / "model"),
+                    total_triples=4,
+                    sampling="uniform",
+                    skip_eval=True,
+                    eval_queries_by_dataset={"b": eval_b},
+                    training_queries_by_dataset={"a": explicit_a},
+                )
+
+            assert mock_labeled.call_count == 2
+            assert mock_plain.call_count == 0
+            passed = [
+                (c.kwargs.get("labeled_queries") or c.args[2])[0]["query"]
+                for c in mock_labeled.call_args_list
+            ]
+            assert set(passed) == {"train-a", "eval-b"}
+            warnings = [r.message for r in caplog.records if r.levelno == _logging.WARNING]
+            assert any("auto-promoted" in m and "'b'" in m for m in warnings)
+            assert not any("'a'" in m for m in warnings if "auto-promoted" in m)
+        finally:
+            s1.close()
+            s2.close()
+
+
 # ------------------------------------------------------------------ #
 # Shared constants + approximation parity                              #
 # ------------------------------------------------------------------ #
@@ -841,6 +1084,7 @@ class TestRetrainMultiBulkEval:
                     eval_queries_by_dataset={"a": eval_queries},
                     bulk_eval=True,
                     bulk_mine_device="cpu",
+                    training_pair_source="prefix",  # isolate: test only exercises bulk_eval
                 )
 
             assert mock_batched.call_count == 2  # baseline + final
@@ -883,6 +1127,7 @@ class TestRetrainMultiBulkEval:
                     sampling="uniform",
                     eval_queries_by_dataset={"a": eval_queries},
                     bulk_eval=False,
+                    training_pair_source="prefix",  # isolate: test only exercises bulk_eval
                 )
 
             assert mock_batched.call_count == 0

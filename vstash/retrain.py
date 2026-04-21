@@ -1294,6 +1294,7 @@ def retrain(
 
 
 SamplingStrategy = Literal["uniform", "proportional", "temperature"]
+TrainingPairSource = Literal["auto", "labeled", "prefix"]
 
 
 def compute_triple_budget(
@@ -1436,6 +1437,7 @@ def retrain_multi(
     bulk_mine_device: str | None = None,
     bulk_eval: bool = False,
     training_queries_by_dataset: dict[str, list[dict]] | None = None,
+    training_pair_source: TrainingPairSource = "auto",
     cfg: "VstashConfig | None" = None,
 ) -> MultiRetrainResult:
     """Fine-tune an embedding model over N corpora with balanced sampling.
@@ -1479,14 +1481,32 @@ def retrain_multi(
             ``bulk_mine=False``.
         training_queries_by_dataset: Optional per-dataset labeled
             training queries, shape ``{alias: [{query, relevant_paths},
-            ...]}``. When set, the batched miner uses these real
-            queries (and their gold docs as positives) instead of the
-            default chunk-prefix pseudo-queries. Required to reproduce
-            the ``Stffens/bge-small-rrf-v2`` recipe (v5 notebook), which
-            trained on BEIR ``queries.jsonl`` + qrels. Implies
-            ``bulk_mine=True`` because the labeled-query path only
-            exists in ``retrain_batch``. Datasets missing from the map
-            fall back to the legacy chunk-prefix flow.
+            ...]}``. Explicit override: when set for a dataset, the
+            batched miner uses these real queries (and their gold
+            docs as positives) instead of the chunk-prefix
+            pseudo-queries. Implies ``bulk_mine=True`` because the
+            labeled-query path only exists in ``retrain_batch``.
+            Datasets missing from the map follow ``training_pair_source``.
+        training_pair_source: Resolution policy when
+            ``training_queries_by_dataset`` does not cover a dataset:
+            - ``"auto"`` (default, H-R1 ships 2026-04-21): reuse
+              ``eval_queries_by_dataset[dataset]`` as training queries
+              when present. Only USER-SUPPLIED eval queries are
+              promoted; queries produced internally by
+              ``split_corpus_for_eval`` never are (those would just
+              reintroduce the chunk-prefix signal under a new name).
+              Falls back to chunk-prefix when no eval labels exist.
+              This removes the 2026-04-18 footgun where a user passed
+              eval qrels but silently trained on chunk-prefixes
+              (-5.15% macro run).
+            - ``"labeled"``: require labels (either explicit training
+              queries or eval queries) for every dataset. Raises if a
+              dataset has neither.
+            - ``"prefix"``: force the legacy chunk-prefix / synth path
+              for every dataset that does not have explicit training
+              queries, even when eval labels exist. Opt-in for users
+              who intentionally want chunk-prefix training on a
+              labeled corpus.
         bulk_eval: Route baseline + final eval through
             ``retrain_batch.evaluate_model_batched`` which replaces
             the per-query ``eval_store.search`` scan with one GPU
@@ -1588,9 +1608,59 @@ def retrain_multi(
     # Triple generation per dataset. Datasets with labeled training
     # queries route through the v5-faithful ``generate_labeled_triples_batched``
     # path; the rest fall back to chunk-prefix / synth.
+    #
+    # H-R1 default (2026-04-21): when ``training_pair_source="auto"`` and
+    # a dataset has no explicit training queries, promote its eval queries
+    # (if present) to training queries automatically. This removes the
+    # 2026-04-18 footgun where BEIR qrels were silently ignored for
+    # training and the corpus trained on chunk-prefixes (-5.15% macro run).
     all_pairs: list[dict] = []
     per_dataset_pairs: dict[str, int] = {}
-    training_by_ds = training_queries_by_dataset or {}
+    explicit_training = training_queries_by_dataset or {}
+    # Only USER-SUPPLIED eval queries are eligible for auto-promotion.
+    # ``eval_training_source[name]`` can be ``None`` or ``[]`` if a caller
+    # passes a partial map; the ``and`` chain below handles both.
+    eval_training_source = eval_queries_by_dataset or {}
+    training_by_ds: dict[str, list[dict]] = {}
+    pair_source_by_ds: dict[str, str] = {}
+    # ``labeled`` implies promotion too -- it just forbids the prefix
+    # fallback. Both ``auto`` and ``labeled`` promote eval queries when
+    # present; only ``prefix`` skips the promotion step entirely.
+    auto_promote = training_pair_source in ("auto", "labeled")
+    for name in stores_dict:
+        if name in explicit_training and explicit_training[name]:
+            training_by_ds[name] = explicit_training[name]
+            pair_source_by_ds[name] = "explicit"
+        elif auto_promote and name in eval_training_source and eval_training_source[name]:
+            training_by_ds[name] = list(eval_training_source[name])
+            pair_source_by_ds[name] = "auto-from-eval"
+        elif training_pair_source == "labeled":
+            raise ValueError(
+                f"training_pair_source='labeled' requires training or eval "
+                f"queries for dataset '{name}'; neither was provided."
+            )
+        else:
+            pair_source_by_ds[name] = "prefix"
+    # Emit a one-shot warning when auto fires for at least one dataset,
+    # so users upgrading past the H-R1 ship can see that their eval
+    # queries are now flowing into training too. Escalated from info to
+    # warning because this is a semantic default change (2026-04-18
+    # footgun).
+    promoted_ds = [n for n, src in pair_source_by_ds.items() if src == "auto-from-eval"]
+    if promoted_ds:
+        logger.warning(
+            "retrain_multi (H-R1, shipped 2026-04-21): auto-promoted "
+            "eval_queries_by_dataset to training queries for datasets %s. "
+            "This replaces the chunk-prefix training signal and fixes the "
+            "2026-04-18 -5.15%% footgun. Pass training_pair_source='prefix' "
+            "to keep the legacy chunk-prefix training path.",
+            promoted_ds,
+        )
+    logger.info(
+        "retrain_multi pair source resolution (training_pair_source=%s): %s",
+        training_pair_source,
+        pair_source_by_ds,
+    )
     for name, store in stores_dict.items():
         n_queries = budget.get(name, 0)
         if n_queries <= 0:

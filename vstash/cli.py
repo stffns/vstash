@@ -1793,6 +1793,16 @@ def retrain_multi_cmd(
         "corpus gets its own stable RNG, and then threaded into train_mnrl "
         "so DataLoader shuffles and torch dropout are reproducible.",
     ),
+    training_pair_source: str = typer.Option(
+        "auto",
+        "--training-pair-source",
+        help="Resolution policy for per-dataset training queries. "
+        "'auto' (default, H-R1) reuses eval labels as training queries "
+        "when present, falling back to chunk-prefix otherwise. "
+        "'labeled' errors if any dataset lacks labels. "
+        "'prefix' forces chunk-prefix even when eval labels exist.",
+        click_type=click.Choice(["auto", "labeled", "prefix"]),
+    ),
 ) -> None:
     """Fine-tune the embedding model over multiple corpora with balanced sampling.
 
@@ -1942,6 +1952,7 @@ def retrain_multi_cmd(
             bulk_mine=bulk_mine,
             bulk_mine_device=bulk_mine_device,
             bulk_eval=bulk_eval,
+            training_pair_source=training_pair_source,  # type: ignore[arg-type]
             cfg=cfg,
         )
     finally:
