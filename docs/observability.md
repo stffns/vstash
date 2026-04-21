@@ -206,10 +206,28 @@ A sustained non-zero rate on this counter means the vector candidate pool is con
 # How often has this fired since process start?
 vstash stats --detailed --json | jq '.metrics.counters.adaptive_rrf_vector_empty_fallback_total'
 
-# For a specific query, run miss_analysis() from the SDK and look for
-# the "adaptive_fallback" stage in the trace — if present, the query
-# hit the fallback path.
+# For a specific query that missed an expected doc, use `vstash why`:
+vstash why "my query" --expect path/to/expected/doc.md
+
+# Prints a stage-by-stage pipeline trace (vector_search -> distance_cutoff
+# -> fts_search -> rrf_fusion -> recency_boost -> mmr_dedup -> top_k_cutoff)
+# with the stage that dropped the expected chunk highlighted, plus the
+# actual top-k for contrast and rule-based suggestions. Issue #157 /
+# 2026-04-21.
+#
+# --json emits the raw MissAnalysis for piping:
+vstash why "my query" --expect path/to/doc.md --json | jq .suggestions
+
+# The Python SDK ``VstashStore.miss_analysis()`` is still available for
+# programmatic use.
 ```
+
+**Planned follow-ups for #157** (not yet shipped):
+- Auto-log a lightweight `miss_analysis_hint` into `search_events` when
+  a search returns empty or entirely low-tier results, so `vstash why`
+  can be invoked post-hoc without the caller having re-run the query.
+- `/debug/why` JSON/HTML route on `vstash serve` for a browser-native
+  debug surface.
 
 **Prometheus alerting suggestion:**
 
