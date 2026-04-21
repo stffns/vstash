@@ -176,6 +176,33 @@ def _do_embed_query(text: str) -> dict:
     }
 
 
+def _do_miss_analysis(
+    query: str,
+    expected_path: str | None,
+    expected_chunk_id: int | None,
+    top_k: int,
+    collection: str | None,
+    project: str | None,
+    layer: str | None,
+) -> dict:
+    """Run ``VstashStore.miss_analysis`` from the debug endpoint.
+    Returns the dumped MissAnalysis as a dict ready for JSONResponse."""
+    cfg = _get_config()
+    store = _get_store()
+    q_emb = embed_query(query, cfg.embeddings.model)
+    analysis = store.miss_analysis(
+        query_embedding=q_emb,
+        query_text=query,
+        expected_path=expected_path,
+        expected_chunk_id=expected_chunk_id,
+        top_k=top_k or cfg.chunking.top_k,
+        collection=collection,
+        project=project,
+        layer=layer,
+    )
+    return analysis.model_dump(exclude_none=True)
+
+
 # ------------------------------------------------------------------ #
 # API endpoints (all async, blocking work via _run_sync)               #
 # ------------------------------------------------------------------ #
@@ -383,6 +410,91 @@ async def api_health(request: Request) -> JSONResponse:
     )
 
 
+async def api_debug_why(request: Request) -> JSONResponse:
+    """GET /debug/why?q=...&expect=... -- miss analysis as JSON.
+
+    Issue #157 part 2. Behind the ``--debug`` flag on ``vstash serve``
+    because the endpoint echoes arbitrary query text + path back to
+    the caller and is intended for local diagnostic use, not public
+    consumption. When ``--debug`` is not set, this route is NOT
+    mounted and the URL returns 404.
+
+    Query parameters:
+        q (required): the search query that missed.
+        expect (optional): expected document path.
+        expect_chunk_id (optional): specific chunk id.
+          One of ``expect`` / ``expect_chunk_id`` is required.
+        top_k (optional, int, default from config): top-k window.
+        collection / project / layer (optional): metadata filters.
+
+    Response: the MissAnalysis model as JSON, ``exclude_none=True``.
+
+    Errors return 400 with ``{"error": "..."}`` for input problems,
+    500 for unexpected internals.
+    """
+    qp = request.query_params
+    query = (qp.get("q") or "").strip()
+    # Normalize ``expect`` the same way the CLI and Memory SDK do:
+    # http(s)/text URIs pass through verbatim, everything else resolves
+    # to an absolute path (ingest stores ``Path(source).resolve()``,
+    # so a caller passing a relative path would otherwise reliably get
+    # "No chunks found" even when the doc exists). ``.strip()`` treats
+    # whitespace-only values as missing.
+    expect_raw = (qp.get("expect") or "").strip()
+    if not expect_raw:
+        expect = None
+    elif expect_raw.startswith(("http://", "https://", "text://")):
+        expect = expect_raw
+    else:
+        expect = str(Path(expect_raw).resolve(strict=False))
+    expect_chunk_id_raw = qp.get("expect_chunk_id")
+    top_k_raw = qp.get("top_k")
+    collection = qp.get("collection") or None
+    project = qp.get("project") or None
+    layer = qp.get("layer") or None
+
+    if not query:
+        return _json({"error": "q (query) is required"}, 400)
+    if expect is None and expect_chunk_id_raw is None:
+        return _json(
+            {"error": "one of expect=<path> or expect_chunk_id=<id> is required"}, 400
+        )
+
+    expect_chunk_id: int | None = None
+    if expect_chunk_id_raw is not None:
+        try:
+            expect_chunk_id = int(expect_chunk_id_raw)
+        except ValueError:
+            return _json({"error": "expect_chunk_id must be an integer"}, 400)
+
+    top_k = 0
+    if top_k_raw is not None:
+        try:
+            top_k = int(top_k_raw)
+        except ValueError:
+            return _json({"error": "top_k must be an integer"}, 400)
+
+    try:
+        data = await _run_sync(
+            _do_miss_analysis,
+            query,
+            expect,
+            expect_chunk_id,
+            top_k,
+            collection,
+            project,
+            layer,
+        )
+    except ValueError as exc:
+        # Expected-path / chunk-id resolution failures come through here.
+        return _json({"error": str(exc)}, 400)
+    except Exception:
+        logger.exception("debug/why failed")
+        return _json({"error": "internal error"}, 500)
+
+    return _json(data)
+
+
 async def api_metrics(request: Request) -> JSONResponse:
     """GET /metrics — snapshot of the metrics registry as JSON.
 
@@ -426,25 +538,32 @@ async def _lifespan(app: Starlette):  # noqa: ARG001
         _store = None
 
 
-def create_app() -> Starlette:
-    """Create the Starlette app with all routes."""
+def create_app(debug: bool = False) -> Starlette:
+    """Create the Starlette app with all routes.
+
+    Args:
+        debug: When True, also mounts ``/debug/why`` (miss analysis as
+            JSON). Issue #157 part 2. Off by default because the
+            endpoint echoes arbitrary query text back and is intended
+            for local diagnostic use, not production.
+    """
     # Eagerly initialize store to avoid lazy-init deadlocks with asyncio
     _get_store()
-    return Starlette(
-        lifespan=_lifespan,
-        routes=[
-            Route("/", index),
-            Route("/api/embed", api_embed, methods=["POST"]),
-            Route("/api/search", api_search, methods=["POST"]),
-            Route("/api/chat", api_chat, methods=["POST"]),
-            Route("/api/chat/reset", api_chat_reset, methods=["POST"]),
-            Route("/api/documents", api_documents),
-            Route("/api/stats", api_stats),
-            Route("/api/upload", api_upload, methods=["POST"]),
-            Route("/health", api_health),
-            Route("/metrics", api_metrics),
-        ],
-    )
+    routes = [
+        Route("/", index),
+        Route("/api/embed", api_embed, methods=["POST"]),
+        Route("/api/search", api_search, methods=["POST"]),
+        Route("/api/chat", api_chat, methods=["POST"]),
+        Route("/api/chat/reset", api_chat_reset, methods=["POST"]),
+        Route("/api/documents", api_documents),
+        Route("/api/stats", api_stats),
+        Route("/api/upload", api_upload, methods=["POST"]),
+        Route("/health", api_health),
+        Route("/metrics", api_metrics),
+    ]
+    if debug:
+        routes.append(Route("/debug/why", api_debug_why))
+    return Starlette(lifespan=_lifespan, routes=routes)
 
 
 # ------------------------------------------------------------------ #
