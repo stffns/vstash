@@ -1213,6 +1213,7 @@ class TestRetrainOrchestration:
                 base_model="dummy",
                 output_path=str(tmp_path / "m"),
                 eval_queries=external,
+                training_pair_source="prefix",  # isolate: test checks eval-split bypass, not training path
             )
 
         # split_corpus_for_eval must be bypassed when external queries supplied.
@@ -1306,3 +1307,261 @@ class TestRetrainOrchestration:
         assert (final_path / "existing.txt").read_text() == "previous good model"
         # No leftover backup.
         assert not (tmp_path / "m.old").exists()
+
+
+class TestRetrainH_R8LabeledAutoTrainingQueries:
+    """H-R8 (2026-04-21): single-corpus retrain gets the same
+    labeled-queries + auto-promote pattern that H-R1 landed on
+    retrain_multi. Single-store users with BEIR qrels no longer need
+    to wrap their store in a one-element dict to reach the batched
+    labeled miner."""
+
+    _labeled_triple = [{"query": "q1", "positive": "p1", "negative": "n1"}] * 15
+
+    def test_explicit_training_queries_route_to_labeled_miner(
+        self, populated_store: VstashStore, tmp_path: Path, st_stubs: Any
+    ) -> None:
+        st_mod, _, _ = st_stubs
+        st_mod.SentenceTransformer.return_value = MagicMock()
+
+        explicit = [
+            {"query": f"train-q{i}", "relevant_paths": [f"/p{i}"]} for i in range(25)
+        ]
+        baseline = EvalMetrics(ndcg_at_10=0.5, mrr=0.5, hit_at_10=0.6, n_queries=25)
+        final = EvalMetrics(ndcg_at_10=0.6, mrr=0.6, hit_at_10=0.7, n_queries=25)
+
+        with (
+            patch(
+                "vstash.retrain_batch.generate_labeled_triples_batched",
+                return_value=list(self._labeled_triple),
+            ) as mock_labeled,
+            patch("vstash.retrain.generate_triples") as mock_plain,
+            patch(
+                "vstash.retrain.evaluate_model",
+                side_effect=[baseline, final],
+            ),
+            patch("vstash.retrain.split_corpus_for_eval", return_value=(set(), explicit)),
+        ):
+            retrain(
+                populated_store,
+                base_model="dummy",
+                output_path=str(tmp_path / "m"),
+                training_queries=explicit,
+            )
+
+        assert mock_labeled.call_count == 1
+        assert mock_plain.call_count == 0
+
+    def test_auto_promotes_eval_queries_to_training(
+        self, populated_store: VstashStore, tmp_path: Path, st_stubs: Any, caplog: Any
+    ) -> None:
+        """Default behavior: eval_queries flow into training_queries
+        unless the user says otherwise. Mirrors H-R1 on retrain_multi."""
+        import logging as _logging
+
+        st_mod, _, _ = st_stubs
+        st_mod.SentenceTransformer.return_value = MagicMock()
+
+        eval_qs = [
+            {"query": f"eval-q{i}", "relevant_paths": [f"/p{i}"]} for i in range(25)
+        ]
+        baseline = EvalMetrics(ndcg_at_10=0.5, mrr=0.5, hit_at_10=0.6, n_queries=25)
+        final = EvalMetrics(ndcg_at_10=0.6, mrr=0.6, hit_at_10=0.7, n_queries=25)
+
+        caplog.set_level(_logging.WARNING, logger="vstash.retrain")
+        with (
+            patch(
+                "vstash.retrain_batch.generate_labeled_triples_batched",
+                return_value=list(self._labeled_triple),
+            ) as mock_labeled,
+            patch("vstash.retrain.generate_triples") as mock_plain,
+            patch(
+                "vstash.retrain.evaluate_model",
+                side_effect=[baseline, final],
+            ),
+        ):
+            retrain(
+                populated_store,
+                base_model="dummy",
+                output_path=str(tmp_path / "m"),
+                eval_queries=eval_qs,
+            )
+
+        assert mock_labeled.call_count == 1
+        passed = (
+            mock_labeled.call_args_list[0].kwargs.get("labeled_queries")
+            or mock_labeled.call_args_list[0].args[2]
+        )
+        assert passed[0]["query"] == "eval-q0"
+        assert mock_plain.call_count == 0
+        warnings = [r.message for r in caplog.records if r.levelno == _logging.WARNING]
+        assert any("auto-promoted" in m for m in warnings)
+
+    def test_prefix_mode_forces_chunk_prefix_even_with_eval(
+        self, populated_store: VstashStore, tmp_path: Path, st_stubs: Any
+    ) -> None:
+        st_mod, _, _ = st_stubs
+        st_mod.SentenceTransformer.return_value = MagicMock()
+
+        eval_qs = [{"query": f"q{i}", "relevant_paths": [f"/p{i}"]} for i in range(25)]
+        baseline = EvalMetrics(ndcg_at_10=0.5, mrr=0.5, hit_at_10=0.6, n_queries=25)
+        final = EvalMetrics(ndcg_at_10=0.6, mrr=0.6, hit_at_10=0.7, n_queries=25)
+
+        with (
+            patch(
+                "vstash.retrain_batch.generate_labeled_triples_batched",
+            ) as mock_labeled,
+            patch(
+                "vstash.retrain.generate_triples",
+                return_value=list(self._labeled_triple),
+            ) as mock_plain,
+            patch(
+                "vstash.retrain.evaluate_model",
+                side_effect=[baseline, final],
+            ),
+        ):
+            retrain(
+                populated_store,
+                base_model="dummy",
+                output_path=str(tmp_path / "m"),
+                eval_queries=eval_qs,
+                training_pair_source="prefix",
+            )
+
+        assert mock_labeled.call_count == 0
+        assert mock_plain.call_count == 1
+
+    def test_labeled_mode_errors_when_no_labels_skip_eval_path(
+        self, populated_store: VstashStore, tmp_path: Path, st_stubs: Any
+    ) -> None:
+        """No labels + empty corpus-split eval set -> fallback hits
+        skip_eval branch, which refuses labeled mode with a clear error."""
+        st_mod, _, _ = st_stubs
+        st_mod.SentenceTransformer.return_value = MagicMock()
+
+        with (
+            patch("vstash.retrain.split_corpus_for_eval", return_value=(set(), [])),
+            patch("vstash.retrain.evaluate_model") as mock_eval,
+        ):
+            with pytest.raises(ValueError, match="requires training_queries or eval_queries"):
+                retrain(
+                    populated_store,
+                    base_model="dummy",
+                    output_path=str(tmp_path / "m"),
+                    training_pair_source="labeled",
+                )
+        assert mock_eval.call_count == 0
+
+    def test_labeled_mode_errors_on_normal_path_too(
+        self, populated_store: VstashStore, tmp_path: Path, st_stubs: Any
+    ) -> None:
+        """W2 (code review): the previous skip_eval-path test relied on
+        the insufficient-eval fallback to reach the error. This test
+        exercises the normal-path resolver directly: pass ENOUGH
+        corpus-split queries to bypass the fallback, then assert that
+        labeled mode still raises when no labels are supplied.
+        cos(retrain.py:1250) chains explicit -> auto-from-eval ->
+        labeled-errors on the non-skip_eval branch."""
+        st_mod, _, _ = st_stubs
+        st_mod.SentenceTransformer.return_value = MagicMock()
+
+        # split_corpus_for_eval returns enough queries to pass
+        # _EVAL_MIN_QUERIES, so the function does NOT fall back to
+        # skip_eval. eval_queries is None -> those split queries are
+        # NOT eligible for auto-promotion (user-supplied only rule).
+        fake_split_queries = [
+            {"query": f"split-q{i}", "relevant_paths": [f"/p{i}"]}
+            for i in range(30)
+        ]
+        with (
+            patch(
+                "vstash.retrain.split_corpus_for_eval",
+                return_value=(set(), fake_split_queries),
+            ),
+            patch("vstash.retrain.evaluate_model") as mock_eval,
+        ):
+            with pytest.raises(ValueError, match="requires training_queries or eval_queries"):
+                retrain(
+                    populated_store,
+                    base_model="dummy",
+                    output_path=str(tmp_path / "m"),
+                    training_pair_source="labeled",
+                )
+        # Baseline eval runs before the resolver (line ~1216), so one
+        # call is expected. The resolver raises before the final-eval call.
+        assert mock_eval.call_count == 1
+
+    def test_auto_promotion_survives_insufficient_eval_fallback(
+        self, populated_store: VstashStore, tmp_path: Path, st_stubs: Any
+    ) -> None:
+        """W1 (code review): when eval_queries has < _EVAL_MIN_QUERIES
+        entries, retrain recurses into skip_eval=True. Without the W1
+        fix the labels are silently dropped in the recursive call and
+        training falls back to chunk-prefix -- the H-R1 footgun
+        relocated. With the fix, the fallback promotes eval_queries to
+        training_queries before recursing, so labeled training still
+        happens."""
+        st_mod, _, _ = st_stubs
+        st_mod.SentenceTransformer.return_value = MagicMock()
+
+        # Fewer than _EVAL_MIN_QUERIES (=20) so the fallback fires.
+        short_eval = [
+            {"query": f"eval-q{i}", "relevant_paths": [f"/p{i}"]}
+            for i in range(10)
+        ]
+        with (
+            patch(
+                "vstash.retrain_batch.generate_labeled_triples_batched",
+                return_value=list(self._labeled_triple),
+            ) as mock_labeled,
+            patch("vstash.retrain.generate_triples") as mock_plain,
+            patch("vstash.retrain.train_mnrl"),
+        ):
+            retrain(
+                populated_store,
+                base_model="dummy",
+                output_path=str(tmp_path / "m"),
+                eval_queries=short_eval,
+                # Default training_pair_source='auto'.
+            )
+
+        assert mock_labeled.call_count == 1
+        assert mock_plain.call_count == 0
+        passed = (
+            mock_labeled.call_args_list[0].kwargs.get("labeled_queries")
+            or mock_labeled.call_args_list[0].args[2]
+        )
+        assert passed[0]["query"] == "eval-q0"
+
+    def test_bulk_mine_routes_chunk_prefix_to_batched(
+        self, populated_store: VstashStore, tmp_path: Path, st_stubs: Any
+    ) -> None:
+        st_mod, _, _ = st_stubs
+        st_mod.SentenceTransformer.return_value = MagicMock()
+
+        baseline = EvalMetrics(ndcg_at_10=0.5, mrr=0.5, hit_at_10=0.6, n_queries=25)
+        final = EvalMetrics(ndcg_at_10=0.6, mrr=0.6, hit_at_10=0.7, n_queries=25)
+
+        with (
+            patch(
+                "vstash.retrain_batch.generate_triples_batched",
+                return_value=list(self._labeled_triple),
+            ) as mock_batched,
+            patch("vstash.retrain.generate_triples") as mock_plain,
+            patch(
+                "vstash.retrain.evaluate_model",
+                side_effect=[baseline, final],
+            ),
+        ):
+            retrain(
+                populated_store,
+                base_model="dummy",
+                output_path=str(tmp_path / "m"),
+                bulk_mine=True,
+                bulk_mine_device="cpu",
+                training_pair_source="prefix",  # keep us on the chunk-prefix path
+            )
+
+        assert mock_batched.call_count == 1
+        assert mock_plain.call_count == 0
+        assert mock_batched.call_args_list[0].kwargs.get("device") == "cpu"
