@@ -153,6 +153,40 @@ class TestSnapvecReindex:
         assert count == 5
         assert len(populated_snap_store._snap) == 5
 
+    def test_reindex_handles_more_than_one_batch(self, tmp_path):
+        """Reindex must paginate correctly past a single batch.
+
+        Regression guard for issue #265: the keyset pagination fix
+        replaced ``LIMIT ? OFFSET ?`` with ``WHERE id > ? ORDER BY id
+        LIMIT ?`` and coalesced per-batch ``snap.add_batch`` into one
+        final call. This test ensures both loops advance past batch 1
+        and that the final snap index ends with exactly N vectors.
+        """
+        db = str(tmp_path / "multibatch.db")
+        store = VstashStore(db, embedding_dim=DIM, vector_backend="snapvec", snapvec_bits=4)
+
+        # Use a batch_size of 10 and seed >> 10 chunks so the reindex
+        # loop must issue multiple pages.
+        n_chunks = 53
+        rng = np.random.default_rng(0xBEEF)
+        for i in range(n_chunks):
+            store.add_document(
+                path=f"/test/doc_{i}.md",
+                title=f"doc {i}",
+                chunks=[f"chunk body {i}"],
+                embeddings=[rng.standard_normal(DIM).tolist()],
+            )
+        assert len(store._snap) == n_chunks
+
+        def fake_embed(texts):
+            inner = np.random.default_rng(0xCAFE)
+            return [inner.standard_normal(DIM).tolist() for _ in texts]
+
+        count = store.reindex(fake_embed, new_dim=DIM, batch_size=10)
+        assert count == n_chunks
+        assert len(store._snap) == n_chunks
+        store.close()
+
 
 class TestSnapvecDimMismatch:
     def test_dim_mismatch_rebuilds(self, tmp_path):
