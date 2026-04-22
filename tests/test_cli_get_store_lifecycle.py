@@ -14,10 +14,43 @@ import numpy as np
 import pytest
 
 import vstash.cli as cli_mod
+from vstash.config import VstashConfig
 from vstash.store import VstashStore
 
 
 DIM = 32
+
+
+def _hermetic_config_factory(db_path, *, vector_backend: str = "sqlite-vec"):
+    """Build a load_config() replacement that ignores ~/.vstash/vstash.toml.
+
+    Keeping these tests hermetic matters for two reasons:
+    - They should never open or modify a developer's real ~/.vstash DB.
+    - They must not trigger an ONNX/Sentence-Transformers download just
+      because the developer's vstash.toml points at a non-default model.
+    """
+
+    def _factory() -> VstashConfig:
+        base = VstashConfig()
+        storage = base.storage.model_copy(
+            update={
+                "db_path": str(db_path),
+                "vector_backend": vector_backend,
+                "snapvec_bits": 4,
+            }
+        )
+        return base.model_copy(update={"storage": storage})
+
+    return _factory
+
+
+def _patch_hermetic_config(monkeypatch, db_path, *, vector_backend: str = "sqlite-vec"):
+    """Apply all monkeypatches needed for a hermetic _get_store call."""
+    monkeypatch.setenv("VSTASH_DB_PATH", str(db_path))
+    monkeypatch.setattr(
+        cli_mod, "load_config", _hermetic_config_factory(db_path, vector_backend=vector_backend)
+    )
+    monkeypatch.setattr(cli_mod, "get_embedding_dim", lambda _model: DIM)
 
 
 class TestGetStoreAtexit:
@@ -29,7 +62,7 @@ class TestGetStoreAtexit:
         monkeypatch.setattr(cli_mod.atexit, "register", registered.append)
 
         db = tmp_path / "lifecycle.db"
-        monkeypatch.setenv("VSTASH_DB_PATH", str(db))
+        _patch_hermetic_config(monkeypatch, db)
 
         _cfg, store = cli_mod._get_store()
         try:
@@ -54,25 +87,7 @@ class TestGetStoreFlushesSnapvec:
         # process exit without relying on interpreter shutdown).
         registered: list = []
         monkeypatch.setattr(cli_mod.atexit, "register", registered.append)
-        monkeypatch.setenv("VSTASH_DB_PATH", str(db))
-
-        # Force snapvec backend regardless of user config. Configs are
-        # frozen Pydantic models, so we rebuild via model_copy.
-        from vstash.config import VstashConfig
-
-        def _snap_config() -> VstashConfig:
-            base = VstashConfig()
-            storage = base.storage.model_copy(
-                update={
-                    "db_path": str(db),
-                    "vector_backend": "snapvec",
-                    "snapvec_bits": 4,
-                }
-            )
-            return base.model_copy(update={"storage": storage})
-
-        monkeypatch.setattr(cli_mod, "load_config", _snap_config)
-        monkeypatch.setattr(cli_mod, "get_embedding_dim", lambda _model: DIM)
+        _patch_hermetic_config(monkeypatch, db, vector_backend="snapvec")
 
         _cfg, store = cli_mod._get_store()
 
