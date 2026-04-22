@@ -1095,15 +1095,11 @@ def retrain(
                 keep_indices = sorted(rng.sample(range(generated), max_queries))
                 pairs = [pairs[i] for i in keep_indices]
         else:
-            training_chunks = sample_training_chunks(
-                store, max_queries=max_queries, seed=seed
-            )
+            training_chunks = sample_training_chunks(store, max_queries=max_queries, seed=seed)
             synth_map: dict[int, list[str]] = {}
             if synthesize_queries and training_chunks:
                 if cfg is None:
-                    raise ValueError(
-                        "synthesize_queries=True requires the ``cfg`` argument."
-                    )
+                    raise ValueError("synthesize_queries=True requires the ``cfg`` argument.")
                 from .retrain_synth import synthesize_queries as _synth_queries
 
                 synth_map = _synth_queries(

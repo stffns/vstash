@@ -545,8 +545,7 @@ class TestRetrainMultiH_R1AutoTrainingQueries:
             assert mock_batched.call_count == 0
             assert mock_plain.call_count == 0
             labeled_qs_per_call = [
-                c.kwargs.get("labeled_queries") or c.args[2]
-                for c in mock_labeled.call_args_list
+                c.kwargs.get("labeled_queries") or c.args[2] for c in mock_labeled.call_args_list
             ]
             flat = [q["query"] for qs in labeled_qs_per_call for q in qs]
             assert "q-a" in flat and "q-b" in flat

@@ -1324,9 +1324,7 @@ class TestRetrainH_R8LabeledAutoTrainingQueries:
         st_mod, _, _ = st_stubs
         st_mod.SentenceTransformer.return_value = MagicMock()
 
-        explicit = [
-            {"query": f"train-q{i}", "relevant_paths": [f"/p{i}"]} for i in range(25)
-        ]
+        explicit = [{"query": f"train-q{i}", "relevant_paths": [f"/p{i}"]} for i in range(25)]
         baseline = EvalMetrics(ndcg_at_10=0.5, mrr=0.5, hit_at_10=0.6, n_queries=25)
         final = EvalMetrics(ndcg_at_10=0.6, mrr=0.6, hit_at_10=0.7, n_queries=25)
 
@@ -1362,9 +1360,7 @@ class TestRetrainH_R8LabeledAutoTrainingQueries:
         st_mod, _, _ = st_stubs
         st_mod.SentenceTransformer.return_value = MagicMock()
 
-        eval_qs = [
-            {"query": f"eval-q{i}", "relevant_paths": [f"/p{i}"]} for i in range(25)
-        ]
+        eval_qs = [{"query": f"eval-q{i}", "relevant_paths": [f"/p{i}"]} for i in range(25)]
         baseline = EvalMetrics(ndcg_at_10=0.5, mrr=0.5, hit_at_10=0.6, n_queries=25)
         final = EvalMetrics(ndcg_at_10=0.6, mrr=0.6, hit_at_10=0.7, n_queries=25)
 
@@ -1470,8 +1466,7 @@ class TestRetrainH_R8LabeledAutoTrainingQueries:
         # skip_eval. eval_queries is None -> those split queries are
         # NOT eligible for auto-promotion (user-supplied only rule).
         fake_split_queries = [
-            {"query": f"split-q{i}", "relevant_paths": [f"/p{i}"]}
-            for i in range(30)
+            {"query": f"split-q{i}", "relevant_paths": [f"/p{i}"]} for i in range(30)
         ]
         with (
             patch(
@@ -1505,10 +1500,7 @@ class TestRetrainH_R8LabeledAutoTrainingQueries:
         st_mod.SentenceTransformer.return_value = MagicMock()
 
         # Fewer than _EVAL_MIN_QUERIES (=20) so the fallback fires.
-        short_eval = [
-            {"query": f"eval-q{i}", "relevant_paths": [f"/p{i}"]}
-            for i in range(10)
-        ]
+        short_eval = [{"query": f"eval-q{i}", "relevant_paths": [f"/p{i}"]} for i in range(10)]
         with (
             patch(
                 "vstash.retrain_batch.generate_labeled_triples_batched",

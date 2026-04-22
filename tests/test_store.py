@@ -1775,9 +1775,7 @@ class TestSearchExactMatch:
         # With exact_match: only chunks whose text contains the
         # hyphenated literal survive. The quota chunk has no "rate-limit"
         # substring at all -> excluded.
-        filtered = sample_store.search(
-            q, "policy", top_k=10, exact_match="rate-limit"
-        )
+        filtered = sample_store.search(q, "policy", top_k=10, exact_match="rate-limit")
         assert filtered, "at least one rate-limit chunk must survive"
         for r in filtered:
             assert "rate-limit" in r.text.casefold()

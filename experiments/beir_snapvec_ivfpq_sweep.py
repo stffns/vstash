@@ -318,9 +318,7 @@ def main() -> int:
                         qrels=qrels,
                         tmp_dir=tmp_dir,
                     )
-                    rows.append(
-                        {"dataset": ds, "rerank": rerank, "nprobe": nprobe, "cell": cell}
-                    )
+                    rows.append({"dataset": ds, "rerank": rerank, "nprobe": nprobe, "cell": cell})
                     print(
                         f"    NDCG@10={cell['ndcg_at_10']:.4f}  "
                         f"R@100={cell['recall_at_100']:.4f}  "

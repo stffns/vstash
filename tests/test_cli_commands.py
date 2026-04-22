@@ -134,9 +134,7 @@ class TestAutoMissHintHook:
 
         monkeypatch.setattr(cli_mod, "embed_query", _fake)
 
-    def test_record_search_event_persists_hint(
-        self, populated_store: VstashStore
-    ) -> None:
+    def test_record_search_event_persists_hint(self, populated_store: VstashStore) -> None:
         """Unit-level check: record_search_event + recent_miss_hints
         roundtrip a dict through the miss_hint column without data loss."""
         populated_store.record_search_event(
@@ -144,9 +142,13 @@ class TestAutoMissHintHook:
             best_distance=1.0,
             relevance_tier="low",
             result_count=0,
-            miss_hint={"reason": "empty", "tier": "low",
-                       "best_distance": 1.0, "result_count": 0,
-                       "top_k_requested": 5},
+            miss_hint={
+                "reason": "empty",
+                "tier": "low",
+                "best_distance": 1.0,
+                "result_count": 0,
+                "top_k_requested": 5,
+            },
         )
         hints = populated_store.recent_miss_hints(limit=5)
         assert any(h["query"] == "unmatchable_xyz" for h in hints)
@@ -154,9 +156,7 @@ class TestAutoMissHintHook:
         assert match["miss_hint"]["reason"] == "empty"
         assert match["miss_hint"]["tier"] == "low"
 
-    def test_record_search_event_none_hint_stays_null(
-        self, populated_store: VstashStore
-    ) -> None:
+    def test_record_search_event_none_hint_stays_null(self, populated_store: VstashStore) -> None:
         """When the caller passes miss_hint=None (e.g., auto_miss_hint
         is disabled) the row is written but recent_miss_hints skips it."""
         start_ids = {h["id"] for h in populated_store.recent_miss_hints(limit=50)}
@@ -321,9 +321,7 @@ class TestWhyCommand:
         data = _json.loads(result.stdout)
         assert "error" in data
 
-    def test_why_recent_rejects_negative(
-        self, monkeypatch, populated_store: VstashStore
-    ) -> None:
+    def test_why_recent_rejects_negative(self, monkeypatch, populated_store: VstashStore) -> None:
         """Code-review: ``--recent`` must validate the int. Negative
         values previously would slip through (and SQLite's ``LIMIT -1``
         would silently return all rows). Now raises a clean error."""
@@ -332,18 +330,14 @@ class TestWhyCommand:
         assert result.exit_code == 1
         assert "--recent" in result.stdout
 
-    def test_recent_miss_hints_rejects_negative_limit(
-        self, populated_store: VstashStore
-    ) -> None:
+    def test_recent_miss_hints_rejects_negative_limit(self, populated_store: VstashStore) -> None:
         """``VstashStore.recent_miss_hints`` clamps against ``LIMIT -1``."""
         with pytest.raises(ValueError, match="limit must be"):
             populated_store.recent_miss_hints(limit=-1)
         with pytest.raises(ValueError, match="limit must be"):
             populated_store.recent_miss_hints(limit=0)
 
-    def test_why_recent_lists_logged_hints(
-        self, monkeypatch, populated_store: VstashStore
-    ) -> None:
+    def test_why_recent_lists_logged_hints(self, monkeypatch, populated_store: VstashStore) -> None:
         """#157 part 3 (2026-04-21): ``vstash why --recent N`` lists
         the N most recent search_events whose auto-logged miss_hint is
         populated. Seed one synthetic event and assert it surfaces."""
@@ -370,9 +364,7 @@ class TestWhyCommand:
         assert "empty" in result.stdout
         assert "low" in result.stdout
 
-    def test_why_recent_json_output(
-        self, monkeypatch, populated_store: VstashStore
-    ) -> None:
+    def test_why_recent_json_output(self, monkeypatch, populated_store: VstashStore) -> None:
         """``vstash why --recent N --json`` emits a parseable JSON object."""
         import json as _json
 
@@ -381,8 +373,13 @@ class TestWhyCommand:
             best_distance=0.995,
             relevance_tier="low",
             result_count=0,
-            miss_hint={"reason": "empty", "tier": "low", "best_distance": 0.995,
-                       "result_count": 0, "top_k_requested": 5},
+            miss_hint={
+                "reason": "empty",
+                "tier": "low",
+                "best_distance": 0.995,
+                "result_count": 0,
+                "top_k_requested": 5,
+            },
         )
 
         result = runner.invoke(app, ["why", "--recent", "3", "--json"])
@@ -396,9 +393,7 @@ class TestWhyCommand:
             assert "miss_hint" in h
             assert "reason" in h["miss_hint"]
 
-    def test_why_recent_empty_is_friendly(
-        self, monkeypatch, tmp_path, sample_config
-    ) -> None:
+    def test_why_recent_empty_is_friendly(self, monkeypatch, tmp_path, sample_config) -> None:
         """With no hints recorded, --recent prints a friendly message,
         not an error. Uses the pytest ``monkeypatch`` fixture directly
         so the teardown runs automatically."""
@@ -420,9 +415,7 @@ class TestWhyCommand:
         finally:
             fresh.close()
 
-    def test_why_json_output_is_parseable(
-        self, monkeypatch, populated_store: VstashStore
-    ) -> None:
+    def test_why_json_output_is_parseable(self, monkeypatch, populated_store: VstashStore) -> None:
         """--json emits a single JSON document matching the MissAnalysis
         schema, suitable for piping into jq or another script."""
         import json as _json

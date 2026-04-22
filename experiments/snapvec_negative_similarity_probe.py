@@ -256,9 +256,9 @@ def main() -> int:
                 _cos(e["query_idx"], e["vec_neg_idx"])
             )
         if s_has:
-            buckets_snap_neg[
-                bucket if bucket in buckets_snap_neg else "both_have_neg"
-            ].append(_cos(e["query_idx"], e["snap_neg_idx"]))
+            buckets_snap_neg[bucket if bucket in buckets_snap_neg else "both_have_neg"].append(
+                _cos(e["query_idx"], e["snap_neg_idx"])
+            )
 
     pos_summary = {k: _summarize(k, np.array(v)) for k, v in buckets_pos.items()}
     vec_neg_summary = {k: _summarize(k, np.array(v)) for k, v in buckets_vec_neg.items()}
@@ -279,9 +279,7 @@ def main() -> int:
     for e in entries:
         if e["snap_neg_idx"] < 0:
             continue
-        m = _cos(e["query_idx"], e["positive_idx"]) - _cos(
-            e["query_idx"], e["snap_neg_idx"]
-        )
+        m = _cos(e["query_idx"], e["positive_idx"]) - _cos(e["query_idx"], e["snap_neg_idx"])
         margins_snap_all.append(m)
         if e["vec_neg_idx"] < 0:
             margins_snap_onlysnap.append(m)
