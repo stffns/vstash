@@ -153,6 +153,140 @@ class TestSnapvecReindex:
         assert count == 5
         assert len(populated_snap_store._snap) == 5
 
+    def test_reindex_handles_more_than_one_batch(self, tmp_path):
+        """Reindex must paginate past a single batch AND avoid the two
+        O(N^2) patterns fixed in issue #265.
+
+        Counting chunks alone would not catch a regression to the old
+        OFFSET + per-page behaviour because the final state is the same.
+        We observe the SQL stream to assert keyset pagination and wrap
+        ``snap.add_batch`` to assert coalescing.
+        """
+        db = str(tmp_path / "multibatch.db")
+        with VstashStore(db, embedding_dim=DIM, vector_backend="snapvec", snapvec_bits=4) as store:
+            n_chunks = 53
+            rng = np.random.default_rng(0xBEEF)
+            for i in range(n_chunks):
+                store.add_document(
+                    path=f"/test/doc_{i}.md",
+                    title=f"doc {i}",
+                    chunks=[f"chunk body {i}"],
+                    embeddings=[rng.standard_normal(DIM).tolist()],
+                )
+            assert len(store._snap) == n_chunks
+
+            def fake_embed(texts):
+                inner = np.random.default_rng(0xCAFE)
+                return [inner.standard_normal(DIM).tolist() for _ in texts]
+
+            statements: list[str] = []
+            store._conn.set_trace_callback(statements.append)
+
+            # reindex re-creates ``self._snap`` with a fresh SnapIndex on
+            # entry (store.py around line 4276), so a monkey-patch on the
+            # pre-reindex instance would be discarded. Patch the class
+            # method for the duration of the call instead.
+            from snapvec import SnapIndex
+
+            original_add_batch = SnapIndex.add_batch
+            add_batch_calls: list[int] = []
+
+            def counting_add_batch(self, ids, vectors):
+                add_batch_calls.append(len(ids))
+                return original_add_batch(self, ids, vectors)
+
+            SnapIndex.add_batch = counting_add_batch  # type: ignore[method-assign]
+
+            try:
+                count = store.reindex(fake_embed, new_dim=DIM, batch_size=10)
+            finally:
+                SnapIndex.add_batch = original_add_batch  # type: ignore[method-assign]
+                store._conn.set_trace_callback(None)
+
+            assert count == n_chunks
+            assert len(store._snap) == n_chunks
+
+            import re
+
+            # ``chunk_offset`` is a column in sqlite-vec's internal
+            # vec_chunks_rowids table and would false-positive a plain
+            # substring match. Look for OFFSET as a SQL keyword instead.
+            offset_kw = re.compile(r"\bOFFSET\b", re.IGNORECASE)
+            chunks_selects = [
+                s for s in statements if re.search(r"FROM\s+chunks\b", s, re.IGNORECASE)
+            ]
+            assert not any(offset_kw.search(s) for s in chunks_selects), (
+                "reindex must use keyset pagination, not LIMIT ? OFFSET ?"
+            )
+            assert any("WHERE id >" in s for s in chunks_selects), (
+                "expected keyset pagination with `WHERE id > ?`"
+            )
+
+            assert len(add_batch_calls) == 1, (
+                f"snap.add_batch should be coalesced into one call, got {len(add_batch_calls)}"
+            )
+            assert add_batch_calls[0] == n_chunks
+
+    def test_reindex_rejects_nonpositive_batch_size(self, tmp_path):
+        """``batch_size <= 0`` must raise BEFORE dropping vec_chunks.
+
+        Regression guard: the keyset loop terminates immediately on
+        ``batch_size=0``, and if we had already dropped vec_chunks the
+        store would be silently wiped. The validation lives at the top
+        of reindex() precisely to prevent that class of data loss.
+        """
+        with VstashStore(
+            str(tmp_path / "bad_batch.db"),
+            embedding_dim=DIM,
+            vector_backend="snapvec",
+            snapvec_bits=4,
+        ) as store:
+            store.add_document(
+                path="/x.md",
+                title="x",
+                chunks=["x"],
+                embeddings=[np.random.default_rng(0).standard_normal(DIM).tolist()],
+            )
+
+            def embed_fn(texts):
+                return [[0.0] * DIM for _ in texts]
+
+            with pytest.raises(ValueError, match="batch_size must be >= 1"):
+                store.reindex(embed_fn, new_dim=DIM, batch_size=0)
+
+            # vec_chunks must still contain the original row.
+            assert len(store._snap) == 1
+
+    def test_reindex_rejects_embed_fn_length_mismatch(self, tmp_path):
+        """``embed_fn`` that returns wrong count must fail fast.
+
+        Without the length check, ``executemany`` would silently truncate
+        against the shorter zip; the store would end up with a partial
+        vector index while ``reindex`` reports success. The validation
+        inside the per-batch loop raises instead.
+        """
+        with VstashStore(
+            str(tmp_path / "bad_embed.db"),
+            embedding_dim=DIM,
+            vector_backend="snapvec",
+            snapvec_bits=4,
+        ) as store:
+            for i in range(3):
+                store.add_document(
+                    path=f"/doc_{i}.md",
+                    title=f"doc {i}",
+                    chunks=[f"text {i}"],
+                    embeddings=[np.random.default_rng(i).standard_normal(DIM).tolist()],
+                )
+
+            def short_embed(texts):
+                # Drop one: simulate a buggy embed_fn that silently
+                # loses an item.
+                return [[0.0] * DIM for _ in texts[:-1]]
+
+            with pytest.raises(ValueError, match="embed_fn returned"):
+                store.reindex(short_embed, new_dim=DIM, batch_size=256)
+
 
 class TestSnapvecDimMismatch:
     def test_dim_mismatch_rebuilds(self, tmp_path):

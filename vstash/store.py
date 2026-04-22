@@ -4299,7 +4299,16 @@ class VstashStore:
 
         Returns:
             Number of chunks re-embedded.
+
+        Raises:
+            ValueError: If ``batch_size`` is not a positive integer.
         """
+        # Fail before we DROP vec_chunks. A non-positive batch_size would
+        # make the keyset loop below terminate immediately after dropping
+        # the table, silently wiping the vector index.
+        if batch_size < 1:
+            raise ValueError(f"batch_size must be >= 1, got {batch_size}")
+
         with self._write_lock:
             # Count total chunks
             total = self._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
@@ -4317,13 +4326,27 @@ class VstashStore:
                 if self._snap is not None:
                     self._snap = SnapIndex(dim=new_dim, bits=self._snapvec_bits, seed=0)
 
-                # Re-embed in batches
+                # Re-embed in batches. Two O(N^2) traps avoided here
+                # (issue #265, sibling to #264):
+                #
+                # 1. Keyset pagination (WHERE id > last_id) instead of
+                #    LIMIT ? OFFSET ?. SQLite rescans `offset` rows per
+                #    page, so N/batch_size pages cost O(N^2/batch_size).
+                # 2. Snapvec add_batch is coalesced into a single call
+                #    after the loop. SnapIndex.add_batch does np.vstack
+                #    on the growing buffer internally (snapvec/_index.py
+                #    :206), so per-page calls copy O(current) each time.
+                #
+                # chunks.id is INTEGER PRIMARY KEY AUTOINCREMENT (>=1),
+                # so seeding last_id=0 matches all rows on the first page.
                 processed = 0
-                offset = 0
-                while offset < total:
+                last_id = 0
+                snap_rowid_parts: list[list[int]] = []
+                snap_vector_parts: list[np.ndarray] = []
+                while True:
                     rows = self._conn.execute(
-                        "SELECT id, text FROM chunks ORDER BY id LIMIT ? OFFSET ?",
-                        [batch_size, offset],
+                        "SELECT id, text FROM chunks WHERE id > ? ORDER BY id LIMIT ?",
+                        [last_id, batch_size],
                     ).fetchall()
                     if not rows:
                         break
@@ -4332,20 +4355,46 @@ class VstashStore:
                     ids = [row["id"] for row in rows]
                     embeddings = embed_fn(texts)
 
-                    for chunk_id, embedding in zip(ids, embeddings):
-                        self._conn.execute(
-                            "INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)",
-                            [chunk_id, _serialize(embedding)],
+                    # Fail fast if embed_fn returns the wrong count. Without
+                    # this guard, executemany would silently truncate to the
+                    # shorter zip and leave the store with a partial vec
+                    # index while ``processed`` still counts all rows.
+                    if len(embeddings) != len(ids):
+                        raise ValueError(
+                            f"embed_fn returned {len(embeddings)} embeddings "
+                            f"for {len(ids)} texts; must match 1:1"
                         )
 
-                    # Add batch to snapvec index
+                    self._conn.executemany(
+                        "INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)",
+                        [(cid, _serialize(emb)) for cid, emb in zip(ids, embeddings)],
+                    )
+
                     if self._snap is not None:
-                        self._snap.add_batch(ids, np.array(embeddings, dtype=np.float32))
+                        snap_rowid_parts.append(ids)
+                        snap_vector_parts.append(np.asarray(embeddings, dtype=np.float32))
 
                     processed += len(rows)
-                    offset += batch_size
+                    last_id = ids[-1]
                     if progress_cb:
                         progress_cb(processed, total)
+
+                if self._snap is not None and snap_rowid_parts:
+                    all_rowids = (
+                        snap_rowid_parts[0]
+                        if len(snap_rowid_parts) == 1
+                        else [rid for part in snap_rowid_parts for rid in part]
+                    )
+                    all_vectors = (
+                        snap_vector_parts[0]
+                        if len(snap_vector_parts) == 1
+                        else np.concatenate(snap_vector_parts, axis=0)
+                    )
+                    # Drop per-batch lists once coalesced so peak RSS is
+                    # bounded during the final add_batch allocation.
+                    snap_vector_parts.clear()
+                    snap_rowid_parts.clear()
+                    self._snap.add_batch(all_rowids, all_vectors)
 
                 self._conn.commit()
                 self._invalidate_idf_cache()
