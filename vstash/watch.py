@@ -95,6 +95,53 @@ def _should_process(path: str, extensions: frozenset[str]) -> bool:
     return p.suffix.lower() in extensions
 
 
+# Burst-drain tuning. The watcher blocks for one queued file, then
+# tries to accumulate a small burst before flushing through the batch
+# ingest route. Both bounds are defensive:
+#   - DRAIN_MAX_BATCH caps peak memory: a burst of 100k files would
+#     otherwise hold every path + embedding in Python land before the
+#     single batch transaction commits.
+#   - DRAIN_MAX_WINDOW_S caps the tail latency a user sees: even if
+#     more files keep arriving, we flush what we have so the first
+#     dropped file does not wait indefinitely.
+DRAIN_MAX_BATCH = 64
+DRAIN_MAX_WINDOW_S = 0.25
+
+
+def _drain_burst(
+    q: queue.Queue[str | None],
+    first: str,
+    *,
+    max_batch: int = DRAIN_MAX_BATCH,
+    max_window_s: float = DRAIN_MAX_WINDOW_S,
+    now: Callable[[], float] = time.monotonic,
+) -> list[str]:
+    """Collect ``first`` plus any extra queued paths up to the window.
+
+    Returns an ordered list of paths ready to feed to ``ingest_batch``.
+    If a poison-pill (``None``) is drained mid-burst, it is re-enqueued
+    so the main loop still sees it and exits cleanly.
+
+    Exposed top-level so the drain semantics are unit-testable without
+    spinning up watchdog or a real ``start_watch``.
+    """
+    batch: list[str] = [first]
+    deadline = now() + max_window_s
+    while len(batch) < max_batch:
+        remaining = deadline - now()
+        if remaining <= 0:
+            break
+        try:
+            extra = q.get(timeout=remaining)
+        except queue.Empty:
+            break
+        if extra is None:
+            q.put(None)
+            break
+        batch.append(extra)
+    return batch
+
+
 def start_watch(
     paths: list[str],
     cfg: VstashConfig,
@@ -128,7 +175,7 @@ def start_watch(
             "watchdog is required for watch mode. Install it with: pip install vstash[watch]"
         ) from exc
 
-    from .ingest import ingest
+    from .ingest import ingest_batch
 
     exts = extensions or SUPPORTED_EXTENSIONS
 
@@ -136,40 +183,48 @@ def start_watch(
     ingest_queue: queue.Queue[str | None] = queue.Queue()
     stop_event = threading.Event()
 
+    def _process_batch(paths: list[str]) -> None:
+        """Route a drained burst through ingest_batch and report."""
+        existing = [p for p in paths if Path(p).exists()]
+        if not existing:
+            return
+        try:
+            results = ingest_batch(
+                existing,
+                cfg,
+                store,
+                force=True,
+                collection=collection,
+                quiet=True,
+            )
+        except Exception as exc:
+            console.print(f"[red]✗ Watch ingest error: {_rich_escape(str(exc))}[/red]")
+            return
+        ts = time.strftime("%H:%M:%S")
+        for result in results:
+            src_name = Path(result.source).name
+            if result.status == "ok":
+                console.print(
+                    f"[dim]{ts}[/dim] [green]✓[/green] "
+                    f"[bold]{result.title}[/bold] — "
+                    f"{result.chunks} chunks → [cyan]{collection}[/cyan]"
+                )
+            elif result.status == "empty":
+                console.print(f"[dim]{ts}[/dim] [yellow]⚠[/yellow] No content: {src_name}")
+            elif result.status == "error":
+                console.print(f"[dim]{ts}[/dim] [red]✗[/red] Error: {result.error}")
+
     def _worker() -> None:
-        """Process files from the queue one at a time."""
+        """Block for the first file, then drain the burst window and flush."""
         while not stop_event.is_set():
             try:
-                file_path = ingest_queue.get(timeout=1)
+                first = ingest_queue.get(timeout=1)
             except queue.Empty:
                 continue
-            if file_path is None:  # Poison pill → exit
+            if first is None:  # Poison pill → exit
                 break
-            if not Path(file_path).exists():
-                continue
-            try:
-                result = ingest(
-                    file_path,
-                    cfg,
-                    store,
-                    force=True,
-                    collection=collection,
-                )
-                ts = time.strftime("%H:%M:%S")
-                if result.status == "ok":
-                    console.print(
-                        f"[dim]{ts}[/dim] [green]✓[/green] "
-                        f"[bold]{result.title}[/bold] — "
-                        f"{result.chunks} chunks → [cyan]{collection}[/cyan]"
-                    )
-                elif result.status == "empty":
-                    console.print(
-                        f"[dim]{ts}[/dim] [yellow]⚠[/yellow] No content: {Path(file_path).name}"
-                    )
-                elif result.status == "error":
-                    console.print(f"[dim]{ts}[/dim] [red]✗[/red] Error: {result.error}")
-            except Exception as exc:
-                console.print(f"[red]✗ Watch ingest error: {_rich_escape(str(exc))}[/red]")
+            batch = _drain_burst(ingest_queue, first)
+            _process_batch(batch)
 
     worker_thread = threading.Thread(target=_worker, daemon=True)
     worker_thread.start()
