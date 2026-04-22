@@ -185,10 +185,14 @@ def start_watch(
 
     def _process_batch(paths: list[str]) -> None:
         """Route a drained burst through ingest_batch and report."""
-        existing = [p for p in paths if Path(p).exists()]
-        if not existing:
-            return
         try:
+            # Path.exists() can raise OSError (permission denied,
+            # stale NFS mount, dead symlink target on some FSes).
+            # Keep the check inside the try so a transient FS error on
+            # one path does not kill the long-running worker thread.
+            existing = [p for p in paths if Path(p).exists()]
+            if not existing:
+                return
             results = ingest_batch(
                 existing,
                 cfg,
