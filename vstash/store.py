@@ -534,9 +534,7 @@ class VstashStore:
         # do not silently lose vectors from the last write burst.
         if loaded_clean and self._vector_backend == "snapvec" and self._snap is not None:
             try:
-                sqlite_n = int(
-                    self._conn.execute("SELECT COUNT(*) FROM vec_chunks").fetchone()[0]
-                )
+                sqlite_n = int(self._conn.execute("SELECT COUNT(*) FROM vec_chunks").fetchone()[0])
             except sqlite3.Error:
                 sqlite_n = 0
             snap_n = len(self._snap)
@@ -555,28 +553,59 @@ class VstashStore:
         Used for crash recovery when ``_init_snapvec`` detects staleness
         and as the ``fit_snapvec`` analogue to ``fit_ivfpq``. Returns the
         number of vectors indexed.
+
+        Two O(N^2) patterns are avoided here (issue #252):
+
+        1. ``LIMIT ? OFFSET ?`` pagination on ``vec_chunks`` rescans
+           ``offset`` rows on every call. With N/batch_size pages the
+           total scan cost is O(N^2/batch_size). Keyset pagination
+           (``WHERE rowid > last``) is O(N) total.
+        2. ``SnapIndex.add_batch`` does ``np.vstack([self._indices,
+           batch_idx])`` internally (snapvec/_index.py:206), so calling
+           it N/batch_size times copies a growing buffer on each call.
+           Coalescing all (rowids, vectors) into a single final call
+           keeps the total memcpy at O(N).
+
+        Measured on 2026-04-22: N=100k rebuild dropped from 41.5s to
+        5.4s (7.65x) after the fix; scaling went from super-linear
+        (148x wall clock for 20x N) to near-linear (23x for 20x N).
+        See experiments/results/snapvec_rebuild_scaling_{before,after}.json.
         """
         if self._snap is None:
             raise RuntimeError("snapvec backend not initialised")
         self._snap = SnapIndex(dim=self.embedding_dim, bits=self._snapvec_bits, seed=0)
 
-        offset = 0
-        total = 0
+        # rowid >= 1 because chunks.id is INTEGER PRIMARY KEY AUTOINCREMENT
+        # and vec_chunks.rowid is fed from chunks.id; starting at 0 matches
+        # all real rows on the first page.
+        last_rowid = 0
+        rowid_parts: list[list[int]] = []
+        vector_parts: list[np.ndarray] = []
         while True:
             rows = self._conn.execute(
-                "SELECT rowid, embedding FROM vec_chunks ORDER BY rowid "
-                "LIMIT ? OFFSET ?",
-                [batch_size, offset],
+                "SELECT rowid, embedding FROM vec_chunks WHERE rowid > ? ORDER BY rowid LIMIT ?",
+                [last_rowid, batch_size],
             ).fetchall()
             if not rows:
                 break
-            rowids = [int(r["rowid"]) for r in rows]
-            vectors = np.asarray(
-                [_deserialize(r["embedding"]) for r in rows], dtype=np.float32
+            rowid_parts.append([int(r["rowid"]) for r in rows])
+            vector_parts.append(
+                np.asarray([_deserialize(r["embedding"]) for r in rows], dtype=np.float32)
             )
-            self._snap.add_batch(rowids, vectors)
-            offset += batch_size
-            total += len(rows)
+            last_rowid = int(rows[-1]["rowid"])
+
+        total = sum(len(p) for p in rowid_parts)
+        if total:
+            all_rowids = [rid for part in rowid_parts for rid in part]
+            all_vectors = (
+                vector_parts[0] if len(vector_parts) == 1 else np.concatenate(vector_parts, axis=0)
+            )
+            # Drop the per-batch list once coalesced so the peak RSS is bounded
+            # by (concat buffer + SnapIndex internal copy) instead of 3x the
+            # final index size. Matters at N >> 500k (f32 x 384 dim ~= 1.5 GB
+            # per copy).
+            vector_parts.clear()
+            self._snap.add_batch(all_rowids, all_vectors)
 
         # Immediately persist the rebuilt index so subsequent opens do
         # not re-run the rebuild unnecessarily.
@@ -1259,9 +1288,7 @@ class VstashStore:
 
                     if self._snap is not None:
                         pending_snap_rowids.extend(rowids)
-                        pending_snap_vecs.append(
-                            np.asarray(embeddings, dtype=np.float32)
-                        )
+                        pending_snap_vecs.append(np.asarray(embeddings, dtype=np.float32))
 
                 # ONE coalesced add_batch for the whole transaction's
                 # worth of vectors instead of one per document. Avoids
@@ -1867,12 +1894,7 @@ class VstashStore:
         # filter is rare enough that the simpler skip is preferable.
         _cache_key: int | None = None
         _cache_max = self._cache_config.query_cache_size
-        if (
-            _cache_max > 0
-            and _tracer is None
-            and not explain
-            and not exact_match
-        ):
+        if _cache_max > 0 and _tracer is None and not explain and not exact_match:
             _cache_key = self._compute_search_cache_key(
                 query_embedding=query_embedding,
                 query_text=query_text,

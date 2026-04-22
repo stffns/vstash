@@ -1,0 +1,47 @@
+{
+  "label": "after_keyset_coalesce",
+  "backend": "snapvec",
+  "dim": 384,
+  "checkpoints": [
+    {
+      "n_at_probe": 5000,
+      "rebuild_seconds_p50": 0.23,
+      "rebuild_seconds_min": 0.229,
+      "rebuild_seconds_max": 0.234,
+      "rebuild_seconds_mean": 0.231,
+      "repeats": 3
+    },
+    {
+      "n_at_probe": 10000,
+      "rebuild_seconds_p50": 0.482,
+      "rebuild_seconds_min": 0.478,
+      "rebuild_seconds_max": 0.497,
+      "rebuild_seconds_mean": 0.485,
+      "repeats": 3
+    },
+    {
+      "n_at_probe": 25000,
+      "rebuild_seconds_p50": 1.635,
+      "rebuild_seconds_min": 1.215,
+      "rebuild_seconds_max": 1.688,
+      "rebuild_seconds_mean": 1.513,
+      "repeats": 3
+    },
+    {
+      "n_at_probe": 50000,
+      "rebuild_seconds_p50": 2.53,
+      "rebuild_seconds_min": 2.529,
+      "rebuild_seconds_max": 3.233,
+      "rebuild_seconds_mean": 2.764,
+      "repeats": 3
+    },
+    {
+      "n_at_probe": 100000,
+      "rebuild_seconds_p50": 5.426,
+      "rebuild_seconds_min": 4.955,
+      "rebuild_seconds_max": 6.563,
+      "rebuild_seconds_mean": 5.648,
+      "repeats": 3
+    }
+  ]
+}
