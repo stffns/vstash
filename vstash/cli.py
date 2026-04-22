@@ -1501,8 +1501,7 @@ def serve(
     console.print(f"[bold cyan]vstash[/bold cyan] serving at [link]http://{host}:{port}[/link]")
     if debug:
         console.print(
-            "[yellow]! debug mode: /debug/why is exposed. "
-            "Do not use in production.[/yellow]"
+            "[yellow]! debug mode: /debug/why is exposed. Do not use in production.[/yellow]"
         )
     console.print("[dim]Press Ctrl+C to stop[/dim]")
     uvicorn.run(create_app(debug=debug), host=host, port=port, log_level="warning")
@@ -1586,9 +1585,7 @@ def why(
     # 1000 rows, including prior runs). Users see which queries
     # recently missed without having to remember them.
     if recent < 0:
-        raise _why_error(
-            f"--recent must be >= 0 (0 = disabled), got {recent}."
-        )
+        raise _why_error(f"--recent must be >= 0 (0 = disabled), got {recent}.")
     if recent > 0:
         _, store = _get_store(warm=False, profile=_profile_from_ctx(ctx))
         with store:
@@ -1625,14 +1622,12 @@ def why(
         console.print()
         console.print(
             "[dim]Drill into any of these with:[/dim] "
-            "[bold]vstash why \"<query>\" --expect <path>[/bold]"
+            '[bold]vstash why "<query>" --expect <path>[/bold]'
         )
         raise typer.Exit(0)
 
     if query is None:
-        raise _why_error(
-            "Missing argument QUERY. Pass a query or use --recent N."
-        )
+        raise _why_error("Missing argument QUERY. Pass a query or use --recent N.")
 
     if expect is None and expect_chunk_id is None:
         raise _why_error("Provide either --expect <path> or --expect-chunk-id <id>.")
@@ -1705,9 +1700,7 @@ def why(
             f"[red]✗[/red] [bold]Expected doc NOT in top-{analysis.top_k_requested}.[/bold]"
         )
         if analysis.dropped_at:
-            console.print(
-                f"  Dropped at stage: [yellow bold]{analysis.dropped_at}[/yellow bold]"
-            )
+            console.print(f"  Dropped at stage: [yellow bold]{analysis.dropped_at}[/yellow bold]")
 
     console.print()
     console.print(f"  [dim]Query:[/dim]          {analysis.query!r}")
@@ -1719,9 +1712,7 @@ def why(
             f"([dim]{analysis.target_resolution}[/dim])"
         )
     if analysis.total_chunks_in_doc > 1:
-        console.print(
-            f"  [dim]Doc has[/dim]         {analysis.total_chunks_in_doc} chunks"
-        )
+        console.print(f"  [dim]Doc has[/dim]         {analysis.total_chunks_in_doc} chunks")
 
     # Per-stage trace.
     console.print()
@@ -1755,9 +1746,7 @@ def why(
         top_table.add_column("Title", overflow="fold")
         top_table.add_column("Score", justify="right")
         for r in analysis.actual_top_k:
-            top_table.add_row(
-                str(r.rank + 1), r.path, r.title or "-", f"{r.score:.4f}"
-            )
+            top_table.add_row(str(r.rank + 1), r.path, r.title or "-", f"{r.score:.4f}")
         console.print(top_table)
 
     # Suggestions panel last so it lands near the user's prompt.
@@ -2050,9 +2039,7 @@ def retrain(
     if training_queries:
         path = Path(training_queries).expanduser()
         if not path.exists():
-            console.print(
-                f"[red]x[/red] --training-queries: file not found: {path}"
-            )
+            console.print(f"[red]x[/red] --training-queries: file not found: {path}")
             raise typer.Exit(code=1)
         try:
             with path.open() as fh:
@@ -2077,8 +2064,7 @@ def retrain(
                 )
                 raise typer.Exit(code=1)
         console.print(
-            f"  Training queries: [cyan]{len(loaded_training_queries)} labeled[/cyan] "
-            f"from {path}"
+            f"  Training queries: [cyan]{len(loaded_training_queries)} labeled[/cyan] from {path}"
         )
 
     result = run_retrain(

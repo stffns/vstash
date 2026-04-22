@@ -60,7 +60,6 @@ import numpy as np
 
 from experiments.beir_benchmark import download_beir, load_beir
 from experiments.beir_snapvec_h2h import (
-    DEFAULT_MODEL,
     _embed_corpus,
     _embed_queries,
     _get_st_model,
@@ -179,10 +178,7 @@ def _train_triplet(
     model = SentenceTransformer(base_model)
     if max_seq_length is not None:
         model.max_seq_length = max_seq_length
-    examples = [
-        InputExample(texts=[p["query"], p["positive"], p["negative"]])
-        for p in triplets
-    ]
+    examples = [InputExample(texts=[p["query"], p["positive"], p["negative"]]) for p in triplets]
 
     rng = _random.Random(seed)
     rng.shuffle(examples)
@@ -393,15 +389,11 @@ def main() -> int:
         action="store_true",
         help="Train one model per backend and evaluate against BEIR qrels.",
     )
-    parser.add_argument(
-        "--epochs", type=int, default=2, help="MNRL epochs (only when --train)."
-    )
+    parser.add_argument("--epochs", type=int, default=2, help="MNRL epochs (only when --train).")
     parser.add_argument(
         "--batch-size", type=int, default=32, help="MNRL batch size (only when --train)."
     )
-    parser.add_argument(
-        "--lr", type=float, default=3e-6, help="Learning rate (only when --train)."
-    )
+    parser.add_argument("--lr", type=float, default=3e-6, help="Learning rate (only when --train).")
     parser.add_argument(
         "--loss",
         choices=("mnrl", "triplet"),

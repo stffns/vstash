@@ -345,7 +345,10 @@ class TestDebugWhyEndpoint:
             dropped_at="vector_search",
         )
         with (
-            patch("vstash.web._do_miss_analysis", return_value=fake_analysis.model_dump(exclude_none=True)),
+            patch(
+                "vstash.web._do_miss_analysis",
+                return_value=fake_analysis.model_dump(exclude_none=True),
+            ),
             self._client_with_debug(debug=True) as c,
         ):
             resp = c.get("/debug/why?q=test&expect=/a.md")
@@ -457,8 +460,7 @@ class TestDebugWhyEndpoint:
         internals do not leak to unauthed callers."""
         with (
             patch(
-                "vstash.web._do_miss_analysis",
-                side_effect=RuntimeError("sensitive path /etc/...")
+                "vstash.web._do_miss_analysis", side_effect=RuntimeError("sensitive path /etc/...")
             ),
             self._client_with_debug(debug=True) as c,
         ):

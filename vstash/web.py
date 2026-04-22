@@ -456,9 +456,7 @@ async def api_debug_why(request: Request) -> JSONResponse:
     if not query:
         return _json({"error": "q (query) is required"}, 400)
     if expect is None and expect_chunk_id_raw is None:
-        return _json(
-            {"error": "one of expect=<path> or expect_chunk_id=<id> is required"}, 400
-        )
+        return _json({"error": "one of expect=<path> or expect_chunk_id=<id> is required"}, 400)
 
     expect_chunk_id: int | None = None
     if expect_chunk_id_raw is not None:

@@ -191,9 +191,7 @@ def _print_table(results: dict, bits_list: list[int], datasets: list[str]) -> No
         print("| " + " | ".join(cells) + " |")
 
     print("\n### Storage + latency per (bits, dataset)\n")
-    print(
-        "| Dataset | bits | NDCG@10 | Recall@100 | p50 ms | mean ms | ingest s | snpv MB |"
-    )
+    print("| Dataset | bits | NDCG@10 | Recall@100 | p50 ms | mean ms | ingest s | snpv MB |")
     print("|---|---|---|---|---|---|---|---|")
     for ds in datasets:
         for b in bits_list:
