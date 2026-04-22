@@ -896,43 +896,110 @@ def ingest_directory(
         f"[dim]Found {len(files)} files ({total_bytes / 1024:.0f} KB) in {directory}[/dim]"
     )
 
+    return ingest_batch(
+        [str(f) for f in files],
+        cfg,
+        store,
+        force=force,
+        collection=collection,
+        project=project,
+        layer=layer,
+        tags=tags,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        quiet=False,
+    )
+
+
+def ingest_batch(
+    sources: list[str],
+    cfg: VstashConfig,
+    store: VstashStore,
+    *,
+    force: bool = False,
+    collection: str = "default",
+    project: str | None = None,
+    layer: str | None = None,
+    tags: str | None = None,
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
+    quiet: bool = True,
+) -> list[IngestResult]:
+    """Ingest many files in two phases with per-file error isolation.
+
+    Phase 1 runs ``_prepare_document`` per source so a bad file yields
+    a per-file error ``IngestResult`` without killing the rest. Phase
+    2 routes every successfully prepared doc through
+    ``store.batch_mode(defer_fts=True) + add_documents_batch`` so the
+    whole batch shares one SQLite transaction, one snapvec vstack, and
+    one FTS5 flush.
+
+    Used by both ``ingest_directory`` (progress bar on) and the
+    ``watch.py`` worker draining its queue (progress bar off).
+
+    Args:
+        sources: File paths or URLs to ingest.
+        cfg: vstash configuration.
+        store: Vector store instance.
+        force: If False, skip documents already in the store.
+        collection: Named collection to group ingested documents.
+        project: Project tag to apply (overrides frontmatter).
+        layer: Layer tag to apply (overrides frontmatter).
+        tags: Comma-separated tags to apply (overrides frontmatter).
+        chunk_size: Optional chunk-size override.
+        chunk_overlap: Optional chunk-overlap override.
+        quiet: If False, show a preparation progress bar.
+
+    Returns:
+        One ``IngestResult`` per input source, order preserved.
+    """
+    if not sources:
+        return []
+
     results: list[IngestResult] = []
     pending: list[_PreparedDoc] = []
 
-    # Phase 1: parse + chunk + embed (per-file, progress bar)
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[bold]Preparing[/bold]"),
-        BarColumn(),
-        MofNCompleteColumn(),
-        TimeElapsedColumn(),
-        console=console,
-    ) as progress:
-        task = progress.add_task("", total=len(files))
-        for f in files:
-            progress.update(task, description=f.name)
-            prepared = _prepare_document(
-                str(f),
-                cfg,
-                store,
-                force=force,
-                collection=collection,
-                project=project,
-                layer=layer,
-                tags=tags,
-                chunk_size=chunk_size,
-                chunk_overlap=chunk_overlap,
-                quiet=True,
-            )
-            if isinstance(prepared, IngestResult):
-                if prepared.status == "error":
-                    console.print(f"[red]  x {f.name}: {prepared.error}[/red]")
-                results.append(prepared)
-            else:
-                pending.append(prepared)
-            progress.advance(task)
+    def _prepare_one(src: str) -> None:
+        prepared = _prepare_document(
+            src,
+            cfg,
+            store,
+            force=force,
+            collection=collection,
+            project=project,
+            layer=layer,
+            tags=tags,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            quiet=True,
+        )
+        if isinstance(prepared, IngestResult):
+            if prepared.status == "error" and not quiet:
+                console.print(f"[red]  x {Path(src).name}: {prepared.error}[/red]")
+            results.append(prepared)
+        else:
+            pending.append(prepared)
 
-    # Phase 2: store all prepared docs in one batched transaction
+    # Phase 1: parse + chunk + embed (per-file, error-isolated).
+    if quiet:
+        for src in sources:
+            _prepare_one(src)
+    else:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[bold]Preparing[/bold]"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("", total=len(sources))
+            for src in sources:
+                progress.update(task, description=Path(src).name)
+                _prepare_one(src)
+                progress.advance(task)
+
+    # Phase 2: store all prepared docs in one batched transaction.
     if pending:
         batch_docs = [
             {
