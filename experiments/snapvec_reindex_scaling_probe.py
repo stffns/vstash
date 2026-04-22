@@ -19,10 +19,12 @@ Fill the store with N random-vector docs via ``add_documents_batch``
 ``store.reindex(identity_embed_fn, new_dim=DIM)`` and record wall
 clock. Sweep N across a geometric ladder.
 
-The embed_fn is an identity that returns the same DIM-dimensional
-vectors so we measure the store-side work (SQL + snapvec rebuild),
-not embedding latency. new_dim stays equal to the current dim so
-the test exercises the re-embed loop without changing vec_chunks'
+The embed_fn returns deterministic random unit vectors per batch
+(seeded from the probe RNG). It is NOT a true identity -- real
+embedding latency is skipped on purpose, but a small per-call
+RNG + normalization cost is paid so that the allocation pattern
+is realistic. ``new_dim`` stays equal to the current dim so the
+test exercises the re-embed loop without changing vec_chunks'
 schema dimensionality.
 """
 

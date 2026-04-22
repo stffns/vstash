@@ -4299,7 +4299,16 @@ class VstashStore:
 
         Returns:
             Number of chunks re-embedded.
+
+        Raises:
+            ValueError: If ``batch_size`` is not a positive integer.
         """
+        # Fail before we DROP vec_chunks. A non-positive batch_size would
+        # make the keyset loop below terminate immediately after dropping
+        # the table, silently wiping the vector index.
+        if batch_size < 1:
+            raise ValueError(f"batch_size must be >= 1, got {batch_size}")
+
         with self._write_lock:
             # Count total chunks
             total = self._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
@@ -4346,6 +4355,16 @@ class VstashStore:
                     ids = [row["id"] for row in rows]
                     embeddings = embed_fn(texts)
 
+                    # Fail fast if embed_fn returns the wrong count. Without
+                    # this guard, executemany would silently truncate to the
+                    # shorter zip and leave the store with a partial vec
+                    # index while ``processed`` still counts all rows.
+                    if len(embeddings) != len(ids):
+                        raise ValueError(
+                            f"embed_fn returned {len(embeddings)} embeddings "
+                            f"for {len(ids)} texts; must match 1:1"
+                        )
+
                     self._conn.executemany(
                         "INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)",
                         [(cid, _serialize(emb)) for cid, emb in zip(ids, embeddings)],
@@ -4361,15 +4380,20 @@ class VstashStore:
                         progress_cb(processed, total)
 
                 if self._snap is not None and snap_rowid_parts:
-                    all_rowids = [rid for part in snap_rowid_parts for rid in part]
+                    all_rowids = (
+                        snap_rowid_parts[0]
+                        if len(snap_rowid_parts) == 1
+                        else [rid for part in snap_rowid_parts for rid in part]
+                    )
                     all_vectors = (
                         snap_vector_parts[0]
                         if len(snap_vector_parts) == 1
                         else np.concatenate(snap_vector_parts, axis=0)
                     )
-                    # Drop per-batch list once coalesced so peak RSS is
+                    # Drop per-batch lists once coalesced so peak RSS is
                     # bounded during the final add_batch allocation.
                     snap_vector_parts.clear()
+                    snap_rowid_parts.clear()
                     self._snap.add_batch(all_rowids, all_vectors)
 
                 self._conn.commit()
