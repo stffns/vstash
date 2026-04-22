@@ -2,6 +2,19 @@
 
 All notable changes to vstash are documented here.
 
+## [Unreleased]
+
+### Added
+
+- **`retrieval_mode` enum on search** (#275). New `retrieval_mode` parameter on `VstashStore.search`, `Memory.search`, `Memory.ask`, the MCP `vstash_search` / `vstash_ask` tools, and `VstashRetriever`. Three values:
+  - `"hybrid"` (default): unchanged -- vector ANN + FTS5 + adaptive RRF.
+  - `"vec_only"`: skip the FTS5 branch; force `(vec_weight, fts_weight) = (1.0, 0.0)`. Useful when the corpus has no meaningful keyword signal (tabular, code, cross-lingual).
+  - `"fts_only"`: existing #152 short-circuit, now named consistently.
+
+### Deprecated
+
+- **`fts_only=True` bool on `search` / `ask`** is deprecated in favour of `retrieval_mode="fts_only"` (#275). Still works for one release with a `DeprecationWarning`; combining `fts_only=True` with a contradictory `retrieval_mode` now raises `ValueError` rather than silently ignoring one of them.
+
 ## [0.32.0] - 2026-04-16
 
 ### Added
