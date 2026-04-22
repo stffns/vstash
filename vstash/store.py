@@ -567,9 +567,10 @@ class VstashStore:
            keeps the total memcpy at O(N).
 
         Measured on 2026-04-22: N=100k rebuild dropped from 41.5s to
-        5.4s (7.65x) after the fix; scaling went from super-linear
-        (148x wall clock for 20x N) to near-linear (23x for 20x N).
-        See experiments/results/snapvec_rebuild_scaling_{before,after}.json.
+        4.0s (10.3x) after the fix (keyset + coalesce + frombuffer).
+        Scaling went from super-linear (148x wall clock for 20x N) to
+        near-linear (24x for 20x N). See experiments/results/
+        snapvec_rebuild_scaling_{before,after}.json.
         """
         if self._snap is None:
             raise RuntimeError("snapvec backend not initialised")
@@ -589,8 +590,13 @@ class VstashStore:
             if not rows:
                 break
             rowid_parts.append([int(r["rowid"]) for r in rows])
+            # np.frombuffer avoids the Python-list intermediate that
+            # struct.unpack + list() pays inside ``_deserialize``. At
+            # N=100k with dim=384 the fill path allocates ~15M Python
+            # floats otherwise; reading the blob straight into a float32
+            # array drops that to a single memcpy per row.
             vector_parts.append(
-                np.asarray([_deserialize(r["embedding"]) for r in rows], dtype=np.float32)
+                np.stack([np.frombuffer(r["embedding"], dtype=np.float32) for r in rows])
             )
             last_rowid = int(rows[-1]["rowid"])
 
@@ -600,11 +606,13 @@ class VstashStore:
             all_vectors = (
                 vector_parts[0] if len(vector_parts) == 1 else np.concatenate(vector_parts, axis=0)
             )
-            # Drop the per-batch list once coalesced so the peak RSS is bounded
-            # by (concat buffer + SnapIndex internal copy) instead of 3x the
-            # final index size. Matters at N >> 500k (f32 x 384 dim ~= 1.5 GB
-            # per copy).
+            # Drop the per-batch lists once coalesced so the peak RSS is
+            # bounded by (concat buffer + SnapIndex internal copy) instead
+            # of 3x the final index size. Matters at N >> 500k (f32 x 384
+            # dim ~= 1.5 GB per copy). rowid_parts is tiny relative to
+            # vectors, cleared for consistency.
             vector_parts.clear()
+            rowid_parts.clear()
             self._snap.add_batch(all_rowids, all_vectors)
 
         # Immediately persist the rebuilt index so subsequent opens do
