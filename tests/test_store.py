@@ -1797,6 +1797,9 @@ class TestSearchExactMatch:
         def _paths(rs):
             return {r.path for r in rs}
 
+        # Guard against the pipeline silently returning zero candidates --
+        # an all-empty set would make the equality check pass vacuously.
+        assert lower, "baseline case-insensitive query must return hits"
         assert _paths(lower) == _paths(upper) == _paths(mixed)
 
     def test_exact_match_case_sensitive_toggle(self, sample_store) -> None:
@@ -1815,6 +1818,8 @@ class TestSearchExactMatch:
             exact_match="rate-limit",
             exact_match_case_sensitive=True,
         )
+        # Guarantee at least one hit so the loop actually exercises the filter.
+        assert strict_lower, "case-sensitive filter for 'rate-limit' must match the seeded chunks"
         for r in strict_lower:
             assert "rate-limit" in r.text  # strict: no casefold
 

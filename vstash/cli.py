@@ -638,6 +638,21 @@ def search(
                 )
                 chunks = [r for _, r in tagged]
                 _search_tagged = tagged
+                # Post-filter federated results the same way VstashStore.search
+                # does so --exact-match works across profiles too. #106.
+                if exact_match:
+                    if exact_match_case_sensitive:
+                        _search_tagged = [
+                            (name, r) for (name, r) in _search_tagged if exact_match in r.text
+                        ]
+                    else:
+                        _needle = exact_match.casefold()
+                        _search_tagged = [
+                            (name, r)
+                            for (name, r) in _search_tagged
+                            if _needle in r.text.casefold()
+                        ]
+                    chunks = [r for _, r in _search_tagged]
             else:
                 chunks = store.search(
                     q_embedding,

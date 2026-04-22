@@ -1860,17 +1860,18 @@ class VstashStore:
         )
 
         # --- Query cache key ---
-        # Skip the cache when an exact_match filter is active; mixing an
-        # arbitrary substring into the cache key would bloat the cache
-        # and produce stale-match hits across similar-but-different
-        # filter strings. Cheap fallthrough for the rare filter use.
+        # Skip the cache when an exact_match filter is ACTIVE (non-empty).
+        # An empty string and None are no-ops against the post-filter and
+        # stay cacheable. Including the substring in the cache key would
+        # be correct but blow up key cardinality and reduce reuse; the
+        # filter is rare enough that the simpler skip is preferable.
         _cache_key: int | None = None
         _cache_max = self._cache_config.query_cache_size
         if (
             _cache_max > 0
             and _tracer is None
             and not explain
-            and exact_match is None
+            and not exact_match
         ):
             _cache_key = self._compute_search_cache_key(
                 query_embedding=query_embedding,
@@ -2405,13 +2406,11 @@ class VstashStore:
             # guaranteed top_k under a selective substring should pass a
             # larger ``top_k`` (e.g. 3x) or accept a smaller result set.
             if exact_match:
-                needle = exact_match if exact_match_case_sensitive else exact_match.casefold()
-                filtered: list[SearchResult] = []
-                for r in results:
-                    hay = r.text if exact_match_case_sensitive else r.text.casefold()
-                    if needle in hay:
-                        filtered.append(r)
-                results = filtered
+                if exact_match_case_sensitive:
+                    results = [r for r in results if exact_match in r.text]
+                else:
+                    needle = exact_match.casefold()
+                    results = [r for r in results if needle in r.text.casefold()]
 
             # Stash values the finally block needs to log slow queries
             # with accurate data.

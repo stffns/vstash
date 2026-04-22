@@ -817,18 +817,18 @@ class TestMemorySearchExactMatch:
             mem.add(tmp_path / "a.md")
             mem.add(tmp_path / "b.md")
 
-            # Without filter both docs likely surface via 'rate' / 'limit'.
-            baseline = mem.search("rate limits", top_k=10)
-            assert len(baseline) >= 1
-
-            # Case-sensitive "RateLimit" only matches doc A.
+            # Include the exact literal in the query so doc A is reliably
+            # retrieved by FTS / vector before the post-filter runs. Without
+            # this, the test could pass vacuously if the candidate pool
+            # happens to exclude doc A upstream.
             strict = mem.search(
-                "rate limits",
+                "RateLimit rate limits",
                 top_k=10,
                 exact_match="RateLimit",
                 exact_match_case_sensitive=True,
             )
+            assert strict, "passthrough test must surface at least one hit"
             for r in strict:
                 assert "RateLimit" in r.text
             paths = {r.path for r in strict}
-            assert all(str(tmp_path / "a.md") == p for p in paths) or not paths
+            assert paths == {str(tmp_path / "a.md")}
