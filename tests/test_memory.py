@@ -800,3 +800,35 @@ class TestDynamicChunkSize:
 
         # Smaller chunk_size should produce more chunks
         assert chunk_count_512 >= chunk_count_4096
+
+
+class TestMemorySearchExactMatch:
+    """#106 (2026-04-21): Memory.search passes exact_match through to
+    the store and respects the case-sensitivity toggle."""
+
+    def test_memory_search_forwards_exact_match(self, tmp_path: Path) -> None:
+        (tmp_path / "a.md").write_text(
+            "# Doc A\n\nThis paragraph mentions RateLimit as a specific identifier."
+        )
+        (tmp_path / "b.md").write_text(
+            "# Doc B\n\nThis paragraph mentions rate limits but nothing code-ish."
+        )
+        with Memory(db=tmp_path / "mem.db") as mem:
+            mem.add(tmp_path / "a.md")
+            mem.add(tmp_path / "b.md")
+
+            # Include the exact literal in the query so doc A is reliably
+            # retrieved by FTS / vector before the post-filter runs. Without
+            # this, the test could pass vacuously if the candidate pool
+            # happens to exclude doc A upstream.
+            strict = mem.search(
+                "RateLimit rate limits",
+                top_k=10,
+                exact_match="RateLimit",
+                exact_match_case_sensitive=True,
+            )
+            assert strict, "passthrough test must surface at least one hit"
+            for r in strict:
+                assert "RateLimit" in r.text
+            paths = {r.path for r in strict}
+            assert paths == {str(tmp_path / "a.md")}

@@ -504,6 +504,19 @@ def search(
         "--miss-chunk",
         help="Diagnose why this expected chunk id did not appear in results",
     ),
+    exact_match: str | None = typer.Option(
+        None,
+        "--exact-match",
+        help="Post-filter: each returned chunk's text must contain this "
+        "literal substring. Bypasses FTS5 tokenization so punctuation / "
+        "identifiers / code survive verbatim. Case-insensitive by default "
+        "-- pair with --exact-match-case-sensitive for a strict compare.",
+    ),
+    exact_match_case_sensitive: bool = typer.Option(
+        False,
+        "--exact-match-case-sensitive/--no-exact-match-case-sensitive",
+        help="Toggle case sensitivity of --exact-match.",
+    ),
 ) -> None:
     """Semantic search without LLM (free, local)."""
     cfg, store = _get_store(warm=True, profile=_profile_from_ctx(ctx))
@@ -625,6 +638,21 @@ def search(
                 )
                 chunks = [r for _, r in tagged]
                 _search_tagged = tagged
+                # Post-filter federated results the same way VstashStore.search
+                # does so --exact-match works across profiles too. #106.
+                if exact_match:
+                    if exact_match_case_sensitive:
+                        _search_tagged = [
+                            (name, r) for (name, r) in _search_tagged if exact_match in r.text
+                        ]
+                    else:
+                        _needle = exact_match.casefold()
+                        _search_tagged = [
+                            (name, r)
+                            for (name, r) in _search_tagged
+                            if _needle in r.text.casefold()
+                        ]
+                    chunks = [r for _, r in _search_tagged]
             else:
                 chunks = store.search(
                     q_embedding,
@@ -634,6 +662,8 @@ def search(
                     project=project,
                     layer=layer,
                     explain=explain,
+                    exact_match=exact_match,
+                    exact_match_case_sensitive=exact_match_case_sensitive,
                 )
 
         if not chunks:

@@ -1734,3 +1734,103 @@ class TestTemporalFilters:
         q = [0.15] * dim
         results = populated_store.search(q, "programming", top_k=10)
         assert len(results) >= 1
+
+
+class TestSearchExactMatch:
+    """#106 (2026-04-21): ``exact_match`` substring post-filter
+    bypasses FTS5 tokenization so literal identifiers / punctuation /
+    casing survive the pipeline without being stemmed away."""
+
+    def _seed(self, store) -> None:
+        dim = store.embedding_dim
+        store.add_document(
+            path="/docs/rate-limit.md",
+            title="Rate limit policy",
+            chunks=[
+                "Our API enforces a rate-limit of 100 req/s per token rate.",
+                "The rate-limit applies per-IP before per-token rate logic.",
+            ],
+            embeddings=[[0.5] * dim, [0.5] * dim],
+        )
+        store.add_document(
+            path="/docs/quota.md",
+            title="Quota policy",
+            chunks=["Quota caps are daily and reset at 00:00 UTC per rate."],
+            embeddings=[[0.5] * dim],
+        )
+
+    def test_exact_match_requires_literal_substring(self, sample_store) -> None:
+        """A chunk without the literal substring must be dropped, even
+        when it ranks high on vector/FTS signals."""
+        self._seed(sample_store)
+        dim = sample_store.embedding_dim
+        q = [0.5] * dim
+
+        # Without filter: rate-limit chunks surface on FTS via "rate".
+        # The quota chunk is vector-only (uniform 0.5 vectors) so it
+        # may or may not be in top-10 depending on pipeline tie-breaks.
+        unfiltered = sample_store.search(q, "rate", top_k=10)
+        assert unfiltered, "baseline search must surface at least one rate-limit chunk"
+
+        # With exact_match: only chunks whose text contains the
+        # hyphenated literal survive. The quota chunk has no "rate-limit"
+        # substring at all -> excluded.
+        filtered = sample_store.search(
+            q, "policy", top_k=10, exact_match="rate-limit"
+        )
+        assert filtered, "at least one rate-limit chunk must survive"
+        for r in filtered:
+            assert "rate-limit" in r.text.casefold()
+        assert not any(r.path == "/docs/quota.md" for r in filtered)
+
+    def test_exact_match_case_insensitive_by_default(self, sample_store) -> None:
+        """Default ``exact_match_case_sensitive=False`` casefolds both
+        sides so "RATE-LIMIT" matches "Rate-limit" matches "rate-limit"."""
+        self._seed(sample_store)
+        dim = sample_store.embedding_dim
+        q = [0.5] * dim
+
+        lower = sample_store.search(q, "rate", top_k=10, exact_match="rate-limit")
+        upper = sample_store.search(q, "rate", top_k=10, exact_match="RATE-LIMIT")
+        mixed = sample_store.search(q, "rate", top_k=10, exact_match="Rate-LIMIT")
+
+        def _paths(rs):
+            return {r.path for r in rs}
+
+        # Guard against the pipeline silently returning zero candidates --
+        # an all-empty set would make the equality check pass vacuously.
+        assert lower, "baseline case-insensitive query must return hits"
+        assert _paths(lower) == _paths(upper) == _paths(mixed)
+
+    def test_exact_match_case_sensitive_toggle(self, sample_store) -> None:
+        """With ``exact_match_case_sensitive=True`` the comparison is strict."""
+        self._seed(sample_store)
+        dim = sample_store.embedding_dim
+        q = [0.5] * dim
+
+        # Lowercase literal "rate-limit" is in both seeded chunks.
+        # Strict compare is "no casefold"; the test confirms the
+        # substring is present verbatim in every returned chunk.
+        strict_lower = sample_store.search(
+            q,
+            "rate",
+            top_k=10,
+            exact_match="rate-limit",
+            exact_match_case_sensitive=True,
+        )
+        # Guarantee at least one hit so the loop actually exercises the filter.
+        assert strict_lower, "case-sensitive filter for 'rate-limit' must match the seeded chunks"
+        for r in strict_lower:
+            assert "rate-limit" in r.text  # strict: no casefold
+
+    def test_exact_match_empty_filter_is_noop(self, populated_store) -> None:
+        """``exact_match=None`` and ``exact_match=""`` both leave the
+        ranking untouched (the empty string would match everything and
+        the None path skips the filter block)."""
+        dim = populated_store.embedding_dim
+        q = [0.15] * dim
+        base = populated_store.search(q, "python", top_k=5)
+        none_result = populated_store.search(q, "python", top_k=5, exact_match=None)
+        empty_result = populated_store.search(q, "python", top_k=5, exact_match="")
+        assert [r.path for r in base] == [r.path for r in none_result]
+        assert [r.path for r in base] == [r.path for r in empty_result]

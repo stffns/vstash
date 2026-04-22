@@ -282,6 +282,8 @@ class Memory:
         vec_weight: float | None = None,
         fts_weight: float | None = None,
         fts_only: bool = False,
+        exact_match: str | None = None,
+        exact_match_case_sensitive: bool = False,
     ) -> list[SearchResult]:
         """Semantic search without LLM inference.
 
@@ -308,6 +310,12 @@ class Memory:
                 other to ``1.0 - provided`` so the pair sums to 1.0.
             fts_weight: Pin the RRF FTS weight for this single call.
                 Same semantics and range as ``vec_weight``.
+            exact_match: Optional literal substring the returned chunk's
+                ``text`` must contain. Bypasses FTS5 tokenization
+                (stemming, lowercasing) so identifiers and punctuation
+                survive. #106, 2026-04-21.
+            exact_match_case_sensitive: Whether ``exact_match`` is
+                case-sensitive. Default False (casefold compare).
             fts_only: If True, run FTS5 keyword search only and skip the
                 vector ANN scan, distance cutoff, and adaptive RRF
                 entirely. Useful for debugging ranking, for queries
@@ -354,6 +362,8 @@ class Memory:
             added_after=added_after,
             added_before=added_before,
             mmr_lambda=mmr_lambda,
+            exact_match=exact_match,
+            exact_match_case_sensitive=exact_match_case_sensitive,
         )
 
     def miss_analysis(
