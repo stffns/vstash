@@ -17,6 +17,7 @@ Commands:
 
 from __future__ import annotations
 
+import atexit
 import json
 from pathlib import Path
 
@@ -222,6 +223,7 @@ def _get_store(
         ivfpq_nprobe=cfg.storage.ivfpq_nprobe,
         cache=cfg.cache,
     )
+    atexit.register(store.close)
     return cfg, store
 
 
