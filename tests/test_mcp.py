@@ -235,7 +235,10 @@ class TestVstashSearch:
         _, kwargs = mock_store.return_value.search.call_args
         assert kwargs["vec_weight"] == 0.9
         assert kwargs["fts_weight"] == 0.1
-        assert kwargs["fts_only"] is False
+        # #275: MCP forwards the resolved retrieval_mode enum to the
+        # store now. fts_only=False resolves to "hybrid".
+        assert kwargs["retrieval_mode"] == "hybrid"
+        assert "fts_only" not in kwargs
 
     @patch("vstash.mcp.embed_query", return_value=[0.1] * 384)
     @patch("vstash.mcp._get_store")
@@ -260,7 +263,8 @@ class TestVstashSearch:
         _, kwargs = mock_store.return_value.search.call_args
         assert kwargs["vec_weight"] is None
         assert kwargs["fts_weight"] is None
-        assert kwargs["fts_only"] is False
+        assert kwargs["retrieval_mode"] == "hybrid"
+        assert "fts_only" not in kwargs
 
     @patch("vstash.mcp.embed_query", return_value=[0.1] * 384)
     @patch("vstash.mcp._get_store")
@@ -292,7 +296,7 @@ class TestVstashSearch:
         mock_store.return_value.record_search_event.return_value = 1
         mock_config.return_value.embeddings.model = "BAAI/bge-small-en-v1.5"
 
-        # Weights as strings, fts_only omitted (default False).
+        # Weights as strings, fts_only omitted (default False -> hybrid).
         vstash_search(
             "test",
             vec_weight="0.8",  # type: ignore[arg-type]
@@ -301,13 +305,17 @@ class TestVstashSearch:
         _, kwargs = mock_store.return_value.search.call_args
         assert kwargs["vec_weight"] == 0.8
         assert kwargs["fts_weight"] == 0.2
-        assert kwargs["fts_only"] is False
+        assert kwargs["retrieval_mode"] == "hybrid"
 
-        # fts_only as a string, weights omitted.
+        # fts_only as a string coerces + resolves to retrieval_mode='fts_only'.
         mock_store.return_value.search.reset_mock()
-        vstash_search("test", fts_only="true")  # type: ignore[arg-type]
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            vstash_search("test", fts_only="true")  # type: ignore[arg-type]
         _, kwargs = mock_store.return_value.search.call_args
-        assert kwargs["fts_only"] is True
+        assert kwargs["retrieval_mode"] == "fts_only"
 
     @patch("vstash.mcp.embed_query", return_value=[0.1] * 384)
     @patch("vstash.mcp._get_store")
@@ -331,6 +339,13 @@ class TestVstashSearch:
         result2 = json.loads(vstash_search("test", fts_only="maybe"))  # type: ignore[arg-type]
         assert "error" in result2
         assert "fts_only" in result2["error"]
+
+        # Unknown retrieval_mode string surfaces as structured error too.
+        result3 = json.loads(
+            vstash_search("test", retrieval_mode="semantic")  # type: ignore[arg-type]
+        )
+        assert "error" in result3
+        assert "retrieval_mode" in result3["error"]
 
     @patch("vstash.mcp.embed_query", return_value=[0.1] * 384)
     @patch("vstash.mcp._get_store")
@@ -386,29 +401,34 @@ class TestVstashSearch:
         mock_config.return_value.embeddings.model = "BAAI/bge-small-en-v1.5"
 
         # Every one of these combinations would fail coercion on its
-        # own but must succeed when paired with fts_only=true.
+        # own but must succeed when paired with fts_only=true (deprecated)
+        # or retrieval_mode="fts_only".
+        import warnings
+
         for bad_vec, bad_fts in [
             ("not_a_number", None),
             ("nan", None),
             (None, "-inf"),
-            ("10.0", "5.0"),  # out of [0, 1] — but never reaches validator
+            ("10.0", "5.0"),  # out of [0, 1] -- but never reaches validator
         ]:
             mock_store.return_value.search.reset_mock()
-            result = json.loads(
-                vstash_search(
-                    "test",
-                    fts_only=True,
-                    vec_weight=bad_vec,  # type: ignore[arg-type]
-                    fts_weight=bad_fts,  # type: ignore[arg-type]
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                result = json.loads(
+                    vstash_search(
+                        "test",
+                        fts_only=True,
+                        vec_weight=bad_vec,  # type: ignore[arg-type]
+                        fts_weight=bad_fts,  # type: ignore[arg-type]
+                    )
                 )
-            )
             assert "error" not in result, (
                 f"fts_only=True should have dropped invalid weights "
                 f"vec_weight={bad_vec!r}, fts_weight={bad_fts!r}, "
                 f"but got {result}"
             )
             _, kwargs = mock_store.return_value.search.call_args
-            assert kwargs["fts_only"] is True
+            assert kwargs["retrieval_mode"] == "fts_only"
             assert kwargs["vec_weight"] is None
             assert kwargs["fts_weight"] is None
 
@@ -544,7 +564,9 @@ class TestVstashAsk:
         _, kwargs = store_inst.search.call_args
         assert kwargs["vec_weight"] == 0.3
         assert kwargs["fts_weight"] == 0.7
-        assert kwargs["fts_only"] is False
+        # #275: retrieval_mode replaces fts_only at the store boundary.
+        assert kwargs["retrieval_mode"] == "hybrid"
+        assert "fts_only" not in kwargs
 
     @patch("vstash.mcp.embed_query", return_value=[0.1] * 384)
     @patch("vstash.mcp._get_store")
@@ -578,14 +600,18 @@ class TestVstashAsk:
         _, kwargs = store_inst.search.call_args
         assert kwargs["vec_weight"] == 0.1
         assert kwargs["fts_weight"] == 0.9
-        assert kwargs["fts_only"] is False
+        assert kwargs["retrieval_mode"] == "hybrid"
 
-        # fts_only as a string, weights omitted.
+        # fts_only as a string coerces + resolves to retrieval_mode='fts_only'.
         store_inst.search.reset_mock()
+        import warnings
+
         with patch("vstash.chat.ask", return_value="answer"):
-            vstash_ask("query", fts_only="TRUE")  # type: ignore[arg-type]
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                vstash_ask("query", fts_only="TRUE")  # type: ignore[arg-type]
         _, kwargs = store_inst.search.call_args
-        assert kwargs["fts_only"] is True
+        assert kwargs["retrieval_mode"] == "fts_only"
 
 
 # ------------------------------------------------------------------ #

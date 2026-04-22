@@ -1559,13 +1559,16 @@ class VstashStore:
         added_after: str | None,
         added_before: str | None,
         mmr_lambda: float,
-        fts_only: bool,
+        retrieval_mode: str,
         cache_epoch: int,
     ) -> int:
         """Build the search cache key from the full set of query parameters.
 
         ``cache_epoch`` is mixed in so a write invalidates every cached
-        entry without having to scan the LRU.
+        entry without having to scan the LRU. ``retrieval_mode`` is
+        one of ``"hybrid" | "vec_only" | "fts_only"`` so queries that
+        short-circuit one branch do not collide with hybrid queries of
+        the same text.
         """
         emb_bytes = np.array(query_embedding, dtype=np.float32).tobytes()
         return hash(
@@ -1584,10 +1587,47 @@ class VstashStore:
                 added_after,
                 added_before,
                 mmr_lambda,
-                fts_only,
+                retrieval_mode,
                 cache_epoch,
             )
         )
+
+    @staticmethod
+    def _resolve_retrieval_mode(
+        retrieval_mode: Literal["hybrid", "vec_only", "fts_only"] | None,
+        fts_only: bool,
+    ) -> Literal["hybrid", "vec_only", "fts_only"]:
+        """Normalize ``retrieval_mode`` + legacy ``fts_only`` into one enum.
+
+        Precedence: if ``retrieval_mode`` is set it wins. If only the
+        legacy ``fts_only=True`` is set, return ``"fts_only"`` and
+        emit a ``DeprecationWarning`` so callers migrate. Passing
+        ``fts_only=True`` together with a contradictory
+        ``retrieval_mode`` raises ``ValueError`` because there is no
+        obvious right choice.
+        """
+        if retrieval_mode is not None:
+            if fts_only and retrieval_mode != "fts_only":
+                raise ValueError(
+                    f"retrieval_mode={retrieval_mode!r} conflicts with fts_only=True; "
+                    "drop the legacy fts_only argument (it is deprecated)."
+                )
+            if retrieval_mode not in ("hybrid", "vec_only", "fts_only"):
+                raise ValueError(
+                    f"retrieval_mode must be one of 'hybrid', 'vec_only', 'fts_only'; "
+                    f"got {retrieval_mode!r}"
+                )
+            return retrieval_mode
+        if fts_only:
+            import warnings
+
+            warnings.warn(
+                "fts_only=True is deprecated, use retrieval_mode='fts_only' instead.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+            return "fts_only"
+        return "hybrid"
 
     @staticmethod
     def _resolve_rrf_weights(
@@ -1826,6 +1866,7 @@ class VstashStore:
         added_before: str | None = None,
         mmr_lambda: float = 0.5,
         fts_only: bool = False,
+        retrieval_mode: Literal["hybrid", "vec_only", "fts_only"] | None = None,
         exact_match: str | None = None,
         exact_match_case_sensitive: bool = False,
         _tracer: _PipelineTracer | None = None,
@@ -1863,22 +1904,36 @@ class VstashStore:
             exact_match_case_sensitive: Toggle for the above. Default
                 ``False`` does a casefold comparison which matches
                 typical retrieval-filter UX expectations.
-            fts_only: If True, short-circuit the pipeline to FTS5 only (#152):
-                no vector ANN scan, no distance cutoff, no adaptive
-                RRF weight computation. FTS5 hits are still fed
-                through the RRF scoring formula (with ``vec_weight=0.0``
-                and ``fts_weight=1.0``, so each hit scores
-                ``1/(60 + fts_rank)``), through MMR dedup, through the
-                optional recency boost, and through context expansion
-                — it is not a raw BM25 score dump.  Useful for
-                debugging ranking, for queries where vector embeddings
-                are known to be diffuse (cross-lingual, highly
-                technical), or as a deliberate fallback when the
-                vector pool is expected to be empty.
+            fts_only: DEPRECATED, use ``retrieval_mode="fts_only"``.
+                Will be removed in a future release.
+            retrieval_mode: Which search branches to run (default
+                ``"hybrid"``). Three values:
+
+                - ``"hybrid"`` (default): vector ANN + FTS5 + adaptive
+                  RRF + distance cutoff + MMR. This is the pipeline the
+                  paper and README benchmarks are measured against.
+                - ``"fts_only"`` (#152): skip the vector ANN scan,
+                  distance cutoff, and adaptive RRF. FTS5 hits still
+                  flow through RRF scoring (``vec_weight=0.0``,
+                  ``fts_weight=1.0``), MMR, recency boost, and context
+                  expansion — not a raw BM25 dump. Useful for queries
+                  with diffuse vector representations (cross-lingual,
+                  highly technical) or as a fallback when the vector
+                  pool is expected to be empty.
+                - ``"vec_only"`` (#275): symmetric to ``"fts_only"``.
+                  Skip the FTS5 keyword search; force
+                  ``vec_weight=1.0``, ``fts_weight=0.0``. Useful when
+                  the corpus has no meaningful keyword signal (tabular
+                  data, code where identifiers are noise, cross-lingual
+                  corpora where tokenization disagrees with the query)
+                  or for benchmarking / ranking debug.
 
         Returns:
             Ranked list of SearchResult ordered by descending score.
         """
+        _mode = self._resolve_retrieval_mode(retrieval_mode, fts_only)
+        _fts_only = _mode == "fts_only"
+        _vec_only = _mode == "vec_only"
         # Fail-safe validation at the public API boundary (#133).  Runs
         # before any work — if the caller passed a 50k-token query or a
         # negative top_k, we reject it here instead of crashing inside
@@ -1918,7 +1973,7 @@ class VstashStore:
                 added_after=added_after,
                 added_before=added_before,
                 mmr_lambda=mmr_lambda,
-                fts_only=fts_only,
+                retrieval_mode=_mode,
                 cache_epoch=self._cache_epoch,
             )
 
@@ -1961,16 +2016,28 @@ class VstashStore:
                     registry.counter_inc("query_cache_hits_total")
                     return cached
 
-            # FTS-only short-circuit (#152): bypass vector search entirely.
-            # This forces the weights to (0.0, 1.0) and disables adaptive
-            # RRF so the pipeline cannot silently re-enable the vector
-            # path.  The vector search, distance cutoff, and relevance
-            # filter blocks below are all guarded on `not fts_only` or
-            # on `vec_rows` being non-empty, so the downstream MMR /
-            # scoring path runs unchanged on FTS-only input.
-            if fts_only:
+            # Branch short-circuits for non-hybrid modes.
+            #
+            # FTS-only (#152): bypass vector search entirely. Force
+            # weights to (0.0, 1.0) and disable adaptive RRF so the
+            # pipeline cannot silently re-enable the vector path. The
+            # vector search, distance cutoff, and relevance filter
+            # blocks below are guarded on ``not _fts_only`` or on
+            # ``vec_rows`` being non-empty, so downstream MMR / scoring
+            # runs unchanged.
+            #
+            # Vec-only (#275): symmetric. Bypass the FTS5 query. Force
+            # weights to (1.0, 0.0) and disable adaptive RRF so the
+            # FTS path cannot re-enable itself via IDF signals. The
+            # ``fts_rows`` block below is skipped when ``_vec_only``
+            # so no FTS hits ever enter the RRF fusion.
+            if _fts_only:
                 vec_weight = 0.0
                 fts_weight = 1.0
+                adaptive_rrf = False
+            elif _vec_only:
+                vec_weight = 1.0
+                fts_weight = 0.0
                 adaptive_rrf = False
 
             # Adaptive RRF: compute weights from query characteristics (IDF + length)
@@ -1997,7 +2064,7 @@ class VstashStore:
 
             # --- Vector search ---
             vec_rows: list = []
-            if fts_only:
+            if _fts_only:
                 # #152: skip vector ANN entirely. No candidates, no
                 # distances, no distance-cutoff work downstream. Set
                 # last_best_distance to the worst possible so the
@@ -2015,12 +2082,12 @@ class VstashStore:
                     _tracer.record(
                         "vector_search",
                         passed=True,
-                        detail="fts_only=True: vector search intentionally skipped by caller",
+                        detail="retrieval_mode='fts_only': vector search intentionally skipped by caller",
                     )
                     _tracer.record(
                         "distance_cutoff",
                         passed=True,
-                        detail="fts_only=True: no distance cutoff applied",
+                        detail="retrieval_mode='fts_only': no distance cutoff applied",
                     )
             elif self._snap is not None and len(self._snap) > 0:
                 # SnapVec ANN search — returns list[(id, distance)]
@@ -2073,7 +2140,7 @@ class VstashStore:
             # In fts_only mode the "vector_search" and "distance_cutoff"
             # stages were already recorded as skipped above; don't
             # overwrite them with a generic "not found" verdict.
-            if track_target is not None and not fts_only:
+            if track_target is not None and not _fts_only:
                 target_vec_rank: int | None = None
                 target_vec_distance: float | None = None
                 for i, row in enumerate(vec_rows):
@@ -2186,54 +2253,69 @@ class VstashStore:
             # --- FTS5 search ---
             words = query_text.split()
             safe_query, quoted_words = self._build_fts_match_query(query_text, words)
-            try:
-                fts_rows = self._conn.execute(
-                    f"""
-                    SELECT c.id, c.text, d.title, d.path, c.seq,
-                           rank as fts_rank, d.added_at, d.collection, d.tags, d.layer
-                    FROM fts_chunks f
-                    JOIN chunks c ON c.id = f.rowid
-                    JOIN documents d ON d.id = c.doc_id
-                    WHERE fts_chunks MATCH ?
-                      {col_clause}
-                    ORDER BY rank
-                    LIMIT ?
-                    """,
-                    [safe_query, *filter_params, candidate_pool],
-                ).fetchall()
-            except sqlite3.OperationalError:
-                # FTS5 query syntax error (e.g. single char) — fall back to no FTS
+            if _vec_only:
+                # #275: caller asked to bypass keyword search entirely.
+                # Produce no FTS rows; downstream RRF scoring uses
+                # weights (1.0, 0.0) so the absence cannot re-weight
+                # anything. Record the stage in the tracer as an
+                # intentional skip (not a miss) for parity with the
+                # fts_only path above.
                 fts_rows = []
-
-            # --- Track: FTS search stage ---
-            if track_target is not None:
-                target_fts_rank: int | None = None
-                for i, row in enumerate(fts_rows):
-                    if int(row["id"]) == track_target:
-                        target_fts_rank = i
-                        break
-                stemmed_terms = self._stem_terms(words) if words else []
-                if target_fts_rank is not None:
+                if track_target is not None and _tracer is not None:
                     _tracer.record(
                         "fts_search",
                         passed=True,
-                        rank=target_fts_rank,
-                        detail=(
-                            f"Matched FTS at rank {target_fts_rank + 1}/{len(fts_rows)}. "
-                            f"Stemmed query terms: {stemmed_terms}"
-                        ),
+                        detail="retrieval_mode='vec_only': FTS5 search intentionally skipped by caller",
                     )
-                else:
-                    _tracer.record(
-                        "fts_search",
-                        passed=False,
-                        detail=(
-                            f"Did not match FTS5. Stemmed query terms: {stemmed_terms}. "
-                            "The chunk text does not contain any of these stems "
-                            "(after porter stemming)."
-                        ),
-                        counterfactual="Would need a query containing words from the chunk's vocabulary",
-                    )
+            else:
+                try:
+                    fts_rows = self._conn.execute(
+                        f"""
+                        SELECT c.id, c.text, d.title, d.path, c.seq,
+                               rank as fts_rank, d.added_at, d.collection, d.tags, d.layer
+                        FROM fts_chunks f
+                        JOIN chunks c ON c.id = f.rowid
+                        JOIN documents d ON d.id = c.doc_id
+                        WHERE fts_chunks MATCH ?
+                          {col_clause}
+                        ORDER BY rank
+                        LIMIT ?
+                        """,
+                        [safe_query, *filter_params, candidate_pool],
+                    ).fetchall()
+                except sqlite3.OperationalError:
+                    # FTS5 query syntax error (e.g. single char) — fall back to no FTS
+                    fts_rows = []
+
+                # --- Track: FTS search stage ---
+                if track_target is not None:
+                    target_fts_rank: int | None = None
+                    for i, row in enumerate(fts_rows):
+                        if int(row["id"]) == track_target:
+                            target_fts_rank = i
+                            break
+                    stemmed_terms = self._stem_terms(words) if words else []
+                    if target_fts_rank is not None:
+                        _tracer.record(
+                            "fts_search",
+                            passed=True,
+                            rank=target_fts_rank,
+                            detail=(
+                                f"Matched FTS at rank {target_fts_rank + 1}/{len(fts_rows)}. "
+                                f"Stemmed query terms: {stemmed_terms}"
+                            ),
+                        )
+                    else:
+                        _tracer.record(
+                            "fts_search",
+                            passed=False,
+                            detail=(
+                                f"Did not match FTS5. Stemmed query terms: {stemmed_terms}. "
+                                "The chunk text does not contain any of these stems "
+                                "(after porter stemming)."
+                            ),
+                            counterfactual="Would need a query containing words from the chunk's vocabulary",
+                        )
 
             # --- Adaptive fallback: vector pool empty (#156) ---
             # If the vector pool is empty — either the initial ANN scan
@@ -2285,7 +2367,7 @@ class VstashStore:
                 fts_weight=fts_weight,
                 relevant_chunk_ids=relevant_chunk_ids,
                 effective_k=effective_k,
-                fts_only=fts_only,
+                fts_only=_fts_only,
                 explain=explain,
             )
 

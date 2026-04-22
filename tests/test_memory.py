@@ -320,8 +320,16 @@ class TestMemorySearch:
             )
 
     @requires_sqlite_vec
-    def test_search_fts_only_forwards_kwarg_to_store(self, tmp_path: Path) -> None:
-        """Memory.search must forward fts_only to VstashStore.search (#152)."""
+    def test_search_forwards_retrieval_mode_to_store(self, tmp_path: Path) -> None:
+        """Memory.search resolves fts_only/retrieval_mode and forwards the
+        enum value to VstashStore.search (#152, #275).
+
+        The legacy ``fts_only=True`` path is expected to emit a
+        DeprecationWarning, which we filter here -- we only care that
+        the resolved enum lands on the store side.
+        """
+        import warnings
+
         (tmp_path / "doc.md").write_text("Spy test content.")
         with Memory(db=tmp_path / "test.db") as mem:
             mem.add(tmp_path / "doc.md")
@@ -335,14 +343,21 @@ class TestMemorySearch:
 
             mem._store.search = spy_search  # type: ignore[method-assign]
 
-            mem.search("content", fts_only=True)
-            mem.search("content", fts_only=False)
-            mem.search("content")  # default must be False
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                mem.search("content", fts_only=True)
+                mem.search("content", retrieval_mode="vec_only")
+                mem.search("content")  # default -> hybrid
 
             assert len(captured) == 3
-            assert captured[0]["fts_only"] is True
-            assert captured[1]["fts_only"] is False
-            assert captured[2]["fts_only"] is False
+            assert captured[0]["retrieval_mode"] == "fts_only"
+            assert captured[1]["retrieval_mode"] == "vec_only"
+            assert captured[2]["retrieval_mode"] == "hybrid"
+            # fts_only bool must NOT be forwarded to the store any more:
+            # the mode enum is the single source of truth at the store
+            # boundary.
+            for call in captured:
+                assert "fts_only" not in call
 
     @requires_sqlite_vec
     def test_search_fts_only_skips_distance_signal(self, tmp_path: Path) -> None:

@@ -219,6 +219,25 @@ def _coerce_optional_float(value: Any, field: str) -> float | None:
     return parsed
 
 
+def _coerce_retrieval_mode(value: Any, field: str = "retrieval_mode") -> str | None:
+    """Coerce an MCP-supplied value to a ``retrieval_mode`` enum string.
+
+    Accepts ``None`` (leave unset), ``"hybrid"``, ``"vec_only"``,
+    ``"fts_only"``. Any other string raises ``ValueError`` with the
+    valid set listed so the MCP client sees an actionable error instead
+    of a silent downgrade to hybrid.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered == "":
+            return None
+        if lowered in ("hybrid", "vec_only", "fts_only"):
+            return lowered
+    raise ValueError(f"{field}: expected one of 'hybrid', 'vec_only', 'fts_only'; got {value!r}")
+
+
 def _coerce_bool(value: Any, field: str) -> bool:
     """Coerce an MCP-supplied value to ``bool``.
 
@@ -518,6 +537,7 @@ def vstash_ask(
     vec_weight: float | None = None,
     fts_weight: float | None = None,
     fts_only: bool = False,
+    retrieval_mode: str | None = None,
 ) -> str:
     """Query vstash memory and get an LLM-generated answer with sources.
 
@@ -537,8 +557,10 @@ def vstash_ask(
             adaptive per-query RRF.
         fts_weight: Pin the RRF FTS weight on the retrieval step. See
             ``vstash_search``.
-        fts_only: If true, retrieve context using FTS5 only. See
-            ``vstash_search``.
+        fts_only: DEPRECATED, use ``retrieval_mode="fts_only"`` instead.
+        retrieval_mode: Which search branches to run on the retrieval
+            step. One of ``"hybrid"`` (default), ``"vec_only"``,
+            ``"fts_only"``. See ``vstash_search`` for full semantics.
 
     Returns:
         JSON string with answer text and source documents.
@@ -551,11 +573,13 @@ def vstash_ask(
         store = _get_store()
 
         # Defensive type coercion (MCP clients may send strings where
-        # floats/bools are expected). Resolve fts_only first so that
-        # fts_only=True short-circuits weight coercion — see
+        # floats/bools/enums are expected). Resolve retrieval_mode first
+        # so a non-hybrid mode short-circuits the weight coercion -- see
         # vstash_search for the same precedence rule.
+        mode_coerced = _coerce_retrieval_mode(retrieval_mode, "retrieval_mode")
         fts_only_coerced = _coerce_bool(fts_only, "fts_only")
-        if fts_only_coerced:
+        resolved_mode = VstashStore._resolve_retrieval_mode(mode_coerced, fts_only_coerced)
+        if resolved_mode != "hybrid":
             vec_weight_coerced = None
             fts_weight_coerced = None
         else:
@@ -575,7 +599,7 @@ def vstash_ask(
             added_before=added_before,
             vec_weight=vec_weight_coerced,
             fts_weight=fts_weight_coerced,
-            fts_only=fts_only_coerced,
+            retrieval_mode=resolved_mode,
         )
 
         if not chunks:
@@ -643,6 +667,7 @@ def vstash_search(
     vec_weight: float | None = None,
     fts_weight: float | None = None,
     fts_only: bool = False,
+    retrieval_mode: str | None = None,
 ) -> str:
     """Search vstash memory without LLM — returns raw chunks with scores.
 
@@ -671,11 +696,19 @@ def vstash_search(
             embedding is known to be diffuse).
         fts_weight: Pin the RRF FTS weight. Same semantics and range as
             vec_weight.
-        fts_only: If true, run FTS5 keyword search only — skip the vector ANN
-            scan, the distance cutoff, and adaptive RRF entirely. Useful for
-            debugging whether a retrieval miss is a vector problem or an FTS
-            problem, and for queries where the vector signal is known to be
-            unreliable. When true, vec_weight/fts_weight are ignored.
+        fts_only: DEPRECATED, use ``retrieval_mode="fts_only"`` instead.
+        retrieval_mode: Which search branches to run. One of ``"hybrid"``
+            (default), ``"vec_only"``, ``"fts_only"``.
+            - ``"hybrid"``: vector ANN + FTS5 + adaptive RRF. The
+              benchmark default.
+            - ``"vec_only"``: skip FTS5 entirely; force vec_weight=1.0,
+              fts_weight=0.0. Useful when the corpus has no meaningful
+              keyword signal (tabular, code where identifiers are
+              noise) or for benchmarking / ranking debug.
+            - ``"fts_only"``: skip vector ANN. Useful when the vector
+              signal is known to be unreliable.
+            When a non-hybrid mode is set, vec_weight/fts_weight are
+            ignored.
 
     Returns:
         JSON object with chunks array and relevance hint.
@@ -685,19 +718,23 @@ def vstash_search(
         cfg = _get_config()
         store = _get_store()
 
-        # Defensive type coercion — MCP clients can be inconsistent and may
-        # send JSON strings where booleans or floats are expected. Mirror the
-        # existing pattern used for top_k / recency_boost / mmr_lambda.
+        # Defensive type coercion -- MCP clients can be inconsistent and
+        # may send JSON strings where booleans / floats / enums are
+        # expected. Mirror the existing pattern used for top_k /
+        # recency_boost / mmr_lambda.
         #
-        # Precedence (documented in docs/mcp-server.md): if fts_only is
-        # True, vec_weight and fts_weight are ignored. Resolve fts_only
-        # FIRST and short-circuit the weight coercion when it's on — that
-        # way a caller who sends an out-of-range or unparseable weight
-        # together with fts_only=True still gets a successful FTS-only
-        # query instead of a coercion-error bailout for an argument that
-        # was semantically meant to be ignored.
+        # Precedence (documented in docs/mcp-server.md): if retrieval_mode
+        # is non-hybrid (or the deprecated fts_only=True is set),
+        # vec_weight/fts_weight are ignored. Resolve the mode FIRST and
+        # short-circuit the weight coercion when it is non-hybrid --
+        # that way a caller who sends an out-of-range or unparseable
+        # weight together with retrieval_mode="fts_only" still gets a
+        # successful query instead of a coercion-error bailout for an
+        # argument that was semantically meant to be ignored.
+        mode_coerced = _coerce_retrieval_mode(retrieval_mode, "retrieval_mode")
         fts_only_coerced = _coerce_bool(fts_only, "fts_only")
-        if fts_only_coerced:
+        resolved_mode = VstashStore._resolve_retrieval_mode(mode_coerced, fts_only_coerced)
+        if resolved_mode != "hybrid":
             vec_weight_coerced = None
             fts_weight_coerced = None
         else:
@@ -718,7 +755,7 @@ def vstash_search(
             mmr_lambda=float(mmr_lambda),
             vec_weight=vec_weight_coerced,
             fts_weight=fts_weight_coerced,
-            fts_only=fts_only_coerced,
+            retrieval_mode=resolved_mode,
         )
 
         if not chunks:
