@@ -1009,7 +1009,9 @@ class TestAdaptiveRRF:
         vec_w, fts_w, cutoff = sample_store._compute_adaptive_rrf_params("anything")
         assert vec_w == 0.6
         assert fts_w == 0.4
-        assert cutoff == 1.15
+        # 1.3225 = 1.15^2: cosine-distance ratio equivalent to the legacy
+        # v1 L2 ratio 1.15 on unit-normalized embeddings (#272).
+        assert cutoff == 1.3225
 
     def test_adaptive_enabled_by_default(self, populated_store: VstashStore) -> None:
         """search() uses adaptive weights by default."""

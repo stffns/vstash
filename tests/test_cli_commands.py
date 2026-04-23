@@ -436,22 +436,31 @@ class TestWhyCommand:
 
 
 class TestRelevanceTier:
-    """Test the _relevance_tier helper."""
+    """Test the ``relevance_tier`` helper.
+
+    Thresholds were recalibrated to cosine space in schema v2 (#272):
+    ``high <= 0.4513`` (legacy L2 0.95 squared / 2) and
+    ``medium <= 0.4802`` (legacy L2 0.98 squared / 2).  These values
+    preserve tier assignments for BGE-small unit-normalized embeddings
+    under the new cosine metric.
+    """
 
     def test_high_relevance(self) -> None:
         from vstash.store import relevance_tier
 
-        assert relevance_tier(0.50) == "high"
-        assert relevance_tier(0.95) == "high"
+        assert relevance_tier(0.0) == "high"
+        assert relevance_tier(0.30) == "high"
+        assert relevance_tier(0.4513) == "high"
 
     def test_medium_relevance(self) -> None:
         from vstash.store import relevance_tier
 
-        assert relevance_tier(0.96) == "medium"
-        assert relevance_tier(0.98) == "medium"
+        assert relevance_tier(0.46) == "medium"
+        assert relevance_tier(0.4802) == "medium"
 
     def test_low_relevance(self) -> None:
         from vstash.store import relevance_tier
 
-        assert relevance_tier(0.99) == "low"
+        assert relevance_tier(0.49) == "low"
         assert relevance_tier(1.20) == "low"
+        assert relevance_tier(2.0) == "low"
