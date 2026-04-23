@@ -318,11 +318,12 @@ class Memory:
                 survive. #106, 2026-04-21.
             exact_match_case_sensitive: Whether ``exact_match`` is
                 case-sensitive. Default False (casefold compare).
-            fts_only: DEPRECATED, use ``retrieval_mode="fts_only"``
-                instead. Still honoured for the v0.32 cycle with a
-                ``DeprecationWarning``. Will be removed in a future
-                release. Same short-circuit semantics: skip the vector
-                ANN scan, distance cutoff, and adaptive RRF.
+            fts_only: DEPRECATED in v0.33.0, use
+                ``retrieval_mode="fts_only"`` instead. Still honoured
+                for this release with a ``DeprecationWarning``. Will
+                be removed in a future release. Same short-circuit
+                semantics: skip the vector ANN scan, distance cutoff,
+                and adaptive RRF.
             retrieval_mode: Which search branches to run (default
                 ``"hybrid"``). Three values:
 
