@@ -2,18 +2,45 @@
 
 All notable changes to vstash are documented here.
 
-## [Unreleased]
+## [0.33.0] - 2026-04-23
 
 ### Added
 
-- **`retrieval_mode` enum on search** (#275). New `retrieval_mode` parameter on `VstashStore.search`, `Memory.search`, `Memory.ask`, the MCP `vstash_search` / `vstash_ask` tools, and `VstashRetriever`. Three values:
-  - `"hybrid"` (default): unchanged -- vector ANN + FTS5 + adaptive RRF.
+- **`retrieval_mode` enum on search** (#275, #276). New `retrieval_mode` parameter on `VstashStore.search`, `Memory.search`, `Memory.ask`, the MCP `vstash_search` / `vstash_ask` tools, and `VstashRetriever`. Three values:
+  - `"hybrid"` (default, unchanged): vector ANN + FTS5 + adaptive RRF.
   - `"vec_only"`: skip the FTS5 branch; force `(vec_weight, fts_weight) = (1.0, 0.0)`. Useful when the corpus has no meaningful keyword signal (tabular, code, cross-lingual).
   - `"fts_only"`: existing #152 short-circuit, now named consistently.
+- **`vstash why` CLI command** (#260, #261, #262). First-class miss-analysis interface: `vstash why "<query>" --expect <path>` traces where a target chunk was eliminated in the pipeline and suggests the parameter that would have surfaced it. `vstash why --recent` lists the latest logged misses. The same trace is exposed over HTTP at `/debug/why` on `vstash serve` and auto-logged on empty / low-relevance searches for later inspection.
+- **`exact_match` substring filter on `search()`** (#263, #106). Post-filter bypasses FTS5 tokenization so identifiers and punctuation survive (unlike the FTS keyword path which stems and lowercases).
+- **Eval-gated retrain pipeline** (#230, #232, #238, #239, #241, #242, #243, #257, #259). `vstash retrain` now composes: corpus split, held-out NDCG@10 eval, triple mining, MNRL training, atomic candidate/old promote. Refuses to save a candidate whose held-out NDCG@10 regresses versus the baseline. Supports LLM query synthesis (T1.3), multi-corpus training with temperature sampling (T1.4), GPU-batched eval and mining (T1.4b/c), labeled-query pair mining from BEIR qrels (T1.5), auto-promotion of eval queries (H-R1), bulk mining on single-corpus (H-R8), and full eval observability + seed reproducibility (H-R5/H-R7). Validated in Colab at +5.00% macro NDCG@10 across SciFact + NFCorpus + FiQA. The new `bge-small-rrf-v3` model ships on HuggingFace as `Stffens/bge-small-rrf-v3`.
+
+### Changed
+
+- **`ingest_directory` routes through `ingest_batch`** (#274). Internal refactor; no behaviour change. The new `ingest_batch(paths, ...)` helper is also consumed by the watch worker.
+
+### Fixed
+
+- **Two O(N^2) regressions in the ingest path** (#250, #251, #264, #267). Flat snapvec now mirrors the ivfpq deferred-save pattern (#250) and `SnapIndex.add_batch` is coalesced across all docs in a batch instead of per-doc (#251). `_rebuild_snapvec_from_vec_chunks` (#264) and `store.reindex` (#267) rewritten with keyset pagination + coalesced `add_batch`. At N=100k: rebuild dropped 41.6 s -> 4.0 s (10.3x); reindex shape improved 3.05x -> 2.28x at N=200k.
+- **Watch worker burst ingest is now 4-5x faster** (#274). Previously processed one file per queue iteration; now drains a small burst window (default 64 files / 250 ms) and routes through `ingest_batch` so the whole burst shares one SQLite transaction, one FTS5 flush, and one snapvec vstack. Probe results: 1000-file burst on snapvec flat drops from 201 ms to 46 ms. (Note: this is a constant-factor optimization, not the O(N^2) fix originally framed in #266 -- that was already addressed by #250/#251.)
+- **CLI leaked `VstashStore` on every exit** (#269, #268). `cli.py::_get_store` now registers `store.close` via `atexit`, so snapvec-backed DBs flush `.snpv` on process exit and the next open does NOT trigger a full `_rebuild_snapvec_from_vec_chunks`. Post-#264 this saves ~4 s per CLI command at N=100k.
+- **ONNX embedding init** (#234, #235). When a shipped model contains only the `model.onnx` stub without its external data file, `_init_hf_onnx` now downloads the external data alongside and falls back to `SentenceTransformer` for safetensors loading on ONNX failure. Added because `Stffens/bge-small-rrf-v2` shipped an ONNX stub referencing an external data file that was never uploaded.
 
 ### Deprecated
 
-- **`fts_only=True` bool on `search` / `ask`** is deprecated in favour of `retrieval_mode="fts_only"` (#275). Still works for one release with a `DeprecationWarning`; combining `fts_only=True` with a contradictory `retrieval_mode` now raises `ValueError` rather than silently ignoring one of them.
+- **`fts_only=True` bool on `search` / `ask`** (#275, #276). Use `retrieval_mode="fts_only"` instead. Still honoured for this release with a `DeprecationWarning`. Combining `fts_only=True` with a contradictory `retrieval_mode` raises `ValueError` rather than silently ignoring one of them.
+
+### Performance
+
+- MMR greedy selection: invariant precomputed once per query (#256).
+- Context expansion CTE: VALUES batch lookup (#228).
+
+### CI / Repo hygiene
+
+- CI now runs on PRs targeting `develop`, not only `main` (#270). Release PRs to `main` had been silently merging red since v0.30.0 because feature PRs never hit the lint + test matrix.
+- `ruff format .` pass across the repo; `E402` silenced for `.ipynb` (#270).
+- Added `docs/professionalization-roadmap.md` with a prioritized P0-P3 plan for the next hygiene upgrades (#273).
+
+## [0.32.0] - 2026-04-16
 
 ## [0.32.0] - 2026-04-16
 
