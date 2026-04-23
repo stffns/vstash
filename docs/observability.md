@@ -206,10 +206,64 @@ A sustained non-zero rate on this counter means the vector candidate pool is con
 # How often has this fired since process start?
 vstash stats --detailed --json | jq '.metrics.counters.adaptive_rrf_vector_empty_fallback_total'
 
-# For a specific query, run miss_analysis() from the SDK and look for
-# the "adaptive_fallback" stage in the trace — if present, the query
-# hit the fallback path.
+# For a specific query that missed an expected doc, use `vstash why`:
+vstash why "my query" --expect path/to/expected/doc.md
+
+# Prints a stage-by-stage pipeline trace (vector_search -> distance_cutoff
+# -> fts_search -> rrf_fusion -> recency_boost -> mmr_dedup -> top_k_cutoff)
+# with the stage that dropped the expected chunk highlighted, plus the
+# actual top-k for contrast and rule-based suggestions. Issue #157 /
+# 2026-04-21.
+#
+# --json emits the raw MissAnalysis for piping:
+vstash why "my query" --expect path/to/doc.md --json | jq .suggestions
+
+# The Python SDK ``VstashStore.miss_analysis()`` is still available for
+# programmatic use.
 ```
+
+**Auto-logged miss hints** (#157 part 3):
+
+```bash
+# List the most recent auto-logged miss hints (empty / all-low search
+# results) persisted in the DB. ``search_events`` keeps the last 1000
+# rows across runs. Each row is a query that returned nothing or only
+# low-relevance chunks; drill into any of them with
+# `vstash why "<query>" --expect <path>` for the full trace.
+vstash why --recent 10
+
+# JSON for scripting / dashboards:
+vstash why --recent 10 --json | jq '.recent_miss_hints[] | .query'
+```
+
+The hook is on by default. Disable via ``vstash.toml``:
+
+```toml
+[observability]
+auto_miss_hint = false
+```
+
+**Web debug route** (#157 part 2):
+
+```bash
+# Expose /debug/why on vstash serve (off by default):
+vstash serve --debug
+
+# Then (note: ingest stores absolute paths via Path.resolve(), so the
+# endpoint normalizes ``expect`` the same way -- relative paths work
+# as long as the caller invokes curl from a working dir where the
+# resolved path matches what was ingested):
+curl 'http://127.0.0.1:8585/debug/why?q=rate%20limits&expect=notes/api-design.md'
+
+# To avoid any path ambiguity, use an absolute path or take it straight
+# from a search result or ``/api/documents``:
+curl 'http://127.0.0.1:8585/debug/why?q=rate%20limits&expect='"$(readlink -f notes/api-design.md)"
+```
+
+Same MissAnalysis payload as ``vstash why --json``, served over HTTP
+so browsers and remote tooling can consume it. Off by default because
+the endpoint echoes arbitrary query text back to the caller; intended
+for local diagnostic use, not production.
 
 **Prometheus alerting suggestion:**
 

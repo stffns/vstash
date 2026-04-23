@@ -17,8 +17,11 @@ Commands:
 
 from __future__ import annotations
 
+import atexit
+import json
 from pathlib import Path
 
+import click
 import typer
 from rich.console import Console
 from rich.markdown import Markdown
@@ -79,6 +82,75 @@ def _safe_exc(exc: object) -> str:
     from rich.markup import escape as _escape
 
     return _escape(str(exc))
+
+
+def _build_miss_hint(
+    *,
+    cfg_auto_hint: bool,
+    result_count: int,
+    tier: str,
+    best_distance: float,
+    top_k_requested: int,
+) -> dict | None:
+    """Return a lightweight miss_hint dict when a search returns empty
+    results or an all-low relevance tier, or ``None`` otherwise.
+
+    Issue #157 part 3: the hint is persisted on the search_events row
+    by ``record_search_event`` and consumed by ``vstash why --recent``
+    so a user can drill into recent misses post-hoc without re-running
+    the query from memory.
+
+    The hint carries ONLY information that is not already a column on
+    ``search_events`` (``tier``, ``best_distance``, ``result_count``
+    are all stored separately). Keeping the hint dict minimal keeps
+    the JSON blob small and avoids two-sources-of-truth drift when
+    the columns evolve.
+
+    The hint is intentionally cheap to compute (no extra SQL, no
+    re-embedding) -- full ``miss_analysis`` is deferred to the explicit
+    ``vstash why <query> --expect <path>`` call.
+    """
+    if not cfg_auto_hint:
+        return None
+    if result_count == 0:
+        reason = "empty"
+    elif tier == "low":
+        reason = "all_low"
+    else:
+        return None
+    return {
+        "reason": reason,
+        "top_k_requested": int(top_k_requested),
+    }
+
+
+def _record_miss_event(
+    *,
+    store,
+    cfg,
+    query: str,
+    best_distance: float,
+    tier: str,
+    result_count: int,
+    top_k_requested: int,
+) -> None:
+    """Build + persist a miss_hint search event in one place. Shared
+    between ``vstash ask`` and ``vstash search`` to kill the
+    copy-paste this PR introduced."""
+    hint = _build_miss_hint(
+        cfg_auto_hint=cfg.observability.auto_miss_hint,
+        result_count=result_count,
+        tier=tier,
+        best_distance=best_distance,
+        top_k_requested=top_k_requested,
+    )
+    store.record_search_event(
+        query=query,
+        best_distance=best_distance,
+        relevance_tier=tier,
+        result_count=result_count,
+        miss_hint=hint,
+    )
 
 
 @app.callback()
@@ -151,6 +223,7 @@ def _get_store(
         ivfpq_nprobe=cfg.storage.ivfpq_nprobe,
         cache=cfg.cache,
     )
+    atexit.register(store.close)
     return cfg, store
 
 
@@ -316,6 +389,21 @@ def ask(
                 )
 
         if not chunks:
+            if not all_profiles:
+                # Log the empty-result event with a miss_hint so
+                # ``vstash why --recent`` can surface it later. Use
+                # best_distance=1.0 (max) as the sentinel for "no
+                # vector ever matched" -- federated mode has no single
+                # best_distance and is skipped.
+                _record_miss_event(
+                    store=store,
+                    cfg=cfg,
+                    query=query,
+                    best_distance=1.0,
+                    tier="low",
+                    result_count=0,
+                    top_k_requested=k,
+                )
             console.print(
                 "[yellow]No relevant documents found. "
                 "Try adding some with [bold]vstash add[/bold].[/yellow]"
@@ -325,11 +413,14 @@ def ask(
         # Tiered relevance signal (skip for federated — no single best_distance)
         if not all_profiles:
             tier = relevance_tier(store.last_best_distance)
-            store.record_search_event(
+            _record_miss_event(
+                store=store,
+                cfg=cfg,
                 query=query,
                 best_distance=store.last_best_distance,
-                relevance_tier=tier,
+                tier=tier,
                 result_count=len(chunks),
+                top_k_requested=k,
             )
             if tier == "low":
                 console.print(
@@ -414,6 +505,19 @@ def search(
         None,
         "--miss-chunk",
         help="Diagnose why this expected chunk id did not appear in results",
+    ),
+    exact_match: str | None = typer.Option(
+        None,
+        "--exact-match",
+        help="Post-filter: each returned chunk's text must contain this "
+        "literal substring. Bypasses FTS5 tokenization so punctuation / "
+        "identifiers / code survive verbatim. Case-insensitive by default "
+        "-- pair with --exact-match-case-sensitive for a strict compare.",
+    ),
+    exact_match_case_sensitive: bool = typer.Option(
+        False,
+        "--exact-match-case-sensitive/--no-exact-match-case-sensitive",
+        help="Toggle case sensitivity of --exact-match.",
     ),
 ) -> None:
     """Semantic search without LLM (free, local)."""
@@ -536,6 +640,21 @@ def search(
                 )
                 chunks = [r for _, r in tagged]
                 _search_tagged = tagged
+                # Post-filter federated results the same way VstashStore.search
+                # does so --exact-match works across profiles too. #106.
+                if exact_match:
+                    if exact_match_case_sensitive:
+                        _search_tagged = [
+                            (name, r) for (name, r) in _search_tagged if exact_match in r.text
+                        ]
+                    else:
+                        _needle = exact_match.casefold()
+                        _search_tagged = [
+                            (name, r)
+                            for (name, r) in _search_tagged
+                            if _needle in r.text.casefold()
+                        ]
+                    chunks = [r for _, r in _search_tagged]
             else:
                 chunks = store.search(
                     q_embedding,
@@ -545,9 +664,21 @@ def search(
                     project=project,
                     layer=layer,
                     explain=explain,
+                    exact_match=exact_match,
+                    exact_match_case_sensitive=exact_match_case_sensitive,
                 )
 
         if not chunks:
+            if not all_profiles:
+                _record_miss_event(
+                    store=store,
+                    cfg=cfg,
+                    query=query,
+                    best_distance=1.0,
+                    tier="low",
+                    result_count=0,
+                    top_k_requested=k,
+                )
             if json_output:
                 print("[]")
                 raise typer.Exit()
@@ -563,12 +694,16 @@ def search(
             best_distance = store.last_best_distance
             tier = relevance_tier(best_distance)
 
-            # Telemetry: record search event for discard rate analysis
-            _event_id = store.record_search_event(
+            # Telemetry: record search event for discard rate analysis,
+            # attaching a miss_hint when the tier is "low" (issue #157 part 3).
+            _record_miss_event(
+                store=store,
+                cfg=cfg,
                 query=query,
                 best_distance=best_distance,
-                relevance_tier=tier,
+                tier=tier,
                 result_count=len(chunks),
+                top_k_requested=k,
             )
 
         if json_output:
@@ -1298,6 +1433,13 @@ def serve(
         "--warm/--no-warm",
         help="Pre-load embedding model at startup (eliminates first-query cold start)",
     ),
+    debug: bool = typer.Option(
+        False,
+        "--debug/--no-debug",
+        help="Expose the /debug/why route (miss analysis as JSON). Off by "
+        "default because the endpoint echoes arbitrary query text back. "
+        "Intended for local diagnostic use only. Issue #157 part 2.",
+    ),
 ) -> None:
     """Launch the vstash web interface -- a pocket memory agent.
 
@@ -1359,8 +1501,269 @@ def serve(
         )
 
     console.print(f"[bold cyan]vstash[/bold cyan] serving at [link]http://{host}:{port}[/link]")
+    if debug:
+        console.print(
+            "[yellow]! debug mode: /debug/why is exposed. Do not use in production.[/yellow]"
+        )
     console.print("[dim]Press Ctrl+C to stop[/dim]")
-    uvicorn.run(create_app(), host=host, port=port, log_level="warning")
+    uvicorn.run(create_app(debug=debug), host=host, port=port, log_level="warning")
+
+
+@app.command()
+def why(
+    ctx: typer.Context,
+    query: str | None = typer.Argument(
+        None,
+        help="The search query that missed. Omit when using --recent.",
+    ),
+    recent: int = typer.Option(
+        0,
+        "--recent",
+        "-r",
+        help="Instead of running a new miss analysis, list the N most "
+        "recent search events that carry an auto-logged miss_hint "
+        "(empty / all-low results). 0 = disabled. Issue #157 part 3.",
+    ),
+    expect: str | None = typer.Option(
+        None,
+        "--expect",
+        "-e",
+        help="Path of the document you expected to see. Either this or "
+        "--expect-chunk-id must be given.",
+    ),
+    expect_chunk_id: int | None = typer.Option(
+        None,
+        "--expect-chunk-id",
+        help="Specific chunk id to track instead of resolving from a path. "
+        "Useful when you already have a chunk id from an earlier search.",
+    ),
+    top_k: int = typer.Option(
+        0, "--top-k", "-k", help="Top-k window to check against (0 = from config)"
+    ),
+    collection: str | None = typer.Option(
+        None, "--collection", "-c", help="Restrict to collection"
+    ),
+    project: str | None = typer.Option(None, "--project", "-p", help="Restrict to project"),
+    layer: str | None = typer.Option(None, "--layer", "-l", help="Restrict to layer"),
+    json_out: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit the raw MissAnalysis as JSON (for scripting / piping). "
+        "Default output is a rich table plus a suggestions panel.",
+    ),
+) -> None:
+    """Diagnose why an expected document did not appear in search results.
+
+    Runs ``VstashStore.miss_analysis()`` and prints a stage-by-stage trace
+    showing where the expected chunk was eliminated from the ranking, plus
+    rule-based suggestions for fixing the query.
+
+    Examples:
+
+        vstash why "rate limits" --expect notes/api-design.md
+
+        vstash why "renewable energy" --expect papers/2024/clean.pdf --top-k 10
+
+        vstash why "quota" --expect-chunk-id 4213 --json | jq .suggestions
+    """
+    import json as _json
+    import sqlite3 as _sqlite3
+
+    def _why_error(msg: str, exit_code: int = 1) -> typer.Exit:
+        """Emit an error consistently for both --json and pretty modes.
+        Mirrors the pattern in ``vstash search --miss`` so script
+        consumers piping ``vstash why --json`` always see JSON, even on
+        the error path. ``_safe_exc`` strips Rich markup so paths like
+        ``foo[bar].md`` do not get mangled by the markup parser."""
+        if json_out:
+            print(_json.dumps({"error": msg}))
+        else:
+            console.print(f"[red]x[/red] {_safe_exc(msg)}")
+        return typer.Exit(exit_code)
+
+    # --recent mode: dump the N most recent miss_hint rows and exit.
+    # Issue #157 part 3: surfaces recent miss hints stored in the DB
+    # for this profile (the ``search_events`` table keeps the last
+    # 1000 rows, including prior runs). Users see which queries
+    # recently missed without having to remember them.
+    if recent < 0:
+        raise _why_error(f"--recent must be >= 0 (0 = disabled), got {recent}.")
+    if recent > 0:
+        _, store = _get_store(warm=False, profile=_profile_from_ctx(ctx))
+        with store:
+            hints = store.recent_miss_hints(limit=recent)
+        if json_out:
+            print(_json.dumps({"recent_miss_hints": hints}, indent=2, default=str))
+            raise typer.Exit(0)
+        if not hints:
+            console.print(
+                "[dim]No recent miss_hints recorded. "
+                "Run a search that returns empty / all-low results, "
+                "or verify [observability] auto_miss_hint is enabled.[/dim]"
+            )
+            raise typer.Exit(0)
+        console.print(f"[bold]{len(hints)} recent miss hint(s)[/bold]")
+        table = Table(show_header=True, header_style="bold", box=None, pad_edge=False)
+        table.add_column("When", style="dim")
+        table.add_column("Query", overflow="fold")
+        table.add_column("Reason")
+        table.add_column("Tier")
+        table.add_column("Best dist", justify="right")
+        table.add_column("Results", justify="right")
+        for h in hints:
+            reason = h["miss_hint"].get("reason", "-")
+            table.add_row(
+                h["created_at"][:19],  # truncate to seconds
+                h["query"][:80],
+                reason,
+                h["relevance_tier"],
+                f"{h['best_distance']:.4f}",
+                str(h["result_count"]),
+            )
+        console.print(table)
+        console.print()
+        console.print(
+            "[dim]Drill into any of these with:[/dim] "
+            '[bold]vstash why "<query>" --expect <path>[/bold]'
+        )
+        raise typer.Exit(0)
+
+    if query is None:
+        raise _why_error("Missing argument QUERY. Pass a query or use --recent N.")
+
+    if expect is None and expect_chunk_id is None:
+        raise _why_error("Provide either --expect <path> or --expect-chunk-id <id>.")
+
+    # ``why`` is a diagnostic tool; don't eagerly warm the embedder.
+    # ``embed_query`` will load on demand if needed. Users running
+    # ``vstash why`` against a misconfigured model get the actual error
+    # instead of a cold-start failure that masks the diagnostic.
+    cfg, store = _get_store(warm=False, profile=_profile_from_ctx(ctx))
+
+    # Normalize --expect the same way ``vstash search --miss`` and
+    # ``Memory.miss_analysis`` do: http(s)/text URIs pass through,
+    # everything else resolves to an absolute path. Without this,
+    # ``vstash why "q" --expect notes/doc.md`` would lookup the
+    # literal relative string against a DB that stores absolute paths
+    # and always report "No chunks found".
+    expected_path_arg: str | None = None
+    if expect is not None:
+        if expect.startswith(("http://", "https://", "text://")):
+            expected_path_arg = expect
+        else:
+            expected_path_arg = str(Path(expect).resolve(strict=False))
+
+    effective_top_k = top_k or cfg.chunking.top_k
+
+    with store:
+        try:
+            q_embedding = embed_query(query, cfg.embeddings.model)
+            analysis = store.miss_analysis(
+                query_embedding=q_embedding,
+                query_text=query,
+                expected_path=expected_path_arg,
+                expected_chunk_id=expect_chunk_id,
+                top_k=effective_top_k,
+                collection=collection,
+                project=project,
+                layer=layer,
+            )
+        except ValueError as exc:
+            # ValueError covers the documented miss_analysis failures
+            # (unknown path / chunk id, no expected provided) plus
+            # LimitError which subclasses ValueError.
+            raise _why_error(str(exc)) from exc
+        except _sqlite3.Error as exc:
+            # Corrupt / locked DB surfaces here from the search() step
+            # inside miss_analysis. Keep the user on the --json contract.
+            raise _why_error(f"database error: {exc}") from exc
+        except (RuntimeError, OSError) as exc:
+            # embed_query failure modes: ONNX load failure, daemon
+            # socket error, model download failure, etc.
+            raise _why_error(f"embedder error: {exc}") from exc
+
+    if json_out:
+        # exclude_none strips empty-but-optional fields; indent=2 matches
+        # the search --miss JSON contract. Exit code mirrors pretty-mode
+        # (2 when dropped) so script consumers get reliable CI checks.
+        print(_json.dumps(analysis.model_dump(exclude_none=True), indent=2, default=str))
+        raise typer.Exit(0 if analysis.appeared_in_results else 2)
+
+    # Header.
+    # Ranks are 0-indexed internally; display 1-indexed to match ``vstash search``.
+    if analysis.appeared_in_results:
+        assert analysis.final_rank is not None
+        console.print(
+            f"[green]✓[/green] [bold]Expected doc IS in the top-{analysis.top_k_requested}[/bold] "
+            f"(rank {analysis.final_rank + 1})."
+        )
+    else:
+        console.print(
+            f"[red]✗[/red] [bold]Expected doc NOT in top-{analysis.top_k_requested}.[/bold]"
+        )
+        if analysis.dropped_at:
+            console.print(f"  Dropped at stage: [yellow bold]{analysis.dropped_at}[/yellow bold]")
+
+    console.print()
+    console.print(f"  [dim]Query:[/dim]          {analysis.query!r}")
+    if analysis.expected_path:
+        console.print(f"  [dim]Expected path:[/dim]  {analysis.expected_path}")
+    if analysis.expected_chunk_id is not None:
+        console.print(
+            f"  [dim]Chunk id:[/dim]       {analysis.expected_chunk_id} "
+            f"([dim]{analysis.target_resolution}[/dim])"
+        )
+    if analysis.total_chunks_in_doc > 1:
+        console.print(f"  [dim]Doc has[/dim]         {analysis.total_chunks_in_doc} chunks")
+
+    # Per-stage trace.
+    console.print()
+    console.print("[bold]Pipeline trace[/bold]")
+    trace_table = Table(show_header=True, header_style="bold", box=None, pad_edge=False)
+    trace_table.add_column("Stage", style="cyan")
+    trace_table.add_column("Passed")
+    trace_table.add_column("Rank", justify="right")
+    trace_table.add_column("Score", justify="right")
+    trace_table.add_column("Detail", overflow="fold")
+    for v in analysis.stage_verdicts:
+        passed_cell = "[green]yes[/green]" if v.passed else "[red]no[/red]"
+        drop_style = "red bold" if v.stage == analysis.dropped_at else ""
+        stage_cell = f"[{drop_style}]{v.stage}[/{drop_style}]" if drop_style else v.stage
+        trace_table.add_row(
+            stage_cell,
+            passed_cell,
+            "-" if v.rank is None else str(v.rank + 1),
+            "-" if v.score is None else f"{v.score:.4f}",
+            v.detail,
+        )
+    console.print(trace_table)
+
+    # Actual top-k for contrast.
+    if analysis.actual_top_k:
+        console.print()
+        console.print("[bold]Actual top-k[/bold]")
+        top_table = Table(show_header=True, header_style="bold", box=None, pad_edge=False)
+        top_table.add_column("Rank", justify="right")
+        top_table.add_column("Path", overflow="fold")
+        top_table.add_column("Title", overflow="fold")
+        top_table.add_column("Score", justify="right")
+        for r in analysis.actual_top_k:
+            top_table.add_row(str(r.rank + 1), r.path, r.title or "-", f"{r.score:.4f}")
+        console.print(top_table)
+
+    # Suggestions panel last so it lands near the user's prompt.
+    if analysis.suggestions:
+        console.print()
+        console.print(
+            Panel.fit(
+                "\n".join(f"- {s}" for s in analysis.suggestions),
+                title="[bold]Suggestions[/bold]",
+                border_style="yellow",
+            )
+        )
+
+    if not analysis.appeared_in_results:
+        raise typer.Exit(code=2)
 
 
 @app.command()
@@ -1490,6 +1893,86 @@ def retrain(
     base_model: str | None = typer.Option(
         None, "--base-model", help="Base model to fine-tune (default: current config model)"
     ),
+    min_gain: float = typer.Option(
+        0.0,
+        "--min-gain",
+        help="Required NDCG@10 improvement over baseline (0.0 = no regression). "
+        "Pass a negative value to always save.",
+    ),
+    no_eval: bool = typer.Option(
+        False, "--no-eval", help="Skip eval gate entirely and save unconditionally"
+    ),
+    eval_fraction: float = typer.Option(
+        0.15, "--eval-fraction", help="Fraction of corpus reserved for held-out eval"
+    ),
+    eval_noise_size: int = typer.Option(
+        1000,
+        "--eval-noise",
+        help="Distractor chunks added to the eval index (higher = stricter eval)",
+    ),
+    synthesize: bool = typer.Option(
+        False,
+        "--synthesize-queries/--no-synthesize-queries",
+        help="Use the configured LLM backend to generate short realistic "
+        "queries for each training chunk (InPars-style). Closes the "
+        "chunk-prefix vs natural-query distribution gap.",
+    ),
+    synth_n: int = typer.Option(
+        2,
+        "--synth-n",
+        help="Queries synthesized per chunk when --synthesize-queries is on.",
+    ),
+    synth_cache: str | None = typer.Option(
+        None,
+        "--synth-cache",
+        help="JSONL cache file for synthesized queries. Reusing the same "
+        "path across runs avoids re-calling the LLM on unchanged chunks.",
+    ),
+    synth_model: str | None = typer.Option(
+        None,
+        "--synth-model",
+        help="Model name override for synthesis (defaults to the configured "
+        "inference backend's model).",
+    ),
+    seed: int = typer.Option(
+        42,
+        "--seed",
+        help="Deterministic seed. Controls held-out split, triple sampling, "
+        "torch dropout, and DataLoader shuffle, so two runs with the same "
+        "inputs and seed produce identical models.",
+    ),
+    training_queries: str | None = typer.Option(
+        None,
+        "--training-queries",
+        help="Path to a JSONL file of labeled training queries (shape per "
+        "line: {query, relevant_paths}). When set, routes through the "
+        "labeled-batched miner (v5 recipe) instead of chunk-prefix "
+        "pseudo-queries. H-R8 (2026-04-21).",
+    ),
+    training_pair_source: str = typer.Option(
+        "auto",
+        "--training-pair-source",
+        help="Resolution policy when --training-queries is not set. "
+        "'auto' (default, H-R8) reuses --eval-queries as training "
+        "queries when present, falling back to chunk-prefix otherwise. "
+        "'labeled' errors if no labels. 'prefix' forces chunk-prefix.",
+        click_type=click.Choice(["auto", "labeled", "prefix"]),
+    ),
+    bulk_mine: bool = typer.Option(
+        False,
+        "--bulk-mine/--no-bulk-mine",
+        help="Route chunk-prefix mining through the GPU-batched miner "
+        "(retrain_batch.generate_triples_batched). 20-50x faster than "
+        "the default per-query path on FiQA-sized corpora, at the cost "
+        "of holding the full corpus in GPU memory for a moment. "
+        "Ignored when labeled queries are used (labeled path is always batched).",
+    ),
+    bulk_mine_device: str | None = typer.Option(
+        None,
+        "--bulk-mine-device",
+        help="Device override for --bulk-mine / the labeled-batched miner "
+        "('cuda' or 'cpu'). Leave unset to auto-detect.",
+    ),
 ) -> None:
     """Fine-tune the embedding model using your own data.
 
@@ -1498,17 +1981,23 @@ def retrain(
     the embedding model to better understand your data. No human labels
     needed.
 
+    By default the fine-tuned candidate is evaluated honestly on a
+    held-out slice of the corpus (reindexed with the new model) and
+    only saved if NDCG@10 meets or exceeds ``--min-gain`` over the
+    baseline. Use ``--no-eval`` to skip the gate.
+
     Requires: pip install sentence-transformers torch
 
     After training, use the model with:
         vstash reindex --model <output-path>
     """
     try:
-        from .retrain import generate_triples, train_mnrl
+        from .retrain import retrain as run_retrain
     except ImportError as exc:
         console.print(
-            "[red]x[/red] vstash retrain requires sentence-transformers and torch. "
-            "Install with: [bold]pip install sentence-transformers torch[/bold]"
+            "[red]x[/red] vstash retrain requires sentence-transformers, torch, "
+            "and accelerate. Install with: "
+            "[bold]pip install 'sentence-transformers>=3' torch 'accelerate>=1.1.0'[/bold]"
         )
         raise typer.Exit(code=1) from exc
 
@@ -1529,41 +2018,502 @@ def retrain(
         raise typer.Exit(code=1)
 
     console.print("[bold cyan]vstash retrain[/bold cyan]")
-    console.print(f"  Store: {stats.documents} docs, {stats.chunks} chunks")
-    console.print(f"  Base model: {model_name}")
-    console.print(f"  Max queries: {max_queries}")
+    console.print(f"  Store:        {stats.documents} docs, {stats.chunks} chunks")
+    console.print(f"  Base model:   {model_name}")
+    console.print(f"  Max queries:  {max_queries}")
+    if synthesize:
+        console.print(
+            f"  Query source: [cyan]LLM-synthesized[/cyan] "
+            f"(n={synth_n}" + (f", cache={synth_cache}" if synth_cache else "") + ")"
+        )
+    else:
+        console.print("  Query source: chunk prefix (legacy)")
+    if no_eval:
+        console.print("  Eval gate:    [yellow]disabled[/yellow]")
+    else:
+        console.print(
+            f"  Eval gate:    min-gain={min_gain:+.4f}, "
+            f"fraction={eval_fraction:.2f}, noise={eval_noise_size}"
+        )
     console.print()
 
-    # Step 1: Generate triples
-    console.print("[bold]Step 1/2:[/bold] Generating training pairs from signal disagreement...")
-    pairs = generate_triples(store, model_name, max_queries=max_queries)
-
-    if len(pairs) < 10:
+    loaded_training_queries: list[dict] | None = None
+    if training_queries:
+        path = Path(training_queries).expanduser()
+        if not path.exists():
+            console.print(f"[red]x[/red] --training-queries: file not found: {path}")
+            raise typer.Exit(code=1)
+        try:
+            with path.open() as fh:
+                loaded_training_queries = [json.loads(line) for line in fh if line.strip()]
+        except (OSError, json.JSONDecodeError) as exc:
+            console.print(
+                f"[red]x[/red] --training-queries: failed to parse {path}: {exc}. "
+                f"Expected JSONL (one {{'query': ..., 'relevant_paths': [...]}} per line)."
+            )
+            raise typer.Exit(code=1) from exc
+        # Shape validation: each record must be a dict with query +
+        # relevant_paths. A common mistake is passing a JSON-array-per-file
+        # (``queries.json`` instead of ``queries.jsonl``), which would parse
+        # as one list entry and crash opaquely inside the miner.
+        for i, q in enumerate(loaded_training_queries):
+            if not isinstance(q, dict) or "query" not in q or "relevant_paths" not in q:
+                console.print(
+                    f"[red]x[/red] --training-queries: line {i + 1} is not a "
+                    "valid query record. Each line must be a JSON object with "
+                    "'query' and 'relevant_paths' fields. If you have a single "
+                    "JSON array, convert to JSONL (one object per line)."
+                )
+                raise typer.Exit(code=1)
         console.print(
-            "[yellow]! Not enough disagreement pairs generated. "
+            f"  Training queries: [cyan]{len(loaded_training_queries)} labeled[/cyan] from {path}"
+        )
+
+    result = run_retrain(
+        store,
+        base_model=model_name,
+        output_path=output,
+        max_queries=max_queries,
+        epochs=epochs,
+        lr=lr,
+        batch_size=batch_size,
+        eval_fraction=eval_fraction,
+        eval_noise_size=eval_noise_size,
+        min_gain=min_gain,
+        skip_eval=no_eval,
+        seed=seed,
+        synthesize_queries=synthesize,
+        synth_n=synth_n,
+        synth_cache=synth_cache,
+        synth_model=synth_model,
+        training_queries=loaded_training_queries,
+        training_pair_source=training_pair_source,  # type: ignore[arg-type]
+        bulk_mine=bulk_mine,
+        bulk_mine_device=bulk_mine_device,
+        cfg=cfg,
+    )
+
+    if result.n_pairs == 0:
+        console.print(
+            "[yellow]! No training pairs generated. "
             "Your corpus may be too small or too homogeneous.[/yellow]"
         )
         raise typer.Exit(code=1)
 
-    console.print(f"  Generated {len(pairs)} training pairs")
-    console.print()
+    console.print(f"  Training pairs: {result.n_pairs}")
 
-    # Step 2: Train
-    console.print("[bold]Step 2/2:[/bold] Fine-tuning with MNRL...")
-    saved_path = train_mnrl(
-        pairs,
-        base_model=model_name,
-        output_path=output,
-        epochs=epochs,
-        lr=lr,
-        batch_size=batch_size,
-    )
+    if result.baseline is not None and result.final is not None:
+        console.print()
+        console.print("[bold]Eval results[/bold]")
+        console.print(f"  Queries:          {result.baseline.n_queries}")
+        console.print(f"  Baseline NDCG@10: {result.baseline.ndcg_at_10:.4f}")
+        console.print(f"  Final NDCG@10:    {result.final.ndcg_at_10:.4f}")
+        delta = result.delta_ndcg
+        color = "green" if delta >= 0 else "red"
+        console.print(f"  Delta NDCG@10:    [{color}]{delta:+.4f}[/{color}]")
+        console.print(f"  Baseline NDCG@3:  {result.baseline.ndcg_at_3:.4f}")
+        console.print(f"  Final NDCG@3:     {result.final.ndcg_at_3:.4f}")
+        console.print(f"  Baseline MRR:     {result.baseline.mrr:.4f}")
+        console.print(f"  Final MRR:        {result.final.mrr:.4f}")
+        console.print(f"  Baseline Recall@100: {result.baseline.recall_at_100:.4f}")
+        console.print(f"  Final Recall@100:    {result.final.recall_at_100:.4f}")
+
+    if result.gated_out:
+        console.print()
+        if result.final is None:
+            # No candidate was trained (too few pairs). Nothing to promote
+            # or inspect -- the retrain simply did not produce a model.
+            console.print(
+                "[red]Training skipped[/red]: not enough training pairs to "
+                "fine-tune. Your corpus may be too small or too homogeneous."
+            )
+        else:
+            console.print(
+                f"[red]Gated out[/red]: delta NDCG@10 did not meet min-gain "
+                f"({result.min_gain:+.4f}). Candidate left at "
+                f"[dim]{Path(output).expanduser()}.candidate[/dim] for inspection."
+            )
+        raise typer.Exit(code=2)
+
+    if result.output_path is None:
+        # Defensive: any future RetrainResult path that returns None for
+        # output_path without setting gated_out=True would land here.
+        console.print("[red]x[/red] retrain did not save a model. See logs for details.")
+        raise typer.Exit(code=2)
 
     console.print()
-    console.print(f"[green]Model saved to:[/green] {saved_path}")
+    console.print(f"[green]Model saved to:[/green] {result.output_path}")
     console.print()
     console.print("To use the retrained model:")
-    console.print(f"  [bold]vstash reindex --model {saved_path}[/bold]")
+    console.print(f"  [bold]vstash reindex --model {result.output_path}[/bold]")
+
+
+@app.command(name="retrain-multi")
+def retrain_multi_cmd(
+    ctx: typer.Context,
+    store_spec: list[str] = typer.Option(
+        [],
+        "--store",
+        "-s",
+        help="Extra corpus in the form NAME=PATH. Repeat for each dataset. "
+        "The current profile's store is also included, aliased by its "
+        "config name (or 'primary' if unnamed) unless --exclude-primary is passed.",
+    ),
+    exclude_primary: bool = typer.Option(
+        False,
+        "--exclude-primary",
+        help="Do not include the current profile's store in the multi-corpus mix. "
+        "Use this when --store alone covers all datasets you want to train on.",
+    ),
+    output: str = typer.Option(
+        "~/.vstash/models/retrained-multi",
+        "--output",
+        "-o",
+        help="Where to save the fine-tuned model",
+    ),
+    sampling_strategy: str = typer.Option(
+        "temperature",
+        "--sampling-strategy",
+        help="Temperature (default) damps the largest corpus toward a more balanced triple budget.",
+        click_type=click.Choice(["uniform", "proportional", "temperature"]),
+    ),
+    sampling_temperature: float = typer.Option(
+        0.5,
+        "--sampling-temperature",
+        help="Exponent for the temperature strategy. 0=uniform, 1=proportional, "
+        "0.5=favours smaller corpora without abandoning size signal.",
+    ),
+    total_triples: int = typer.Option(
+        10000,
+        "--total-triples",
+        help="Target total pseudo-query budget across all datasets. Actual "
+        "pair count may be lower when corpora are smaller than their share.",
+    ),
+    epochs: int = typer.Option(2, "--epochs", help="Training epochs"),
+    lr: float = typer.Option(3e-6, "--lr", help="Learning rate"),
+    batch_size: int = typer.Option(
+        32,
+        "--batch-size",
+        help="Training batch size. Default 32 keeps a 15 GB T4 in range when "
+        "three corpora are live during eval; raise on bigger GPUs.",
+    ),
+    use_amp: bool = typer.Option(
+        True,
+        "--use-amp/--no-use-amp",
+        help="Automatic mixed precision during training. Near-free and halves GPU memory on T4+.",
+    ),
+    max_seq_length: int | None = typer.Option(
+        None,
+        "--max-seq-length",
+        help="Cap the encoder's max sequence length. Lower values (256, 128) "
+        "further reduce memory when most chunks are short.",
+    ),
+    base_model: str | None = typer.Option(
+        None, "--base-model", help="Base model to fine-tune (default: current config model)"
+    ),
+    min_gain: float = typer.Option(
+        0.0,
+        "--min-gain",
+        help="Required NDCG@10 improvement over baseline. Applied to the "
+        "macro-average unless --per-dataset-gate is passed.",
+    ),
+    per_dataset_gate: bool = typer.Option(
+        False,
+        "--per-dataset-gate",
+        help="Require every dataset individually to clear --min-gain. "
+        "Stricter than the default macro-average gate.",
+    ),
+    no_eval: bool = typer.Option(
+        False, "--no-eval", help="Skip eval gate entirely and save unconditionally"
+    ),
+    eval_fraction: float = typer.Option(
+        0.15, "--eval-fraction", help="Fraction of each corpus reserved for held-out eval"
+    ),
+    eval_noise_size: int = typer.Option(
+        1000,
+        "--eval-noise",
+        help="Distractor chunks added to each eval index (higher = stricter eval)",
+    ),
+    bulk_mine: bool = typer.Option(
+        False,
+        "--bulk-mine/--no-bulk-mine",
+        help="Route triple generation through the GPU-batched miner "
+        "(retrain_batch.generate_triples_batched). 20-50x faster than "
+        "the default per-query path on FiQA-sized corpora, at the cost "
+        "of holding the full corpus in GPU memory for a moment.",
+    ),
+    bulk_eval: bool = typer.Option(
+        False,
+        "--bulk-eval/--no-bulk-eval",
+        help="Route baseline + final eval through the GPU-batched "
+        "evaluator (retrain_batch.evaluate_model_batched). Biggest win "
+        "when --eval-noise is large (e.g. >= 10k). Pair with --bulk-mine "
+        "for end-to-end speedup on Colab T4.",
+    ),
+    bulk_mine_device: str | None = typer.Option(
+        None,
+        "--bulk-mine-device",
+        help="Device override for --bulk-mine / --bulk-eval ('cuda' or "
+        "'cpu'). Leave unset to auto-detect.",
+    ),
+    seed: int = typer.Option(
+        42,
+        "--seed",
+        help="Deterministic seed. Derived per-dataset via SHA-256 so each "
+        "corpus gets its own stable RNG, and then threaded into train_mnrl "
+        "so DataLoader shuffles and torch dropout are reproducible.",
+    ),
+    training_pair_source: str = typer.Option(
+        "auto",
+        "--training-pair-source",
+        help="Resolution policy for per-dataset training queries. "
+        "'auto' (default, H-R1) reuses eval labels as training queries "
+        "when present, falling back to chunk-prefix otherwise. "
+        "'labeled' errors if any dataset lacks labels. "
+        "'prefix' forces chunk-prefix even when eval labels exist.",
+        click_type=click.Choice(["auto", "labeled", "prefix"]),
+    ),
+) -> None:
+    """Fine-tune the embedding model over multiple corpora with balanced sampling.
+
+    Wrapper around ``vstash.retrain.retrain_multi``. Give it one or more
+    vstash stores (each one a separate corpus) plus the current
+    profile's store; retrain-multi computes a per-dataset triple budget,
+    generates (query, positive, hard_neg) triples from each corpus,
+    shuffles them globally, and fine-tunes a single embedding model.
+
+    Per-dataset NDCG@10 is reported before and after. The macro-average
+    gate (or --per-dataset-gate) prevents a regressed model from being
+    promoted over your current one.
+
+    Example:
+        vstash retrain-multi \\
+            --store nfcorpus=/data/vstash-nfcorpus.db \\
+            --store fiqa=/data/vstash-fiqa.db \\
+            --sampling-strategy temperature \\
+            --sampling-temperature 0.5 \\
+            --total-triples 30000 \\
+            --output ~/.vstash/models/multi-tuned
+
+    Requires: pip install sentence-transformers torch
+    """
+    try:
+        from .retrain import retrain_multi as run_retrain_multi
+    except ImportError as exc:
+        console.print(
+            "[red]x[/red] vstash retrain-multi requires sentence-transformers, torch, "
+            "and accelerate. Install with: "
+            "[bold]pip install 'sentence-transformers>=3' torch 'accelerate>=1.1.0'[/bold]"
+        )
+        raise typer.Exit(code=1) from exc
+
+    from .embed import get_embedding_dim as _get_dim
+
+    cfg, primary_store = _get_store(profile=_profile_from_ctx(ctx))
+    model_name = base_model or cfg.embeddings.model
+
+    # Nudge when --bulk-mine-device is set without either batched path.
+    # The device override would otherwise be silently ignored.
+    if bulk_mine_device and not (bulk_mine or bulk_eval):
+        console.print(
+            "[yellow]! --bulk-mine-device was passed without --bulk-mine or "
+            "--bulk-eval. The device override is ignored; pass one of the "
+            "--bulk-* flags to enable the GPU-batched path.[/yellow]"
+        )
+
+    stores: dict[str, VstashStore] = {}
+    opened_extra: list[VstashStore] = []
+    if not exclude_primary:
+        primary_alias = _profile_from_ctx(ctx) or "primary"
+        stores[primary_alias] = primary_store
+
+    try:
+        dim = _get_dim(cfg.embeddings.model)
+        for spec in store_spec:
+            if "=" not in spec:
+                console.print(
+                    f"[red]x[/red] Invalid --store spec [bold]{spec}[/bold]. Expected NAME=PATH."
+                )
+                raise typer.Exit(code=1)
+            alias, _, path = spec.partition("=")
+            alias = alias.strip()
+            path = path.strip()
+            if not alias or not path:
+                console.print(
+                    f"[red]x[/red] Invalid --store spec [bold]{spec}[/bold]. "
+                    "Both NAME and PATH must be non-empty."
+                )
+                raise typer.Exit(code=1)
+            if alias in stores:
+                console.print(
+                    f"[red]x[/red] Duplicate store alias [bold]{alias}[/bold]. "
+                    "Each --store must use a unique name."
+                )
+                raise typer.Exit(code=1)
+            extra_store = VstashStore(
+                path,
+                embedding_dim=dim,
+                vector_backend=cfg.storage.vector_backend,
+                snapvec_bits=cfg.storage.snapvec_bits,
+                ivfpq_nlist=cfg.storage.ivfpq_nlist,
+                ivfpq_M=cfg.storage.ivfpq_M,
+                ivfpq_K=cfg.storage.ivfpq_K,
+                ivfpq_rerank_candidates=cfg.storage.ivfpq_rerank_candidates,
+                ivfpq_nprobe=cfg.storage.ivfpq_nprobe,
+                cache=cfg.cache,
+            )
+            opened_extra.append(extra_store)
+            stores[alias] = extra_store
+
+        if not stores:
+            console.print(
+                "[red]x[/red] No stores to train on. "
+                "Pass one or more --store NAME=PATH, or remove --exclude-primary."
+            )
+            raise typer.Exit(code=1)
+
+        # Quick sanity check: each store should have at least a few chunks,
+        # otherwise we print a hint rather than failing inside retrain_multi.
+        sizes = {name: s.stats().chunks for name, s in stores.items()}
+        if all(n < 10 for n in sizes.values()):
+            console.print(
+                "[yellow]! Every provided store has fewer than 10 chunks. "
+                "Add more documents before retraining.[/yellow]"
+            )
+            raise typer.Exit(code=1)
+
+        console.print("[bold cyan]vstash retrain-multi[/bold cyan]")
+        for name, s in stores.items():
+            stats = s.stats()
+            console.print(f"  {name}: {stats.documents} docs, {stats.chunks} chunks")
+        console.print(f"  Base model:       {model_name}")
+        console.print(
+            f"  Sampling:         {sampling_strategy} (temperature={sampling_temperature})"
+        )
+        console.print(f"  Total triples:    {total_triples}")
+        if no_eval:
+            console.print("  Eval gate:        [yellow]disabled[/yellow]")
+        else:
+            gate_mode = "per-dataset" if per_dataset_gate else "macro-average"
+            console.print(
+                f"  Eval gate:        {gate_mode}, min-gain={min_gain:+.4f}, "
+                f"fraction={eval_fraction:.2f}, noise={eval_noise_size}"
+            )
+        console.print()
+
+        result = run_retrain_multi(
+            stores,
+            base_model=model_name,
+            output_path=output,
+            sampling=sampling_strategy,  # type: ignore[arg-type]
+            temperature=sampling_temperature,
+            total_triples=total_triples,
+            epochs=epochs,
+            lr=lr,
+            batch_size=batch_size,
+            use_amp=use_amp,
+            max_seq_length=max_seq_length,
+            eval_fraction=eval_fraction,
+            eval_noise_size=eval_noise_size,
+            min_gain=min_gain,
+            per_dataset_gate=per_dataset_gate,
+            skip_eval=no_eval,
+            seed=seed,
+            bulk_mine=bulk_mine,
+            bulk_mine_device=bulk_mine_device,
+            bulk_eval=bulk_eval,
+            training_pair_source=training_pair_source,  # type: ignore[arg-type]
+            cfg=cfg,
+        )
+    finally:
+        for s in opened_extra:
+            try:
+                s.close()
+            except Exception:
+                pass
+
+    console.print(f"  Total training pairs: {result.total_pairs}")
+    for name, n_pairs in result.per_dataset_pairs.items():
+        budget_for_name = result.per_dataset_budget.get(name, 0)
+        console.print(f"    {name}: {n_pairs} pairs (budget: {budget_for_name})")
+
+    if result.per_dataset_baseline and result.per_dataset_final:
+        console.print()
+        console.print("[bold]Eval results (per dataset, NDCG@10)[/bold]")
+        for name in result.per_dataset_baseline:
+            base = result.per_dataset_baseline[name]
+            final = result.per_dataset_final.get(name)
+            if final is None or base.n_queries == 0:
+                continue
+            delta = final.ndcg_at_10 - base.ndcg_at_10
+            color = "green" if delta >= 0 else "red"
+            console.print(
+                f"  {name:<20} baseline={base.ndcg_at_10:.4f}  "
+                f"final={final.ndcg_at_10:.4f}  "
+                f"delta=[{color}]{delta:+.4f}[/{color}]  (n={base.n_queries})"
+            )
+        macro_color = "green" if result.macro_delta_ndcg >= 0 else "red"
+        console.print(
+            f"  [bold]macro-avg            baseline={result.macro_baseline_ndcg:.4f}  "
+            f"final={result.macro_final_ndcg:.4f}  "
+            f"delta=[{macro_color}]{result.macro_delta_ndcg:+.4f}[/{macro_color}][/bold]"
+        )
+
+        console.print()
+        console.print("[bold]Head quality + candidate health (per dataset)[/bold]")
+        head_table = Table(show_header=True, header_style="bold cyan", border_style="dim")
+        head_table.add_column("dataset", style="magenta")
+        head_table.add_column("NDCG@3 base", justify="right")
+        head_table.add_column("NDCG@3 final", justify="right")
+        head_table.add_column("delta", justify="right")
+        head_table.add_column("Recall@100 base", justify="right")
+        head_table.add_column("Recall@100 final", justify="right")
+        head_table.add_column("delta", justify="right")
+        for name in result.per_dataset_baseline:
+            base = result.per_dataset_baseline[name]
+            final = result.per_dataset_final.get(name)
+            if final is None or base.n_queries == 0:
+                continue
+            d3 = final.ndcg_at_3 - base.ndcg_at_3
+            dr = final.recall_at_100 - base.recall_at_100
+            c3 = "green" if d3 >= 0 else "red"
+            cr = "green" if dr >= 0 else "red"
+            head_table.add_row(
+                name,
+                f"{base.ndcg_at_3:.4f}",
+                f"{final.ndcg_at_3:.4f}",
+                f"[{c3}]{d3:+.4f}[/{c3}]",
+                f"{base.recall_at_100:.4f}",
+                f"{final.recall_at_100:.4f}",
+                f"[{cr}]{dr:+.4f}[/{cr}]",
+            )
+        console.print(head_table)
+
+    if result.gated_out:
+        console.print()
+        if result.total_pairs < 10:
+            console.print(
+                "[red]Training skipped[/red]: not enough training pairs across all corpora. "
+                "Try a larger --total-triples or add more documents."
+            )
+        else:
+            gate_mode = "per-dataset" if per_dataset_gate else "macro-average"
+            console.print(
+                f"[red]Gated out[/red] ({gate_mode}): NDCG@10 delta did not meet "
+                f"min-gain ({result.min_gain:+.4f}). Candidate left at "
+                f"[dim]{Path(output).expanduser()}.candidate[/dim] for inspection."
+            )
+        raise typer.Exit(code=2)
+
+    if result.output_path is None:
+        console.print("[red]x[/red] retrain-multi did not save a model. See logs for details.")
+        raise typer.Exit(code=2)
+
+    console.print()
+    console.print(f"[green]Model saved to:[/green] {result.output_path}")
+    console.print()
+    console.print("To use the retrained model:")
+    console.print(f"  [bold]vstash reindex --model {result.output_path}[/bold]")
 
 
 @profile_app.command(name="create")

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import TracebackType
+from typing import Literal
 
 from .chat import ask as _chat_ask
 from .config import VstashConfig, load_config
@@ -282,6 +283,9 @@ class Memory:
         vec_weight: float | None = None,
         fts_weight: float | None = None,
         fts_only: bool = False,
+        retrieval_mode: Literal["hybrid", "vec_only", "fts_only"] | None = None,
+        exact_match: str | None = None,
+        exact_match_case_sensitive: bool = False,
     ) -> list[SearchResult]:
         """Semantic search without LLM inference.
 
@@ -308,36 +312,58 @@ class Memory:
                 other to ``1.0 - provided`` so the pair sums to 1.0.
             fts_weight: Pin the RRF FTS weight for this single call.
                 Same semantics and range as ``vec_weight``.
-            fts_only: If True, run FTS5 keyword search only and skip the
-                vector ANN scan, distance cutoff, and adaptive RRF
-                entirely. Useful for debugging ranking, for queries
-                where vector embeddings are known to be diffuse
-                (cross-lingual, highly technical), or as a deliberate
-                fallback when the vector pool is expected to be empty.
-                MMR dedup still runs on the FTS-only result set. The
-                vector embedding is still computed (it costs ~1ms and
-                upstream code may need it), but it is never queried.
+            exact_match: Optional literal substring the returned chunk's
+                ``text`` must contain. Bypasses FTS5 tokenization
+                (stemming, lowercasing) so identifiers and punctuation
+                survive. #106, 2026-04-21.
+            exact_match_case_sensitive: Whether ``exact_match`` is
+                case-sensitive. Default False (casefold compare).
+            fts_only: DEPRECATED in v0.33.0, use
+                ``retrieval_mode="fts_only"`` instead. Still honoured
+                for this release with a ``DeprecationWarning``. Will
+                be removed in a future release. Same short-circuit
+                semantics: skip the vector ANN scan, distance cutoff,
+                and adaptive RRF.
+            retrieval_mode: Which search branches to run (default
+                ``"hybrid"``). Three values:
+
+                - ``"hybrid"`` (default): vector ANN + FTS5 + adaptive
+                  RRF + distance cutoff + MMR. This is the pipeline the
+                  paper and README benchmarks are measured against.
+                - ``"fts_only"`` (#152): skip the vector ANN scan,
+                  distance cutoff, and adaptive RRF. Useful for queries
+                  with diffuse vector representations (cross-lingual,
+                  highly technical) or as a fallback when the vector
+                  pool is expected to be empty.
+                - ``"vec_only"`` (#275): skip the FTS5 keyword search;
+                  force ``vec_weight=1.0``, ``fts_weight=0.0``. Useful
+                  when the corpus has no meaningful keyword signal
+                  (tabular data, code where identifiers are noise) or
+                  for benchmarking / ranking debug.
+
                 Mutually exclusive with ``vec_weight`` / ``fts_weight``:
-                when ``fts_only=True`` is set, any explicit weight
-                arguments are dropped *before* reaching
-                ``VstashStore.search`` — the validator will not see
-                them, so a nonsensical pair like
-                ``fts_only=True, vec_weight=1.5`` does not raise.
-                This is deliberate: ``fts_only`` is a stronger
-                statement of intent than pinned weights and should
-                not be rejected by a stale weight value.
+                non-``"hybrid"`` modes drop any explicit weight arguments
+                *before* reaching ``VstashStore.search`` so a nonsensical
+                pair like ``retrieval_mode="fts_only", vec_weight=1.5``
+                does not raise. The mode is a stronger statement of
+                intent than pinned weights.
 
         Returns:
             Ranked list of SearchResult ordered by relevance.
         """
         q_embedding = embed_query(query, self._cfg.embeddings.model)
-        # When fts_only is set, drop any caller-supplied weight
-        # arguments before they reach the store's validator. The store
-        # will force (vec_weight=0.0, fts_weight=1.0) internally on
-        # the fts_only branch, so forwarding caller weights would
-        # either no-op or raise `RRFWeightOutOfRangeError` for a
-        # nonsensical value the caller did not intend us to validate.
-        if fts_only:
+        # Resolve the mode at this layer so the deprecation warning
+        # fires at the Memory call site (not the store layer, which
+        # would show our own memory.py in the stacklevel).
+        _mode = self._store._resolve_retrieval_mode(retrieval_mode, fts_only)
+        # When a non-hybrid mode is active, drop any caller-supplied
+        # weight arguments before they reach the store's validator.
+        # The store will force the weights to (0.0, 1.0) or (1.0, 0.0)
+        # internally on the short-circuit branch, so forwarding caller
+        # weights would either no-op or raise
+        # ``RRFWeightOutOfRangeError`` for a nonsensical value the
+        # caller did not intend us to validate.
+        if _mode != "hybrid":
             vec_weight = None
             fts_weight = None
         return self._store.search(
@@ -346,7 +372,7 @@ class Memory:
             top_k=top_k,
             vec_weight=vec_weight,
             fts_weight=fts_weight,
-            fts_only=fts_only,
+            retrieval_mode=_mode,
             collection=self._resolve_collection(collection),
             project=self._resolve_project(project),
             layer=layer,
@@ -354,6 +380,8 @@ class Memory:
             added_after=added_after,
             added_before=added_before,
             mmr_lambda=mmr_lambda,
+            exact_match=exact_match,
+            exact_match_case_sensitive=exact_match_case_sensitive,
         )
 
     def miss_analysis(
@@ -472,6 +500,7 @@ class Memory:
         vec_weight: float | None = None,
         fts_weight: float | None = None,
         fts_only: bool = False,
+        retrieval_mode: Literal["hybrid", "vec_only", "fts_only"] | None = None,
     ) -> str:
         """Search memory + generate an LLM answer.
 
@@ -489,8 +518,9 @@ class Memory:
             vec_weight: Pin the RRF vector weight on the retrieval
                 call. See :meth:`search` for full semantics.
             fts_weight: Pin the RRF FTS weight on the retrieval call.
-            fts_only: If True, retrieve LLM context using FTS5 only —
-                no vector ANN, no distance cutoff. See :meth:`search`.
+            fts_only: DEPRECATED, use ``retrieval_mode="fts_only"``.
+            retrieval_mode: ``"hybrid"`` (default), ``"vec_only"``, or
+                ``"fts_only"``. See :meth:`search` for full semantics.
 
         Returns:
             Model response text.
@@ -508,6 +538,7 @@ class Memory:
             vec_weight=vec_weight,
             fts_weight=fts_weight,
             fts_only=fts_only,
+            retrieval_mode=retrieval_mode,
         )
         return _chat_ask(query, chunks, self._cfg, history)
 

@@ -20,7 +20,7 @@ try:
 except ImportError:  # Python 3.10
     import tomli as tomllib  # type: ignore[no-redef]
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class InferenceConfig(BaseModel):
@@ -149,9 +149,12 @@ class StorageConfig(BaseModel):
     ivfpq_nlist: int = Field(
         default=0,
         ge=0,
+        le=1024,
         description=(
             "IVF coarse clusters for snapvec-ivfpq. 0 = auto (4 * sqrt(N)). "
-            "FAISS rule: need at least 30 training vectors per cluster."
+            "Explicit values are clamped to [8, 1024] to match the internal "
+            "_nlist_for clamp. FAISS rule: need at least 30 training vectors "
+            "per cluster."
         ),
     )
     ivfpq_M: int = Field(
@@ -181,6 +184,26 @@ class StorageConfig(BaseModel):
             "Higher = better recall at linear latency cost."
         ),
     )
+
+    @field_validator("ivfpq_nlist")
+    @classmethod
+    def _check_ivfpq_nlist(cls, value: int) -> int:
+        """Reject explicit nlist values below the FAISS-sane lower bound.
+
+        ``0`` means "auto-derive" and is passed through unchanged. Any
+        other value must satisfy the same ``[8, 1024]`` range enforced
+        at runtime by ``VstashStore._nlist_for``. Catching this at config
+        load time turns a late, cryptic FAISS failure into an early
+        validation error that names the offending field.
+        """
+        if value == 0:
+            return value
+        if value < 8:
+            raise ValueError(
+                f"ivfpq_nlist={value} is below the FAISS sane minimum of 8. "
+                "Use 0 for auto-derive or a value in [8, 1024]."
+            )
+        return value
 
 
 class ScoringConfig(BaseModel):
@@ -271,6 +294,17 @@ class ObservabilityConfig(BaseModel):
             "to stderr with their query text, latency, and result count. "
             "Set to 0 to log every query (debug), or a very high number "
             "to effectively disable."
+        ),
+    )
+    auto_miss_hint: bool = Field(
+        default=True,
+        description=(
+            "Record a lightweight ``miss_hint`` JSON on search_events "
+            "rows when a query returns zero results or a result set "
+            "entirely in the 'low' relevance tier (distance > 0.98). "
+            "Set to false to skip the extra JSON column write per miss. "
+            "The hint is consumed by ``vstash why --recent``. Added in "
+            "issue #157 part 3."
         ),
     )
 

@@ -39,8 +39,12 @@ KNOWN_DIMS: dict[str, int] = {
     "BAAI/bge-large-en-v1.5": 1024,
     "nomic-ai/nomic-embed-text-v1.5": 768,
     # RRF-tuned: BGE-small fine-tuned with hybrid retrieval disagreement signal.
+    # v3 (2026-04-19): H-R9 winning config, temperature=0.5 + total_triples=60000.
+    # +5.35% macro NDCG@10 on SciFact+NFCorpus+FiQA vs base bge-small.
     # v2: MNRL + explicit hard negatives. +7.4% SciFact, +19.5% NFCorpus vs base.
-    # Loaded via custom HF ONNX backend (not FastEmbed). Use via vstash reindex.
+    # Loaded via SentenceTransformer (v3) / custom HF ONNX backend (v1/v2).
+    # Use via ``vstash reindex --model Stffens/bge-small-rrf-v3``.
+    "Stffens/bge-small-rrf-v3": 384,
     "Stffens/bge-small-rrf-v2": 384,
     "stffens/bge-small-rrf-v1": 384,  # legacy v1
     # Multilingual models (FastEmbed-supported)
@@ -282,6 +286,9 @@ _HF_ONNX_MODELS: set[str] = {
 
 _hf_onnx_cache: dict[str, tuple] = {}  # model_name -> (session, tokenizer, max_len)
 _hf_onnx_lock = threading.Lock()
+_hf_st_cache: dict[str, object] = {}  # model_name -> SentenceTransformer
+_hf_st_lock = threading.Lock()
+_hf_onnx_unavailable: set[str] = set()
 
 
 def _is_hf_onnx_model(model_name: str) -> bool:
@@ -303,8 +310,24 @@ def _init_hf_onnx(model_name: str) -> tuple:
 
                 try:
                     model_path = hf_hub_download(model_name, "onnx/model.onnx")
+                    onnx_prefix = "onnx/"
                 except (EntryNotFoundError, OSError):
                     model_path = hf_hub_download(model_name, "model.onnx")
+                    onnx_prefix = ""
+                # Large ONNX exports store weights in an external data file
+                # (`model.onnx.data` with a dot, or `model.onnx_data` with
+                # an underscore depending on the exporter version). ONNX
+                # Runtime expects that file to sit next to the .onnx. Fetch
+                # it alongside; best-effort, not all models have it.
+                for data_name in (
+                    f"{onnx_prefix}model.onnx.data",
+                    f"{onnx_prefix}model.onnx_data",
+                ):
+                    try:
+                        hf_hub_download(model_name, data_name)
+                        break
+                    except (EntryNotFoundError, OSError):
+                        continue
                 try:
                     tokenizer_path = hf_hub_download(model_name, "onnx/tokenizer.json")
                 except (EntryNotFoundError, OSError):
@@ -316,14 +339,60 @@ def _init_hf_onnx(model_name: str) -> tuple:
     return _hf_onnx_cache[model_name]
 
 
+def _init_hf_st(model_name: str):
+    """Lazily load a SentenceTransformer for an HF model. Used as the
+    fallback path when the ONNX export is broken (missing external data
+    file) or when sentence-transformers is the only published format."""
+    if model_name not in _hf_st_cache:
+        with _hf_st_lock:
+            if model_name not in _hf_st_cache:
+                try:
+                    from sentence_transformers import SentenceTransformer
+                except ImportError as exc:
+                    raise ImportError(
+                        f"Cannot load {model_name}: ONNX init failed AND "
+                        "sentence-transformers is not installed. Install with: "
+                        "pip install 'sentence-transformers>=3' torch 'accelerate>=1.1.0'"
+                    ) from exc
+                _logger.info("Loading %s via SentenceTransformer fallback", model_name)
+                _hf_st_cache[model_name] = SentenceTransformer(model_name)
+    return _hf_st_cache[model_name]
+
+
+def _embed_hf_st(texts: list[str], model_name: str) -> list[list[float]]:
+    """Embed texts via the SentenceTransformer fallback path."""
+    if not texts:
+        return []
+    model = _init_hf_st(model_name)
+    vecs = model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
+    return [list(map(float, v)) for v in vecs]
+
+
 def _embed_hf_onnx(texts: list[str], model_name: str) -> list[list[float]]:
-    """Embed texts using a custom HF ONNX model with mean pooling."""
+    """Embed texts using a custom HF ONNX model with mean pooling.
+
+    Falls back to ``_embed_hf_st`` if the ONNX init fails for this model
+    (e.g., the HF repo publishes a stub ``model.onnx`` whose external
+    ``.data`` file was never uploaded).
+    """
     import numpy as np
 
     if not texts:
         return []
 
-    session, tokenizer, max_len = _init_hf_onnx(model_name)
+    if model_name in _hf_onnx_unavailable:
+        return _embed_hf_st(texts, model_name)
+
+    try:
+        session, tokenizer, max_len = _init_hf_onnx(model_name)
+    except Exception as exc:  # includes onnxruntime RuntimeException
+        _logger.warning(
+            "HF ONNX init failed for %s (%s); falling back to sentence-transformers.",
+            model_name,
+            exc.__class__.__name__,
+        )
+        _hf_onnx_unavailable.add(model_name)
+        return _embed_hf_st(texts, model_name)
     all_embeddings: list[list[float]] = []
     batch_size = 32
 

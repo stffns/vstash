@@ -320,8 +320,16 @@ class TestMemorySearch:
             )
 
     @requires_sqlite_vec
-    def test_search_fts_only_forwards_kwarg_to_store(self, tmp_path: Path) -> None:
-        """Memory.search must forward fts_only to VstashStore.search (#152)."""
+    def test_search_forwards_retrieval_mode_to_store(self, tmp_path: Path) -> None:
+        """Memory.search resolves fts_only/retrieval_mode and forwards the
+        enum value to VstashStore.search (#152, #275).
+
+        The legacy ``fts_only=True`` path is expected to emit a
+        DeprecationWarning, which we filter here -- we only care that
+        the resolved enum lands on the store side.
+        """
+        import warnings
+
         (tmp_path / "doc.md").write_text("Spy test content.")
         with Memory(db=tmp_path / "test.db") as mem:
             mem.add(tmp_path / "doc.md")
@@ -335,14 +343,21 @@ class TestMemorySearch:
 
             mem._store.search = spy_search  # type: ignore[method-assign]
 
-            mem.search("content", fts_only=True)
-            mem.search("content", fts_only=False)
-            mem.search("content")  # default must be False
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                mem.search("content", fts_only=True)
+                mem.search("content", retrieval_mode="vec_only")
+                mem.search("content")  # default -> hybrid
 
             assert len(captured) == 3
-            assert captured[0]["fts_only"] is True
-            assert captured[1]["fts_only"] is False
-            assert captured[2]["fts_only"] is False
+            assert captured[0]["retrieval_mode"] == "fts_only"
+            assert captured[1]["retrieval_mode"] == "vec_only"
+            assert captured[2]["retrieval_mode"] == "hybrid"
+            # fts_only bool must NOT be forwarded to the store any more:
+            # the mode enum is the single source of truth at the store
+            # boundary.
+            for call in captured:
+                assert "fts_only" not in call
 
     @requires_sqlite_vec
     def test_search_fts_only_skips_distance_signal(self, tmp_path: Path) -> None:
@@ -800,3 +815,35 @@ class TestDynamicChunkSize:
 
         # Smaller chunk_size should produce more chunks
         assert chunk_count_512 >= chunk_count_4096
+
+
+class TestMemorySearchExactMatch:
+    """#106 (2026-04-21): Memory.search passes exact_match through to
+    the store and respects the case-sensitivity toggle."""
+
+    def test_memory_search_forwards_exact_match(self, tmp_path: Path) -> None:
+        (tmp_path / "a.md").write_text(
+            "# Doc A\n\nThis paragraph mentions RateLimit as a specific identifier."
+        )
+        (tmp_path / "b.md").write_text(
+            "# Doc B\n\nThis paragraph mentions rate limits but nothing code-ish."
+        )
+        with Memory(db=tmp_path / "mem.db") as mem:
+            mem.add(tmp_path / "a.md")
+            mem.add(tmp_path / "b.md")
+
+            # Include the exact literal in the query so doc A is reliably
+            # retrieved by FTS / vector before the post-filter runs. Without
+            # this, the test could pass vacuously if the candidate pool
+            # happens to exclude doc A upstream.
+            strict = mem.search(
+                "RateLimit rate limits",
+                top_k=10,
+                exact_match="RateLimit",
+                exact_match_case_sensitive=True,
+            )
+            assert strict, "passthrough test must surface at least one hit"
+            for r in strict:
+                assert "RateLimit" in r.text
+            paths = {r.path for r in strict}
+            assert paths == {str(tmp_path / "a.md")}

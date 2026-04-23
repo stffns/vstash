@@ -1,0 +1,47 @@
+{
+  "label": "before",
+  "backend": "snapvec",
+  "dim": 384,
+  "checkpoints": [
+    {
+      "n_at_probe": 5000,
+      "rebuild_seconds_p50": 0.284,
+      "rebuild_seconds_min": 0.281,
+      "rebuild_seconds_max": 0.297,
+      "rebuild_seconds_mean": 0.287,
+      "repeats": 3
+    },
+    {
+      "n_at_probe": 10000,
+      "rebuild_seconds_p50": 0.836,
+      "rebuild_seconds_min": 0.657,
+      "rebuild_seconds_max": 1.264,
+      "rebuild_seconds_mean": 0.919,
+      "repeats": 3
+    },
+    {
+      "n_at_probe": 25000,
+      "rebuild_seconds_p50": 2.17,
+      "rebuild_seconds_min": 1.919,
+      "rebuild_seconds_max": 2.18,
+      "rebuild_seconds_mean": 2.089,
+      "repeats": 3
+    },
+    {
+      "n_at_probe": 50000,
+      "rebuild_seconds_p50": 7.999,
+      "rebuild_seconds_min": 6.246,
+      "rebuild_seconds_max": 8.802,
+      "rebuild_seconds_mean": 7.683,
+      "repeats": 3
+    },
+    {
+      "n_at_probe": 100000,
+      "rebuild_seconds_p50": 41.575,
+      "rebuild_seconds_min": 39.901,
+      "rebuild_seconds_max": 41.883,
+      "rebuild_seconds_mean": 41.12,
+      "repeats": 3
+    }
+  ]
+}

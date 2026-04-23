@@ -1,0 +1,47 @@
+{
+  "label": "after_frombuffer",
+  "backend": "snapvec",
+  "dim": 384,
+  "checkpoints": [
+    {
+      "n_at_probe": 5000,
+      "rebuild_seconds_p50": 0.165,
+      "rebuild_seconds_min": 0.161,
+      "rebuild_seconds_max": 0.166,
+      "rebuild_seconds_mean": 0.164,
+      "repeats": 3
+    },
+    {
+      "n_at_probe": 10000,
+      "rebuild_seconds_p50": 0.348,
+      "rebuild_seconds_min": 0.346,
+      "rebuild_seconds_max": 0.37,
+      "rebuild_seconds_mean": 0.355,
+      "repeats": 3
+    },
+    {
+      "n_at_probe": 25000,
+      "rebuild_seconds_p50": 0.897,
+      "rebuild_seconds_min": 0.894,
+      "rebuild_seconds_max": 0.965,
+      "rebuild_seconds_mean": 0.919,
+      "repeats": 3
+    },
+    {
+      "n_at_probe": 50000,
+      "rebuild_seconds_p50": 1.859,
+      "rebuild_seconds_min": 1.858,
+      "rebuild_seconds_max": 2.297,
+      "rebuild_seconds_mean": 2.005,
+      "repeats": 3
+    },
+    {
+      "n_at_probe": 100000,
+      "rebuild_seconds_p50": 4.046,
+      "rebuild_seconds_min": 3.983,
+      "rebuild_seconds_max": 5.31,
+      "rebuild_seconds_mean": 4.446,
+      "repeats": 3
+    }
+  ]
+}

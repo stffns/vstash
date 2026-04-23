@@ -16,7 +16,7 @@ all BaseRetriever subclasses automatically.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 try:
     from langchain_core.callbacks.manager import CallbackManagerForRetrieverRun
@@ -45,6 +45,9 @@ class VstashRetriever(BaseRetriever):
         project: Override the Memory's default project filter.
         collection: Override the Memory's default collection filter.
         layer: Filter by layer tag.
+        retrieval_mode: Which search branches to run. One of ``"hybrid"``
+            (default), ``"vec_only"``, or ``"fts_only"``. See
+            :meth:`vstash.Memory.search` for full semantics.
 
     Example::
 
@@ -71,6 +74,7 @@ class VstashRetriever(BaseRetriever):
     project: str | None = None
     collection: str | None = None
     layer: str | None = None
+    retrieval_mode: Literal["hybrid", "vec_only", "fts_only"] | None = None
 
     def _get_relevant_documents(
         self,
@@ -92,7 +96,8 @@ class VstashRetriever(BaseRetriever):
         # will correctly override a Memory scoped to a project.
         search_kwargs: dict[str, Any] = {"top_k": self.top_k}
         retriever_filters = self.model_dump(
-            include={"project", "collection", "layer"}, exclude_unset=True
+            include={"project", "collection", "layer", "retrieval_mode"},
+            exclude_unset=True,
         )
         search_kwargs.update(retriever_filters)
 

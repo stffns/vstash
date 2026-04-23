@@ -1,0 +1,55 @@
+{
+  "label": "before",
+  "backend": "snapvec",
+  "dim": 384,
+  "checkpoints": [
+    {
+      "n_at_probe": 5000,
+      "reindex_seconds_p50": 0.216,
+      "reindex_seconds_min": 0.214,
+      "reindex_seconds_max": 0.226,
+      "reindex_seconds_mean": 0.218,
+      "repeats": 5
+    },
+    {
+      "n_at_probe": 10000,
+      "reindex_seconds_p50": 0.432,
+      "reindex_seconds_min": 0.428,
+      "reindex_seconds_max": 0.437,
+      "reindex_seconds_mean": 0.432,
+      "repeats": 5
+    },
+    {
+      "n_at_probe": 25000,
+      "reindex_seconds_p50": 1.108,
+      "reindex_seconds_min": 1.089,
+      "reindex_seconds_max": 1.116,
+      "reindex_seconds_mean": 1.103,
+      "repeats": 5
+    },
+    {
+      "n_at_probe": 50000,
+      "reindex_seconds_p50": 2.304,
+      "reindex_seconds_min": 2.278,
+      "reindex_seconds_max": 2.311,
+      "reindex_seconds_mean": 2.299,
+      "repeats": 5
+    },
+    {
+      "n_at_probe": 100000,
+      "reindex_seconds_p50": 5.235,
+      "reindex_seconds_min": 5.199,
+      "reindex_seconds_max": 5.282,
+      "reindex_seconds_mean": 5.24,
+      "repeats": 5
+    },
+    {
+      "n_at_probe": 200000,
+      "reindex_seconds_p50": 15.962,
+      "reindex_seconds_min": 12.63,
+      "reindex_seconds_max": 16.183,
+      "reindex_seconds_mean": 14.723,
+      "repeats": 5
+    }
+  ]
+}

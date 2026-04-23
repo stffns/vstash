@@ -1,0 +1,102 @@
+{
+  "backend": "snapvec",
+  "dim": 384,
+  "checkpoints": [
+    {
+      "n_at_probe": 5000,
+      "batch_fill_seconds": 0.56,
+      "per_doc_probe_count": 10,
+      "per_doc_ms_p50": 1.899,
+      "per_doc_ms_p95": 2.083,
+      "per_doc_ms_mean": 1.922,
+      "per_doc_ms_min": 1.826,
+      "per_doc_ms_max": 2.109,
+      "disk_bytes": {
+        "db": 10297344,
+        "db-wal": 10530752,
+        "db-shm": 32768,
+        "snpv": 1331593
+      }
+    },
+    {
+      "n_at_probe": 10000,
+      "batch_fill_seconds": 0.65,
+      "per_doc_probe_count": 10,
+      "per_doc_ms_p50": 3.459,
+      "per_doc_ms_p95": 3.634,
+      "per_doc_ms_mean": 3.472,
+      "per_doc_ms_min": 3.349,
+      "per_doc_ms_max": 3.666,
+      "disk_bytes": {
+        "db": 20459520,
+        "db-wal": 11960392,
+        "db-shm": 32768,
+        "snpv": 2661604
+      }
+    },
+    {
+      "n_at_probe": 25000,
+      "batch_fill_seconds": 2.6,
+      "per_doc_probe_count": 10,
+      "per_doc_ms_p50": 8.221,
+      "per_doc_ms_p95": 8.411,
+      "per_doc_ms_mean": 8.168,
+      "per_doc_ms_min": 7.857,
+      "per_doc_ms_max": 8.463,
+      "disk_bytes": {
+        "db": 51134464,
+        "db-wal": 33260792,
+        "db-shm": 65536,
+        "snpv": 6666604
+      }
+    },
+    {
+      "n_at_probe": 50000,
+      "batch_fill_seconds": 6.29,
+      "per_doc_probe_count": 10,
+      "per_doc_ms_p50": 16.099,
+      "per_doc_ms_p95": 16.833,
+      "per_doc_ms_mean": 16.142,
+      "per_doc_ms_min": 15.558,
+      "per_doc_ms_max": 17.03,
+      "disk_bytes": {
+        "db": 100794368,
+        "db-wal": 54936112,
+        "db-shm": 131072,
+        "snpv": 13341604
+      }
+    },
+    {
+      "n_at_probe": 75000,
+      "batch_fill_seconds": 9.06,
+      "per_doc_probe_count": 10,
+      "per_doc_ms_p50": 24.046,
+      "per_doc_ms_p95": 24.716,
+      "per_doc_ms_mean": 24.114,
+      "per_doc_ms_min": 23.408,
+      "per_doc_ms_max": 24.803,
+      "disk_bytes": {
+        "db": 152121344,
+        "db-wal": 58137352,
+        "db-shm": 131072,
+        "snpv": 20016604
+      }
+    },
+    {
+      "n_at_probe": 100000,
+      "batch_fill_seconds": 10.95,
+      "per_doc_probe_count": 10,
+      "per_doc_ms_p50": 31.577,
+      "per_doc_ms_p95": 32.291,
+      "per_doc_ms_mean": 31.713,
+      "per_doc_ms_min": 31.443,
+      "per_doc_ms_max": 32.47,
+      "disk_bytes": {
+        "db": 201916416,
+        "db-wal": 59731792,
+        "db-shm": 131072,
+        "snpv": 26691615
+      }
+    }
+  ]
+}

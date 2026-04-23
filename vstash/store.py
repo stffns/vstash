@@ -11,6 +11,7 @@ Single .db file. WAL mode for safe concurrent reads.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import math
 import operator
@@ -395,8 +396,6 @@ class VstashStore:
     @staticmethod
     def _nlist_for(n: int) -> int:
         """FAISS rule of thumb: 4 * sqrt(N), clamped to [8, 1024]."""
-        import math
-
         if n <= 0:
             return 256  # placeholder; real nlist is derived at fit() time
         return max(8, min(1024, int(4 * math.sqrt(n))))
@@ -476,7 +475,13 @@ class VstashStore:
         }
 
     def _init_snapvec(self) -> None:
-        """Load or create the SnapIndex for the snapvec backend."""
+        """Load or create the SnapIndex for the snapvec backend.
+
+        If the on-disk ``.snpv`` is out of sync with ``vec_chunks``
+        (e.g. a process crashed between ``add_document`` and
+        ``close()`` with deferred save active), rebuild the flat
+        index from ``vec_chunks``, which is the source of truth.
+        """
         if not _HAS_SNAPVEC:
             logger.warning(
                 "snapvec backend requested but snapvec is not installed. "
@@ -486,10 +491,17 @@ class VstashStore:
             return
 
         path = self._snapvec_path
+        # ``loaded_clean`` == True when we have a SnapIndex whose on-disk
+        # dim matches ``self.embedding_dim``. Only in that case is the
+        # stale-vs-fresh comparison against ``vec_chunks`` meaningful. If
+        # dim mismatched or the file was corrupt, we already reset to an
+        # empty index and the user needs ``vstash reindex`` to rebuild
+        # with the new model; shoving old-dim vectors through the flat
+        # crash-recovery path would crash with a shape mismatch.
+        loaded_clean = False
         if path.exists():
             try:
                 self._snap = SnapIndex.load(str(path))
-                # Verify dimension match
                 if self._snap.dim != self.embedding_dim:
                     logger.warning(
                         "SnapIndex dim=%d != embedding_dim=%d. Rebuilding index.",
@@ -497,7 +509,9 @@ class VstashStore:
                         self.embedding_dim,
                     )
                     self._snap = SnapIndex(dim=self.embedding_dim, bits=self._snapvec_bits, seed=0)
-                    self._save_snapvec()
+                    self._snap.save(str(self._snapvec_path))
+                else:
+                    loaded_clean = True
             except Exception:
                 logger.warning(
                     "Failed to load SnapIndex from %s — creating empty. "
@@ -506,30 +520,137 @@ class VstashStore:
                     exc_info=True,
                 )
                 self._snap = SnapIndex(dim=self.embedding_dim, bits=self._snapvec_bits, seed=0)
-                self._save_snapvec()
+                self._snap.save(str(self._snapvec_path))
         else:
             self._snap = SnapIndex(dim=self.embedding_dim, bits=self._snapvec_bits, seed=0)
+            # Fresh in-memory index with matching dim; safe to check
+            # staleness and rebuild from vec_chunks if needed (e.g.
+            # user deleted the .snpv companion but kept the .db).
+            loaded_clean = True
+
+        # Staleness check: flat snapvec defers save until close() /
+        # checkpoint, so a crash mid-session can leave ``.snpv`` with
+        # fewer rows than ``vec_chunks``. Detect and rebuild so users
+        # do not silently lose vectors from the last write burst.
+        if loaded_clean and self._vector_backend == "snapvec" and self._snap is not None:
+            try:
+                sqlite_n = int(self._conn.execute("SELECT COUNT(*) FROM vec_chunks").fetchone()[0])
+            except sqlite3.Error:
+                sqlite_n = 0
+            snap_n = len(self._snap)
+            if sqlite_n > snap_n:
+                logger.info(
+                    "SnapIndex has %d vectors but vec_chunks has %d. Rebuilding flat "
+                    "snapvec index from SQLite (crash recovery).",
+                    snap_n,
+                    sqlite_n,
+                )
+                self._rebuild_snapvec_from_vec_chunks()
+
+    def _rebuild_snapvec_from_vec_chunks(self, batch_size: int = 10_000) -> int:
+        """Rebuild the flat SnapIndex from ``vec_chunks`` source-of-truth.
+
+        Used for crash recovery when ``_init_snapvec`` detects staleness
+        and as the ``fit_snapvec`` analogue to ``fit_ivfpq``. Returns the
+        number of vectors indexed.
+
+        Two O(N^2) patterns are avoided here (issue #252):
+
+        1. ``LIMIT ? OFFSET ?`` pagination on ``vec_chunks`` rescans
+           ``offset`` rows on every call. With N/batch_size pages the
+           total scan cost is O(N^2/batch_size). Keyset pagination
+           (``WHERE rowid > last``) is O(N) total.
+        2. ``SnapIndex.add_batch`` does ``np.vstack([self._indices,
+           batch_idx])`` internally (snapvec/_index.py:206), so calling
+           it N/batch_size times copies a growing buffer on each call.
+           Coalescing all (rowids, vectors) into a single final call
+           keeps the total memcpy at O(N).
+
+        Measured on 2026-04-22: N=100k rebuild dropped from 41.5s to
+        4.0s (10.3x) after the fix (keyset + coalesce + frombuffer).
+        Scaling went from super-linear (148x wall clock for 20x N) to
+        near-linear (24x for 20x N). See experiments/results/
+        snapvec_rebuild_scaling_{before,after}.json.
+        """
+        if self._snap is None:
+            raise RuntimeError("snapvec backend not initialised")
+        self._snap = SnapIndex(dim=self.embedding_dim, bits=self._snapvec_bits, seed=0)
+
+        # rowid >= 1 because chunks.id is INTEGER PRIMARY KEY AUTOINCREMENT
+        # and vec_chunks.rowid is fed from chunks.id; starting at 0 matches
+        # all real rows on the first page.
+        last_rowid = 0
+        rowid_parts: list[list[int]] = []
+        vector_parts: list[np.ndarray] = []
+        while True:
+            rows = self._conn.execute(
+                "SELECT rowid, embedding FROM vec_chunks WHERE rowid > ? ORDER BY rowid LIMIT ?",
+                [last_rowid, batch_size],
+            ).fetchall()
+            if not rows:
+                break
+            rowid_parts.append([int(r["rowid"]) for r in rows])
+            # np.frombuffer avoids the Python-list intermediate that
+            # struct.unpack + list() pays inside ``_deserialize``. At
+            # N=100k with dim=384 the fill path allocates ~15M Python
+            # floats otherwise; reading the blob straight into a float32
+            # array drops that to a single memcpy per row.
+            vector_parts.append(
+                np.stack([np.frombuffer(r["embedding"], dtype=np.float32) for r in rows])
+            )
+            last_rowid = int(rows[-1]["rowid"])
+
+        total = sum(len(p) for p in rowid_parts)
+        if total:
+            all_rowids = [rid for part in rowid_parts for rid in part]
+            all_vectors = (
+                vector_parts[0] if len(vector_parts) == 1 else np.concatenate(vector_parts, axis=0)
+            )
+            # Drop the per-batch lists once coalesced so the peak RSS is
+            # bounded by (concat buffer + SnapIndex internal copy) instead
+            # of 3x the final index size. Matters at N >> 500k (f32 x 384
+            # dim ~= 1.5 GB per copy). rowid_parts is tiny relative to
+            # vectors, cleared for consistency.
+            vector_parts.clear()
+            rowid_parts.clear()
+            self._snap.add_batch(all_rowids, all_vectors)
+
+        # Immediately persist the rebuilt index so subsequent opens do
+        # not re-run the rebuild unnecessarily.
+        self._snap.save(str(self._snapvec_path))
+        self._snap_dirty = False
+        logger.info("Rebuilt flat snapvec index with %d vectors", total)
+        return total
 
     def _save_snapvec(self) -> None:
-        """Persist the snapvec index to disk. Called after successful SQLite commit.
+        """Mark the in-memory snapvec index dirty; flush deferred to
+        ``close()`` / ``_checkpoint_snapvec()``.
 
-        Flat SnapIndex is small and cheap to rewrite on every commit.
-        IVFPQ with keep_full_precision=True can be 80+ MB at 100K
-        vectors — rewriting on each add_document would thrash disk.
-        For IVFPQ we mark the index dirty in memory and flush on
-        ``close()`` (or on an explicit checkpoint). SQLite's vec_chunks
-        stays the source of truth, so a crash at worst loses the most
-        recent post-fit adds and the operator can re-run
-        ``vstash snapvec fit`` to rebuild.
+        Historically the flat backend wrote ``.snpv`` on every call
+        (typically one per ``add_document``). That is a full-file
+        rewrite and costs ~1.25 ms/MB on Apple Silicon (memory
+        bandwidth). In tight per-doc ingest loops the OS page cache
+        hides the cost at small N, but once the file grows past the
+        kernel's dirty-page absorption budget (roughly a few tens of
+        MB in practice), every save starts paying real disk I/O and
+        the sum becomes quadratic. Observed on 2026-04-19: a 100k
+        per-doc ingest on flat snapvec took 40+ minutes of pure
+        ``.snpv`` rewrites.
+
+        Fix: mirror the ivfpq pattern and defer the flush for both
+        backends. ``vec_chunks`` is the SQLite source of truth, so a
+        process crash before the deferred flush runs is recoverable
+        via ``_rebuild_snapvec_from_vec_chunks`` (``_init_snapvec``
+        detects the staleness on next open and rebuilds
+        automatically).
+
+        Callers that want a synchronous flush can invoke
+        ``_checkpoint_snapvec()`` directly (``close()`` does this on
+        teardown).
         """
         if self._snap is None:
             return
-        if self._vector_backend == "snapvec-ivfpq":
-            # Defer to close() / explicit checkpoint.
-            self._snap_dirty = True
-            return
-        self._snap.save(str(self._snapvec_path))
-        self._snap_dirty = False
+        self._snap_dirty = True
 
     def _checkpoint_snapvec(self) -> None:
         """Flush the in-memory snapvec index to disk if dirty."""
@@ -675,7 +796,11 @@ class VstashStore:
                 created_at TEXT NOT NULL
             );
 
-            -- Search event telemetry for validating relevance signal
+            -- Search event telemetry for validating relevance signal.
+            -- ``miss_hint`` (issue #157 part 3, 2026-04-21) is a small
+            -- JSON blob populated by ``record_search_event`` when a
+            -- query returned empty / all-low results; consumed by
+            -- ``vstash why --recent`` for post-hoc diagnosis.
             CREATE TABLE IF NOT EXISTS search_events (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 query           TEXT NOT NULL,
@@ -683,7 +808,8 @@ class VstashStore:
                 relevance_tier  TEXT NOT NULL,
                 result_count    INTEGER NOT NULL,
                 dismissed       INTEGER NOT NULL DEFAULT 0,
-                created_at      TEXT NOT NULL
+                created_at      TEXT NOT NULL,
+                miss_hint       TEXT
             );
 
             -- Store metadata: key-value table for tracking what the
@@ -787,6 +913,13 @@ class VstashStore:
             migrations.append("ALTER TABLE documents ADD COLUMN layer TEXT")
         if "tags" not in doc_columns:
             migrations.append("ALTER TABLE documents ADD COLUMN tags TEXT")
+
+        # miss_hint column on search_events (issue #157 part 3, 2026-04-21)
+        event_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(search_events)").fetchall()
+        }
+        if event_columns and "miss_hint" not in event_columns:
+            migrations.append("ALTER TABLE search_events ADD COLUMN miss_hint TEXT")
 
         # Frequency + decay scoring columns on chunks
         chunk_columns = {row[1] for row in conn.execute("PRAGMA table_info(chunks)").fetchall()}
@@ -1075,6 +1208,15 @@ class VstashStore:
         with self._write_lock:
             self._conn.execute("BEGIN IMMEDIATE")
             pending_fts: list[tuple[int, str]] = []
+            # Coalesce every doc's vectors and rowids into one buffer so
+            # we hand ``SnapIndex.add_batch`` a single (N, dim) array at
+            # the end. Its internal ``np.vstack`` is O(total_size + new)
+            # per call, so calling it N times with size-1 inputs during
+            # the loop would be O(N^2) memory copies (measured: 500k
+            # docs via the old path took ~11 minutes of pure RAM
+            # memcpy). One final batch drops the cost to O(N).
+            pending_snap_rowids: list[int] = []
+            pending_snap_vecs: list[np.ndarray] = []
             try:
                 now_iso = datetime.now(timezone.utc).isoformat()
 
@@ -1153,9 +1295,20 @@ class VstashStore:
                         )
 
                     if self._snap is not None:
-                        snap_vecs = np.array(embeddings, dtype=np.float32)
-                        self._snap.add_batch(rowids, snap_vecs)
-                        self._snap_dirty = True
+                        pending_snap_rowids.extend(rowids)
+                        pending_snap_vecs.append(np.asarray(embeddings, dtype=np.float32))
+
+                # ONE coalesced add_batch for the whole transaction's
+                # worth of vectors instead of one per document. Avoids
+                # the quadratic np.vstack inside SnapIndex.add_batch.
+                if self._snap is not None and pending_snap_rowids:
+                    all_snap_vecs = (
+                        pending_snap_vecs[0]
+                        if len(pending_snap_vecs) == 1
+                        else np.concatenate(pending_snap_vecs, axis=0)
+                    )
+                    self._snap.add_batch(pending_snap_rowids, all_snap_vecs)
+                    self._snap_dirty = True
 
                 self._conn.commit()
                 if pending_fts:
@@ -1390,6 +1543,311 @@ class VstashStore:
     # Search — Hybrid RRF                                                  #
     # ------------------------------------------------------------------ #
 
+    @staticmethod
+    def _compute_search_cache_key(
+        query_embedding: list[float],
+        query_text: str,
+        top_k: int,
+        vec_weight: float | None,
+        fts_weight: float | None,
+        distance_cutoff: float,
+        collection: str | None,
+        project: str | None,
+        layer: str | None,
+        adaptive_rrf: bool,
+        recency_boost: float,
+        added_after: str | None,
+        added_before: str | None,
+        mmr_lambda: float,
+        retrieval_mode: str,
+        cache_epoch: int,
+    ) -> int:
+        """Build the search cache key from the full set of query parameters.
+
+        ``cache_epoch`` is mixed in so a write invalidates every cached
+        entry without having to scan the LRU. ``retrieval_mode`` is
+        one of ``"hybrid" | "vec_only" | "fts_only"`` so queries that
+        short-circuit one branch do not collide with hybrid queries of
+        the same text.
+        """
+        emb_bytes = np.array(query_embedding, dtype=np.float32).tobytes()
+        return hash(
+            (
+                emb_bytes,
+                query_text,
+                top_k,
+                vec_weight,
+                fts_weight,
+                distance_cutoff,
+                collection,
+                project,
+                layer,
+                adaptive_rrf,
+                recency_boost,
+                added_after,
+                added_before,
+                mmr_lambda,
+                retrieval_mode,
+                cache_epoch,
+            )
+        )
+
+    @staticmethod
+    def _resolve_retrieval_mode(
+        retrieval_mode: Literal["hybrid", "vec_only", "fts_only"] | None,
+        fts_only: bool,
+    ) -> Literal["hybrid", "vec_only", "fts_only"]:
+        """Normalize ``retrieval_mode`` + legacy ``fts_only`` into one enum.
+
+        Precedence: if ``retrieval_mode`` is set it wins. If only the
+        legacy ``fts_only=True`` is set, return ``"fts_only"`` and
+        emit a ``DeprecationWarning`` so callers migrate. Passing
+        ``fts_only=True`` together with a contradictory
+        ``retrieval_mode`` raises ``ValueError`` because there is no
+        obvious right choice.
+        """
+        if retrieval_mode is not None:
+            if fts_only and retrieval_mode != "fts_only":
+                raise ValueError(
+                    f"retrieval_mode={retrieval_mode!r} conflicts with fts_only=True; "
+                    "drop the legacy fts_only argument (it is deprecated)."
+                )
+            if retrieval_mode not in ("hybrid", "vec_only", "fts_only"):
+                raise ValueError(
+                    f"retrieval_mode must be one of 'hybrid', 'vec_only', 'fts_only'; "
+                    f"got {retrieval_mode!r}"
+                )
+            return retrieval_mode
+        if fts_only:
+            import warnings
+
+            warnings.warn(
+                "fts_only=True is deprecated, use retrieval_mode='fts_only' instead.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+            return "fts_only"
+        return "hybrid"
+
+    @staticmethod
+    def _resolve_rrf_weights(
+        vec_weight: float | None, fts_weight: float | None
+    ) -> tuple[float, float]:
+        """Fill in missing RRF weights with the default 0.6/0.4 split.
+
+        If only one side is provided, the other is set so the pair sums
+        to 1.0. If both are ``None``, return the historical defaults.
+        """
+        if vec_weight is None and fts_weight is None:
+            return 0.6, 0.4
+        if vec_weight is None:
+            assert fts_weight is not None
+            fts_w = float(fts_weight)
+            return 1.0 - fts_w, fts_w
+        if fts_weight is None:
+            return float(vec_weight), 1.0 - float(vec_weight)
+        return float(vec_weight), float(fts_weight)
+
+    @staticmethod
+    def _build_fts_match_query(
+        query_text: str, words: list[str] | None = None
+    ) -> tuple[str, list[str]]:
+        """Build an injection-safe FTS5 MATCH string from raw query text.
+
+        Returns ``(match_string, quoted_words)``. Words of length 1 are
+        dropped (FTS5 tokenizer usually strips them anyway) and each
+        token is double-quoted so FTS5 cannot interpret operators like
+        NEAR/NOT/OR from user input. If nothing survives, the entire
+        query is quoted as a single phrase.
+
+        ``words`` may be passed by callers that already split the query
+        (e.g. ``search()``) so we do not tokenize twice on the hot path.
+        """
+        if words is None:
+            words = query_text.split()
+        quoted_words = ['"' + w.replace('"', '""') + '"' for w in words if len(w) > 1]
+        if quoted_words:
+            return " OR ".join(quoted_words), quoted_words
+        return '"' + query_text.replace('"', '""') + '"', quoted_words
+
+    def _fuse_rrf_scores(
+        self,
+        vec_rows: list,
+        fts_rows: list,
+        vec_weight: float,
+        fts_weight: float,
+        relevant_chunk_ids: set[int],
+        effective_k: int,
+        fts_only: bool,
+        explain: bool,
+    ) -> tuple[
+        dict[int, dict[str, str | int | float]],
+        dict[int, float],
+        dict[int, float],
+        dict[int, int],
+    ]:
+        """Run Reciprocal Rank Fusion over vector and FTS result sets.
+
+        Returns ``(scores, explain_rrf_vec, explain_rrf_fts, explain_fts_rank)``.
+        The explain maps are populated only when ``explain=True``, otherwise
+        they are empty.
+
+        FTS rows that neither pass the vector distance filter nor land in
+        the top ``effective_k * 2`` FTS hits are dropped, to keep weak
+        keyword noise out of the score pool when vector search has a
+        strong opinion. In ``fts_only`` mode this gate is disabled.
+        """
+        scores: dict[int, dict[str, str | int | float]] = {}
+        explain_rrf_vec: dict[int, float] = {}
+        explain_rrf_fts: dict[int, float] = {}
+        explain_fts_rank: dict[int, int] = {}
+
+        for rank, row in enumerate(vec_rows):
+            chunk_id: int = row["id"]
+            vec_contrib = vec_weight * (1.0 / (RRF_K + rank))
+            scores[chunk_id] = {
+                "id": chunk_id,
+                "text": row["text"],
+                "title": row["title"],
+                "path": row["path"],
+                "chunk": row["seq"],
+                "rrf": vec_contrib,
+                "added_at": row["added_at"],
+                "collection": row["collection"],
+                "tags": row["tags"],
+                "layer": row["layer"],
+            }
+            if explain:
+                explain_rrf_vec[chunk_id] = vec_contrib
+
+        for rank, row in enumerate(fts_rows):
+            chunk_id = row["id"]
+            # is_fts_top is the gate that lets FTS-only hits into the
+            # score pool when they are not also in the vector candidate
+            # set. In fts_only mode the vector signal is absent, so we
+            # let every FTS row through up to the candidate pool.
+            is_fts_top = True if fts_only else rank < effective_k * 2
+            fts_contribution = fts_weight * (1.0 / (RRF_K + rank))
+            if chunk_id in scores:
+                scores[chunk_id]["rrf"] = float(scores[chunk_id]["rrf"]) + fts_contribution
+                if explain:
+                    explain_rrf_fts[chunk_id] = fts_contribution
+                    explain_fts_rank[chunk_id] = rank
+            elif chunk_id in relevant_chunk_ids or is_fts_top:
+                scores[chunk_id] = {
+                    "id": chunk_id,
+                    "text": row["text"],
+                    "title": row["title"],
+                    "path": row["path"],
+                    "chunk": row["seq"],
+                    "rrf": fts_contribution,
+                    "added_at": row["added_at"],
+                    "collection": row["collection"],
+                    "tags": row["tags"],
+                    "layer": row["layer"],
+                }
+                if explain:
+                    explain_rrf_fts[chunk_id] = fts_contribution
+                    explain_fts_rank[chunk_id] = rank
+
+        return scores, explain_rrf_vec, explain_rrf_fts, explain_fts_rank
+
+    def _apply_recency_boost(
+        self,
+        ranked: list[dict[str, str | int | float]],
+        recency_boost: float,
+    ) -> list[dict[str, str | int | float]]:
+        """Multiply each chunk's RRF score by an exponential decay factor.
+
+        ``recency_boost=0`` disables the boost. Chunks whose ``created_at``
+        is unparseable are left untouched. Returns a newly sorted list
+        so callers always see post-boost ordering.
+        """
+        if recency_boost <= 0 or not ranked:
+            return ranked
+
+        now = datetime.now(timezone.utc)
+        chunk_ids = [int(r["id"]) for r in ranked]
+        # Batch the IN clause so large top_k / candidate pools don't trip
+        # SQLite's default SQLITE_LIMIT_VARIABLE_NUMBER (999 on most builds).
+        created_map: dict[int, datetime] = {}
+        for start in range(0, len(chunk_ids), _SQLITE_PARAM_BATCH):
+            batch = chunk_ids[start : start + _SQLITE_PARAM_BATCH]
+            placeholders = ",".join("?" * len(batch))
+            for row in self._conn.execute(
+                f"SELECT id, created_at FROM chunks WHERE id IN ({placeholders})",
+                batch,
+            ).fetchall():
+                try:
+                    created_map[row["id"]] = datetime.fromisoformat(row["created_at"])
+                except (TypeError, ValueError):
+                    pass
+
+        for r in ranked:
+            cid = int(r["id"])
+            if cid in created_map:
+                days_ago = max(0.0, (now - created_map[cid]).total_seconds() / 86400)
+                decay = math.exp(-0.05 * days_ago)
+                r["rrf"] = float(r["rrf"]) * (1.0 + recency_boost * decay)
+
+        return sorted(ranked, key=lambda x: float(x["rrf"]), reverse=True)
+
+    @staticmethod
+    def _build_search_results(
+        ranked: list[dict[str, str | int | float]],
+        *,
+        explain: bool,
+        explain_vec: dict[int, tuple[int, float]],
+        explain_rrf_vec: dict[int, float],
+        explain_rrf_fts: dict[int, float],
+        explain_fts_rank: dict[int, int],
+        quoted_words: list[str],
+        vec_weight: float,
+        fts_weight: float,
+    ) -> list[SearchResult]:
+        """Materialize ``SearchResult`` instances with optional ExplainInfo.
+
+        All rounding is applied here so callers see stable floating-point
+        values (scores to 6 decimals, distances to 4).
+        """
+        explain_map: dict[int, ExplainInfo] = {}
+        if explain:
+            fts_terms = [w.strip('"') for w in quoted_words] if quoted_words else []
+            for r in ranked:
+                cid = int(r["id"])
+                vec_info = explain_vec.get(cid)
+                rrf_vec_val = round(explain_rrf_vec.get(cid, 0.0), 6)
+                rrf_fts_val = round(explain_rrf_fts.get(cid, 0.0), 6)
+                explain_map[cid] = ExplainInfo(
+                    vec_rank=vec_info[0] if vec_info else None,
+                    vec_distance=round(vec_info[1], 4) if vec_info else None,
+                    fts_rank=explain_fts_rank.get(cid),
+                    rrf_vec=rrf_vec_val,
+                    rrf_fts=rrf_fts_val,
+                    rrf_total=round(rrf_vec_val + rrf_fts_val, 6),
+                    mmr_penalty=round(float(r.get("_mmr_penalty", 0.0)), 4),
+                    fts_terms=fts_terms,
+                    rrf_vec_weight=vec_weight,
+                    rrf_fts_weight=fts_weight,
+                )
+
+        return [
+            SearchResult(
+                chunk_id=int(r["id"]),
+                text=str(r["text"]),
+                title=str(r["title"]),
+                path=str(r["path"]),
+                chunk=int(r["chunk"]),
+                score=round(float(r["rrf"]), 6),
+                explain=explain_map.get(int(r["id"])) if explain else None,
+                added_at=r.get("added_at"),
+                collection=r.get("collection"),
+                tags=r.get("tags"),
+                layer=r.get("layer"),
+            )
+            for r in ranked
+        ]
+
     def search(
         self,
         query_embedding: list[float],
@@ -1408,6 +1866,9 @@ class VstashStore:
         added_before: str | None = None,
         mmr_lambda: float = 0.5,
         fts_only: bool = False,
+        retrieval_mode: Literal["hybrid", "vec_only", "fts_only"] | None = None,
+        exact_match: str | None = None,
+        exact_match_case_sensitive: bool = False,
         _tracer: _PipelineTracer | None = None,
     ) -> list[SearchResult]:
         """Hybrid search: vector (semantic) + FTS5 (keyword) combined with RRF.
@@ -1430,22 +1891,49 @@ class VstashStore:
             collection: If set, restrict search to documents in this collection.
             project: If set, restrict search to documents with this project tag.
             layer: If set, restrict search to documents with this layer tag.
-            fts_only: If True, short-circuit the pipeline to FTS5 only (#152):
-                no vector ANN scan, no distance cutoff, no adaptive
-                RRF weight computation. FTS5 hits are still fed
-                through the RRF scoring formula (with ``vec_weight=0.0``
-                and ``fts_weight=1.0``, so each hit scores
-                ``1/(60 + fts_rank)``), through MMR dedup, through the
-                optional recency boost, and through context expansion
-                — it is not a raw BM25 score dump.  Useful for
-                debugging ranking, for queries where vector embeddings
-                are known to be diffuse (cross-lingual, highly
-                technical), or as a deliberate fallback when the
-                vector pool is expected to be empty.
+            exact_match: Optional substring that each returned chunk's
+                ``text`` must contain. Applied as a post-filter after
+                the full pipeline so the upstream candidate pool does
+                NOT know about this constraint -- callers who need a
+                guaranteed top_k under a selective substring should
+                request a larger ``top_k`` and accept that fewer
+                results may come back. Bypasses FTS5 tokenization, so
+                literal strings with punctuation / casing / code
+                identifiers survive (unlike the FTS5 keyword path
+                which stems and lowercases). #106, 2026-04-21.
+            exact_match_case_sensitive: Toggle for the above. Default
+                ``False`` does a casefold comparison which matches
+                typical retrieval-filter UX expectations.
+            fts_only: DEPRECATED, use ``retrieval_mode="fts_only"``.
+                Will be removed in a future release.
+            retrieval_mode: Which search branches to run (default
+                ``"hybrid"``). Three values:
+
+                - ``"hybrid"`` (default): vector ANN + FTS5 + adaptive
+                  RRF + distance cutoff + MMR. This is the pipeline the
+                  paper and README benchmarks are measured against.
+                - ``"fts_only"`` (#152): skip the vector ANN scan,
+                  distance cutoff, and adaptive RRF. FTS5 hits still
+                  flow through RRF scoring (``vec_weight=0.0``,
+                  ``fts_weight=1.0``), MMR, recency boost, and context
+                  expansion — not a raw BM25 dump. Useful for queries
+                  with diffuse vector representations (cross-lingual,
+                  highly technical) or as a fallback when the vector
+                  pool is expected to be empty.
+                - ``"vec_only"`` (#275): symmetric to ``"fts_only"``.
+                  Skip the FTS5 keyword search; force
+                  ``vec_weight=1.0``, ``fts_weight=0.0``. Useful when
+                  the corpus has no meaningful keyword signal (tabular
+                  data, code where identifiers are noise, cross-lingual
+                  corpora where tokenization disagrees with the query)
+                  or for benchmarking / ranking debug.
 
         Returns:
             Ranked list of SearchResult ordered by descending score.
         """
+        _mode = self._resolve_retrieval_mode(retrieval_mode, fts_only)
+        _fts_only = _mode == "fts_only"
+        _vec_only = _mode == "vec_only"
         # Fail-safe validation at the public API boundary (#133).  Runs
         # before any work — if the caller passed a 50k-token query or a
         # negative top_k, we reject it here instead of crashing inside
@@ -1462,29 +1950,31 @@ class VstashStore:
         )
 
         # --- Query cache key ---
+        # Skip the cache when an exact_match filter is ACTIVE (non-empty).
+        # An empty string and None are no-ops against the post-filter and
+        # stay cacheable. Including the substring in the cache key would
+        # be correct but blow up key cardinality and reduce reuse; the
+        # filter is rare enough that the simpler skip is preferable.
         _cache_key: int | None = None
         _cache_max = self._cache_config.query_cache_size
-        if _cache_max > 0 and _tracer is None and not explain:
-            _emb_bytes = np.array(query_embedding, dtype=np.float32).tobytes()
-            _cache_key = hash(
-                (
-                    _emb_bytes,
-                    query_text,
-                    top_k,
-                    vec_weight,
-                    fts_weight,
-                    distance_cutoff,
-                    collection,
-                    project,
-                    layer,
-                    adaptive_rrf,
-                    recency_boost,
-                    added_after,
-                    added_before,
-                    mmr_lambda,
-                    fts_only,
-                    self._cache_epoch,
-                )
+        if _cache_max > 0 and _tracer is None and not explain and not exact_match:
+            _cache_key = self._compute_search_cache_key(
+                query_embedding=query_embedding,
+                query_text=query_text,
+                top_k=top_k,
+                vec_weight=vec_weight,
+                fts_weight=fts_weight,
+                distance_cutoff=distance_cutoff,
+                collection=collection,
+                project=project,
+                layer=layer,
+                adaptive_rrf=adaptive_rrf,
+                recency_boost=recency_boost,
+                added_after=added_after,
+                added_before=added_before,
+                mmr_lambda=mmr_lambda,
+                retrieval_mode=_mode,
+                cache_epoch=self._cache_epoch,
             )
 
         # Per-search miss-analysis tracker (#108).  The tracer is owned
@@ -1526,16 +2016,28 @@ class VstashStore:
                     registry.counter_inc("query_cache_hits_total")
                     return cached
 
-            # FTS-only short-circuit (#152): bypass vector search entirely.
-            # This forces the weights to (0.0, 1.0) and disables adaptive
-            # RRF so the pipeline cannot silently re-enable the vector
-            # path.  The vector search, distance cutoff, and relevance
-            # filter blocks below are all guarded on `not fts_only` or
-            # on `vec_rows` being non-empty, so the downstream MMR /
-            # scoring path runs unchanged on FTS-only input.
-            if fts_only:
+            # Branch short-circuits for non-hybrid modes.
+            #
+            # FTS-only (#152): bypass vector search entirely. Force
+            # weights to (0.0, 1.0) and disable adaptive RRF so the
+            # pipeline cannot silently re-enable the vector path. The
+            # vector search, distance cutoff, and relevance filter
+            # blocks below are guarded on ``not _fts_only`` or on
+            # ``vec_rows`` being non-empty, so downstream MMR / scoring
+            # runs unchanged.
+            #
+            # Vec-only (#275): symmetric. Bypass the FTS5 query. Force
+            # weights to (1.0, 0.0) and disable adaptive RRF so the
+            # FTS path cannot re-enable itself via IDF signals. The
+            # ``fts_rows`` block below is skipped when ``_vec_only``
+            # so no FTS hits ever enter the RRF fusion.
+            if _fts_only:
                 vec_weight = 0.0
                 fts_weight = 1.0
+                adaptive_rrf = False
+            elif _vec_only:
+                vec_weight = 1.0
+                fts_weight = 0.0
                 adaptive_rrf = False
 
             # Adaptive RRF: compute weights from query characteristics (IDF + length)
@@ -1544,12 +2046,7 @@ class VstashStore:
                 vec_weight, fts_weight, distance_cutoff = self._compute_adaptive_rrf_params(
                     query_text, default_cutoff=distance_cutoff
                 )
-            if vec_weight is None and fts_weight is None:
-                vec_weight, fts_weight = 0.6, 0.4
-            elif vec_weight is None:
-                vec_weight = 1.0 - fts_weight
-            elif fts_weight is None:
-                fts_weight = 1.0 - vec_weight
+            vec_weight, fts_weight = self._resolve_rrf_weights(vec_weight, fts_weight)
 
             # Adaptive candidate pool — avoid pulling half the corpus on small DBs
             effective_k = top_k
@@ -1567,7 +2064,7 @@ class VstashStore:
 
             # --- Vector search ---
             vec_rows: list = []
-            if fts_only:
+            if _fts_only:
                 # #152: skip vector ANN entirely. No candidates, no
                 # distances, no distance-cutoff work downstream. Set
                 # last_best_distance to the worst possible so the
@@ -1585,12 +2082,12 @@ class VstashStore:
                     _tracer.record(
                         "vector_search",
                         passed=True,
-                        detail="fts_only=True: vector search intentionally skipped by caller",
+                        detail="retrieval_mode='fts_only': vector search intentionally skipped by caller",
                     )
                     _tracer.record(
                         "distance_cutoff",
                         passed=True,
-                        detail="fts_only=True: no distance cutoff applied",
+                        detail="retrieval_mode='fts_only': no distance cutoff applied",
                     )
             elif self._snap is not None and len(self._snap) > 0:
                 # SnapVec ANN search — returns list[(id, distance)]
@@ -1643,7 +2140,7 @@ class VstashStore:
             # In fts_only mode the "vector_search" and "distance_cutoff"
             # stages were already recorded as skipped above; don't
             # overwrite them with a generic "not found" verdict.
-            if track_target is not None and not fts_only:
+            if track_target is not None and not _fts_only:
                 target_vec_rank: int | None = None
                 target_vec_distance: float | None = None
                 for i, row in enumerate(vec_rows):
@@ -1754,65 +2251,71 @@ class VstashStore:
                     _explain_vec[int(row["id"])] = (rank, float(row["distance"]))
 
             # --- FTS5 search ---
-            # Quote each word individually and join with OR for keyword matching.
-            # This preserves injection safety (each token is double-quoted to
-            # prevent FTS5 syntax like NEAR, NOT, OR from being interpreted)
-            # while allowing keyword-level matching instead of exact-phrase.
             words = query_text.split()
-            quoted_words = ['"' + w.replace('"', '""') + '"' for w in words if len(w) > 1]
-            safe_query = (
-                " OR ".join(quoted_words)
-                if quoted_words
-                else '"' + query_text.replace('"', '""') + '"'
-            )
-            try:
-                fts_rows = self._conn.execute(
-                    f"""
-                    SELECT c.id, c.text, d.title, d.path, c.seq,
-                           rank as fts_rank, d.added_at, d.collection, d.tags, d.layer
-                    FROM fts_chunks f
-                    JOIN chunks c ON c.id = f.rowid
-                    JOIN documents d ON d.id = c.doc_id
-                    WHERE fts_chunks MATCH ?
-                      {col_clause}
-                    ORDER BY rank
-                    LIMIT ?
-                    """,
-                    [safe_query, *filter_params, candidate_pool],
-                ).fetchall()
-            except sqlite3.OperationalError:
-                # FTS5 query syntax error (e.g. single char) — fall back to no FTS
+            safe_query, quoted_words = self._build_fts_match_query(query_text, words)
+            if _vec_only:
+                # #275: caller asked to bypass keyword search entirely.
+                # Produce no FTS rows; downstream RRF scoring uses
+                # weights (1.0, 0.0) so the absence cannot re-weight
+                # anything. Record the stage in the tracer as an
+                # intentional skip (not a miss) for parity with the
+                # fts_only path above.
                 fts_rows = []
-
-            # --- Track: FTS search stage ---
-            if track_target is not None:
-                target_fts_rank: int | None = None
-                for i, row in enumerate(fts_rows):
-                    if int(row["id"]) == track_target:
-                        target_fts_rank = i
-                        break
-                stemmed_terms = self._stem_terms(words) if words else []
-                if target_fts_rank is not None:
+                if track_target is not None and _tracer is not None:
                     _tracer.record(
                         "fts_search",
                         passed=True,
-                        rank=target_fts_rank,
-                        detail=(
-                            f"Matched FTS at rank {target_fts_rank + 1}/{len(fts_rows)}. "
-                            f"Stemmed query terms: {stemmed_terms}"
-                        ),
+                        detail="retrieval_mode='vec_only': FTS5 search intentionally skipped by caller",
                     )
-                else:
-                    _tracer.record(
-                        "fts_search",
-                        passed=False,
-                        detail=(
-                            f"Did not match FTS5. Stemmed query terms: {stemmed_terms}. "
-                            "The chunk text does not contain any of these stems "
-                            "(after porter stemming)."
-                        ),
-                        counterfactual="Would need a query containing words from the chunk's vocabulary",
-                    )
+            else:
+                try:
+                    fts_rows = self._conn.execute(
+                        f"""
+                        SELECT c.id, c.text, d.title, d.path, c.seq,
+                               rank as fts_rank, d.added_at, d.collection, d.tags, d.layer
+                        FROM fts_chunks f
+                        JOIN chunks c ON c.id = f.rowid
+                        JOIN documents d ON d.id = c.doc_id
+                        WHERE fts_chunks MATCH ?
+                          {col_clause}
+                        ORDER BY rank
+                        LIMIT ?
+                        """,
+                        [safe_query, *filter_params, candidate_pool],
+                    ).fetchall()
+                except sqlite3.OperationalError:
+                    # FTS5 query syntax error (e.g. single char) — fall back to no FTS
+                    fts_rows = []
+
+                # --- Track: FTS search stage ---
+                if track_target is not None:
+                    target_fts_rank: int | None = None
+                    for i, row in enumerate(fts_rows):
+                        if int(row["id"]) == track_target:
+                            target_fts_rank = i
+                            break
+                    stemmed_terms = self._stem_terms(words) if words else []
+                    if target_fts_rank is not None:
+                        _tracer.record(
+                            "fts_search",
+                            passed=True,
+                            rank=target_fts_rank,
+                            detail=(
+                                f"Matched FTS at rank {target_fts_rank + 1}/{len(fts_rows)}. "
+                                f"Stemmed query terms: {stemmed_terms}"
+                            ),
+                        )
+                    else:
+                        _tracer.record(
+                            "fts_search",
+                            passed=False,
+                            detail=(
+                                f"Did not match FTS5. Stemmed query terms: {stemmed_terms}. "
+                                "The chunk text does not contain any of these stems "
+                                "(after porter stemming)."
+                            ),
+                            counterfactual="Would need a query containing words from the chunk's vocabulary",
+                        )
 
             # --- Adaptive fallback: vector pool empty (#156) ---
             # If the vector pool is empty — either the initial ANN scan
@@ -1857,67 +2360,16 @@ class VstashStore:
                     )
 
             # --- Reciprocal Rank Fusion ---
-            scores: dict[int, dict[str, str | int | float]] = {}
-            _explain_rrf_vec: dict[int, float] = {}  # chunk_id -> vec RRF contribution
-            _explain_rrf_fts: dict[int, float] = {}  # chunk_id -> fts RRF contribution
-            _explain_fts_rank: dict[int, int] = {}  # chunk_id -> fts rank
-
-            for rank, row in enumerate(vec_rows):
-                chunk_id: int = row["id"]
-                vec_contrib = vec_weight * (1.0 / (RRF_K + rank))
-                scores[chunk_id] = {
-                    "id": chunk_id,
-                    "text": row["text"],
-                    "title": row["title"],
-                    "path": row["path"],
-                    "chunk": row["seq"],
-                    "rrf": vec_contrib,
-                    "added_at": row["added_at"],
-                    "collection": row["collection"],
-                    "tags": row["tags"],
-                    "layer": row["layer"],
-                }
-                if explain:
-                    _explain_rrf_vec[chunk_id] = vec_contrib
-
-            for rank, row in enumerate(fts_rows):
-                chunk_id = row["id"]
-                # Only include FTS results that also passed vector relevance filter,
-                # OR that are in the top FTS results (strong keyword match).
-                # is_fts_top is the gate that lets FTS-only hits into
-                # the score pool when they are not also in the vector
-                # candidate set.  Normally we cap at top_k*2 to stop
-                # weak keyword noise from polluting results when
-                # vector search has a strong opinion.  In fts_only
-                # mode there is no vector signal, so the cap becomes
-                # a counter-productive artificial truncation — let
-                # every FTS row through up to the candidate pool.
-                if fts_only:
-                    is_fts_top = True
-                else:
-                    is_fts_top = rank < effective_k * 2
-                fts_contribution = fts_weight * (1.0 / (RRF_K + rank))
-                if chunk_id in scores:
-                    scores[chunk_id]["rrf"] = float(scores[chunk_id]["rrf"]) + fts_contribution
-                    if explain:
-                        _explain_rrf_fts[chunk_id] = fts_contribution
-                        _explain_fts_rank[chunk_id] = rank
-                elif chunk_id in relevant_chunk_ids or is_fts_top:
-                    scores[chunk_id] = {
-                        "id": chunk_id,
-                        "text": row["text"],
-                        "title": row["title"],
-                        "path": row["path"],
-                        "chunk": row["seq"],
-                        "rrf": fts_contribution,
-                        "added_at": row["added_at"],
-                        "collection": row["collection"],
-                        "tags": row["tags"],
-                        "layer": row["layer"],
-                    }
-                    if explain:
-                        _explain_rrf_fts[chunk_id] = fts_contribution
-                        _explain_fts_rank[chunk_id] = rank
+            scores, _explain_rrf_vec, _explain_rrf_fts, _explain_fts_rank = self._fuse_rrf_scores(
+                vec_rows=vec_rows,
+                fts_rows=fts_rows,
+                vec_weight=vec_weight,
+                fts_weight=fts_weight,
+                relevant_chunk_ids=relevant_chunk_ids,
+                effective_k=effective_k,
+                fts_only=_fts_only,
+                explain=explain,
+            )
 
             # Sort by RRF score descending
             ranked = sorted(scores.values(), key=lambda x: float(x["rrf"]), reverse=True)
@@ -1953,32 +2405,9 @@ class VstashStore:
                     )
 
             # --- Recency boost (temporal decay) ---
-            # When recency_boost > 0, multiply each chunk's RRF score by a decay
-            # factor based on how recently it was created.  This biases results
-            # toward recent content — useful for agentic memory where the latest
-            # context is more likely to be relevant.
-            if recency_boost > 0 and ranked:
-                now = datetime.now(timezone.utc)
-                chunk_ids = [int(r["id"]) for r in ranked]
-                placeholders = ",".join("?" * len(chunk_ids))
-                rows = self._conn.execute(
-                    f"SELECT id, created_at FROM chunks WHERE id IN ({placeholders})",
-                    chunk_ids,
-                ).fetchall()
-                created_map = {}
-                for row in rows:
-                    try:
-                        created_map[row["id"]] = datetime.fromisoformat(row["created_at"])
-                    except (TypeError, ValueError):
-                        pass
-                for r in ranked:
-                    cid = int(r["id"])
-                    if cid in created_map:
-                        days_ago = max(0.0, (now - created_map[cid]).total_seconds() / 86400)
-                        decay = math.exp(-0.05 * days_ago)
-                        r["rrf"] = float(r["rrf"]) * (1.0 + recency_boost * decay)
-                # Re-sort after boost
-                ranked = sorted(ranked, key=lambda x: float(x["rrf"]), reverse=True)
+            # Biases scores toward recent content, useful for agentic
+            # memory where latest context tends to be most relevant.
+            ranked = self._apply_recency_boost(ranked, recency_boost)
 
             # --- Track: recency boost stage ---
             if track_target is not None and recency_boost > 0:
@@ -2060,44 +2489,40 @@ class VstashStore:
                             counterfactual=f"Would appear with top_k ≥ {target_final_rank + 1}",
                         )
 
-            # --- Build ExplainInfo per chunk when requested ---
-            _explain_map: dict[int, ExplainInfo] = {}
-            if explain:
-                fts_terms = [w.strip('"') for w in quoted_words] if quoted_words else []
-                for r in ranked:
-                    cid = int(r["id"])
-                    vec_info = _explain_vec.get(cid)
-                    rrf_vec_val = round(_explain_rrf_vec.get(cid, 0.0), 6)
-                    rrf_fts_val = round(_explain_rrf_fts.get(cid, 0.0), 6)
-                    _explain_map[cid] = ExplainInfo(
-                        vec_rank=vec_info[0] if vec_info else None,
-                        vec_distance=round(vec_info[1], 4) if vec_info else None,
-                        fts_rank=_explain_fts_rank.get(cid),
-                        rrf_vec=rrf_vec_val,
-                        rrf_fts=rrf_fts_val,
-                        rrf_total=round(rrf_vec_val + rrf_fts_val, 6),
-                        mmr_penalty=round(float(r.get("_mmr_penalty", 0.0)), 4),
-                        fts_terms=fts_terms,
-                        rrf_vec_weight=vec_weight,
-                        rrf_fts_weight=fts_weight,
-                    )
+            results = self._build_search_results(
+                ranked,
+                explain=explain,
+                explain_vec=_explain_vec,
+                explain_rrf_vec=_explain_rrf_vec,
+                explain_rrf_fts=_explain_rrf_fts,
+                explain_fts_rank=_explain_fts_rank,
+                quoted_words=quoted_words,
+                vec_weight=vec_weight,
+                fts_weight=fts_weight,
+            )
 
-            results = [
-                SearchResult(
-                    chunk_id=int(r["id"]),
-                    text=str(r["text"]),
-                    title=str(r["title"]),
-                    path=str(r["path"]),
-                    chunk=int(r["chunk"]),
-                    score=round(float(r["rrf"]), 6),
-                    explain=_explain_map.get(int(r["id"])) if explain else None,
-                    added_at=r.get("added_at"),
-                    collection=r.get("collection"),
-                    tags=r.get("tags"),
-                    layer=r.get("layer"),
-                )
-                for r in ranked
-            ]
+            # Exact-match text filter (#106). Applied post-pipeline on
+            # the final ranked list: a chunk that otherwise would have
+            # made the top-k is dropped unless its ``text`` contains
+            # ``exact_match`` as a substring. Bypasses FTS5 tokenization
+            # so identifiers / phrases that stem or tokenize differently
+            # than the user typed survive -- e.g. ``exact_match="rate-
+            # limit"`` requires the literal string, not ``rate limit``.
+            #
+            # Case-sensitive opt-in via ``exact_match_case_sensitive``.
+            # Default is case-insensitive which is the usual UX
+            # expectation for retrieval filters.
+            #
+            # Post-filter means the candidate pool upstream was sized
+            # without knowing about this filter, so callers who need a
+            # guaranteed top_k under a selective substring should pass a
+            # larger ``top_k`` (e.g. 3x) or accept a smaller result set.
+            if exact_match:
+                if exact_match_case_sensitive:
+                    results = [r for r in results if exact_match in r.text]
+                else:
+                    needle = exact_match.casefold()
+                    results = [r for r in results if needle in r.text.casefold()]
 
             # Stash values the finally block needs to log slow queries
             # with accurate data.
@@ -2608,6 +3033,10 @@ class VstashStore:
         # hoist would do (flagged in the #167 review).
         norm_scores = [(s - s_min) / s_range for s in scores]
 
+        # Precompute invariant MMR relevance terms to avoid O(K * N) recalculations
+        relevance_terms = [mmr_lambda * ns for ns in norm_scores]
+        penalty_multiplier = 1.0 - mmr_lambda
+
         # Extract values into fast lists for index-based access
         doc_keys = [str(r["path"]) for r in ranked]
         chunk_embs = [embeddings.get(int(r["id"])) for r in ranked]
@@ -2624,12 +3053,9 @@ class VstashStore:
             best_mmr = -float("inf")
 
             for idx in remaining:
-                norm_score = norm_scores[idx]
-
-                # Diversity penalty: only against same-document selections.
                 max_sim = max_sims[idx]
 
-                mmr_score = mmr_lambda * norm_score - (1 - mmr_lambda) * max_sim
+                mmr_score = relevance_terms[idx] - penalty_multiplier * max_sim
                 if mmr_score > best_mmr:
                     best_mmr = mmr_score
                     best_idx = idx
@@ -3501,6 +3927,7 @@ class VstashStore:
             }
         except Exception:
             # fts5vocab table may not exist — disable adaptive IDF
+            logger.debug("fts_chunks_vocab unavailable; adaptive IDF disabled", exc_info=True)
             self._idf_cache = ({}, 0)
             return self._idf_cache
 
@@ -3711,17 +4138,32 @@ class VstashStore:
         best_distance: float,
         relevance_tier: str,
         result_count: int,
+        miss_hint: dict | None = None,
     ) -> int:
         """Record a search event for discard telemetry.
+
+        Args:
+            query: Raw query text.
+            best_distance: Distance of the top result (smaller = more relevant).
+            relevance_tier: ``"high"`` | ``"medium"`` | ``"low"`` bucket.
+            result_count: Number of rows the caller surfaced to the user.
+            miss_hint: Optional lightweight diagnostic blob, persisted as
+                JSON in the ``miss_hint`` column. Issue #157 part 3
+                (2026-04-21). Typical shape:
+                ``{"reason": "empty" | "all_low", "best_distance": ...,
+                "tier": ..., "result_count": ..., "top_k_requested": ...}``.
+                Consumed by ``vstash why --recent``.
 
         Returns the event ID so it can be marked as dismissed later.
         """
         now_iso = datetime.now(timezone.utc).isoformat()
+        hint_json = json.dumps(miss_hint) if miss_hint is not None else None
         with self._write_lock:
             cursor = self._conn.execute(
                 "INSERT INTO search_events (query, best_distance, relevance_tier, "
-                "result_count, dismissed, created_at) VALUES (?, ?, ?, ?, 0, ?)",
-                [query, best_distance, relevance_tier, result_count, now_iso],
+                "result_count, dismissed, created_at, miss_hint) "
+                "VALUES (?, ?, ?, ?, 0, ?, ?)",
+                [query, best_distance, relevance_tier, result_count, now_iso, hint_json],
             )
             # Prune to keep only the last 1000 entries
             self._conn.execute(
@@ -3730,6 +4172,42 @@ class VstashStore:
             )
             self._conn.commit()
             return cursor.lastrowid  # type: ignore[return-value]
+
+    def recent_miss_hints(self, limit: int = 10) -> list[dict]:
+        """Return the N most recent search_events that carry a miss_hint,
+        newest first. Used by ``vstash why --recent``.
+
+        Raises ``ValueError`` when ``limit < 1`` so a negative value
+        does not accidentally turn into SQLite's "unlimited" sentinel
+        (``LIMIT -1``)."""
+        limit = int(limit)
+        if limit < 1:
+            raise ValueError(f"limit must be >= 1, got {limit}")
+        rows = self._conn.execute(
+            "SELECT id, query, best_distance, relevance_tier, result_count, "
+            "miss_hint, created_at FROM search_events "
+            "WHERE miss_hint IS NOT NULL "
+            "ORDER BY id DESC LIMIT ?",
+            [limit],
+        ).fetchall()
+        out: list[dict] = []
+        for r in rows:
+            try:
+                hint = json.loads(r["miss_hint"]) if r["miss_hint"] else {}
+            except (TypeError, ValueError):
+                hint = {}
+            out.append(
+                {
+                    "id": int(r["id"]),
+                    "query": str(r["query"]),
+                    "best_distance": float(r["best_distance"]),
+                    "relevance_tier": str(r["relevance_tier"]),
+                    "result_count": int(r["result_count"]),
+                    "created_at": str(r["created_at"]),
+                    "miss_hint": hint,
+                }
+            )
+        return out
 
     def mark_search_dismissed(self, event_id: int) -> None:
         """Mark a search event as dismissed (user didn't engage with results)."""
@@ -3803,36 +4281,48 @@ class VstashStore:
                     doc_id_map[r.chunk_id] = row["doc_id"]
 
         # -- Step 2: batch-fetch adjacent chunks grouped by doc_id --------
-        # Build (doc_id, seq_lo, seq_hi) ranges and group by doc_id to
-        # minimise queries.  Each doc_id gets one range query that covers
-        # the union of all windows for results in that document.
-        from collections import defaultdict
+        # To avoid fetching massive unneeded intermediate rows when resolving
+        # exact sparse matches against compound keys, we calculate exactly
+        # which (doc_id, seq) pairs are needed, and query them in batches
+        # via a Common Table Expression (CTE) with a VALUES clause.
 
-        doc_ranges: dict[str, tuple[int, int]] = {}
-        doc_result_indices: dict[str, list[int]] = defaultdict(list)
-        for idx, r in enumerate(results):
+        needed_targets = set()
+        for r in results:
             did = doc_id_map.get(r.chunk_id)
             if did is None:
                 continue
-            lo, hi = r.chunk - window, r.chunk + window
-            if did in doc_ranges:
-                old_lo, old_hi = doc_ranges[did]
-                doc_ranges[did] = (min(old_lo, lo), max(old_hi, hi))
-            else:
-                doc_ranges[did] = (lo, hi)
-            doc_result_indices[did].append(idx)
+            for seq in range(r.chunk - window, r.chunk + window + 1):
+                if seq >= 0:  # sequence numbers are 0-indexed and non-negative
+                    needed_targets.add((did, seq))
 
-        # Fetch all needed chunks per doc_id in one query each.
+        # Sort target pairs by (doc_id, seq) so the SQL lookup touches rows
+        # in roughly sequential order within each document. Helps page-cache
+        # locality for large stores without changing correctness.
+        needed_targets_list = sorted(needed_targets)
+
         # Key: (doc_id, seq) → text
         chunk_text_map: dict[tuple[str, int], str] = {}
-        for did, (lo, hi) in doc_ranges.items():
-            rows = self._conn.execute(
-                "SELECT seq, text FROM chunks WHERE doc_id = ? "
-                "AND seq BETWEEN ? AND ? ORDER BY seq",
-                [did, lo, hi],
-            ).fetchall()
+
+        # A pair (doc_id, seq) is 2 params. To stay under _SQLITE_PARAM_BATCH,
+        # batch size for pairs is _SQLITE_PARAM_BATCH // 2
+        batch_size = _SQLITE_PARAM_BATCH // 2
+
+        for i in range(0, len(needed_targets_list), batch_size):
+            batch = needed_targets_list[i : i + batch_size]
+            values_clause = ", ".join(["(?, ?)"] * len(batch))
+            flat_params = [item for sublist in batch for item in sublist]
+
+            query = f"""
+                WITH targets(doc_id, seq) AS (
+                    VALUES {values_clause}
+                )
+                SELECT c.doc_id, c.seq, c.text
+                FROM chunks c
+                JOIN targets t ON c.doc_id = t.doc_id AND c.seq = t.seq
+            """
+            rows = self._conn.execute(query, flat_params).fetchall()
             for row in rows:
-                chunk_text_map[(did, row["seq"])] = row["text"]
+                chunk_text_map[(row["doc_id"], row["seq"])] = row["text"]
 
         # -- Step 3: assemble expanded results, preserving explain --------
         expanded = []
@@ -3891,7 +4381,16 @@ class VstashStore:
 
         Returns:
             Number of chunks re-embedded.
+
+        Raises:
+            ValueError: If ``batch_size`` is not a positive integer.
         """
+        # Fail before we DROP vec_chunks. A non-positive batch_size would
+        # make the keyset loop below terminate immediately after dropping
+        # the table, silently wiping the vector index.
+        if batch_size < 1:
+            raise ValueError(f"batch_size must be >= 1, got {batch_size}")
+
         with self._write_lock:
             # Count total chunks
             total = self._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
@@ -3909,13 +4408,27 @@ class VstashStore:
                 if self._snap is not None:
                     self._snap = SnapIndex(dim=new_dim, bits=self._snapvec_bits, seed=0)
 
-                # Re-embed in batches
+                # Re-embed in batches. Two O(N^2) traps avoided here
+                # (issue #265, sibling to #264):
+                #
+                # 1. Keyset pagination (WHERE id > last_id) instead of
+                #    LIMIT ? OFFSET ?. SQLite rescans `offset` rows per
+                #    page, so N/batch_size pages cost O(N^2/batch_size).
+                # 2. Snapvec add_batch is coalesced into a single call
+                #    after the loop. SnapIndex.add_batch does np.vstack
+                #    on the growing buffer internally (snapvec/_index.py
+                #    :206), so per-page calls copy O(current) each time.
+                #
+                # chunks.id is INTEGER PRIMARY KEY AUTOINCREMENT (>=1),
+                # so seeding last_id=0 matches all rows on the first page.
                 processed = 0
-                offset = 0
-                while offset < total:
+                last_id = 0
+                snap_rowid_parts: list[list[int]] = []
+                snap_vector_parts: list[np.ndarray] = []
+                while True:
                     rows = self._conn.execute(
-                        "SELECT id, text FROM chunks ORDER BY id LIMIT ? OFFSET ?",
-                        [batch_size, offset],
+                        "SELECT id, text FROM chunks WHERE id > ? ORDER BY id LIMIT ?",
+                        [last_id, batch_size],
                     ).fetchall()
                     if not rows:
                         break
@@ -3924,20 +4437,46 @@ class VstashStore:
                     ids = [row["id"] for row in rows]
                     embeddings = embed_fn(texts)
 
-                    for chunk_id, embedding in zip(ids, embeddings):
-                        self._conn.execute(
-                            "INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)",
-                            [chunk_id, _serialize(embedding)],
+                    # Fail fast if embed_fn returns the wrong count. Without
+                    # this guard, executemany would silently truncate to the
+                    # shorter zip and leave the store with a partial vec
+                    # index while ``processed`` still counts all rows.
+                    if len(embeddings) != len(ids):
+                        raise ValueError(
+                            f"embed_fn returned {len(embeddings)} embeddings "
+                            f"for {len(ids)} texts; must match 1:1"
                         )
 
-                    # Add batch to snapvec index
+                    self._conn.executemany(
+                        "INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)",
+                        [(cid, _serialize(emb)) for cid, emb in zip(ids, embeddings)],
+                    )
+
                     if self._snap is not None:
-                        self._snap.add_batch(ids, np.array(embeddings, dtype=np.float32))
+                        snap_rowid_parts.append(ids)
+                        snap_vector_parts.append(np.asarray(embeddings, dtype=np.float32))
 
                     processed += len(rows)
-                    offset += batch_size
+                    last_id = ids[-1]
                     if progress_cb:
                         progress_cb(processed, total)
+
+                if self._snap is not None and snap_rowid_parts:
+                    all_rowids = (
+                        snap_rowid_parts[0]
+                        if len(snap_rowid_parts) == 1
+                        else [rid for part in snap_rowid_parts for rid in part]
+                    )
+                    all_vectors = (
+                        snap_vector_parts[0]
+                        if len(snap_vector_parts) == 1
+                        else np.concatenate(snap_vector_parts, axis=0)
+                    )
+                    # Drop per-batch lists once coalesced so peak RSS is
+                    # bounded during the final add_batch allocation.
+                    snap_vector_parts.clear()
+                    snap_rowid_parts.clear()
+                    self._snap.add_batch(all_rowids, all_vectors)
 
                 self._conn.commit()
                 self._invalidate_idf_cache()
@@ -3975,10 +4514,13 @@ class VstashStore:
         """
         import contextlib
 
-        # Flush any pending snapvec writes before tearing down.  For the
-        # flat backend this is usually a no-op (_save_snapvec already ran
-        # on every commit); for snapvec-ivfpq it is the primary save
-        # point, so the IVFPQ file only hits disk once per session.
+        # Flush any pending snapvec writes before tearing down. Both
+        # the flat and ivfpq backends now defer ``.snpv`` / ivfpq
+        # writes until here (or an explicit ``_checkpoint_snapvec``
+        # call), so the file hits disk once per session instead of
+        # once per ``add_document``. Crash recovery is handled on
+        # next open by ``_init_snapvec`` comparing the stored index
+        # length against ``vec_chunks`` and rebuilding if stale.
         with contextlib.suppress(Exception):
             self._checkpoint_snapvec()
 

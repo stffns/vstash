@@ -77,7 +77,7 @@ This model needs none of that. The training signal comes from running the existi
 
 ## The Training Signal: Hybrid Retrieval Disagreement
 
-We discovered that **82% of queries produce disagreement** between vector and keyword search in the top-5 results. These disagreements fall into two categories:
+We discovered that **74.5% of queries produce disagreement** between vector-heavy (vec=0.95, fts=0.05) and keyword-heavy (vec=0.05, fts=0.95) search in the top-10 results, measured on 753 BEIR queries across SciFact, NFCorpus, and FiQA. Per-dataset rates are 63.4% (SciFact) / 73.4% (NFCorpus) / 86.7% (FiQA); see [`rrf_training_pairs.py`](https://github.com/stffns/vstash/blob/develop/experiments/rrf_training_pairs.py) and [`experiments/results/rrf_training_pairs.stats.json`](https://github.com/stffns/vstash/blob/develop/experiments/results/rrf_training_pairs.stats.json). These disagreements fall into two categories:
 
 - **Vector blind spots** (51%): chunks the vector search ranks high but keyword search ignores. These are semantically similar but not actually relevant.
 - **Keyword blind spots** (49%): chunks keyword search finds but vector search misses. These contain relevant terms but the embedding doesn't recognize their relevance.
@@ -103,11 +103,11 @@ Fine-tuning on these disagreement pairs teaches the model to fix both types of b
 
 ### Why MNRL, not TripletLoss?
 
-We tested TripletLoss first. It **destroyed the model** (-84% NDCG after 3 epochs). TripletLoss pushes individual negatives away with brute force, distorting the embedding space. MNRL adjusts relationships across 64 documents simultaneously per batch, preserving the model's general knowledge while learning from disagreements.
+We tested TripletLoss first. It **destroyed the model** (NDCG@10 dropped from 0.6464 to 0.0550 on SciFact, a -91.5% relative delta after 3 epochs at lr=2e-5). TripletLoss pushes individual negatives away with brute force, distorting the embedding space. MNRL adjusts relationships across 64 documents simultaneously per batch, preserving the model's general knowledge while learning from disagreements.
 
 | Loss Function | NDCG@10 on SciFact | Result |
 |---|:-:|---|
-| TripletLoss (3 epochs, lr=2e-5) | 0.055 | -84% (destroyed) |
+| TripletLoss (3 epochs, lr=2e-5) | 0.055 | -91.5% (destroyed) |
 | TripletLoss (1 epoch, lr=1e-6) | 0.347 | -0.03% (no effect) |
 | MNRL batch-only negatives (v1) | 0.683 | +5.6% |
 | **MNRL + explicit hard negatives (this model)** | **0.695** | **+7.4%** |

@@ -11,11 +11,12 @@ vstash uses [FastEmbed](https://github.com/qdrant/fastembed) for local embedding
 | Model | Dimensions | Speed | Quality | Notes |
 |-------|-----------|-------|---------|-------|
 | `BAAI/bge-small-en-v1.5` (default) | 384 | ~700 ch/s | Great | Best speed/quality ratio |
-| `Stffens/bge-small-rrf-v2` | 384 | ~700 ch/s | **Best** | Self-tuned, +7-19% NDCG vs base, beats ColBERTv2 on 3/5 BEIR |
+| `Stffens/bge-small-rrf-v3` | 384 | ~700 ch/s | **Best** | Self-tuned, macro NDCG@10 0.6405 on 5-dataset BEIR. 5/5 wins vs ColBERTv2. Recommended default. |
+| `Stffens/bge-small-rrf-v2` | 384 | ~700 ch/s | Great | Previous self-tune. Retains NFCorpus advantage over v3 (0.4325 vs 0.3927); pick it only if NFCorpus-like keyword retrieval dominates your workload. |
 | `BAAI/bge-base-en-v1.5` | 768 | ~300 ch/s | Excellent | |
 | `nomic-ai/nomic-embed-text-v1.5` | 768 | ~300 ch/s | Excellent | |
 
-> **New in v0.28:** `Stffens/bge-small-rrf-v2` is a BGE-small model fine-tuned with vstash's own hybrid retrieval disagreement signal. Same dimensions, same speed, better quality. Use `vstash reindex --model Stffens/bge-small-rrf-v2` to switch, or run `vstash retrain` to fine-tune on your own data.
+> **Current pick (2026-04-19):** `Stffens/bge-small-rrf-v3` is a BGE-small model fine-tuned with vstash's own hybrid retrieval disagreement signal using the H-R9 winning config (`temperature=0.5, total_triples=60000`). Same 384 dims, same speed as the base model; macro NDCG@10 0.6405 across SciFact + NFCorpus + SciDocs + FiQA + ArguAna (vs 0.6246 for v2, 0.6118 for base). Both v2 and v3 beat ColBERTv2 on all 5 BEIR datasets under this pipeline. Switch in with `vstash reindex --model Stffens/bge-small-rrf-v3`, or fine-tune on your own data via `vstash retrain` / `vstash retrain-multi` (see [docs/retrain.md](retrain.md)).
 
 ### Multilingual
 
@@ -37,11 +38,11 @@ Observed in production use on a medical-document corpus (msdlocal). This model h
 
 **Why it happens.** The model was trained on general-purpose paraphrase pairs; specialized vocabularies (clinical, legal, heavily-jargoned technical domains) push query and document embeddings into a crowded neighborhood where the model cannot discriminate. Cross-lingual recall (e.g. Spanish query against English document) is notably worse than the model's aggregate benchmarks suggest.
 
-**Diagnostic signal.** If `miss_analysis()` (v0.21) consistently reports `vector_search: not_found` or `distance_cutoff: failed` on queries where the target document is provably FTS-reachable, that is the fingerprint of this weakness. Run the same query with `fts_only=True` (v0.26, see `Memory.search`) — if it surfaces the document, the vector side is the problem, not your corpus or your query.
+**Diagnostic signal.** If `miss_analysis()` (v0.21) consistently reports `vector_search: not_found` or `distance_cutoff: failed` on queries where the target document is provably FTS-reachable, that is the fingerprint of this weakness. Run the same query with `retrieval_mode="fts_only"` (v0.33.0, renamed from the deprecated `fts_only=True` introduced in v0.26) — if it surfaces the document, the vector side is the problem, not your corpus or your query. The symmetric `retrieval_mode="vec_only"` is useful for the opposite debug path: "does pure semantic search reach the target without FTS help?".
 
 **Mitigations** (in order of effort):
 
-1. **Use `fts_only=True` for the query.** If the term you care about is literal (drug name, diagnosis code, SKU), keyword search alone is often sufficient and the fastest fix. See the `fts_only` parameter on `Memory.search()` and `Memory.ask()`.
+1. **Use `retrieval_mode="fts_only"` for the query.** If the term you care about is literal (drug name, diagnosis code, SKU), keyword search alone is often sufficient and the fastest fix. See the `retrieval_mode` parameter on `Memory.search()` and `Memory.ask()` (v0.33.0+). The older `fts_only=True` bool still works with a `DeprecationWarning`.
 2. **Relax the distance cutoff.** Pass a larger `distance_cutoff` (e.g. 1.5 or 2.0) on specific queries to let more vector candidates reach RRF fusion. FTS5 + RRF will usually re-rank the noise down.
 3. **Pin the RRF weights toward FTS.** Use `vec_weight=0.2, fts_weight=0.8` on `Memory.search()` to trust keyword matching over the diffuse vector signal for this query only — adaptive RRF will still kick in for the next query with default weights.
 4. **Switch models.** `paraphrase-multilingual-mpnet-base-v2` (768 dims) handles specialized vocabularies noticeably better at ~2× the embedding cost. `intfloat/multilingual-e5-large` is the strongest multilingual option we have tested.
