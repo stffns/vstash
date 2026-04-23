@@ -4179,9 +4179,16 @@ class VstashStore:
         n_words = len(words)
 
         # Long queries: favor vector + relax distance cutoff
-        # (diffuse embeddings from long text compress distance range)
+        # (diffuse embeddings from long text compress distance range).
+        # 25.0 = 5.0^2: same squaring relationship as the main
+        # ``default_cutoff`` between v1 L2 space and v2 cosine space
+        # (#272); preserves the ArguAna-class "effectively disabled"
+        # semantics where long-query best_dist was ~0.8 under L2 so
+        # 5*best was always past the L2 ceiling of 2.  Under cosine
+        # best_dist is ~0.2 so we need 25*best to keep the cutoff
+        # from rejecting true positives at rank > 0.
         if n_words > _ADAPTIVE_RRF_LONG_QUERY:
-            return 0.9, 0.1, 5.0
+            return 0.9, 0.1, 25.0
 
         idf_dict, total_chunks = self._build_idf_cache()
 

@@ -993,7 +993,9 @@ class TestAdaptiveRRF:
         vec_w, fts_w, cutoff = populated_store._compute_adaptive_rrf_params(long_query)
         assert vec_w == 0.9
         assert fts_w == 0.1
-        assert cutoff == 5.0  # relaxed for diffuse embeddings
+        # 25.0 = 5.0^2: cosine-space equivalent of the legacy v1 L2
+        # "effectively disabled" relaxation (#272).
+        assert cutoff == 25.0
 
     def test_rare_terms_boost_fts(self, populated_store: VstashStore) -> None:
         """OOV / very rare terms should increase FTS weight."""
@@ -1262,10 +1264,13 @@ class TestAdaptiveRRF:
         assert len(fixed_paths & adaptive_paths) > 0
 
     def test_long_query_cutoff_relaxation_recovers_results(self, sample_store: VstashStore) -> None:
-        """Long queries (>50 words) should relax distance cutoff to 5.0x,
-        recovering results that the tight 1.15x cutoff would discard.
+        """Long queries (>50 words) should relax distance cutoff enough
+        to recover results that the tight default would discard.  The
+        relaxation value is cosine-space (25.0 under v2; see #272);
+        semantics match the legacy v1 L2 5.0x that was effectively
+        "disabled" once the best distance exceeded 0.4 on long queries.
 
-        This protects the ArguAna BEIR claim (+19% from cutoff relaxation).
+        This protects the ArguAna BEIR claim.
         """
         dim = sample_store.embedding_dim
 
