@@ -106,8 +106,10 @@ class TestDrainBurstDefaults:
         into the default keyword so changing one requires changing the
         other."""
         q: queue.Queue[str | None] = queue.Queue()
-        # Fill the queue with max-1 items. Together with the head path
-        # that totals DRAIN_MAX_BATCH and must not overflow.
+        # Overflow the queue past DRAIN_MAX_BATCH so the cap is the
+        # limiting factor, not the queue size. The drain must stop
+        # exactly at DRAIN_MAX_BATCH regardless of how many extras are
+        # waiting.
         for i in range(DRAIN_MAX_BATCH + 10):
             q.put(f"p{i}")
         batch = _drain_burst(q, "head")
