@@ -164,6 +164,43 @@ class TestVstashStoreIVFPQIntegration:
         assert store._ivfpq_path.exists()
         store.close()
 
+    def test_ivfpq_last_best_distance_in_cosine_range(self, tmp_path):
+        """Regression test for #289: the per-backend branch in
+        ``VstashStore.search`` must not double-invert ``IVFPQBackend
+        .search`` output.  ``IVFPQBackend`` already returns cosine
+        distance in ``[0, 2]`` (see ``_ivfpq_backend.py``), so a same-
+        vector query under ``snapvec-ivfpq`` must land in the
+        ``"high"`` tier, not the ``"low"`` tier that double-inversion
+        would produce.
+        """
+        from vstash.store import RELEVANCE_TIER_HIGH_MAX, relevance_tier
+
+        store = VstashStore(
+            str(tmp_path / "ivfpq_dist.db"),
+            embedding_dim=DIM,
+            vector_backend="snapvec-ivfpq",
+            ivfpq_M=24,
+            ivfpq_K=32,
+            ivfpq_nlist=16,
+            ivfpq_rerank_candidates=32,
+        )
+        rng = np.random.default_rng(5)
+        vecs = _unit_vectors(rng, N, DIM)
+        store.add_document(
+            path="/t/dist.md",
+            title="Dist",
+            chunks=[f"chunk {i}" for i in range(N)],
+            embeddings=vecs.tolist(),
+            source_type="text",
+        )
+        store.fit_ivfpq(training_sample=N)
+
+        store.search(vecs[0].tolist(), "chunk 0", top_k=1)
+        assert 0.0 <= store.last_best_distance <= 2.0
+        assert store.last_best_distance <= RELEVANCE_TIER_HIGH_MAX
+        assert relevance_tier(store.last_best_distance) == "high"
+        store.close()
+
     def test_fit_ivfpq_rejects_non_ivfpq_backend(self, tmp_path):
         store = VstashStore(
             str(tmp_path / "s.db"),

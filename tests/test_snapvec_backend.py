@@ -114,9 +114,12 @@ class TestSnapvecDistanceSemantics:
     def test_last_best_distance_stays_in_cosine_range(self, snap_store):
         """``last_best_distance`` must be in [0, 2] after a snapvec
         search, matching the sqlite-vec backend contract.  A same-
-        vector query should land near 0, not near 1 (which would mean
-        similarity was leaking through).
+        vector query should land in the ``"high"`` relevance tier,
+        not ``"low"`` (which would mean similarity was leaking
+        through and ~0.94 was treated as distance).
         """
+        from vstash.store import RELEVANCE_TIER_HIGH_MAX
+
         emb = np.random.default_rng(0).standard_normal(DIM).tolist()
         snap_store.add_document(
             path="/s/a.md",
@@ -126,10 +129,12 @@ class TestSnapvecDistanceSemantics:
         )
         snap_store.search(query_embedding=emb, query_text="hello", top_k=1)
         assert 0.0 <= snap_store.last_best_distance <= 2.0
-        # Same vector -> similarity ~1 -> cos_dist ~0.  Allow slack for
-        # the snapvec 4-bit quantization (similarity comes back ~0.94
-        # on 32-dim random vectors, so distance ~0.06).
-        assert snap_store.last_best_distance <= 0.15
+        # Contract-based upper bound: a same-vector query must land
+        # in the ``"high"`` tier regardless of the bit-depth /
+        # quantization quirks of the snapvec backend.  Hardcoding a
+        # specific delta (e.g. 0.15) would couple the test to the
+        # 4-bit quantization error.
+        assert snap_store.last_best_distance <= RELEVANCE_TIER_HIGH_MAX
 
     def test_relevance_tier_high_for_near_match(self, snap_store):
         """A near-identical query produces ``"high"`` confidence under
@@ -172,14 +177,25 @@ class TestSnapvecDistanceSemantics:
             chunks=["distant topic"],
             embeddings=[far_emb.tolist()],
         )
+        # Query is ``close_emb`` with a small perturbation on a
+        # different index.  That guarantees cos_dist to the close
+        # chunk is > 0 (tiny, but nonzero), so we do not accidentally
+        # trigger the ``best_distance == 0`` cutoff-bypass in
+        # ``VstashStore.search`` (store.py:2368).  Without the
+        # perturbation, a snapvec build that returned an exact
+        # similarity of 1.0 on the identical vector would skip the
+        # cutoff entirely and leave the far chunk in the results,
+        # masking a real regression as a pass.
+        query_emb = close_emb.copy()
+        query_emb[1] = 0.05
+
         # Tight cutoff: with correct distances the orthogonal chunk
         # (cos_dist ~1.0) must be dropped when the near chunk is at
-        # cos_dist ~0.  1.15 * 0 ~ 0, so anything > 0 drops.
-        # ``retrieval_mode="vec_only"`` isolates the vec path so the
-        # FTS hit on the shared word "topic" cannot reintroduce the
-        # far chunk after the cutoff.
+        # cos_dist ~0.  ``retrieval_mode="vec_only"`` isolates the
+        # vec path so the FTS hit on the shared word "topic" cannot
+        # reintroduce the far chunk after the cutoff.
         results = snap_store.search(
-            query_embedding=close_emb.tolist(),
+            query_embedding=query_emb.tolist(),
             query_text="topic",
             top_k=5,
             distance_cutoff=1.15,
