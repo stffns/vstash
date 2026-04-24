@@ -342,3 +342,183 @@ class TestOutputNormalisation:
         assert all(isinstance(v, list) for v in vecs)
         assert all(all(isinstance(x, float) for x in v) for v in vecs)
         assert vecs == [[2.0] * 4, [2.0] * 4]
+
+
+# ------------------------------------------------------------------ #
+# Identity-based registration                                          #
+# ------------------------------------------------------------------ #
+
+
+class TestIdentityRegistration:
+    def test_equal_but_distinct_resolvers_coexist(self) -> None:
+        """Registration is by identity (``is``), not equality.  Two
+        resolvers that compare ``==`` but are different objects stay
+        distinct in the registry, because a custom ``__eq__`` on
+        resolvers (e.g. ``functools.partial`` comparing by args) would
+        otherwise silently collapse registrations.
+        """
+
+        class EqResolver:
+            def __init__(self, tag):
+                self.tag = tag
+                self.stub = _StubEncoder(dim=2, tag=tag)
+
+            def __eq__(self, other):  # all instances compare equal
+                return isinstance(other, EqResolver)
+
+            def __hash__(self):
+                return 0
+
+            def __call__(self, name):
+                return self.stub if name == "custom" else None
+
+        a = EqResolver(tag=1.0)
+        b = EqResolver(tag=2.0)
+        assert a == b  # value-equal
+        assert a is not b
+
+        register_encoder_resolver(a)
+        register_encoder_resolver(b)
+
+        # Both are in the registry despite value equality.
+        assert sum(1 for r in embed_mod._encoder_resolvers if r is a) == 1
+        assert sum(1 for r in embed_mod._encoder_resolvers if r is b) == 1
+
+    def test_unregister_matches_by_identity(self) -> None:
+        """``unregister`` removes the exact object, not a value-equal
+        peer.  Symmetric with registration.
+        """
+
+        class EqResolver:
+            def __eq__(self, other):
+                return isinstance(other, EqResolver)
+
+            def __hash__(self):
+                return 0
+
+            def __call__(self, name):
+                return None
+
+        a = EqResolver()
+        b = EqResolver()
+        register_encoder_resolver(a)
+        register_encoder_resolver(b)
+
+        unregister_encoder_resolver(a)
+
+        assert not any(r is a for r in embed_mod._encoder_resolvers)
+        assert any(r is b for r in embed_mod._encoder_resolvers)
+
+
+# ------------------------------------------------------------------ #
+# Encoder protocol validation at resolve time                          #
+# ------------------------------------------------------------------ #
+
+
+class TestEncoderProtocolValidation:
+    def test_malformed_encoder_is_skipped_with_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A resolver that returns an object missing ``.encode`` or
+        ``.embedding_dim`` is logged and skipped.  Without this, the
+        caller would see a cryptic ``AttributeError`` deep in
+        :func:`_embed_via_custom`.
+        """
+
+        class Malformed:
+            # No ``encode`` method, no ``embedding_dim`` attribute.
+            pass
+
+        good = _StubEncoder(dim=3, tag=4.0)
+
+        def resolver_bad(name):
+            return Malformed() if name == "x" else None
+
+        def resolver_good(name):
+            return good if name == "x" else None
+
+        register_encoder_resolver(resolver_bad)
+        register_encoder_resolver(resolver_good)
+
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="vstash.embed"):
+            vecs = embed_texts(["q"], "x")
+
+        assert vecs == [[4.0, 4.0, 4.0]]
+        assert any("does not satisfy the Encoder protocol" in rec.message for rec in caplog.records)
+
+
+# ------------------------------------------------------------------ #
+# Shape validation                                                     #
+# ------------------------------------------------------------------ #
+
+
+class TestShapeValidation:
+    def test_wrong_row_count_raises(self) -> None:
+        """A custom encoder that returns the wrong number of rows
+        raises :class:`ValueError` with a clear message, instead of
+        cascading into an obscure sqlite-vec shape error during
+        ingest.
+        """
+
+        class BadRowCount:
+            embedding_dim = 3
+
+            def encode(self, texts):
+                # Return one fewer row than asked for.
+                return [[0.0, 0.0, 0.0] for _ in range(len(texts) - 1)]
+
+        def resolver(name: str) -> Any:
+            return BadRowCount() if name == "short" else None
+
+        register_encoder_resolver(resolver)
+
+        with pytest.raises(ValueError, match="returned 1 vectors for 2 texts"):
+            embed_texts(["a", "b"], "short")
+
+    def test_wrong_vector_dim_raises(self) -> None:
+        """A custom encoder returning the wrong dim per vector raises
+        with the offending index so the caller can locate it.
+        """
+
+        class BadDim:
+            embedding_dim = 4
+
+            def encode(self, texts):
+                # Second vector has 3 dims instead of 4.
+                return [[0.0] * 4, [0.0] * 3]
+
+        def resolver(name: str) -> Any:
+            return BadDim() if name == "ragged" else None
+
+        register_encoder_resolver(resolver)
+
+        with pytest.raises(ValueError, match="vector at index 1 with dimension 3"):
+            embed_texts(["a", "b"], "ragged")
+
+    def test_flat_1d_output_raises_actionable_value_error(self) -> None:
+        """An encoder that returns a flat 1-D sequence (``[0.1, 0.2,
+        0.3]``) instead of a matrix can pass the row-count check when
+        ``batch_size == embedding_dim``.  The per-row ``len(v)`` then
+        hits a scalar and used to raise a bare ``TypeError``.  The
+        guard must reraise as ``ValueError`` with the offending type
+        so the caller sees the same failure shape as other malformed
+        outputs.
+        """
+
+        class Flat1D:
+            embedding_dim = 3
+
+            def encode(self, texts):
+                # Three "rows" of scalars -- a shape mistake that
+                # would silently pass a naive row-count check.
+                return [0.1, 0.2, 0.3]
+
+        def resolver(name: str) -> Any:
+            return Flat1D() if name == "flat" else None
+
+        register_encoder_resolver(resolver)
+
+        with pytest.raises(ValueError, match="non-sequence vector at index 0"):
+            embed_texts(["a", "b", "c"], "flat")
