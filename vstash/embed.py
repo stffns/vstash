@@ -166,23 +166,29 @@ def _embed_via_custom(texts: list[str], encoder: "Encoder") -> list[list[float]]
 
     Accepts numpy arrays, nested lists, or any object with ``tolist``.
     Validates shape: raises :class:`ValueError` if the returned batch
-    has the wrong row count or a vector has the wrong dimension, so
-    malformed custom encoders surface with an actionable message
-    instead of cascading into an obscure sqlite-vec shape error.
+    has the wrong row count, a row is not a sequence, or a vector has
+    the wrong dimension -- malformed custom encoders surface with an
+    actionable message instead of cascading into an obscure sqlite-vec
+    shape error or a bare ``TypeError`` from ``map(float, scalar)``.
 
     ``.tolist()`` on a numpy float array already returns Python floats,
-    so we can skip the ``map(float, ...)`` fallback on the hot path
-    and use it only for untyped nested lists.
+    so we skip the ``map(float, ...)`` pass on that hot path and only
+    coerce on the untyped-nested-list branch.
     """
     vecs = encoder.encode(texts)
     tolist = getattr(vecs, "tolist", None)
     if tolist is not None:
+        # numpy array -> list[list[float]] with Python floats already.
+        # No per-row coercion needed.
         normalized = tolist()
+        needs_float_coerce = False
     else:
-        # Untyped nested iterable (e.g. a plain Python list of lists).
-        # ``float()`` here rejects non-numeric elements with a clear
-        # ``TypeError`` before the vectors reach the store.
-        normalized = [list(map(float, v)) for v in vecs]
+        # Untyped nested iterable -- materialize without per-row
+        # coercion so the shape-validation loop below can raise a
+        # clear ``ValueError`` before any ``map(float, scalar)`` blows
+        # up as a bare ``TypeError`` on a flat 1-D output.
+        normalized = list(vecs)
+        needs_float_coerce = True
 
     if len(normalized) != len(texts):
         raise ValueError(
@@ -190,11 +196,29 @@ def _embed_via_custom(texts: list[str], encoder: "Encoder") -> list[list[float]]
         )
     expected_dim = int(encoder.embedding_dim)
     for i, v in enumerate(normalized):
-        if len(v) != expected_dim:
+        try:
+            row_dim = len(v)
+        except TypeError as e:
+            # ``len()`` on a scalar raises ``TypeError``; this happens
+            # when an encoder returns a 1-D list of floats (``[0.1,
+            # 0.2, 0.3]``) whose length happens to equal ``len(texts)``
+            # but which is actually a single flattened vector.  Re-raise
+            # as the ``ValueError`` the caller catches alongside every
+            # other shape-validation failure.
+            raise ValueError(
+                f"Custom encoder returned non-sequence vector at index {i}: "
+                f"{type(v).__name__}; expected a sequence of dimension {expected_dim}"
+            ) from e
+        if row_dim != expected_dim:
             raise ValueError(
                 f"Custom encoder returned vector at index {i} with "
-                f"dimension {len(v)}; expected {expected_dim}"
+                f"dimension {row_dim}; expected {expected_dim}"
             )
+        if needs_float_coerce:
+            try:
+                normalized[i] = list(map(float, v))
+            except (TypeError, ValueError) as e:
+                raise ValueError(f"Custom encoder returned non-numeric element at index {i}") from e
     return normalized
 
 

@@ -996,21 +996,37 @@ class VstashStore:
             # embedding blob in Python memory -- at 384-dim float32 a
             # million rows is ~1.5 GB which a naive ``fetchall`` +
             # ``executemany`` would paginate through Python lists.
-            # The backup is a regular ``TABLE`` (not ``vec0``) so the
-            # vec0 shadow tables don't collide with the real
-            # ``vec_chunks`` ones during the rebuild; ``ALTER TABLE
-            # RENAME`` on vec0 is a trap because the shadow tables
-            # (``vec_chunks_chunks``, ``vec_chunks_rowids``, ...) keep
-            # the original name and every subsequent query fails with
-            # ``no such table: main.vec_chunks_chunks``.
+            #
+            # Two non-obvious choices:
+            #
+            # 1. The backup is a regular (not ``vec0``) table so the
+            #    vec0 shadow tables don't collide with the real
+            #    ``vec_chunks`` ones during the rebuild.  ``ALTER TABLE
+            #    RENAME`` on vec0 is a trap because the shadow tables
+            #    (``vec_chunks_chunks``, ``vec_chunks_rowids``, ...)
+            #    keep the original name and every subsequent query
+            #    fails with ``no such table: main.vec_chunks_chunks``.
+            #
+            # 2. The backup lives in ``TEMP`` so it does not grow the
+            #    main DB file.  SQLite does not auto-shrink the main
+            #    DB after ``DROP TABLE``; pages stay on the freelist
+            #    and a migration on a large store would permanently
+            #    ~double the file size until a manual ``VACUUM``.
+            #    TEMP tables write to the per-connection temp DB and
+            #    disappear on connection close.
             conn.execute(
-                "CREATE TABLE _vec_chunks_v2_backup (rowid INTEGER PRIMARY KEY, embedding BLOB)"
+                "CREATE TEMP TABLE _vec_chunks_v2_backup "
+                "(rowid INTEGER PRIMARY KEY, embedding BLOB)"
             )
-            conn.execute(
+            # ``cursor.rowcount`` on an ``INSERT INTO ... SELECT``
+            # returns the number of rows inserted without the extra
+            # table scan that a follow-up ``SELECT COUNT(*)`` would
+            # cost on large stores.
+            cursor = conn.execute(
                 "INSERT INTO _vec_chunks_v2_backup (rowid, embedding) "
                 "SELECT rowid, embedding FROM vec_chunks"
             )
-            row_count = conn.execute("SELECT COUNT(*) FROM _vec_chunks_v2_backup").fetchone()[0]
+            row_count = cursor.rowcount
             conn.execute("DROP TABLE vec_chunks")
             conn.execute(
                 f"CREATE VIRTUAL TABLE vec_chunks "

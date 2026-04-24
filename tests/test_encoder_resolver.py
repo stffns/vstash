@@ -496,3 +496,29 @@ class TestShapeValidation:
 
         with pytest.raises(ValueError, match="vector at index 1 with dimension 3"):
             embed_texts(["a", "b"], "ragged")
+
+    def test_flat_1d_output_raises_actionable_value_error(self) -> None:
+        """An encoder that returns a flat 1-D sequence (``[0.1, 0.2,
+        0.3]``) instead of a matrix can pass the row-count check when
+        ``batch_size == embedding_dim``.  The per-row ``len(v)`` then
+        hits a scalar and used to raise a bare ``TypeError``.  The
+        guard must reraise as ``ValueError`` with the offending type
+        so the caller sees the same failure shape as other malformed
+        outputs.
+        """
+
+        class Flat1D:
+            embedding_dim = 3
+
+            def encode(self, texts):
+                # Three "rows" of scalars -- a shape mistake that
+                # would silently pass a naive row-count check.
+                return [0.1, 0.2, 0.3]
+
+        def resolver(name: str) -> Any:
+            return Flat1D() if name == "flat" else None
+
+        register_encoder_resolver(resolver)
+
+        with pytest.raises(ValueError, match="non-sequence vector at index 0"):
+            embed_texts(["a", "b", "c"], "flat")
