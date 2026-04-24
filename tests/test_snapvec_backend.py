@@ -99,6 +99,101 @@ class TestSnapvecSearch:
         assert len(results) <= 2
 
 
+class TestSnapvecDistanceSemantics:
+    """Regression tests for #289.
+
+    ``snapvec.SnapIndex.search`` returns (id, similarity) in [-1, 1],
+    but downstream ``distance_cutoff``, ``relevance_tier``, and
+    ``last_best_distance`` all live in cosine-distance space [0, 2].
+    The store must convert on read.  Before the fix, these invariants
+    all failed: a perfect match reported distance ~0.94 (similarity),
+    classified ``"low"`` by ``relevance_tier``, and the distance
+    cutoff never fired.
+    """
+
+    def test_last_best_distance_stays_in_cosine_range(self, snap_store):
+        """``last_best_distance`` must be in [0, 2] after a snapvec
+        search, matching the sqlite-vec backend contract.  A same-
+        vector query should land near 0, not near 1 (which would mean
+        similarity was leaking through).
+        """
+        emb = np.random.default_rng(0).standard_normal(DIM).tolist()
+        snap_store.add_document(
+            path="/s/a.md",
+            title="a",
+            chunks=["hello"],
+            embeddings=[emb],
+        )
+        snap_store.search(query_embedding=emb, query_text="hello", top_k=1)
+        assert 0.0 <= snap_store.last_best_distance <= 2.0
+        # Same vector -> similarity ~1 -> cos_dist ~0.  Allow slack for
+        # the snapvec 4-bit quantization (similarity comes back ~0.94
+        # on 32-dim random vectors, so distance ~0.06).
+        assert snap_store.last_best_distance <= 0.15
+
+    def test_relevance_tier_high_for_near_match(self, snap_store):
+        """A near-identical query produces ``"high"`` confidence under
+        cosine-space thresholds (``RELEVANCE_TIER_HIGH_MAX = 0.4513``).
+        Without the similarity->distance conversion, the store would
+        report the cosine similarity (~0.94) which falls in ``"low"``.
+        """
+        from vstash.store import relevance_tier
+
+        emb = np.random.default_rng(7).standard_normal(DIM).tolist()
+        snap_store.add_document(
+            path="/s/h.md",
+            title="h",
+            chunks=["topic"],
+            embeddings=[emb],
+        )
+        snap_store.search(query_embedding=emb, query_text="topic", top_k=1)
+        assert relevance_tier(snap_store.last_best_distance) == "high"
+
+    def test_distance_cutoff_drops_far_chunks(self, snap_store):
+        """The distance cutoff must actually gate results: an embedding
+        that points away from the query should be filterable.  Under
+        the pre-fix behaviour the similarity-as-distance inversion made
+        the cutoff a no-op for snapvec.
+        """
+        # Two clearly different directions in 32-dim space.
+        close_emb = np.zeros(DIM, dtype=np.float32)
+        close_emb[0] = 1.0
+        far_emb = np.zeros(DIM, dtype=np.float32)
+        far_emb[16] = 1.0  # orthogonal to close_emb
+        snap_store.add_document(
+            path="/s/close.md",
+            title="close",
+            chunks=["near topic"],
+            embeddings=[close_emb.tolist()],
+        )
+        snap_store.add_document(
+            path="/s/far.md",
+            title="far",
+            chunks=["distant topic"],
+            embeddings=[far_emb.tolist()],
+        )
+        # Tight cutoff: with correct distances the orthogonal chunk
+        # (cos_dist ~1.0) must be dropped when the near chunk is at
+        # cos_dist ~0.  1.15 * 0 ~ 0, so anything > 0 drops.
+        # ``retrieval_mode="vec_only"`` isolates the vec path so the
+        # FTS hit on the shared word "topic" cannot reintroduce the
+        # far chunk after the cutoff.
+        results = snap_store.search(
+            query_embedding=close_emb.tolist(),
+            query_text="topic",
+            top_k=5,
+            distance_cutoff=1.15,
+            adaptive_rrf=False,
+            retrieval_mode="vec_only",
+        )
+        paths = {r.path for r in results}
+        assert "/s/close.md" in paths
+        assert "/s/far.md" not in paths, (
+            f"distance_cutoff failed to drop the orthogonal chunk under snapvec; "
+            f"paths={paths}, last_best_distance={snap_store.last_best_distance}"
+        )
+
+
 class TestSnapvecDelete:
     def test_delete_removes_from_snap_index(self, populated_snap_store):
         initial_count = len(populated_snap_store._snap)

@@ -2261,12 +2261,20 @@ class VstashStore:
                         detail="retrieval_mode='fts_only': no distance cutoff applied",
                     )
             elif self._snap is not None and len(self._snap) > 0:
-                # SnapVec ANN search — returns list[(id, distance)]
+                # SnapVec ANN search: returns list[(id, similarity)]
+                # with similarity in [-1, 1], descending.  Downstream
+                # ``distance_cutoff`` + ``relevance_tier`` +
+                # ``last_best_distance`` all live in cosine-distance
+                # space ([0, 2]), so convert here: cos_dist = max(0,
+                # 1 - similarity).  ``max(0, ...)`` guards against
+                # tiny numerical overshoot on near-identical vectors.
+                # The sibling IVFPQ backend does the same conversion
+                # internally in ``_ivfpq_backend.py`` (#289).
                 snap_results = self._snap.search(
                     np.array(query_embedding, dtype=np.float32), k=candidate_pool
                 )
                 snap_ids = [int(r[0]) for r in snap_results]
-                snap_dists = {int(r[0]): float(r[1]) for r in snap_results}
+                snap_dists = {int(r[0]): max(0.0, 1.0 - float(r[1])) for r in snap_results}
 
                 if snap_ids:
                     placeholders = ",".join("?" * len(snap_ids))
