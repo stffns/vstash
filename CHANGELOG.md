@@ -2,6 +2,30 @@
 
 All notable changes to vstash are documented here.
 
+## [0.34.0] - 2026-04-24
+
+### Fixed
+
+- **`vec_chunks` now uses cosine metric, not L2** (#271, #272, #286). `sqlite-vec`'s `vec0(embedding float[N])` defaults to L2 distance, but every comment, threshold, and telemetry field in vstash labelled the value "cosine distance". Worked accidentally for BGE-small unit-normalized embeddings; broke for non-normalized models like `paraphrase-multilingual` where L2 exceeds 2.0 on large-magnitude vectors. `SCHEMA_VERSION` bumped to `"2"`; v1 DBs rebuild `vec_chunks` in place on open via an atomic (`BEGIN IMMEDIATE`) + idempotent (`sqlite_master` guard) + streaming-in-SQL (`TEMP` backup, never materializes embeddings in Python) migration. No re-embedding required. `relevance_tier` thresholds recalibrated from 0.95/0.98 (L2-on-unit-vec) to 0.4513/0.4802 (cosine equivalents) so BGE-small keeps identical tier assignments. `distance_cutoff` defaults squared (`1.15 -> 1.3225`, long-query `5.0 -> 25.0`) because cosine ratios relate to L2 ratios by a square on unit vectors -- without this, NFCorpus / FiQA / ArguAna regressed past the 0.005 BEIR tolerance. BEIR non-regression gate green on all 5 datasets post-fix (SciFact 0.7251, NFCorpus 0.3591, FiQA 0.3917, SciDocs 0.1945, ArguAna 0.4367).
+- **Flat `snapvec` backend treated similarity as distance** (#289, #290). `snapvec.SnapIndex.search` returns `(id, similarity)` in `[-1, 1]`, but the store was feeding that directly into `distance_cutoff`, `relevance_tier`, and `last_best_distance`, all of which assume cosine-distance space `[0, 2]`. Ranking worked by accident (descending similarity = ascending distance monotonically), but `distance_cutoff` was effectively disabled and a perfect match classified as `"low"` relevance. The sibling `snapvec-ivfpq` backend already converted internally -- flat just never got the same treatment. Fix branches on `self._vector_backend` so IVFPQ is not double-inverted; both branches clamp to `[0, 2]`.
+
+### Added
+
+- **Custom encoder resolver hook** (#278, #287, #288). `register_encoder_resolver(fn)` / `unregister_encoder_resolver` plus an `Encoder` `Protocol` let callers plug in LoRA-adapted, locally fine-tuned, or otherwise-unnamable encoders without monkey-patching `vstash.embed`. `embed_texts` / `embed_query` / `get_embedding_dim` consult the registry before every built-in path (daemon delegation, Gemma, HF ONNX, MLX, FastEmbed). Identity-based registration (so `__eq__`-defining callables don't collapse), runtime protocol validation (malformed encoders skipped with a warning instead of cascading into `AttributeError`), and shape validation (`ValueError` with index on row-count mismatch, wrong per-row dim, or non-sequence row). Resolvers are process-global; the CLI / MCP / SDK all share the same registry today. Docstring includes a SentenceTransformer adapter recipe (ST uses `get_sentence_embedding_dimension()`, not an `embedding_dim` attribute).
+
+### Validation artifacts (this release)
+
+- `experiments/probe_vec0_cosine.py` -- sqlite-vec cosine distance probe.
+- `experiments/probe_272_migration_parity.py` -- v1->v2 top-10 ranking parity (7/7 queries identical on BGE).
+- `experiments/probe_272_concurrent_migration.py` -- 4 concurrent processes migrating the same v1 DB, no data loss.
+- `experiments/probe_272_reindex.py` -- cosine DDL preserved across `reindex()`.
+- `experiments/beir_272_cosine_validation_colab.ipynb` -- GPU-accelerated BEIR regression gate (monkey-patches `embed_texts` onto CUDA + batch 256; drops wall time from ~30-45 min CPU to ~5 min T4).
+
+### Migration notes
+
+- Existing v1 stores are migrated automatically on first open with v0.34. The migration is single-connection safe and streams in SQL, so a store with 5+ million embeddings will not OOM the Python process. `search_stats` rolling window is cleared (L2 spreads are not comparable to cosine spreads; the window repopulates from v2 searches). No user action required. `vstash check` is a good post-upgrade sanity pass -- all five invariants still hold post-migration.
+- Callers that pass an explicit `distance_cutoff=1.15` keep that cutoff verbatim (now tighter in cosine space than in v1 L2 space). To preserve v1 selectivity set `distance_cutoff=1.3225`. The default already matches v1 behaviour.
+
 ## [0.33.0] - 2026-04-23
 
 ### Added

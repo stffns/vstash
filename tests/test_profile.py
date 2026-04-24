@@ -676,19 +676,28 @@ class TestFederatedContextExpansion:
         monkeypatch.setattr("vstash.profile._find_local_db", lambda: None)
 
         dim = 384
+        # Direction-differentiated embeddings: uniform-value vectors
+        # all share the same direction and tie at cosine distance 0,
+        # making single-hit ranking undefined after the v2 cosine
+        # migration (#272).  Basis-like vectors give the middle chunk
+        # a unique closest match.
+        emb_outer = [0.0] * dim
+        emb_outer[0] = 1.0
+        emb_middle = [0.0] * dim
+        emb_middle[1] = 1.0
         store = VstashStore(str(default_db), embedding_dim=dim)
         store.add_document(
             path="/multi.md",
             title="Multi",
             chunks=["chapter one intro", "chapter two body", "chapter three end"],
-            embeddings=[[0.1] * dim, [0.5] * dim, [0.1] * dim],
+            embeddings=[emb_outer, emb_middle, emb_outer],
             source_type="markdown",
         )
         store.close()
 
         # Without expansion
         results_no_expand = federated_search(
-            query_embedding=[0.5] * dim,
+            query_embedding=emb_middle,
             query_text="chapter two",
             embedding_dim=dim,
             top_k=1,
@@ -699,7 +708,7 @@ class TestFederatedContextExpansion:
 
         # With expansion
         results_expanded = federated_search(
-            query_embedding=[0.5] * dim,
+            query_embedding=emb_middle,
             query_text="chapter two",
             embedding_dim=dim,
             top_k=1,

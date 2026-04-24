@@ -59,11 +59,17 @@ _SQLITE_PARAM_BATCH = 900
 #: type change, semantics change).  Pure additive ALTER TABLE migrations
 #: stay within the same version because they're handled in
 #: ``_migrate_schema``.
-SCHEMA_VERSION = "1"
+#:
+#: v2 (#272): ``vec_chunks`` uses ``distance_metric=cosine``.  Prior v1
+#: DBs stored identical float bytes under sqlite-vec's default L2
+#: metric; on-open migration rebuilds the virtual table (no
+#: re-embedding).
+SCHEMA_VERSION = "2"
 
 #: Schema versions this build of vstash knows how to read.  Anything
-#: not in this set raises :class:`SchemaVersionError` on open.
-KNOWN_SCHEMA_VERSIONS: frozenset[str] = frozenset({"1"})
+#: not in this set raises :class:`SchemaVersionError` on open.  v1 is
+#: accepted because on-open migration promotes it to v2 in-place.
+KNOWN_SCHEMA_VERSIONS: frozenset[str] = frozenset({"1", "2"})
 
 
 class SchemaVersionError(RuntimeError):
@@ -221,17 +227,39 @@ def _cosine_sim(
     return dot / (norm_a * norm_b)
 
 
+#: High-confidence cosine distance cutoff for ``relevance_tier``.  Value
+#: is the cosine equivalent of the legacy L2-on-unit-vec threshold 0.95
+#: (``cos_dist = L2^2 / 2 = 0.4513``), so BGE-small unit-normalized
+#: embeddings keep identical tier assignments across the v1 -> v2
+#: metric change (#272).
+RELEVANCE_TIER_HIGH_MAX = 0.4513
+
+#: Medium-confidence cosine distance cutoff for ``relevance_tier``.
+#: Cosine equivalent of the legacy L2 threshold 0.98
+#: (``0.98^2 / 2 = 0.4802``).  Anything above is classified "low".
+RELEVANCE_TIER_MEDIUM_MAX = 0.4802
+
+
 def relevance_tier(distance: float) -> str:
-    """Classify vector distance into a relevance tier.
+    """Classify cosine distance into a relevance tier.
+
+    Thresholds were recalibrated for cosine metric in schema v2 (#272).
+    The old labels claimed "cosine distance" while sqlite-vec was
+    actually returning L2 distance, which only worked by accident on
+    unit-normalized BGE.  See the ``RELEVANCE_TIER_*`` constants above
+    for how the new cutoffs were derived.
 
     Tiers:
-        "high"   — distance <= 0.95: confident match.
-        "medium" — 0.95 < distance <= 0.98: uncertain.
-        "low"    — distance > 0.98: likely off-topic.
+        "high"   -- distance <= ``RELEVANCE_TIER_HIGH_MAX`` (0.4513):
+            confident match.
+        "medium" -- ``RELEVANCE_TIER_HIGH_MAX`` < distance <=
+            ``RELEVANCE_TIER_MEDIUM_MAX`` (0.4802): uncertain.
+        "low"    -- distance > ``RELEVANCE_TIER_MEDIUM_MAX``: likely
+            off-topic.
     """
-    if distance <= 0.95:
+    if distance <= RELEVANCE_TIER_HIGH_MAX:
         return "high"
-    if distance <= 0.98:
+    if distance <= RELEVANCE_TIER_MEDIUM_MAX:
         return "medium"
     return "low"
 
@@ -773,9 +801,13 @@ class VstashStore:
                 text    TEXT NOT NULL
             );
 
-            -- Vector index (sqlite-vec)
+            -- Vector index (sqlite-vec).  distance_metric=cosine is
+            -- required (#272): sqlite-vec defaults to L2 which is only
+            -- monotonic with cosine on unit-normalized embeddings and
+            -- exceeds [0, 2] otherwise, breaking non-normalized models.
+            -- v1 DBs get rebuilt on open via ``_migrate_v1_to_v2``.
             CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks
-            USING vec0(embedding float[{self.embedding_dim}]);
+            USING vec0(embedding float[{self.embedding_dim}] distance_metric=cosine);
 
             -- Full-text search index (FTS5)
             -- content= makes it a content table — no duplicate text stored
@@ -858,28 +890,41 @@ class VstashStore:
     def _check_schema_version(self, conn: sqlite3.Connection) -> None:
         """Read or stamp the schema version in ``store_meta``.
 
-        On a fresh DB the version row does not exist yet — we write
-        the current :data:`SCHEMA_VERSION`.  On an existing DB we read
-        the row and compare against :data:`KNOWN_SCHEMA_VERSIONS`:
+        The vec_chunks DDL is the authoritative signal: if it already
+        contains ``distance_metric=cosine`` the DB is effectively v2,
+        regardless of whether the schema_version row was stamped.  This
+        lets us safely re-open DBs created by any prior vstash build,
+        including pre-v0.25 unstamped ones and empty pre-v0.25 DBs that
+        have no embeddings yet.
 
-        - Match → no-op.
-        - Missing → assume legacy v1 (the only schema ever shipped) and
-          stamp it for next time.
-        - Unknown → raise :class:`SchemaVersionError` so the caller
-          knows the DB was written by a newer vstash than this build
-          can safely read.
+        Flow:
+
+        1. Always call :meth:`_migrate_v1_to_v2`; that method is a no-op
+           if the ``vec_chunks`` DDL already declares cosine metric.
+        2. Read the existing schema_version row.
+        3. If we migrated, or the row is missing or stamped v1, promote
+           it to the current SCHEMA_VERSION.
+        4. Reject any stamped version we do not recognize with
+           :class:`SchemaVersionError`.
         """
         from . import __version__ as _vstash_version
 
-        # Use INSERT OR IGNORE so two processes opening the same fresh
-        # DB concurrently can't crash on a UNIQUE constraint — whichever
-        # one wins the race stamps the version, the other no-ops.  We
-        # always re-read after the (potentially-skipped) insert so the
-        # value we validate is the one actually in the DB.
+        migrated = self._migrate_v1_to_v2(conn)
+
+        pre_row = conn.execute(
+            "SELECT value FROM store_meta WHERE key = 'schema_version'"
+        ).fetchone()
+        stored_version = str(pre_row["value"]) if pre_row else None
+
+        if stored_version is None or stored_version == "1" or migrated:
+            existing = SCHEMA_VERSION
+        else:
+            existing = stored_version
+
         now_iso = datetime.now(timezone.utc).isoformat()
         conn.execute(
-            "INSERT OR IGNORE INTO store_meta (key, value, updated_at) VALUES (?, ?, ?)",
-            ["schema_version", SCHEMA_VERSION, now_iso],
+            "INSERT OR REPLACE INTO store_meta (key, value, updated_at) VALUES (?, ?, ?)",
+            ["schema_version", existing, now_iso],
         )
         conn.execute(
             "INSERT OR REPLACE INTO store_meta (key, value, updated_at) VALUES (?, ?, ?)",
@@ -887,9 +932,6 @@ class VstashStore:
         )
         conn.commit()
 
-        row = conn.execute("SELECT value FROM store_meta WHERE key = 'schema_version'").fetchone()
-        # row cannot be None here — we just inserted (or ignored) it.
-        existing = str(row["value"])
         if existing not in KNOWN_SCHEMA_VERSIONS:
             msg = (
                 f"Database at {self.db_path} declares schema_version={existing!r}, "
@@ -898,6 +940,131 @@ class VstashStore:
                 f"Upgrade vstash or restore the DB from a compatible backup."
             )
             raise SchemaVersionError(msg)
+
+    def _migrate_v1_to_v2(self, conn: sqlite3.Connection) -> bool:
+        """In-place migrate a v1 DB's ``vec_chunks`` to cosine metric.
+
+        v1 created ``vec_chunks`` as ``vec0(embedding float[N])`` which
+        sqlite-vec treats as L2.  v2 requires ``distance_metric=cosine``.
+        The stored float bytes are identical under both metrics, so the
+        migration reads every ``(rowid, embedding)`` row, drops the old
+        virtual table, creates a new one with cosine, and bulk-reinserts
+        the same bytes.  No re-embedding required.
+
+        Atomic: the whole rebuild runs inside a ``BEGIN IMMEDIATE``
+        transaction so a crash between ``DROP`` and the bulk ``INSERT``
+        rolls back both DDL and data, and a second process attempting
+        the same migration concurrently hits ``SQLITE_BUSY`` rather than
+        racing on the table drop.
+
+        Idempotent: on re-entry the ``sqlite_master`` DDL is inspected
+        first; if it already declares cosine metric we return ``False``
+        without touching the table.
+
+        Returns:
+            ``True`` if the migration rebuilt the table, ``False`` if it
+            was already cosine (no-op).
+        """
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='vec_chunks'"
+        ).fetchone()
+        if row is None:
+            # Defensive: ``_create_schema`` creates ``vec_chunks`` before
+            # this runs, but the check keeps the function safe as a
+            # standalone helper.
+            return False
+        if self._ddl_declares_cosine(row["sql"]):
+            return False
+
+        # BEGIN IMMEDIATE acquires the reserved lock up front, so a
+        # concurrent process opening the same v1 DB blocks here instead
+        # of racing on the DROP.  The transaction covers DDL + bulk
+        # insert so a crash rolls back to the L2 state rather than
+        # leaving an empty cosine table with no embeddings.
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            # Re-check under the lock in case a concurrent process
+            # completed the migration between our pre-check and BEGIN.
+            row = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='vec_chunks'"
+            ).fetchone()
+            if row is None or self._ddl_declares_cosine(row["sql"]):
+                conn.rollback()
+                return False
+
+            # Copy entirely in SQL so we never materialize the full
+            # embedding blob in Python memory -- at 384-dim float32 a
+            # million rows is ~1.5 GB which a naive ``fetchall`` +
+            # ``executemany`` would paginate through Python lists.
+            #
+            # Two non-obvious choices:
+            #
+            # 1. The backup is a regular (not ``vec0``) table so the
+            #    vec0 shadow tables don't collide with the real
+            #    ``vec_chunks`` ones during the rebuild.  ``ALTER TABLE
+            #    RENAME`` on vec0 is a trap because the shadow tables
+            #    (``vec_chunks_chunks``, ``vec_chunks_rowids``, ...)
+            #    keep the original name and every subsequent query
+            #    fails with ``no such table: main.vec_chunks_chunks``.
+            #
+            # 2. The backup lives in ``TEMP`` so it does not grow the
+            #    main DB file.  SQLite does not auto-shrink the main
+            #    DB after ``DROP TABLE``; pages stay on the freelist
+            #    and a migration on a large store would permanently
+            #    ~double the file size until a manual ``VACUUM``.
+            #    TEMP tables write to the per-connection temp DB and
+            #    disappear on connection close.
+            conn.execute(
+                "CREATE TEMP TABLE _vec_chunks_v2_backup "
+                "(rowid INTEGER PRIMARY KEY, embedding BLOB)"
+            )
+            # ``cursor.rowcount`` on an ``INSERT INTO ... SELECT``
+            # returns the number of rows inserted without the extra
+            # table scan that a follow-up ``SELECT COUNT(*)`` would
+            # cost on large stores.
+            cursor = conn.execute(
+                "INSERT INTO _vec_chunks_v2_backup (rowid, embedding) "
+                "SELECT rowid, embedding FROM vec_chunks"
+            )
+            row_count = cursor.rowcount
+            conn.execute("DROP TABLE vec_chunks")
+            conn.execute(
+                f"CREATE VIRTUAL TABLE vec_chunks "
+                f"USING vec0(embedding float[{self.embedding_dim}] distance_metric=cosine)"
+            )
+            conn.execute(
+                "INSERT INTO vec_chunks (rowid, embedding) "
+                "SELECT rowid, embedding FROM _vec_chunks_v2_backup"
+            )
+            conn.execute("DROP TABLE _vec_chunks_v2_backup")
+            # Clear adaptive-threshold history: spread values recorded
+            # under L2 are not comparable to cosine spreads.  Dropping
+            # them lets the rolling window repopulate from v2 searches.
+            conn.execute("DELETE FROM search_stats")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+        logger.info(
+            "Migrated vec_chunks from L2 to cosine metric (schema v1 -> v2, %d embeddings rebuilt)",
+            row_count,
+        )
+        return True
+
+    @staticmethod
+    def _ddl_declares_cosine(ddl: str | None) -> bool:
+        """Whitespace-insensitive check for ``distance_metric=cosine``.
+
+        sqlite_master stores DDL verbatim, including whitespace, so a
+        naive substring check would miss ``distance_metric = cosine`` or
+        similar variants.  Strip whitespace and lower-case before the
+        compare.
+        """
+        if not ddl:
+            return False
+        normalized = "".join(ddl.lower().split())
+        return "distance_metric=cosine" in normalized
 
     def _migrate_schema(self, conn: sqlite3.Connection) -> None:
         """Add missing columns to existing databases."""
@@ -1855,7 +2022,7 @@ class VstashStore:
         top_k: int = 5,
         vec_weight: float | None = None,
         fts_weight: float | None = None,
-        distance_cutoff: float = 1.15,
+        distance_cutoff: float = 1.3225,
         collection: str | None = None,
         project: str | None = None,
         layer: str | None = None,
@@ -1888,6 +2055,10 @@ class VstashStore:
             fts_weight: Weight for keyword search contribution.
             distance_cutoff: Maximum allowed ratio of distance to best distance.
                 Chunks with distance > best_distance * distance_cutoff are dropped.
+                Default 1.3225 = 1.15^2; under BGE unit-normalized
+                embeddings the cosine-distance ratio relates to the
+                legacy v1 L2-distance ratio by a square (#272), so this
+                value preserves v1 cutoff semantics.
             collection: If set, restrict search to documents in this collection.
             project: If set, restrict search to documents with this project tag.
             layer: If set, restrict search to documents with this layer tag.
@@ -2090,12 +2261,34 @@ class VstashStore:
                         detail="retrieval_mode='fts_only': no distance cutoff applied",
                     )
             elif self._snap is not None and len(self._snap) > 0:
-                # SnapVec ANN search — returns list[(id, distance)]
+                # The two snapvec backends disagree on their return
+                # semantics and this shared call site has to reconcile
+                # them to the cosine-distance contract the rest of
+                # the pipeline assumes (#289).
+                #
+                # - Flat ``snapvec`` (``SnapIndex``) returns
+                #   ``(id, similarity)`` in ``[-1, 1]`` sorted
+                #   descending and needs the ``1 - similarity``
+                #   conversion here.
+                # - ``snapvec-ivfpq`` (``IVFPQBackend``) already
+                #   applies ``1 - similarity`` inside its own
+                #   ``search()`` (see ``_ivfpq_backend.py``) and
+                #   must not be double-inverted.
+                #
+                # ``min / max`` clamps keep the invariant that
+                # ``last_best_distance`` and ``relevance_tier`` both
+                # assume (``[0, 2]``), even if an implementation
+                # quirk yields a value slightly outside ``[-1, 1]``.
                 snap_results = self._snap.search(
                     np.array(query_embedding, dtype=np.float32), k=candidate_pool
                 )
                 snap_ids = [int(r[0]) for r in snap_results]
-                snap_dists = {int(r[0]): float(r[1]) for r in snap_results}
+                if self._vector_backend == "snapvec":
+                    snap_dists = {
+                        int(r[0]): min(2.0, max(0.0, 1.0 - float(r[1]))) for r in snap_results
+                    }
+                else:
+                    snap_dists = {int(r[0]): min(2.0, max(0.0, float(r[1]))) for r in snap_results}
 
                 if snap_ids:
                     placeholders = ",".join("?" * len(snap_ids))
@@ -4020,7 +4213,7 @@ class VstashStore:
                         self._batch_dirty = False
 
     def _compute_adaptive_rrf_params(
-        self, query_text: str, default_cutoff: float = 1.15
+        self, query_text: str, default_cutoff: float = 1.3225
     ) -> tuple[float, float, float]:
         """Compute adaptive vec/fts weights and distance cutoff.
 
@@ -4039,9 +4232,16 @@ class VstashStore:
         n_words = len(words)
 
         # Long queries: favor vector + relax distance cutoff
-        # (diffuse embeddings from long text compress distance range)
+        # (diffuse embeddings from long text compress distance range).
+        # 25.0 = 5.0^2: same squaring relationship as the main
+        # ``default_cutoff`` between v1 L2 space and v2 cosine space
+        # (#272); preserves the ArguAna-class "effectively disabled"
+        # semantics where long-query best_dist was ~0.8 under L2 so
+        # 5*best was always past the L2 ceiling of 2.  Under cosine
+        # best_dist is ~0.2 so we need 25*best to keep the cutoff
+        # from rejecting true positives at rank > 0.
         if n_words > _ADAPTIVE_RRF_LONG_QUERY:
-            return 0.9, 0.1, 5.0
+            return 0.9, 0.1, 25.0
 
         idf_dict, total_chunks = self._build_idf_cache()
 
@@ -4401,7 +4601,8 @@ class VstashStore:
                 # Drop and recreate vec_chunks with new dimensions
                 self._conn.execute("DROP TABLE IF EXISTS vec_chunks")
                 self._conn.execute(
-                    f"CREATE VIRTUAL TABLE vec_chunks USING vec0(embedding float[{new_dim}])"
+                    f"CREATE VIRTUAL TABLE vec_chunks "
+                    f"USING vec0(embedding float[{new_dim}] distance_metric=cosine)"
                 )
 
                 # Rebuild snapvec index if active

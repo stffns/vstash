@@ -20,12 +20,206 @@ import os
 import platform
 import threading
 import urllib.request
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Callable, Literal, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from fastembed import TextEmbedding
 
 _logger = logging.getLogger(__name__)
+
+
+# ------------------------------------------------------------------ #
+# Custom encoder plug-in hook (#278)                                   #
+# ------------------------------------------------------------------ #
+
+
+@runtime_checkable
+class Encoder(Protocol):
+    """Shape a plugged-in encoder must satisfy.
+
+    ``embedding_dim`` lets callers of :func:`get_embedding_dim` discover
+    the output size without running the model.  ``encode`` returns a
+    matrix of shape ``(len(texts), embedding_dim)``; lists of floats or
+    numpy arrays both work.
+
+    SentenceTransformer instances expose
+    ``get_sentence_embedding_dimension()`` rather than the
+    ``embedding_dim`` attribute this protocol expects, so a small
+    adapter is needed::
+
+        from sentence_transformers import SentenceTransformer
+
+        class STEncoder:
+            def __init__(self, model: SentenceTransformer) -> None:
+                self._m = model
+                self.embedding_dim = model.get_sentence_embedding_dimension()
+
+            def encode(self, texts: list[str]):
+                return self._m.encode(texts, normalize_embeddings=True)
+
+    PEFT-wrapped ST instances, custom pooling heads, and any other
+    ``.encode``-speaking object follow the same shape.  See #278 for
+    motivation.
+    """
+
+    embedding_dim: int
+
+    def encode(self, texts: list[str]):  # -> list[list[float]] | np.ndarray
+        ...
+
+
+#: Global list of custom encoder resolvers, consulted in registration
+#: order.  Each resolver receives a ``model_name`` string and returns
+#: an :class:`Encoder` if it handles that name, otherwise ``None`` to
+#: defer to the built-in backends.  See :func:`register_encoder_resolver`.
+_encoder_resolvers: list[Callable[[str], "Encoder | None"]] = []
+_encoder_resolvers_lock = threading.Lock()
+
+
+def register_encoder_resolver(resolver: Callable[[str], "Encoder | None"]) -> None:
+    """Register a custom encoder resolver.
+
+    Resolvers are consulted **before** every built-in embedding path
+    (daemon delegation, Gemma, HF ONNX, MLX, FastEmbed).  The first
+    resolver that returns a non-``None`` encoder wins; its ``encode``
+    method is then used for the call.  This lets callers plug in
+    LoRA-adapted, locally-fine-tuned, or otherwise-unnamable encoders
+    without monkey-patching :func:`embed_texts`.
+
+    Resolvers are process-global.  Callers are responsible for
+    registering them before any ingest or search uses the matching
+    model name.  Registrations are idempotent by **object identity**
+    (``is`` comparison), not value equality: a callable that defines
+    ``__eq__`` is still registered distinctly from its peers, which
+    matches what resolvers usually are (closures or bound methods).
+
+    Args:
+        resolver: Callable taking a ``model_name`` and returning an
+            object that satisfies the :class:`Encoder` protocol, or
+            ``None`` to defer to the next resolver / built-in.
+
+    See :func:`unregister_encoder_resolver`.
+    """
+    with _encoder_resolvers_lock:
+        if not any(r is resolver for r in _encoder_resolvers):
+            _encoder_resolvers.append(resolver)
+
+
+def unregister_encoder_resolver(resolver: Callable[[str], "Encoder | None"]) -> None:
+    """Remove a previously-registered resolver.
+
+    Identity-based match: removes the entry ``r`` where ``r is resolver``.
+    No-op if the resolver was never registered.  Primarily useful in
+    tests that want process-level hygiene between cases.
+    """
+    with _encoder_resolvers_lock:
+        for i, r in enumerate(_encoder_resolvers):
+            if r is resolver:
+                del _encoder_resolvers[i]
+                return
+
+
+def _resolve_custom_encoder(model_name: str) -> "Encoder | None":
+    """Walk the resolver list and return the first valid encoder that
+    claims ``model_name``.
+
+    Never raises -- a resolver that throws is logged and treated as
+    ``None`` so one bad resolver does not brick the others.  A resolver
+    that returns something that does not satisfy the :class:`Encoder`
+    protocol (missing ``encode`` or ``embedding_dim``) is also logged
+    and skipped, so a malformed encoder does not surface as a
+    hard-to-trace ``AttributeError`` deep in the embedding call.
+    """
+    # Snapshot under the lock so concurrent (un)register does not mutate
+    # the list mid-iteration; but call the resolver callbacks outside
+    # the lock to avoid holding it across user code.
+    with _encoder_resolvers_lock:
+        snapshot = list(_encoder_resolvers)
+    for resolver in snapshot:
+        try:
+            encoder = resolver(model_name)
+        except Exception:
+            _logger.exception(
+                "custom encoder resolver %r raised for model_name=%r; skipping",
+                resolver,
+                model_name,
+            )
+            continue
+        if encoder is None:
+            continue
+        if not isinstance(encoder, Encoder):
+            _logger.warning(
+                "custom encoder resolver %r returned %r for model_name=%r, "
+                "which does not satisfy the Encoder protocol (needs "
+                "``embedding_dim`` and ``encode``); skipping",
+                resolver,
+                encoder,
+                model_name,
+            )
+            continue
+        return encoder
+    return None
+
+
+def _embed_via_custom(texts: list[str], encoder: "Encoder") -> list[list[float]]:
+    """Run a custom encoder and normalise its output to ``list[list[float]]``.
+
+    Accepts numpy arrays, nested lists, or any object with ``tolist``.
+    Validates shape: raises :class:`ValueError` if the returned batch
+    has the wrong row count, a row is not a sequence, or a vector has
+    the wrong dimension -- malformed custom encoders surface with an
+    actionable message instead of cascading into an obscure sqlite-vec
+    shape error or a bare ``TypeError`` from ``map(float, scalar)``.
+
+    ``.tolist()`` on a numpy float array already returns Python floats,
+    so we skip the ``map(float, ...)`` pass on that hot path and only
+    coerce on the untyped-nested-list branch.
+    """
+    vecs = encoder.encode(texts)
+    tolist = getattr(vecs, "tolist", None)
+    if tolist is not None:
+        # numpy array -> list[list[float]] with Python floats already.
+        # No per-row coercion needed.
+        normalized = tolist()
+        needs_float_coerce = False
+    else:
+        # Untyped nested iterable -- materialize without per-row
+        # coercion so the shape-validation loop below can raise a
+        # clear ``ValueError`` before any ``map(float, scalar)`` blows
+        # up as a bare ``TypeError`` on a flat 1-D output.
+        normalized = list(vecs)
+        needs_float_coerce = True
+
+    if len(normalized) != len(texts):
+        raise ValueError(
+            f"Custom encoder returned {len(normalized)} vectors for {len(texts)} texts"
+        )
+    expected_dim = int(encoder.embedding_dim)
+    for i, v in enumerate(normalized):
+        try:
+            row_dim = len(v)
+        except TypeError as e:
+            # ``len()`` on a scalar raises ``TypeError``; this happens
+            # when an encoder returns a 1-D list of floats (``[0.1,
+            # 0.2, 0.3]``) whose length happens to equal ``len(texts)``
+            # but which is actually a single flattened vector.  Re-raise
+            # as the ``ValueError`` the caller catches alongside every
+            # other shape-validation failure.
+            raise ValueError(
+                f"Custom encoder returned non-sequence vector at index {i}: "
+                f"{type(v).__name__}; expected a sequence of dimension {expected_dim}"
+            ) from e
+        if row_dim != expected_dim:
+            raise ValueError(
+                f"Custom encoder returned vector at index {i} with "
+                f"dimension {row_dim}; expected {expected_dim}"
+            )
+        if needs_float_coerce:
+            try:
+                normalized[i] = list(map(float, v))
+            except (TypeError, ValueError) as e:
+                raise ValueError(f"Custom encoder returned non-numeric element at index {i}") from e
+    return normalized
 
 
 # ------------------------------------------------------------------ #
@@ -74,21 +268,32 @@ BackendType = Literal["onnx", "mlx", "auto"]
 def get_embedding_dim(model_name: str) -> int:
     """Get the embedding dimensionality for a known model.
 
+    Custom encoders registered via :func:`register_encoder_resolver`
+    are consulted first -- their ``embedding_dim`` attribute is
+    authoritative for names they handle.  Built-in FastEmbed models
+    fall back to :data:`KNOWN_DIMS`.
+
     Args:
-        model_name: FastEmbed model identifier.
+        model_name: Model identifier (FastEmbed name or a custom name
+            handled by a registered resolver).
 
     Returns:
-        Embedding dimension for known models.
+        Embedding dimension.
 
     Raises:
-        ValueError: If the model is not in the known registry.
+        ValueError: If the model is not in the known registry and no
+            registered resolver claims the name.
     """
+    custom = _resolve_custom_encoder(model_name)
+    if custom is not None:
+        return int(custom.embedding_dim)
     dim = KNOWN_DIMS.get(model_name)
     if dim is None:
         raise ValueError(
             f"Unknown embedding model: '{model_name}'. "
             f"Known models: {', '.join(sorted(KNOWN_DIMS))}. "
-            "Add it to KNOWN_DIMS in embed.py with its dimension."
+            "Add it to KNOWN_DIMS in embed.py with its dimension, or "
+            "register a custom resolver via register_encoder_resolver()."
         )
     return dim
 
@@ -685,6 +890,17 @@ def embed_texts(
     Returns:
         List of float vectors, one per input text.
     """
+    if not texts:
+        return []
+
+    # Custom resolvers win over every built-in path -- the daemon only
+    # has the default model loaded, and name-based backend detection
+    # (_is_gemma_model, _is_hf_onnx_model) would false-match a custom
+    # name that happens to share a prefix.
+    custom = _resolve_custom_encoder(model_name)
+    if custom is not None:
+        return _embed_via_custom(texts, custom)
+
     url = _check_daemon()
     if url is not None:
         result = _daemon_embed_texts(texts, url, model_name)
@@ -719,6 +935,12 @@ def embed_query(
     Returns:
         Float vector for the query.
     """
+    # Custom resolvers win over every built-in path (see embed_texts).
+    custom = _resolve_custom_encoder(model_name)
+    if custom is not None:
+        vecs = _embed_via_custom([text], custom)
+        return vecs[0]
+
     url = _check_daemon()
     if url is not None:
         result = _daemon_embed_query(text, url, model_name)
