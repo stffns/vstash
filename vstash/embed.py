@@ -493,7 +493,15 @@ _hf_onnx_cache: dict[str, tuple] = {}  # model_name -> (session, tokenizer, max_
 _hf_onnx_lock = threading.Lock()
 _hf_st_cache: dict[str, object] = {}  # model_name -> SentenceTransformer
 _hf_st_lock = threading.Lock()
+# Models whose ONNX init has failed in this process.  Guarded by a
+# dedicated lock so a concurrent read (hot path) and write (cold
+# fallback on first init failure) cannot observe an intermediate
+# set state -- the race is benign under the GIL (a double-failed
+# init is at worst one extra slow-path attempt), but the lock keeps
+# the failure semantics predictable and lines up with the other
+# module-level caches above.
 _hf_onnx_unavailable: set[str] = set()
+_hf_onnx_unavailable_lock = threading.Lock()
 
 
 def _is_hf_onnx_model(model_name: str) -> bool:
@@ -585,8 +593,9 @@ def _embed_hf_onnx(texts: list[str], model_name: str) -> list[list[float]]:
     if not texts:
         return []
 
-    if model_name in _hf_onnx_unavailable:
-        return _embed_hf_st(texts, model_name)
+    with _hf_onnx_unavailable_lock:
+        if model_name in _hf_onnx_unavailable:
+            return _embed_hf_st(texts, model_name)
 
     try:
         session, tokenizer, max_len = _init_hf_onnx(model_name)
@@ -596,7 +605,8 @@ def _embed_hf_onnx(texts: list[str], model_name: str) -> list[list[float]]:
             model_name,
             exc.__class__.__name__,
         )
-        _hf_onnx_unavailable.add(model_name)
+        with _hf_onnx_unavailable_lock:
+            _hf_onnx_unavailable.add(model_name)
         return _embed_hf_st(texts, model_name)
     all_embeddings: list[list[float]] = []
     batch_size = 32

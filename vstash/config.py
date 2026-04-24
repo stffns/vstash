@@ -151,10 +151,11 @@ class StorageConfig(BaseModel):
         ge=0,
         le=1024,
         description=(
-            "IVF coarse clusters for snapvec-ivfpq. 0 = auto (4 * sqrt(N)). "
-            "Explicit values are clamped to [8, 1024] to match the internal "
-            "_nlist_for clamp. FAISS rule: need at least 30 training vectors "
-            "per cluster."
+            "IVF coarse clusters for snapvec-ivfpq. 0 = auto (4 * sqrt(N), "
+            "clamped by ``_nlist_for`` to [8, 1024]). Explicit values must "
+            "fall in [8, 1024]; values outside this range are rejected at "
+            "load time by the field validator. FAISS rule of thumb: need "
+            "at least 30 training vectors per cluster."
         ),
     )
     ivfpq_M: int = Field(

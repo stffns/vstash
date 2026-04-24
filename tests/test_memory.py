@@ -304,10 +304,14 @@ class TestMemorySearch:
 
             # fts_only MUST find the kubernetes-bearing doc regardless
             # of vector distance, because the vector path is skipped.
-            # Assert on the chunk text, not the auto-generated title —
+            # Assert on the chunk text, not the auto-generated title --
             # vstash derives titles from filenames when no frontmatter
             # is present, which is not what this test is about.
-            results = mem.search("kubernetes", fts_only=True)
+            # ``fts_only=True`` is deprecated; wrap in pytest.warns so
+            # the suite stays green under -W error::DeprecationWarning
+            # (#279).
+            with pytest.warns(DeprecationWarning, match="fts_only=True is deprecated"):
+                results = mem.search("kubernetes", fts_only=True)
             assert len(results) > 0
             assert any("kubernetes" in r.text.lower() for r in results), (
                 f"fts_only=True failed to surface the FTS-matching doc; "
@@ -386,8 +390,9 @@ class TestMemorySearch:
 
             # FTS-only on the same query: last_best_distance must
             # be exactly 2.0 (worst case), proving the vector path
-            # was bypassed.
-            mem.search("rust", top_k=3, fts_only=True)
+            # was bypassed.  ``fts_only=True`` is deprecated (#279).
+            with pytest.warns(DeprecationWarning, match="fts_only=True is deprecated"):
+                mem.search("rust", top_k=3, fts_only=True)
             fts_distance = mem._store.last_best_distance
             assert fts_distance == 2.0, (
                 f"fts_only=True should leave last_best_distance == 2.0, got {fts_distance}"
@@ -406,13 +411,15 @@ class TestMemorySearch:
         with Memory(db=tmp_path / "test.db") as mem:
             mem.add(tmp_path / "doc.md")
             # Would raise RRFWeightOutOfRangeError without the
-            # Memory.search override.
-            results = mem.search(
-                "text",
-                fts_only=True,
-                vec_weight=1.5,  # out of range — would normally raise
-                fts_weight=-0.2,  # ditto
-            )
+            # Memory.search override.  ``fts_only=True`` is deprecated
+            # so we expect the corresponding warning too (#279).
+            with pytest.warns(DeprecationWarning, match="fts_only=True is deprecated"):
+                results = mem.search(
+                    "text",
+                    fts_only=True,
+                    vec_weight=1.5,  # out of range -- would normally raise
+                    fts_weight=-0.2,  # ditto
+                )
             assert isinstance(results, list)
 
     @requires_sqlite_vec
