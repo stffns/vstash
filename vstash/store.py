@@ -2261,12 +2261,34 @@ class VstashStore:
                         detail="retrieval_mode='fts_only': no distance cutoff applied",
                     )
             elif self._snap is not None and len(self._snap) > 0:
-                # SnapVec ANN search — returns list[(id, distance)]
+                # The two snapvec backends disagree on their return
+                # semantics and this shared call site has to reconcile
+                # them to the cosine-distance contract the rest of
+                # the pipeline assumes (#289).
+                #
+                # - Flat ``snapvec`` (``SnapIndex``) returns
+                #   ``(id, similarity)`` in ``[-1, 1]`` sorted
+                #   descending and needs the ``1 - similarity``
+                #   conversion here.
+                # - ``snapvec-ivfpq`` (``IVFPQBackend``) already
+                #   applies ``1 - similarity`` inside its own
+                #   ``search()`` (see ``_ivfpq_backend.py``) and
+                #   must not be double-inverted.
+                #
+                # ``min / max`` clamps keep the invariant that
+                # ``last_best_distance`` and ``relevance_tier`` both
+                # assume (``[0, 2]``), even if an implementation
+                # quirk yields a value slightly outside ``[-1, 1]``.
                 snap_results = self._snap.search(
                     np.array(query_embedding, dtype=np.float32), k=candidate_pool
                 )
                 snap_ids = [int(r[0]) for r in snap_results]
-                snap_dists = {int(r[0]): float(r[1]) for r in snap_results}
+                if self._vector_backend == "snapvec":
+                    snap_dists = {
+                        int(r[0]): min(2.0, max(0.0, 1.0 - float(r[1]))) for r in snap_results
+                    }
+                else:
+                    snap_dists = {int(r[0]): min(2.0, max(0.0, float(r[1]))) for r in snap_results}
 
                 if snap_ids:
                     placeholders = ",".join("?" * len(snap_ids))
