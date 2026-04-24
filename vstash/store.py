@@ -992,20 +992,35 @@ class VstashStore:
                 conn.rollback()
                 return False
 
-            # For large DBs this is a one-shot O(N) read; at 384-dim
-            # float32 one million rows is ~1.5 GB.  Acceptable for the
-            # one-time migration.
-            rows = conn.execute("SELECT rowid, embedding FROM vec_chunks").fetchall()
+            # Copy entirely in SQL so we never materialize the full
+            # embedding blob in Python memory -- at 384-dim float32 a
+            # million rows is ~1.5 GB which a naive ``fetchall`` +
+            # ``executemany`` would paginate through Python lists.
+            # The backup is a regular ``TABLE`` (not ``vec0``) so the
+            # vec0 shadow tables don't collide with the real
+            # ``vec_chunks`` ones during the rebuild; ``ALTER TABLE
+            # RENAME`` on vec0 is a trap because the shadow tables
+            # (``vec_chunks_chunks``, ``vec_chunks_rowids``, ...) keep
+            # the original name and every subsequent query fails with
+            # ``no such table: main.vec_chunks_chunks``.
+            conn.execute(
+                "CREATE TABLE _vec_chunks_v2_backup (rowid INTEGER PRIMARY KEY, embedding BLOB)"
+            )
+            conn.execute(
+                "INSERT INTO _vec_chunks_v2_backup (rowid, embedding) "
+                "SELECT rowid, embedding FROM vec_chunks"
+            )
+            row_count = conn.execute("SELECT COUNT(*) FROM _vec_chunks_v2_backup").fetchone()[0]
             conn.execute("DROP TABLE vec_chunks")
             conn.execute(
                 f"CREATE VIRTUAL TABLE vec_chunks "
                 f"USING vec0(embedding float[{self.embedding_dim}] distance_metric=cosine)"
             )
-            if rows:
-                conn.executemany(
-                    "INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)",
-                    [(r["rowid"], r["embedding"]) for r in rows],
-                )
+            conn.execute(
+                "INSERT INTO vec_chunks (rowid, embedding) "
+                "SELECT rowid, embedding FROM _vec_chunks_v2_backup"
+            )
+            conn.execute("DROP TABLE _vec_chunks_v2_backup")
             # Clear adaptive-threshold history: spread values recorded
             # under L2 are not comparable to cosine spreads.  Dropping
             # them lets the rolling window repopulate from v2 searches.
@@ -1017,7 +1032,7 @@ class VstashStore:
 
         logger.info(
             "Migrated vec_chunks from L2 to cosine metric (schema v1 -> v2, %d embeddings rebuilt)",
-            len(rows),
+            row_count,
         )
         return True
 
