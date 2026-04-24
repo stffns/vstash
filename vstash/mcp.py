@@ -238,35 +238,6 @@ def _coerce_retrieval_mode(value: Any, field: str = "retrieval_mode") -> str | N
     raise ValueError(f"{field}: expected one of 'hybrid', 'vec_only', 'fts_only'; got {value!r}")
 
 
-def _coerce_bool(value: Any, field: str) -> bool:
-    """Coerce an MCP-supplied value to ``bool``.
-
-    Accepts Python bool, JSON strings ``"true"``/``"false"`` (case-insensitive),
-    and string aliases ``"1"``/``"0"``/``"yes"``/``"no"``/``"on"``/``"off"``,
-    plus ``"none"``/``"null"`` (consistent with ``_coerce_optional_float``).
-    ``None`` becomes ``False`` (the parameter default).  Anything else
-    raises ``ValueError``.
-    """
-    if value is None:
-        return False
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, int):
-        # Plain int from JSON — 0 = False, anything else = True.  Keeps
-        # parity with Python truthiness without silently accepting floats.
-        return bool(value)
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in ("true", "1", "yes", "on"):
-            return True
-        if lowered in ("false", "0", "no", "off", "", "null", "none"):
-            return False
-        msg = f"{field}: could not parse {value!r} as bool"
-        raise ValueError(msg)
-    msg = f"{field}: expected a bool or 'true'/'false' string, got {type(value).__name__}"
-    raise ValueError(msg)
-
-
 # ------------------------------------------------------------------ #
 # Tools                                                                #
 # ------------------------------------------------------------------ #
@@ -536,7 +507,6 @@ def vstash_ask(
     added_before: str | None = None,
     vec_weight: float | None = None,
     fts_weight: float | None = None,
-    fts_only: bool = False,
     retrieval_mode: str | None = None,
 ) -> str:
     """Query vstash memory and get an LLM-generated answer with sources.
@@ -557,7 +527,6 @@ def vstash_ask(
             adaptive per-query RRF.
         fts_weight: Pin the RRF FTS weight on the retrieval step. See
             ``vstash_search``.
-        fts_only: DEPRECATED, use ``retrieval_mode="fts_only"`` instead.
         retrieval_mode: Which search branches to run on the retrieval
             step. One of ``"hybrid"`` (default), ``"vec_only"``,
             ``"fts_only"``. See ``vstash_search`` for full semantics.
@@ -573,12 +542,11 @@ def vstash_ask(
         store = _get_store()
 
         # Defensive type coercion (MCP clients may send strings where
-        # floats/bools/enums are expected). Resolve retrieval_mode first
-        # so a non-hybrid mode short-circuits the weight coercion -- see
+        # floats/enums are expected). Resolve retrieval_mode first so a
+        # non-hybrid mode short-circuits the weight coercion -- see
         # vstash_search for the same precedence rule.
         mode_coerced = _coerce_retrieval_mode(retrieval_mode, "retrieval_mode")
-        fts_only_coerced = _coerce_bool(fts_only, "fts_only")
-        resolved_mode = VstashStore._resolve_retrieval_mode(mode_coerced, fts_only_coerced)
+        resolved_mode = VstashStore._resolve_retrieval_mode(mode_coerced)
         if resolved_mode != "hybrid":
             vec_weight_coerced = None
             fts_weight_coerced = None
@@ -666,7 +634,6 @@ def vstash_search(
     mmr_lambda: float = 0.5,
     vec_weight: float | None = None,
     fts_weight: float | None = None,
-    fts_only: bool = False,
     retrieval_mode: str | None = None,
 ) -> str:
     """Search vstash memory without LLM — returns raw chunks with scores.
@@ -696,7 +663,6 @@ def vstash_search(
             embedding is known to be diffuse).
         fts_weight: Pin the RRF FTS weight. Same semantics and range as
             vec_weight.
-        fts_only: DEPRECATED, use ``retrieval_mode="fts_only"`` instead.
         retrieval_mode: Which search branches to run. One of ``"hybrid"``
             (default), ``"vec_only"``, ``"fts_only"``.
             - ``"hybrid"``: vector ANN + FTS5 + adaptive RRF. The
@@ -719,21 +685,20 @@ def vstash_search(
         store = _get_store()
 
         # Defensive type coercion -- MCP clients can be inconsistent and
-        # may send JSON strings where booleans / floats / enums are
-        # expected. Mirror the existing pattern used for top_k /
-        # recency_boost / mmr_lambda.
+        # may send JSON strings where floats / enums are expected.
+        # Mirror the existing pattern used for top_k / recency_boost /
+        # mmr_lambda.
         #
-        # Precedence (documented in docs/mcp-server.md): if retrieval_mode
-        # is non-hybrid (or the deprecated fts_only=True is set),
-        # vec_weight/fts_weight are ignored. Resolve the mode FIRST and
-        # short-circuit the weight coercion when it is non-hybrid --
-        # that way a caller who sends an out-of-range or unparseable
-        # weight together with retrieval_mode="fts_only" still gets a
-        # successful query instead of a coercion-error bailout for an
-        # argument that was semantically meant to be ignored.
+        # Precedence (documented in docs/mcp-server.md): if
+        # retrieval_mode is non-hybrid, vec_weight/fts_weight are
+        # ignored.  Resolve the mode FIRST and short-circuit the weight
+        # coercion when it is non-hybrid -- that way a caller who sends
+        # an out-of-range or unparseable weight together with
+        # retrieval_mode="fts_only" still gets a successful query
+        # instead of a coercion-error bailout for an argument that was
+        # semantically meant to be ignored.
         mode_coerced = _coerce_retrieval_mode(retrieval_mode, "retrieval_mode")
-        fts_only_coerced = _coerce_bool(fts_only, "fts_only")
-        resolved_mode = VstashStore._resolve_retrieval_mode(mode_coerced, fts_only_coerced)
+        resolved_mode = VstashStore._resolve_retrieval_mode(mode_coerced)
         if resolved_mode != "hybrid":
             vec_weight_coerced = None
             fts_weight_coerced = None

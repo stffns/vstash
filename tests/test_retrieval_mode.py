@@ -1,4 +1,4 @@
-"""Tests for the retrieval_mode enum (issue #275).
+"""Tests for the retrieval_mode enum (issue #275, #281).
 
 The three modes (``hybrid``, ``vec_only``, ``fts_only``) are mutually
 exclusive switches on ``VstashStore.search``. Contracts under test:
@@ -8,18 +8,15 @@ exclusive switches on ``VstashStore.search``. Contracts under test:
 - ``"vec_only"`` skips the FTS5 SQL entirely and forces
   ``(vec_weight, fts_weight) = (1.0, 0.0)``.
 - ``"fts_only"`` keeps its historical short-circuit semantics (#152).
-- The legacy ``fts_only=True`` bool emits ``DeprecationWarning`` but
-  still resolves to ``retrieval_mode="fts_only"``.
-- A contradictory combination (``fts_only=True`` + ``retrieval_mode``
-  other than ``"fts_only"``) raises ``ValueError``.
 - An unknown string for ``retrieval_mode`` raises ``ValueError``.
+- The legacy ``fts_only=True`` bool kwarg was removed in v0.35.0
+  (#281); callers still passing it hit a ``TypeError`` from
+  Python's argument binder instead of a soft deprecation warning.
 - The query cache distinguishes between modes (same query text in
   different modes must not collide).
 """
 
 from __future__ import annotations
-
-import warnings
 
 import pytest
 
@@ -55,40 +52,25 @@ class TestResolver:
     """_resolve_retrieval_mode is the single source of truth for mode."""
 
     def test_default_is_hybrid(self) -> None:
-        assert VstashStore._resolve_retrieval_mode(None, False) == "hybrid"
+        assert VstashStore._resolve_retrieval_mode(None) == "hybrid"
 
-    def test_retrieval_mode_wins(self) -> None:
-        assert VstashStore._resolve_retrieval_mode("vec_only", False) == "vec_only"
-        assert VstashStore._resolve_retrieval_mode("fts_only", False) == "fts_only"
-
-    def test_legacy_fts_only_emits_deprecation(self) -> None:
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            mode = VstashStore._resolve_retrieval_mode(None, True)
-        assert mode == "fts_only"
-        assert any(issubclass(w.category, DeprecationWarning) for w in caught)
-        assert any("retrieval_mode='fts_only'" in str(w.message) for w in caught)
-
-    def test_conflicting_inputs_raise(self) -> None:
-        with pytest.raises(ValueError, match="conflicts with fts_only=True"):
-            VstashStore._resolve_retrieval_mode("vec_only", True)
-        with pytest.raises(ValueError, match="conflicts with fts_only=True"):
-            VstashStore._resolve_retrieval_mode("hybrid", True)
-
-    def test_fts_only_plus_fts_only_mode_is_ok(self) -> None:
-        # Not a conflict: redundant but consistent. Drop to "fts_only"
-        # silently (no deprecation since retrieval_mode was provided).
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            mode = VstashStore._resolve_retrieval_mode("fts_only", True)
-        assert mode == "fts_only"
-        assert not any(issubclass(w.category, DeprecationWarning) for w in caught), (
-            "explicit retrieval_mode wins; no deprecation warning expected"
-        )
+    def test_retrieval_mode_is_passthrough(self) -> None:
+        assert VstashStore._resolve_retrieval_mode("vec_only") == "vec_only"
+        assert VstashStore._resolve_retrieval_mode("fts_only") == "fts_only"
+        assert VstashStore._resolve_retrieval_mode("hybrid") == "hybrid"
 
     def test_unknown_mode_string_raises(self) -> None:
         with pytest.raises(ValueError, match="must be one of"):
-            VstashStore._resolve_retrieval_mode("semantic", False)
+            VstashStore._resolve_retrieval_mode("semantic")
+
+    def test_legacy_fts_only_kwarg_raises_type_error(self) -> None:
+        """Removal of the legacy ``fts_only=True`` bool is a hard break
+        in v0.35.0 (#281).  Passing it hits Python's argument binder,
+        not a soft deprecation warning: two releases of notice are
+        enough signal.
+        """
+        with pytest.raises(TypeError):
+            VstashStore._resolve_retrieval_mode(None, True)  # type: ignore[call-arg]
 
 
 class TestVecOnlyBranch:

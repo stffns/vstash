@@ -1762,39 +1762,27 @@ class VstashStore:
     @staticmethod
     def _resolve_retrieval_mode(
         retrieval_mode: Literal["hybrid", "vec_only", "fts_only"] | None,
-        fts_only: bool,
     ) -> Literal["hybrid", "vec_only", "fts_only"]:
-        """Normalize ``retrieval_mode`` + legacy ``fts_only`` into one enum.
+        """Normalize ``retrieval_mode`` to the canonical enum.
 
-        Precedence: if ``retrieval_mode`` is set it wins. If only the
-        legacy ``fts_only=True`` is set, return ``"fts_only"`` and
-        emit a ``DeprecationWarning`` so callers migrate. Passing
-        ``fts_only=True`` together with a contradictory
-        ``retrieval_mode`` raises ``ValueError`` because there is no
-        obvious right choice.
+        ``None`` resolves to ``"hybrid"`` (the default pipeline).  Any
+        other value must be one of the three known modes; everything
+        else raises ``ValueError`` with the expected set.
+
+        The legacy ``fts_only=True`` bool parameter was deprecated in
+        v0.33.0 and removed in v0.35.0 (#281).  Callers still passing
+        it will hit a ``TypeError`` from Python's argument binder
+        instead of a soft deprecation warning -- an intentional hard
+        break after two releases of advance notice.
         """
-        if retrieval_mode is not None:
-            if fts_only and retrieval_mode != "fts_only":
-                raise ValueError(
-                    f"retrieval_mode={retrieval_mode!r} conflicts with fts_only=True; "
-                    "drop the legacy fts_only argument (it is deprecated)."
-                )
-            if retrieval_mode not in ("hybrid", "vec_only", "fts_only"):
-                raise ValueError(
-                    f"retrieval_mode must be one of 'hybrid', 'vec_only', 'fts_only'; "
-                    f"got {retrieval_mode!r}"
-                )
-            return retrieval_mode
-        if fts_only:
-            import warnings
-
-            warnings.warn(
-                "fts_only=True is deprecated, use retrieval_mode='fts_only' instead.",
-                DeprecationWarning,
-                stacklevel=3,
+        if retrieval_mode is None:
+            return "hybrid"
+        if retrieval_mode not in ("hybrid", "vec_only", "fts_only"):
+            raise ValueError(
+                f"retrieval_mode must be one of 'hybrid', 'vec_only', 'fts_only'; "
+                f"got {retrieval_mode!r}"
             )
-            return "fts_only"
-        return "hybrid"
+        return retrieval_mode
 
     @staticmethod
     def _resolve_rrf_weights(
@@ -2032,7 +2020,6 @@ class VstashStore:
         added_after: str | None = None,
         added_before: str | None = None,
         mmr_lambda: float = 0.5,
-        fts_only: bool = False,
         retrieval_mode: Literal["hybrid", "vec_only", "fts_only"] | None = None,
         exact_match: str | None = None,
         exact_match_case_sensitive: bool = False,
@@ -2075,8 +2062,6 @@ class VstashStore:
             exact_match_case_sensitive: Toggle for the above. Default
                 ``False`` does a casefold comparison which matches
                 typical retrieval-filter UX expectations.
-            fts_only: DEPRECATED, use ``retrieval_mode="fts_only"``.
-                Will be removed in a future release.
             retrieval_mode: Which search branches to run (default
                 ``"hybrid"``). Three values:
 
@@ -2102,7 +2087,7 @@ class VstashStore:
         Returns:
             Ranked list of SearchResult ordered by descending score.
         """
-        _mode = self._resolve_retrieval_mode(retrieval_mode, fts_only)
+        _mode = self._resolve_retrieval_mode(retrieval_mode)
         _fts_only = _mode == "fts_only"
         _vec_only = _mode == "vec_only"
         # Fail-safe validation at the public API boundary (#133).  Runs

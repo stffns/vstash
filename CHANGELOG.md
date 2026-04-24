@@ -2,6 +2,23 @@
 
 All notable changes to vstash are documented here.
 
+## [Unreleased]
+
+### Removed (breaking)
+
+- **``fts_only=True`` bool parameter on ``search`` / ``ask``** (#281).  Deprecated in v0.33.0 with a ``DeprecationWarning`` and retained through v0.34.0; removed from every public surface in v0.35.0:
+
+  - ``VstashStore.search(..., fts_only=...)``
+  - ``Memory.search(..., fts_only=...)`` and ``Memory.ask(..., fts_only=...)``
+  - MCP tools ``vstash_search`` and ``vstash_ask``
+
+  Callers still passing it hit a ``TypeError`` from Python's argument binder.  The migration is a straight rename to ``retrieval_mode="fts_only"``.  Everything else about the three-mode enum (``"hybrid"`` | ``"vec_only"`` | ``"fts_only"``) is unchanged.
+
+### Changed
+
+- ``VstashStore._resolve_retrieval_mode`` is now single-argument (only the ``retrieval_mode`` string).  The removal of the legacy bool also removed the ``"conflicts with fts_only=True"`` ``ValueError`` branch since that combination is no longer expressible.
+- ``_coerce_bool`` helper in ``vstash.mcp`` removed; no remaining callers.
+
 ## [0.34.0] - 2026-04-24
 
 ### Fixed
