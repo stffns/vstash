@@ -35,11 +35,11 @@ def run(metric: str) -> dict[str, float]:
     conn.execute(ddl)
 
     probes = {
-        "same":        ([1.0, 0.0, 0.0], [1.0, 0.0, 0.0]),
+        "same": ([1.0, 0.0, 0.0], [1.0, 0.0, 0.0]),
         "orthogonal": ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
-        "opposite":   ([1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]),
-        "scaled":     ([1.0, 0.0, 0.0], [2.0, 0.0, 0.0]),      # same direction, diff magnitude
-        "multi_big":  ([0.5, 0.5, 0.5], [3.0, 2.0, 1.0]),       # arbitrary non-unit
+        "opposite": ([1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]),
+        "scaled": ([1.0, 0.0, 0.0], [2.0, 0.0, 0.0]),  # same direction, diff magnitude
+        "multi_big": ([0.5, 0.5, 0.5], [3.0, 2.0, 1.0]),  # arbitrary non-unit
     }
 
     out: dict[str, float] = {}

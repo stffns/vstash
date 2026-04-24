@@ -74,8 +74,7 @@ def main() -> int:
         ctx = mp.get_context("spawn")
         result_q: mp.Queue = ctx.Queue()
         workers = [
-            ctx.Process(target=_open_worker, args=(str(db_path), dim, result_q))
-            for _ in range(4)
+            ctx.Process(target=_open_worker, args=(str(db_path), dim, result_q)) for _ in range(4)
         ]
         t0 = time.perf_counter()
         for w in workers:
