@@ -63,14 +63,31 @@ class TestResolver:
         with pytest.raises(ValueError, match="must be one of"):
             VstashStore._resolve_retrieval_mode("semantic")
 
-    def test_legacy_fts_only_kwarg_raises_type_error(self) -> None:
-        """Removal of the legacy ``fts_only=True`` bool is a hard break
-        in v0.35.0 (#281).  Passing it hits Python's argument binder,
-        not a soft deprecation warning: two releases of notice are
-        enough signal.
+    def test_legacy_fts_only_kwarg_raises_type_error(self, tmp_path) -> None:
+        """Removal of the legacy ``fts_only=True`` bool is a hard
+        break in v0.35.0 (#281).  Passing it to the **public** API
+        hits Python's argument binder with "unexpected keyword
+        argument 'fts_only'", not a soft deprecation warning.
+
+        Asserting on ``VstashStore.search`` rather than the internal
+        resolver means this test fails if the kwarg is accidentally
+        reintroduced on the public surface (the thing users actually
+        call), which is the regression we care about blocking.
         """
-        with pytest.raises(TypeError):
-            VstashStore._resolve_retrieval_mode(None, True)  # type: ignore[call-arg]
+        store = _seed_store(tmp_path)
+        try:
+            with pytest.raises(
+                TypeError,
+                match=r"unexpected keyword argument 'fts_only'",
+            ):
+                store.search(
+                    query_embedding=[1.0] + [0.0] * (DIM - 1),
+                    query_text="rust",
+                    top_k=1,
+                    fts_only=True,  # type: ignore[call-arg]
+                )
+        finally:
+            store.close()
 
 
 class TestVecOnlyBranch:

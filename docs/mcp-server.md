@@ -87,8 +87,7 @@ Both `vstash_search` and `vstash_ask` expose four parameters for overriding the 
 |---|---|---|
 | `vec_weight` | `float \| None` | Pin the RRF vector weight for this query (valid range `[0.0, 1.0]`). Overrides adaptive RRF. May be passed alone — the store derives `fts_weight = 1.0 - vec_weight` when only one is provided. |
 | `fts_weight` | `float \| None` | Pin the RRF FTS weight. Same range and same alone-or-together behavior as `vec_weight`. |
-| `retrieval_mode` | `str \| None` | Which search branches to run. One of `"hybrid"` (default), `"vec_only"`, or `"fts_only"`. When set to a non-hybrid mode, `vec_weight` and `fts_weight` are ignored (the mode is a stronger statement of intent). |
-| `fts_only` | `bool` | **Deprecated in v0.33.0** — equivalent to `retrieval_mode="fts_only"`. Still honoured with a `DeprecationWarning`; will be removed in a future release. Combining `fts_only=true` with a conflicting `retrieval_mode` raises an error. |
+| `retrieval_mode` | `str \| None` | Which search branches to run. One of `"hybrid"` (default), `"vec_only"`, or `"fts_only"`. When set to a non-hybrid mode, `vec_weight` and `fts_weight` are ignored (the mode is a stronger statement of intent). The legacy `fts_only=true` bool was deprecated in v0.33.0 and removed in v0.35.0 (#281); passing it now hits a `TypeError` from the argument binder. |
 
 **When to use them:**
 
@@ -97,7 +96,7 @@ Both `vstash_search` and `vstash_ask` expose four parameters for overriding the 
 - **`vec_weight=0.1, fts_weight=0.9`** — bias a specific query toward keyword matching without disabling the vector path entirely. Adaptive RRF resumes on the next query with defaults.
 - **`vec_weight=0.9, fts_weight=0.1`** — inverse: bias toward semantic paraphrase when you know the exact term may not be in the corpus.
 
-**Type coercion note.** The MCP server accepts string values for these parameters (`"0.5"`, `"true"`, `"false"`, `"1"`, `"0"`, `"hybrid"`, `"vec_only"`, `"fts_only"`) and coerces them internally, so clients that serialize JSON numbers, booleans, or enum strings get a consistent parse at the tool boundary instead of a 422. An unparseable value surfaces as a structured `{"error": "..."}` response naming the offending field. If a caller supplies a non-hybrid `retrieval_mode` together with explicit weights, the weights are silently ignored.
+**Type coercion note.** The MCP server accepts string values for these parameters (`"0.5"`, `"hybrid"`, `"vec_only"`, `"fts_only"`) and coerces them internally, so clients that serialize JSON numbers or enum strings get a consistent parse at the tool boundary instead of a 422. An unparseable value surfaces as a structured `{"error": "..."}` response naming the offending field. If a caller supplies a non-hybrid `retrieval_mode` together with explicit weights, the weights are silently ignored.
 
 Example MCP call:
 

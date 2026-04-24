@@ -19,7 +19,7 @@ import math
 import threading
 from collections import deque
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -219,13 +219,19 @@ def _coerce_optional_float(value: Any, field: str) -> float | None:
     return parsed
 
 
-def _coerce_retrieval_mode(value: Any, field: str = "retrieval_mode") -> str | None:
+_RetrievalMode = Literal["hybrid", "vec_only", "fts_only"]
+
+
+def _coerce_retrieval_mode(value: Any, field: str = "retrieval_mode") -> _RetrievalMode | None:
     """Coerce an MCP-supplied value to a ``retrieval_mode`` enum string.
 
     Accepts ``None`` (leave unset), ``"hybrid"``, ``"vec_only"``,
-    ``"fts_only"``. Any other string raises ``ValueError`` with the
-    valid set listed so the MCP client sees an actionable error instead
-    of a silent downgrade to hybrid.
+    ``"fts_only"``.  Any other string raises ``ValueError`` with the
+    valid set listed so the MCP client sees an actionable error
+    instead of a silent downgrade to hybrid.  The return type is
+    narrowed to the same ``Literal`` alias ``VstashStore.
+    _resolve_retrieval_mode`` accepts, so the two can chain without
+    a cast.
     """
     if value is None:
         return None
@@ -234,7 +240,11 @@ def _coerce_retrieval_mode(value: Any, field: str = "retrieval_mode") -> str | N
         if lowered == "":
             return None
         if lowered in ("hybrid", "vec_only", "fts_only"):
-            return lowered
+            # The ``in`` check above narrows to the literal alias at
+            # runtime; ``cast`` is just for the type checker.
+            from typing import cast
+
+            return cast(_RetrievalMode, lowered)
     raise ValueError(f"{field}: expected one of 'hybrid', 'vec_only', 'fts_only'; got {value!r}")
 
 

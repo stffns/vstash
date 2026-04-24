@@ -525,9 +525,9 @@ class TestVstashAsk:
         mock_store: MagicMock,
         mock_embed: MagicMock,
     ) -> None:
-        """vstash_ask must forward vec_weight/fts_weight/fts_only to the
-        retrieval step (#159). Symmetric with the SDK ``Memory.ask()``
-        forwarding test.
+        """vstash_ask must forward vec_weight / fts_weight /
+        retrieval_mode to the retrieval step (#159, #281).  Symmetric
+        with the SDK ``Memory.ask()`` forwarding test.
         """
         chunks = [_make_search_result("context", "Doc1")]
         store_inst = mock_store.return_value
