@@ -153,9 +153,10 @@ class StorageConfig(BaseModel):
         description=(
             "IVF coarse clusters for snapvec-ivfpq. 0 = auto (4 * sqrt(N), "
             "clamped by ``_nlist_for`` to [8, 1024]). Explicit values must "
-            "fall in [8, 1024]; values outside this range are rejected at "
-            "load time by the field validator. FAISS rule of thumb: need "
-            "at least 30 training vectors per cluster."
+            "fall in [8, 1024]: values below 8 are rejected at load time by "
+            "``_check_ivfpq_nlist`` and values above 1024 by Pydantic's "
+            "``le=1024`` field constraint. FAISS rule of thumb: need at "
+            "least 30 training vectors per cluster."
         ),
     )
     ivfpq_M: int = Field(

@@ -30,32 +30,34 @@ class TestGetEmbeddingDim:
         assert len(KNOWN_DIMS) >= 4
 
 
-class TestHFOnnxUnavailableLock:
-    """Regression coverage for the threading lock on the shared
-    ``_hf_onnx_unavailable`` set.
+class TestHFOnnxUnavailableConcurrency:
+    """Pin the chosen concurrency semantics of ``_hf_onnx_unavailable``.
 
-    Protects against multiple threads each retriggering a slow ONNX
-    init for a model we already know is broken.  The lock makes the
-    check-then-add pattern observably single-writer; this test just
-    pins that invariant so a future refactor does not silently drop
-    the lock and leave a race behind.
+    The set is deliberately unlocked (set ops are atomic under the
+    GIL; a real guard would have to span the slow ``_init_hf_onnx``
+    call and serialize every fallback).  This test exercises the
+    concurrent fallback path and asserts the two contracts we care
+    about: no thread deadlocks, and the failure marker sticks.
+
+    It does **not** assert "``_init_hf_onnx`` was called exactly
+    once" -- accepting up to ``n_threads`` init attempts is the
+    explicit trade-off for keeping the hot path lock-free.
     """
 
-    def test_concurrent_init_fallback_is_serialised(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Spawn N threads that all hit the fallback path for the same
-        model_name.  The set must end with exactly one entry -- the
-        lock serialises the ``.add`` even though each thread sees the
-        check-before-add race individually.
-        """
+    def test_concurrent_init_fallback_is_safe(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import threading
 
         import vstash.embed as embed_mod
 
         # Start clean so we don't leak state into other tests.
-        with embed_mod._hf_onnx_unavailable_lock:
-            embed_mod._hf_onnx_unavailable.discard("broken/model")
+        embed_mod._hf_onnx_unavailable.discard("broken/model")
+        init_calls = 0
+        init_calls_lock = threading.Lock()
 
         def always_fail(model_name: str) -> tuple:
+            nonlocal init_calls
+            with init_calls_lock:
+                init_calls += 1
             raise RuntimeError("simulated ONNX init failure")
 
         monkeypatch.setattr(embed_mod, "_init_hf_onnx", always_fail)
@@ -81,8 +83,17 @@ class TestHFOnnxUnavailableLock:
             t.join(timeout=5)
 
         try:
+            # (1) No thread is stuck -- a future refactor that
+            # introduces a lock around the slow path would show up
+            # here as a join timeout.
+            for t in threads:
+                assert not t.is_alive(), "worker thread did not finish within timeout"
+            # (2) The failure marker is set after the storm.
             assert "broken/model" in embed_mod._hf_onnx_unavailable
-            assert sum(1 for m in embed_mod._hf_onnx_unavailable if m == "broken/model") == 1
+            # (3) Each thread independently tried to init at least
+            # once; we accept up to n_threads attempts (the
+            # deliberately-benign race).  Fail only if zero attempts
+            # happened, which would mean the fallback path never ran.
+            assert 1 <= init_calls <= n_threads
         finally:
-            with embed_mod._hf_onnx_unavailable_lock:
-                embed_mod._hf_onnx_unavailable.discard("broken/model")
+            embed_mod._hf_onnx_unavailable.discard("broken/model")
