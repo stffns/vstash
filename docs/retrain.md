@@ -205,6 +205,110 @@ smoke tests). Override with `--min-gain -1` to always save the
 candidate (useful when you want to inspect a known-regression
 model for debugging).
 
+### Labeled training and eval queries (BEIR-style)
+
+When you have real `(query, relevant_doc_paths)` labels --
+BEIR qrels, search-log clicks, manual annotations -- pass them
+to `vstash retrain` directly. Both flags accept JSONL files
+where each line is one labeled query:
+
+```jsonl
+{"query": "what is the meaning of life", "relevant_paths": ["/notes/answer.md"]}
+{"query": "how do mitochondria work", "relevant_paths": ["/biology/cell.md", "/biology/atp.md"]}
+```
+
+```bash
+vstash retrain \
+    --training-queries train.jsonl \
+    --eval-queries eval.jsonl \
+    --base-model BAAI/bge-small-en-v1.5 \
+    --output ~/.vstash/models/my-fine-tune
+```
+
+What changes vs. the default flow:
+
+- **Training pairs** come from real (query, gold) labels via
+  `generate_labeled_triples_batched` instead of chunk-prefix
+  pseudo-queries. This reuses the v5 recipe that produced
+  `Stffens/bge-small-rrf-v2` and `bge-small-rrf-v3`. Pass
+  `--training-pair-source labeled` to refuse to fall back to
+  chunk-prefix when no training labels are present (forces a
+  hard error rather than silent regression).
+- **Eval gate** scores baseline and fine-tuned on `eval.jsonl`
+  rather than the internal chunk-prefix split. This matters
+  whenever you care about specific query distributions: the
+  internal split's pseudo-queries are statement-shaped, so a
+  +0.05 NDCG there can hide a regression on real questions.
+- `--eval-fraction` is ignored (the held-out set is the file
+  you provide). `--eval-noise` still applies and controls how
+  many distractor chunks join the eval index.
+- `--no-eval` and `--eval-queries` are mutually exclusive: pick
+  one. If both are set the CLI exits non-zero.
+
+#### Building a stratified holdout from BEIR-style qrels
+
+`vstash.retrain.qrels_to_eval_queries` converts the standard
+`(queries, qrels)` dicts into the JSONL shape above:
+
+```python
+import json
+from vstash.retrain import qrels_to_eval_queries
+
+queries = {"q1": "what is the meaning of life", ...}
+qrels   = {"q1": {"answer.md": 1}, ...}
+
+records = qrels_to_eval_queries(queries, qrels, path_for_doc_id=lambda d: d)
+
+# 80/20 split
+train, holdout = records[: int(len(records) * 0.8)], records[int(len(records) * 0.8) :]
+with open("train.jsonl", "w") as fh:
+    for r in train: fh.write(json.dumps(r) + "\n")
+with open("eval.jsonl", "w") as fh:
+    for r in holdout: fh.write(json.dumps(r) + "\n")
+```
+
+If your data is multi-domain (e.g., LongMemEval question types),
+stratify the split by the relevant key before slicing -- a
+random 80/20 over a heterogeneous benchmark hides per-category
+regressions. The Python API (`retrain(..., eval_queries=...)`)
+also accepts the records directly without writing JSONL.
+
+#### Working from chat-style JSON (e.g., LongMemEval)
+
+`vstash` does not ship a dedicated chat-JSON ingester -- the
+schema varies too much across products. The pattern is:
+
+1. **Reduce each chat session to a text blob** (one document).
+   Concatenating turns with role markers
+   (`[USER]\n...\n[ASSISTANT]\n...`) is a reasonable default;
+   richer schemas may need timestamps or tool-call markup.
+2. **Use the session id as the document path** so labeled
+   queries can reference it directly in `relevant_paths`.
+3. Ingest the blobs via the standard `Memory.remember` /
+   `VstashStore.add_documents_batch` paths.
+
+```python
+# Sketch: turns -> blob -> doc, one per session
+def _format_session(turns: list[dict]) -> str:
+    return "\n\n".join(f"[{t['role'].upper()}]\n{t['content']}" for t in turns)
+
+for session_id, turns in chat_sessions.items():
+    text = _format_session(turns)
+    chunks = chunk_text(text, cfg.chunking.size, cfg.chunking.overlap)
+    embeddings = embed_texts(chunks, cfg.embeddings.model)
+    store.add_documents_batch([{
+        "path": session_id,
+        "title": session_id,
+        "chunks": chunks,
+        "embeddings": embeddings,
+        "source_type": "chat",
+        "collection": "my-chats",
+    }])
+```
+
+The labeled-query JSONL then references each `session_id`
+directly in `relevant_paths`.
+
 ---
 
 ## Multi-corpus: `vstash retrain-multi`
