@@ -88,53 +88,87 @@ def _load_labeled_queries_jsonl(path_str: str, *, flag: str) -> list[dict]:
     """Load and validate a JSONL file of labeled queries.
 
     Used by ``vstash retrain`` for both --training-queries and
-    --eval-queries.  Each line must be a JSON object with at least
-    ``query`` and ``relevant_paths``; returns the parsed records.
+    --eval-queries.  Each line must be a JSON object with a non-empty
+    string ``query`` and a non-empty list of non-empty string
+    ``relevant_paths``; returns the parsed records.
 
     Errors and exits the process with a clear message on:
-        - missing file,
-        - invalid JSON,
+        - missing file or non-file path,
+        - invalid JSON (with the offending line number),
         - records that are not objects with the required keys,
+        - records with non-string / empty fields,
         - empty file.
     The caller's flag name is woven into every message so the user
     knows which argument was wrong when they pass both.
     """
     path = Path(path_str).expanduser()
-    if not path.exists():
-        console.print(f"[red]x[/red] {flag}: file not found: {path}")
+    if not path.is_file():
+        # ``not exists`` and ``is a directory`` both end here -- distinguish
+        # them so users debugging a wrong path know whether they typoed or
+        # pointed at the parent dir.
+        if path.exists():
+            console.print(f"[red]x[/red] {flag}: path is not a file: {path}")
+        else:
+            console.print(f"[red]x[/red] {flag}: file not found: {path}")
         raise typer.Exit(code=1)
+
+    records: list[dict] = []
     try:
-        with path.open() as fh:
-            records = [json.loads(line) for line in fh if line.strip()]
-    except (OSError, json.JSONDecodeError) as exc:
-        console.print(
-            f"[red]x[/red] {flag}: failed to parse {path}: {exc}. "
-            f"Expected JSONL (one {{'query': ..., 'relevant_paths': [...]}} per line)."
-        )
+        with path.open(encoding="utf-8") as fh:
+            for line_no, line in enumerate(fh, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    q = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    console.print(
+                        f"[red]x[/red] {flag}: failed to parse {path} at line {line_no}: "
+                        f'{exc}. Expected JSONL (one {{"query": ..., '
+                        f'"relevant_paths": [...]}} per line).'
+                    )
+                    raise typer.Exit(code=1) from exc
+
+                # Shape validation per line, with the line number in every
+                # message so users can fix the exact record without diffing
+                # the whole file.  A common mistake is passing a JSON-array-
+                # per-file (``queries.json`` instead of ``queries.jsonl``),
+                # which would parse as one list entry and crash opaquely
+                # deep inside the miner / eval.
+                if not isinstance(q, dict) or "query" not in q or "relevant_paths" not in q:
+                    console.print(
+                        f"[red]x[/red] {flag}: line {line_no} is not a valid query record. "
+                        "Each line must be a JSON object with 'query' and "
+                        "'relevant_paths' fields. If you have a single JSON array, "
+                        "convert to JSONL (one object per line)."
+                    )
+                    raise typer.Exit(code=1)
+                if not isinstance(q["query"], str) or not q["query"].strip():
+                    console.print(
+                        f"[red]x[/red] {flag}: line {line_no} has invalid 'query'. "
+                        "The 'query' field must be a non-empty string."
+                    )
+                    raise typer.Exit(code=1)
+                if not isinstance(q["relevant_paths"], list) or not q["relevant_paths"]:
+                    console.print(
+                        f"[red]x[/red] {flag}: line {line_no} has empty or non-list "
+                        "'relevant_paths'. Every labeled query needs at least one "
+                        "relevant document path."
+                    )
+                    raise typer.Exit(code=1)
+                if any(not isinstance(p, str) or not p.strip() for p in q["relevant_paths"]):
+                    console.print(
+                        f"[red]x[/red] {flag}: line {line_no} has invalid 'relevant_paths'. "
+                        "Every relevant path must be a non-empty string."
+                    )
+                    raise typer.Exit(code=1)
+                records.append(q)
+    except OSError as exc:
+        console.print(f"[red]x[/red] {flag}: failed to read {path}: {exc}.")
         raise typer.Exit(code=1) from exc
+
     if not records:
         console.print(f"[red]x[/red] {flag}: file {path} contained no records.")
         raise typer.Exit(code=1)
-    # Shape validation: each record must be a dict with query +
-    # relevant_paths.  A common mistake is passing a JSON-array-per-file
-    # (``queries.json`` instead of ``queries.jsonl``), which would parse
-    # as one list entry and crash opaquely deep inside the miner / eval.
-    for i, q in enumerate(records):
-        if not isinstance(q, dict) or "query" not in q or "relevant_paths" not in q:
-            console.print(
-                f"[red]x[/red] {flag}: line {i + 1} is not a valid query record. "
-                "Each line must be a JSON object with 'query' and "
-                "'relevant_paths' fields. If you have a single JSON array, "
-                "convert to JSONL (one object per line)."
-            )
-            raise typer.Exit(code=1)
-        if not isinstance(q["relevant_paths"], list) or not q["relevant_paths"]:
-            console.print(
-                f"[red]x[/red] {flag}: line {i + 1} has empty or non-list "
-                "'relevant_paths'. Every labeled query needs at least one "
-                "relevant document path."
-            )
-            raise typer.Exit(code=1)
     return records
 
 
@@ -2124,10 +2158,28 @@ def retrain(
         # store.  The retrain pipeline silently scores those queries as
         # 0 (no relevant chunk to retrieve), which would invalidate
         # NDCG@10 without surfacing a single error.
-        all_paths = {row[0] for row in store._conn.execute("SELECT path FROM documents").fetchall()}
-        missing = sorted(
-            {p for q in loaded_eval_queries for p in q["relevant_paths"] if p not in all_paths}
-        )
+        #
+        # Query only the paths the user actually referenced -- a full
+        # ``SELECT path FROM documents`` would pull the entire corpus
+        # into memory on stores with millions of docs (MS MARCO scale,
+        # production search logs).  Eval sets are typically <10k unique
+        # paths so a chunked ``WHERE path IN (...)`` is O(eval_size) on
+        # the indexed ``documents.path`` instead of O(corpus_size).
+        eval_paths = sorted({p for q in loaded_eval_queries for p in q["relevant_paths"]})
+        existing_paths: set[str] = set()
+        # 500 keeps the IN-list well below SQLite's default
+        # ``SQLITE_LIMIT_VARIABLE_NUMBER`` (999) with headroom.
+        chunk_size = 500
+        for i in range(0, len(eval_paths), chunk_size):
+            chunk = eval_paths[i : i + chunk_size]
+            placeholders = ",".join("?" * len(chunk))
+            existing_paths.update(
+                row[0]
+                for row in store._conn.execute(
+                    f"SELECT path FROM documents WHERE path IN ({placeholders})", chunk
+                ).fetchall()
+            )
+        missing = sorted(set(eval_paths) - existing_paths)
         if missing:
             preview = ", ".join(missing[:5]) + (" ..." if len(missing) > 5 else "")
             console.print(

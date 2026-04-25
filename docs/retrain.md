@@ -284,12 +284,30 @@ schema varies too much across products. The pattern is:
    richer schemas may need timestamps or tool-call markup.
 2. **Use the session id as the document path** so labeled
    queries can reference it directly in `relevant_paths`.
-3. Ingest the blobs via the standard `Memory.remember` / 
+3. Ingest the blobs via the standard `Memory.remember` /
    `VstashStore.add_documents_batch` paths.
 
-A worked reference adapter for LongMemEval lives at
-`experiments/longmemeval_retrieval.py` (see `_format_session`
-and `_ingest_question`); copy and adapt to your schema.
+```python
+# Sketch: turns -> blob -> doc, one per session
+def _format_session(turns: list[dict]) -> str:
+    return "\n\n".join(f"[{t['role'].upper()}]\n{t['content']}" for t in turns)
+
+for session_id, turns in chat_sessions.items():
+    text = _format_session(turns)
+    chunks = chunk_text(text, cfg.chunking.size, cfg.chunking.overlap)
+    embeddings = embed_texts(chunks, cfg.embeddings.model)
+    store.add_documents_batch([{
+        "path": session_id,
+        "title": session_id,
+        "chunks": chunks,
+        "embeddings": embeddings,
+        "source_type": "chat",
+        "collection": "my-chats",
+    }])
+```
+
+The labeled-query JSONL then references each `session_id`
+directly in `relevant_paths`.
 
 ---
 

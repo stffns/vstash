@@ -214,6 +214,71 @@ class TestEvalQueriesFlag:
         flat = " ".join(result.stdout.split())
         assert "no records" in flat
 
+    def test_non_string_query_rejected(self, tmp_path: Path, patched_cli: dict[str, Any]) -> None:
+        bad = _write_jsonl(
+            tmp_path / "bad_query.jsonl",
+            [{"query": 42, "relevant_paths": ["/test/python_guide.md"]}],
+        )
+        result = runner.invoke(
+            app, ["retrain", "--eval-queries", str(bad), "--output", str(tmp_path / "out")]
+        )
+        assert result.exit_code == 1
+        flat = " ".join(result.stdout.split())
+        assert "line 1" in flat
+        assert "non-empty string" in flat
+
+    def test_empty_string_query_rejected(self, tmp_path: Path, patched_cli: dict[str, Any]) -> None:
+        bad = _write_jsonl(
+            tmp_path / "blank_query.jsonl",
+            [{"query": "  ", "relevant_paths": ["/test/python_guide.md"]}],
+        )
+        result = runner.invoke(
+            app, ["retrain", "--eval-queries", str(bad), "--output", str(tmp_path / "out")]
+        )
+        assert result.exit_code == 1
+        flat = " ".join(result.stdout.split())
+        assert "non-empty string" in flat
+
+    def test_non_string_relevant_path_rejected(
+        self, tmp_path: Path, patched_cli: dict[str, Any]
+    ) -> None:
+        bad = _write_jsonl(
+            tmp_path / "bad_paths.jsonl",
+            [{"query": "q", "relevant_paths": ["/ok.md", 7]}],
+        )
+        result = runner.invoke(
+            app, ["retrain", "--eval-queries", str(bad), "--output", str(tmp_path / "out")]
+        )
+        assert result.exit_code == 1
+        flat = " ".join(result.stdout.split())
+        assert "Every relevant path must be a non-empty string" in flat
+
+    def test_directory_path_rejected(self, tmp_path: Path, patched_cli: dict[str, Any]) -> None:
+        result = runner.invoke(
+            app, ["retrain", "--eval-queries", str(tmp_path), "--output", str(tmp_path / "out")]
+        )
+        assert result.exit_code == 1
+        flat = " ".join(result.stdout.split())
+        assert "path is not a file" in flat
+
+    def test_invalid_json_includes_line_number(
+        self, tmp_path: Path, patched_cli: dict[str, Any]
+    ) -> None:
+        bad = tmp_path / "with_bad_line.jsonl"
+        bad.write_text(
+            json.dumps({"query": "ok", "relevant_paths": ["/a"]})
+            + "\n{not valid json\n"
+            + json.dumps({"query": "ok2", "relevant_paths": ["/b"]})
+            + "\n"
+        )
+        result = runner.invoke(
+            app, ["retrain", "--eval-queries", str(bad), "--output", str(tmp_path / "out")]
+        )
+        assert result.exit_code == 1
+        flat = " ".join(result.stdout.split())
+        assert "line 2" in flat
+        assert "failed to parse" in flat
+
     def test_mutually_exclusive_with_no_eval(
         self, tmp_path: Path, patched_cli: dict[str, Any]
     ) -> None:
