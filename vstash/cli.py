@@ -84,6 +84,60 @@ def _safe_exc(exc: object) -> str:
     return _escape(str(exc))
 
 
+def _load_labeled_queries_jsonl(path_str: str, *, flag: str) -> list[dict]:
+    """Load and validate a JSONL file of labeled queries.
+
+    Used by ``vstash retrain`` for both --training-queries and
+    --eval-queries.  Each line must be a JSON object with at least
+    ``query`` and ``relevant_paths``; returns the parsed records.
+
+    Errors and exits the process with a clear message on:
+        - missing file,
+        - invalid JSON,
+        - records that are not objects with the required keys,
+        - empty file.
+    The caller's flag name is woven into every message so the user
+    knows which argument was wrong when they pass both.
+    """
+    path = Path(path_str).expanduser()
+    if not path.exists():
+        console.print(f"[red]x[/red] {flag}: file not found: {path}")
+        raise typer.Exit(code=1)
+    try:
+        with path.open() as fh:
+            records = [json.loads(line) for line in fh if line.strip()]
+    except (OSError, json.JSONDecodeError) as exc:
+        console.print(
+            f"[red]x[/red] {flag}: failed to parse {path}: {exc}. "
+            f"Expected JSONL (one {{'query': ..., 'relevant_paths': [...]}} per line)."
+        )
+        raise typer.Exit(code=1) from exc
+    if not records:
+        console.print(f"[red]x[/red] {flag}: file {path} contained no records.")
+        raise typer.Exit(code=1)
+    # Shape validation: each record must be a dict with query +
+    # relevant_paths.  A common mistake is passing a JSON-array-per-file
+    # (``queries.json`` instead of ``queries.jsonl``), which would parse
+    # as one list entry and crash opaquely deep inside the miner / eval.
+    for i, q in enumerate(records):
+        if not isinstance(q, dict) or "query" not in q or "relevant_paths" not in q:
+            console.print(
+                f"[red]x[/red] {flag}: line {i + 1} is not a valid query record. "
+                "Each line must be a JSON object with 'query' and "
+                "'relevant_paths' fields. If you have a single JSON array, "
+                "convert to JSONL (one object per line)."
+            )
+            raise typer.Exit(code=1)
+        if not isinstance(q["relevant_paths"], list) or not q["relevant_paths"]:
+            console.print(
+                f"[red]x[/red] {flag}: line {i + 1} has empty or non-list "
+                "'relevant_paths'. Every labeled query needs at least one "
+                "relevant document path."
+            )
+            raise typer.Exit(code=1)
+    return records
+
+
 def _build_miss_hint(
     *,
     cfg_auto_hint: bool,
@@ -1949,6 +2003,17 @@ def retrain(
         "labeled-batched miner (v5 recipe) instead of chunk-prefix "
         "pseudo-queries. H-R8 (2026-04-21).",
     ),
+    eval_queries_path: str | None = typer.Option(
+        None,
+        "--eval-queries",
+        help="Path to a JSONL file of labeled eval queries (same shape as "
+        "--training-queries). When set, the eval gate scores baseline "
+        "and fine-tuned models on these real queries instead of the "
+        "internal chunk-prefix split, so the gate reflects the corpus "
+        "you actually care about (BEIR qrels, search logs, manual "
+        "annotations). Mutually exclusive with --no-eval. Ignores "
+        "--eval-fraction (the held-out set is the file you provide).",
+    ),
     training_pair_source: str = typer.Option(
         "auto",
         "--training-pair-source",
@@ -2039,34 +2104,40 @@ def retrain(
 
     loaded_training_queries: list[dict] | None = None
     if training_queries:
-        path = Path(training_queries).expanduser()
-        if not path.exists():
-            console.print(f"[red]x[/red] --training-queries: file not found: {path}")
-            raise typer.Exit(code=1)
-        try:
-            with path.open() as fh:
-                loaded_training_queries = [json.loads(line) for line in fh if line.strip()]
-        except (OSError, json.JSONDecodeError) as exc:
-            console.print(
-                f"[red]x[/red] --training-queries: failed to parse {path}: {exc}. "
-                f"Expected JSONL (one {{'query': ..., 'relevant_paths': [...]}} per line)."
-            )
-            raise typer.Exit(code=1) from exc
-        # Shape validation: each record must be a dict with query +
-        # relevant_paths. A common mistake is passing a JSON-array-per-file
-        # (``queries.json`` instead of ``queries.jsonl``), which would parse
-        # as one list entry and crash opaquely inside the miner.
-        for i, q in enumerate(loaded_training_queries):
-            if not isinstance(q, dict) or "query" not in q or "relevant_paths" not in q:
-                console.print(
-                    f"[red]x[/red] --training-queries: line {i + 1} is not a "
-                    "valid query record. Each line must be a JSON object with "
-                    "'query' and 'relevant_paths' fields. If you have a single "
-                    "JSON array, convert to JSONL (one object per line)."
-                )
-                raise typer.Exit(code=1)
+        loaded_training_queries = _load_labeled_queries_jsonl(
+            training_queries, flag="--training-queries"
+        )
         console.print(
-            f"  Training queries: [cyan]{len(loaded_training_queries)} labeled[/cyan] from {path}"
+            f"  Training queries: [cyan]{len(loaded_training_queries)} labeled[/cyan] "
+            f"from {training_queries}"
+        )
+
+    loaded_eval_queries: list[dict] | None = None
+    if eval_queries_path:
+        if no_eval:
+            console.print(
+                "[red]x[/red] --eval-queries and --no-eval are mutually exclusive. Drop one."
+            )
+            raise typer.Exit(code=1)
+        loaded_eval_queries = _load_labeled_queries_jsonl(eval_queries_path, flag="--eval-queries")
+        # Warn when the eval queries reference paths absent from the
+        # store.  The retrain pipeline silently scores those queries as
+        # 0 (no relevant chunk to retrieve), which would invalidate
+        # NDCG@10 without surfacing a single error.
+        all_paths = {row[0] for row in store._conn.execute("SELECT path FROM documents").fetchall()}
+        missing = sorted(
+            {p for q in loaded_eval_queries for p in q["relevant_paths"] if p not in all_paths}
+        )
+        if missing:
+            preview = ", ".join(missing[:5]) + (" ..." if len(missing) > 5 else "")
+            console.print(
+                f"[yellow]! --eval-queries: {len(missing)} relevant_paths reference "
+                f"docs not in this store ({preview}). Those queries will score 0; "
+                "ingest the missing docs first or remove them from the eval file.[/yellow]"
+            )
+        console.print(
+            f"  Eval queries:     [cyan]{len(loaded_eval_queries)} labeled[/cyan] "
+            f"from {eval_queries_path} (gate uses these instead of internal split)"
         )
 
     result = run_retrain(
@@ -2082,6 +2153,7 @@ def retrain(
         min_gain=min_gain,
         skip_eval=no_eval,
         seed=seed,
+        eval_queries=loaded_eval_queries,
         synthesize_queries=synthesize,
         synth_n=synth_n,
         synth_cache=synth_cache,
