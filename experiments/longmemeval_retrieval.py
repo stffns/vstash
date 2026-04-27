@@ -56,7 +56,11 @@ class _STEncoder:
     def __init__(self, model_name: str, device: str | None = None) -> None:
         from sentence_transformers import SentenceTransformer
 
-        self._m = SentenceTransformer(model_name, device=device) if device else SentenceTransformer(model_name)
+        self._m = (
+            SentenceTransformer(model_name, device=device)
+            if device
+            else SentenceTransformer(model_name)
+        )
         self.embedding_dim = self._m.get_sentence_embedding_dimension()
 
     def encode(self, texts: list[str]):
@@ -232,7 +236,9 @@ def run(
     global _st_device_override, _st_force_for_all
     cfg = VstashConfig()
     if model is not None:
-        cfg = cfg.model_copy(update={"embeddings": cfg.embeddings.model_copy(update={"model": model})})
+        cfg = cfg.model_copy(
+            update={"embeddings": cfg.embeddings.model_copy(update={"model": model})}
+        )
 
     # When --device cuda is set, route EVERY model through the
     # SentenceTransformer-CUDA path -- otherwise FastEmbed (no CUDA
@@ -394,9 +400,7 @@ def _run_locked(
 
     if output is not None:
         output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(
-            json.dumps({"summary": summary, "per_question": per_question}, indent=2)
-        )
+        output.write_text(json.dumps({"summary": summary, "per_question": per_question}, indent=2))
         print(f"\nWrote {output}")
 
     return summary

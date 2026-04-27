@@ -167,8 +167,7 @@ def evaluate_colbert(
     """
     doc_ids = list(corpus.keys())
     doc_texts = [
-        (corpus[d].get("title", "") + "\n" + corpus[d].get("text", "")).strip()
-        for d in doc_ids
+        (corpus[d].get("title", "") + "\n" + corpus[d].get("text", "")).strip() for d in doc_ids
     ]
 
     t0 = time.perf_counter()
@@ -226,14 +225,14 @@ def evaluate_colbert(
 
 def main() -> None:
     p = argparse.ArgumentParser(description="ColBERTv2 BEIR benchmark")
-    p.add_argument("--datasets", nargs="*", default=list(DATASETS.keys()),
-                   choices=list(DATASETS.keys()))
+    p.add_argument(
+        "--datasets", nargs="*", default=list(DATASETS.keys()), choices=list(DATASETS.keys())
+    )
     p.add_argument("--model", default=DEFAULT_MODEL)
     p.add_argument("--device", choices=["cpu", "cuda"], default="cuda")
     p.add_argument("--encode-batch-size", type=int, default=64)
     p.add_argument("--query-batch-size", type=int, default=64)
-    p.add_argument("--output", type=Path,
-                   default=Path("experiments/results/beir_colbertv2.json"))
+    p.add_argument("--output", type=Path, default=Path("experiments/results/beir_colbertv2.json"))
     p.add_argument(
         "--engine",
         choices=["pylate", "minimal"],
@@ -289,6 +288,7 @@ def main() -> None:
         # leave us OOM on SciDocs.
         try:
             import torch
+
             torch.cuda.empty_cache()
         except Exception:
             pass

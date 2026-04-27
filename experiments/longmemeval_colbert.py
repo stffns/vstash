@@ -240,9 +240,7 @@ def run(
         sessions = q["haystack_sessions"]
 
         t0 = time.time()
-        chunk_sids, doc_emb = _encode_haystack(
-            model, cfg, session_ids, sessions, encode_batch_size
-        )
+        chunk_sids, doc_emb = _encode_haystack(model, cfg, session_ids, sessions, encode_batch_size)
         encode_s = time.time() - t0
         if doc_emb is None:
             per_question.append(
@@ -322,10 +320,7 @@ def run(
 
     print()
     print("=" * 72)
-    print(
-        f"Macro over {summary['n_questions']} questions  "
-        f"(model={model_name}, device={device}):"
-    )
+    print(f"Macro over {summary['n_questions']} questions  (model={model_name}, device={device}):")
     for k in ks:
         print(f"  Recall@{k:<3d} = {summary['macro'][f'recall@{k}']:.4f}")
     print()
@@ -338,9 +333,7 @@ def run(
 
     if output is not None:
         output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(
-            json.dumps({"summary": summary, "per_question": per_question}, indent=2)
-        )
+        output.write_text(json.dumps({"summary": summary, "per_question": per_question}, indent=2))
         print(f"\nWrote {output}")
     return summary
 

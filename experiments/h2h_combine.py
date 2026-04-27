@@ -80,10 +80,7 @@ def _fmt_num(v: float | None, width: int = 7, prec: int = 4) -> str:
 
 def render_lme_macro(arms: dict[str, dict]) -> list[str]:
     lines = ["LongMemEval-s (Recall@K, session-level, n=500):"]
-    header = (
-        f"  {'Model':<32}"
-        + "".join(f" | {f'R@{k}':>6}" for k in LME_KS)
-    )
+    header = f"  {'Model':<32}" + "".join(f" | {f'R@{k}':>6}" for k in LME_KS)
     lines.append(header)
     lines.append("  " + "-" * (len(header) - 2))
     for label, summary in arms.items():
@@ -139,9 +136,7 @@ def render_lme_latency(arms_per_question: dict[str, list[dict]]) -> list[str]:
 
 def render_lme_by_type(arms: dict[str, dict]) -> list[str]:
     lines = ["", "LongMemEval per question_type (Recall@10):"]
-    header = f"  {'Type':<28} {'n':>4}" + "".join(
-        f" | {label[:14]:>14}" for label in arms
-    )
+    header = f"  {'Type':<28} {'n':>4}" + "".join(f" | {label[:14]:>14}" for label in arms)
     lines.append(header)
     lines.append("  " + "-" * (len(header) - 2))
     for t in LME_TYPES:
@@ -156,17 +151,13 @@ def render_lme_by_type(arms: dict[str, dict]) -> list[str]:
             if nq is None:
                 nq = agg["n"]
             cells.append(_fmt_num(agg["recall@10"], width=14, prec=4))
-        lines.append(
-            f"  {t:<28} {nq if nq is not None else '-':>4} | " + " | ".join(cells)
-        )
+        lines.append(f"  {t:<28} {nq if nq is not None else '-':>4} | " + " | ".join(cells))
     return lines
 
 
 def render_beir(beir_arms: dict[str, dict[str, dict]]) -> list[str]:
     lines = ["", "BEIR (NDCG@10):"]
-    header = f"  {'Dataset':<10}" + "".join(
-        f" | {label[:14]:>14}" for label in beir_arms
-    )
+    header = f"  {'Dataset':<10}" + "".join(f" | {label[:14]:>14}" for label in beir_arms)
     lines.append(header)
     lines.append("  " + "-" * (len(header) - 2))
     for ds in BEIR_DATASETS:

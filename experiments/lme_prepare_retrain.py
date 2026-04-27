@@ -82,6 +82,7 @@ class _BatchedEmbedder:
         )
         return [list(map(float, v)) for v in vecs]
 
+
 DEFAULT_SEED = 42
 DEFAULT_HOLDOUT_FRACTION = 0.2
 COLLECTION = "lme"
@@ -287,8 +288,7 @@ def main() -> None:
         "--encode-batch-size",
         type=int,
         default=128,
-        help="Batch size for the SentenceTransformer encode (only used "
-        "when --device cuda).",
+        help="Batch size for the SentenceTransformer encode (only used when --device cuda).",
     )
     args = p.parse_args()
 

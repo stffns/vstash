@@ -185,9 +185,7 @@ def analyze(
 
     qindex = _build_question_index(DATA_PATH)
     cfg = VstashConfig()
-    cfg = cfg.model_copy(
-        update={"embeddings": cfg.embeddings.model_copy(update={"model": model})}
-    )
+    cfg = cfg.model_copy(update={"embeddings": cfg.embeddings.model_copy(update={"model": model})})
     resolver_registered = False
     if cfg.embeddings.model in _ST_FALLBACK_MODELS:
         register_encoder_resolver(_st_resolver)

@@ -51,7 +51,9 @@ class MinimalColBERT:
     ) -> None:
         from transformers import AutoModel, AutoTokenizer
 
-        self.device = torch.device(device if torch.cuda.is_available() or device == "cpu" else "cpu")
+        self.device = torch.device(
+            device if torch.cuda.is_available() or device == "cpu" else "cpu"
+        )
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         # AutoModel returns BertModel; the linear projection is stored
         # under the ``linear`` key in the checkpoint but is NOT loaded
@@ -150,8 +152,8 @@ class MinimalColBERT:
 
     @staticmethod
     def maxsim_scores(
-        query_emb: torch.Tensor,            # (seq_q, 128)
-        doc_embs: torch.Tensor,             # (n_docs, seq_d, 128)
+        query_emb: torch.Tensor,  # (seq_q, 128)
+        doc_embs: torch.Tensor,  # (n_docs, seq_d, 128)
     ) -> torch.Tensor:
         """ColBERT MaxSim: for each query token, take max cosine over
         doc tokens; sum across query tokens.
