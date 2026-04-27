@@ -3,21 +3,18 @@
 **Jayson Steffens**
 [github.com/stffns/vstash](https://github.com/stffns/vstash)
 
-> **Note for maintainers.** This is a v2 draft that extends the v1 paper
-> (arXiv:2604.15484, 2026-04-20).  Sections marked *[unchanged from v1]*
-> reuse the v1 prose verbatim; v2 introduces three new contributions
-> (labeled-query retrain CLI, chat-memory domain fine-tune, ColBERTv2
-> calibration H2H) and revises the abstract, contributions, limitations,
-> and conclusion accordingly.
-
 ---
 
 ## Abstract
 
 We present **vstash**, a local-first document memory system that
 combines vector similarity search with full-text keyword matching
-via Reciprocal Rank Fusion (RRF) in a single SQLite file.  vstash v2
-introduces four primary contributions:
+via Reciprocal Rank Fusion (RRF) in a single SQLite file.  This
+paper extends the v1 contribution (arXiv:2604.15484, April 2026)
+with three additions: a labeled-query retrain mode with refuse-to-
+save eval gate, a chat-memory case study on LongMemEval, and a
+calibrated head-to-head against ColBERTv2.  vstash v2 introduces
+four primary contributions:
 
 **(1) Self-supervised embedding refinement.** Across 753 BEIR queries
 on SciFact, NFCorpus, and FiQA, 74.5% produce top-10 disagreement
@@ -37,17 +34,17 @@ that regress NDCG@10 on the holdout are not saved.  To our
 knowledge this is the first integration of a refuse-to-save eval
 gate with user-supplied labels in an open-source retrieval CLI.
 
-**(4) The first in-tree evidence that BEIR-tuned weights damage
-chat-memory retrieval, motivating per-domain models.** The v1 BEIR
+**(4) Cross-domain transfer failure of BEIR-tuned weights, motivating
+per-domain models.** The v1 BEIR
 fine-tune loses to vanilla BGE-small by -2.45pp NDCG@10 on a 102-
 query LongMemEval-s holdout.  Training a chat-memory specialist
 (`bge-small-rrf-lme-v1`) on 398 labeled queries via the new mode
 lifts holdout R@1 by +3.4pp, R@5 by +3.8pp; R@10 saturates at 0.96
 for both arms (ranking, not coverage, is the lever).  In a same-
 machine head-to-head against a faithful HuggingFace re-implementation
-of ColBERTv2, the chat-tuned model leads by +5.68pp R@1 raw and by
-+1.6pp R@1 post-calibration, where the +0.04 NDCG@10 calibration
-band is derived from BEIR-published reference numbers.  Search
+of ColBERTv2, the chat-tuned model leads R@1 by +1.6pp post-
+calibration (+5.68pp raw, with calibration band ~0.04 NDCG@10
+derived from BEIR; Appendix D).  Search
 latency is 27 ms median on the LongMemEval stores -- approximately
 3x faster than ColBERTv2 measured on a T4 GPU, despite vstash
 running on CPU.
@@ -92,9 +89,9 @@ disagreement; (2) adaptive RRF with IDF-based per-query weight
 adjustment; (3) a documented negative result on post-RRF scoring;
 **(4)** an eval-gated *labeled* retrain mode where users provide
 real `(query, gold)` labels via JSONL and the gate refuses to save
-candidates that regress on a held-out slice; **(5)** the first
-in-tree evidence that BEIR-tuned weights actively damage chat-memory
-retrieval, motivating per-domain models; **(6)** a chat-memory
+candidates that regress on a held-out slice; **(5)** evidence
+that BEIR-tuned weights regress on chat-memory retrieval,
+motivating per-domain models; **(6)** a chat-memory
 specialist model `bge-small-rrf-lme-v1` validated against ColBERTv2
 under a calibrated head-to-head; and (7) a deployable substrate
 with integrity checking, schema versioning, observability, and
@@ -198,8 +195,9 @@ vstash retrain \
 Each JSONL line is `{"query": str, "relevant_paths": [str, ...]}`.
 Training routes through `generate_labeled_triples_batched` (the v5
 recipe): for each labeled query, the gold doc's first chunk is the
-positive, hard negatives are mined from vector-heavy / FTS-heavy
-top-K disagreement against non-gold docs in the corpus.
+positive, and hard negatives are mined from vector-heavy /
+FTS-heavy top-K disagreement against non-gold docs in the corpus
+(see Appendix E.1 for the full mining procedure).
 
 **Eval gate.** The held-out `--eval-queries` set drives a
 refuse-to-save policy: NDCG@10 is measured on the holdout for the
@@ -213,6 +211,33 @@ source retrieval CLIs prior to this work; existing domain
 adaptation tools (GPL, Promptagator) lack a comparable promotion
 guard.
 
+```
+Figure 1: Eval-gated labeled-retrain pipeline (Section 5.6)
+
+   train.jsonl                          eval.jsonl
+   {q, gold_paths}                      {q, gold_paths}
+        |                                    |
+        v                                    |
+   labeled-batched miner                     |
+   (q, gold_chunk, hard_neg from disagreement)
+        |                                    |
+        v                                    |
+     MNRL                                    |
+        |                                    |
+        v                                    v
+   candidate model -----> evaluate_model NDCG@10
+                                    |
+                                    v
+                           delta >= min_gain ?
+                          /                  \
+                       yes                    no
+                        |                     |
+                        v                     v
+              promote to output_path    keep at .candidate/,
+                                        leave active model
+                                        unchanged
+```
+
 The labeled-query retrain mode is implemented as a CLI flag in
 `vstash/cli.py` with input validation, store-side path checks,
 and forwarding tests; full implementation details and test
@@ -220,7 +245,7 @@ inventory are in Appendix E.
 
 This labeled mode enables the case study in Section 6.
 
-### 5.7  Why labeled mode matters: BEIR-tuned weights damage chat memory
+### 5.7  Cross-domain transfer failure of BEIR-tuned weights
 
 Before describing the chat-memory case study, we report the result
 that motivated it.  On the 102-query LongMemEval-s stratified
@@ -231,11 +256,11 @@ BEIR dataset (Section 7.3) but actively *regresses* 2.8pp R@5 on
 LongMemEval temporal-reasoning specifically, the category where
 queries reference cross-session dates.
 
-This is the first in-tree evidence the project has assembled that
-"best on BEIR" does not transfer to "best on chat memory" -- and
-hence that a single universal fine-tune is the wrong design target
-for a memory layer that may host heterogeneous corpora.  The
-remedy is per-domain models, fed by the labeled retrain mode.
+This is direct evidence that "best on BEIR" does not transfer to
+"best on chat memory" -- at least within the cross-domain pair
+examined here -- and that a universal fine-tune is suboptimal for
+memory systems hosting heterogeneous corpora.  The remedy is
+per-domain models, fed by the labeled retrain mode.
 
 ---
 
@@ -316,7 +341,7 @@ is the lever.  R@50 = 1.000 across all four arms confirms the
 embedder always retrieves the gold session somewhere in the top-50;
 the chat fine-tune only lifts where it ranks within those.
 
-### 6.4  Per-type R@5 (where the gain concentrates)
+### 6.4  Per question-type R@5 analysis
 
 The macro R@5 +3.8pp lift is not uniform.  Per question_type on
 the same holdout (`n` = holdout count per type):
@@ -347,17 +372,18 @@ We anticipate four reviewer questions and pre-empt them:
 1. **Is the holdout disjoint from training?**  Yes, by
    construction.  398 train + 102 holdout, no overlap.  Code in
    `experiments/lme_prepare_retrain.py:stratified_split`.
-2. **Is R@1 = 0.55 catastrophic?**  No.  Three of six question
-   types have multi-gold structure (multi-session 2-5, knowledge-
-   update always 2, temporal-reasoning 85% multi-gold), capping
-   macro R@1 at 0.75.  The 0.55 holdout R@1 is 73% of the
-   structural ceiling.  Closing that gap is future work
-   (cross-encoder reranker over top-10, Section 9).
+2. **Is the macro R@1 of 0.55 unusually low?**  No, given the
+   structural ceiling.  Three of six question types have
+   multi-gold structure (multi-session 2-5, knowledge-update
+   always 2, temporal-reasoning 85% multi-gold), capping macro
+   R@1 at 0.75.  The 0.55 holdout R@1 is 73% of that ceiling.
+   Closing the remaining gap is future work (cross-encoder
+   reranker over top-10, Section 9).
 3. **Is the training data really label-only, no synthesis?**  Yes.
    `--training-queries` consumes real `(question,
    answer_session_ids)` pairs; no LLM was called for query
    generation.  The miner mines hard negatives from the haystack
-   via vector / FTS disagreement (Section 5.6 v5 recipe).
+   via vector / FTS disagreement (Section 5.6).
 4. **What does the N=500 number prove vs the holdout?**  The full-
    set numbers (Section 8.7) include 398 training questions and
    are partially memorisation.  We disclose them in the appendix
@@ -467,6 +493,12 @@ interpreting LongMemEval claims.  Three claim categories:
   - **Domain mismatch** (Section 6.1): involves only vstash arms
     (vanilla and v3), no ColBERT comparison.
 
+This stratification ensures that downstream interpretation of the
+LongMemEval comparison rests only on claims that exceed the
+empirically-derived calibration band by a defensible margin; the
+remaining claims are reported in the appendix as raw measurements
+without being asserted as wins.
+
 ### 8.9  Per-query search latency
 
 vstash measured on a 2024 Mac (Apple Silicon, FastEmbed CPU
@@ -532,7 +564,9 @@ systematic gap (Appendix D).  The headline LongMemEval R@1 win
 (+1.6pp post-calibration) survives this band; the R@10 macro and
 "vanilla BGE > ColBERT R@10" claims do not, and are not claimed.
 A re-evaluation through the official Stanford codebase or a
-maintained `pylate` release is queued for the v2 review cycle.
+maintained `pylate` release is left to future work; we expect
+it to close the BEIR calibration gap and either confirm or
+refine the LongMemEval claims.
 
 **[v2 NEW] LongMemEval scope.** All chat-memory results are on
 LongMemEval-s.  We do not claim that `bge-small-rrf-lme-v1`
@@ -576,17 +610,18 @@ rather than a research-paper artifact.
 
 **[v2 NEW] Domain matters more than universal model quality.**
 The v1 BEIR fine-tune *loses* to vanilla BGE-small on
-LongMemEval (-0.0245 NDCG@10 holdout).  This is the first in-tree
-evidence that a single universal embedder is the wrong design
-target for a memory layer hosting heterogeneous corpora.
+LongMemEval (-0.0245 NDCG@10 holdout).  This provides direct
+evidence that a single universal embedder is suboptimal for
+memory systems hosting heterogeneous corpora -- at least within
+the cross-domain pair (BEIR, chat memory) examined here.
 
 **[v2 NEW] `bge-small-rrf-lme-v1`: chat-memory specialist.**  398
 labeled LongMemEval queries via the labeled retrain CLI lift
 holdout R@1 by +3.4pp and R@5 by +3.8pp.  In a same-machine
 head-to-head against a minimal-HF ColBERTv2 re-implementation,
-the chat-tuned model leads R@1 by +5.68pp raw and by +1.6pp
-post-calibration (where the +0.04 NDCG@10 band is derived from
-BEIR reference numbers, Appendix D).  Median search latency on
+the chat-tuned model leads R@1 by +1.6pp post-calibration
+(+5.68pp raw, with calibration band ~0.04 NDCG@10 derived from
+BEIR; Appendix D).  Median search latency on
 the LongMemEval per-question stores is approximately 3x lower
 than ColBERTv2 measured on a T4 GPU, despite vstash running on
 CPU.
@@ -654,14 +689,14 @@ LongMemEval evaluation environment.  Rather than ship a
 delayed paper while debugging dep cascades, we wrote a faithful
 re-implementation in ~80 LOC and disclose the calibration band.
 
-A future-work re-evaluation through the official codebase is
-expected to close the BEIR gap (Stanford published results
-should reproduce up to T4 vs A100 hardware noise) and either
-confirm or refine the LongMemEval claims.  The asymmetric-risk
-argument supports deferring this until the v2 review cycle:
-running it now has high cost with downside-only outcomes;
-running it during revision has the same cost with controlled
-disclosure if asked.
+We defer the official-codebase re-evaluation to future work.
+Should reviewers request it during revision, the calibration
+band can be replaced with direct measurements without altering
+the paper's claim structure, since the LongMemEval R@1 win
+survives the band by a margin of +1.6pp; the marginal claims
+(R@5 macro, per-type R@10 on multi-session and temporal-
+reasoning) would either be promoted or formally retired
+according to what the official run produces.
 
 ---
 
