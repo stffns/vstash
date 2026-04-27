@@ -51,6 +51,37 @@ from vstash.embed import (
 from vstash.ingest import chunk_text
 from vstash.store import VstashStore
 
+
+class _BatchedEmbedder:
+    """Optional SentenceTransformer-backed encoder used when --device cuda
+    is passed.  vstash's default embed path is FastEmbed ONNX, which has
+    no CUDA wheel and runs on CPU; on Colab T4 that bottleneck adds ~9
+    minutes to the LongMemEval ingest.  Loading the same model via
+    sentence-transformers and pinning it to ``cuda`` cuts the embed step
+    by 10-50x.
+
+    The class is intentionally minimal: one model, batch-encode, return
+    plain Python lists so the caller stays compatible with vstash's
+    ``add_documents_batch`` (which expects ``list[list[float]]``).
+    """
+
+    def __init__(self, model_name: str, device: str, batch_size: int = 128) -> None:
+        from sentence_transformers import SentenceTransformer
+
+        self._m = SentenceTransformer(model_name, device=device)
+        self._batch = batch_size
+
+    def encode(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        vecs = self._m.encode(
+            texts,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+            batch_size=self._batch,
+        )
+        return [list(map(float, v)) for v in vecs]
+
 DEFAULT_SEED = 42
 DEFAULT_HOLDOUT_FRACTION = 0.2
 COLLECTION = "lme"
@@ -99,6 +130,7 @@ def ingest_corpus(
     *,
     role: str,
     progress_every: int = 25,
+    encoder: _BatchedEmbedder | None = None,
 ) -> int:
     """Ingest every haystack session for the given questions into one store.
 
@@ -111,13 +143,20 @@ def ingest_corpus(
     ``role`` is woven into ``source_type`` (``chat:train`` /
     ``chat:holdout``) so downstream tooling can split without
     re-deriving the split.
+
+    When ``encoder`` is provided (``--device cuda`` path), all chunks of
+    one batch of ``progress_every`` questions are embedded via a single
+    SentenceTransformer.encode call.  This collapses the per-doc CPU
+    embed bottleneck (~9 min on Colab CPU FastEmbed) to ~1-2 min on a
+    T4.  When ``encoder`` is None we fall back to vstash's standard
+    embed_texts path (FastEmbed ONNX or whatever the config resolves to).
     """
     n_docs = 0
     t_start = time.time()
     for i, q in enumerate(questions):
         qid = q["question_id"]
         seen: set[str] = set()
-        documents: list[dict] = []
+        per_doc_chunks: list[tuple[str, list[str]]] = []
         for sid, turns in zip(q["haystack_session_ids"], q["haystack_sessions"]):
             if sid in seen:
                 continue
@@ -128,18 +167,50 @@ def ingest_corpus(
             chunks = chunk_text(text, cfg.chunking.size, cfg.chunking.overlap)
             if not chunks:
                 continue
-            embeddings = embed_texts(chunks, cfg.embeddings.model)
-            documents.append(
-                {
-                    "path": _path_for(qid, sid),
-                    "title": _path_for(qid, sid),
-                    "chunks": chunks,
-                    "embeddings": embeddings,
-                    "source_type": f"chat:{role}",
-                    "collection": COLLECTION,
-                    "tags": f"qid={qid},role={role}",
-                }
-            )
+            per_doc_chunks.append((sid, chunks))
+
+        if encoder is not None and per_doc_chunks:
+            # Coalesce every chunk in this question into one encode call,
+            # then split the returned matrix back per-doc.  Saves the
+            # per-doc CUDA kernel-launch overhead on T4.
+            flat_texts: list[str] = []
+            offsets: list[int] = []
+            running = 0
+            for _sid, chs in per_doc_chunks:
+                offsets.append(running)
+                running += len(chs)
+                flat_texts.extend(chs)
+            offsets.append(running)
+            flat_vecs = encoder.encode(flat_texts)
+            documents: list[dict] = []
+            for j, (sid, chs) in enumerate(per_doc_chunks):
+                embs = flat_vecs[offsets[j] : offsets[j + 1]]
+                documents.append(
+                    {
+                        "path": _path_for(qid, sid),
+                        "title": _path_for(qid, sid),
+                        "chunks": chs,
+                        "embeddings": embs,
+                        "source_type": f"chat:{role}",
+                        "collection": COLLECTION,
+                        "tags": f"qid={qid},role={role}",
+                    }
+                )
+        else:
+            documents = []
+            for sid, chs in per_doc_chunks:
+                embs = embed_texts(chs, cfg.embeddings.model)
+                documents.append(
+                    {
+                        "path": _path_for(qid, sid),
+                        "title": _path_for(qid, sid),
+                        "chunks": chs,
+                        "embeddings": embs,
+                        "source_type": f"chat:{role}",
+                        "collection": COLLECTION,
+                        "tags": f"qid={qid},role={role}",
+                    }
+                )
         if documents:
             with store.batch_mode(defer_fts=True):
                 store.add_documents_batch(documents)
@@ -204,6 +275,21 @@ def main() -> None:
         help="Embedding model. Default: vstash.toml resolution.",
     )
     p.add_argument("--force", action="store_true", help="Overwrite output_db if it exists")
+    p.add_argument(
+        "--device",
+        choices=["cpu", "cuda"],
+        default="cpu",
+        help="Embedding device for ingest. 'cuda' uses SentenceTransformer "
+        "on GPU and is 10-50x faster than the FastEmbed CPU default on "
+        "Colab T4.  Falls back to FastEmbed when 'cpu'.",
+    )
+    p.add_argument(
+        "--encode-batch-size",
+        type=int,
+        default=128,
+        help="Batch size for the SentenceTransformer encode (only used "
+        "when --device cuda).",
+    )
     args = p.parse_args()
 
     out_db = args.output_db.expanduser()
@@ -256,11 +342,19 @@ def main() -> None:
             limits=cfg.limits,
             cache=cfg.cache,
         )
+        encoder = None
+        if args.device == "cuda":
+            print(f"Loading SentenceTransformer({cfg.embeddings.model}) on cuda for fast ingest...")
+            encoder = _BatchedEmbedder(
+                cfg.embeddings.model,
+                device="cuda",
+                batch_size=args.encode_batch_size,
+            )
         try:
             print("Ingesting train haystacks...")
-            n_train = ingest_corpus(store, cfg, train_qs, role="train")
+            n_train = ingest_corpus(store, cfg, train_qs, role="train", encoder=encoder)
             print("Ingesting holdout haystacks...")
-            n_hold = ingest_corpus(store, cfg, holdout_qs, role="holdout")
+            n_hold = ingest_corpus(store, cfg, holdout_qs, role="holdout", encoder=encoder)
         finally:
             store.close()
 
