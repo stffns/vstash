@@ -59,8 +59,76 @@ def _load_pylate(model_name: str, device: str):
     return models.ColBERT(model_name_or_path=model_name, device=device)
 
 
+def _load_minimal(model_name: str, device: str):
+    """Load the raw-HF MinimalColBERT fallback.
+
+    Used when ``--engine minimal`` is passed (Colab pylate dependency
+    storms).  Wraps the colbert_minimal API so callers can stay
+    engine-agnostic.
+    """
+    from experiments.colbert_minimal import MinimalColBERT
+
+    impl = MinimalColBERT(model_name=model_name, device=device)
+
+    class _MinimalEngine:
+        engine_name = "minimal"
+
+        def encode_query(self, text: str):
+            return impl.encode_queries([text])[0]
+
+        def encode_docs(self, texts, batch_size: int = 32):
+            doc_embs, _ = impl.encode_documents(texts, batch_size=batch_size)
+            return doc_embs
+
+        def score(self, query_emb, doc_embs):
+            return impl.maxsim_scores(query_emb, doc_embs)
+
+    return _MinimalEngine()
+
+
+def _load_pylate_engine(model_name: str, device: str):
+    """Wrap pylate ColBERT in the same engine-agnostic surface."""
+    pylate_model = _load_pylate(model_name, device)
+
+    class _PylateEngine:
+        engine_name = "pylate"
+
+        def encode_query(self, text: str):
+            from pylate import models  # noqa: F401  (kept for clarity)
+
+            embs = pylate_model.encode([text], is_query=True, show_progress_bar=False)
+            return embs[0] if hasattr(embs, "__getitem__") else embs
+
+        def encode_docs(self, texts, batch_size: int = 32):
+            return pylate_model.encode(
+                texts,
+                is_query=False,
+                batch_size=batch_size,
+                show_progress_bar=False,
+            )
+
+        def score(self, query_emb, doc_embs):
+            from pylate import scores as colbert_scores  # type: ignore
+
+            sim = colbert_scores.colbert_scores(
+                query_emb.unsqueeze(0) if query_emb.dim() == 2 else query_emb,
+                doc_embs,
+            )
+            return sim[0] if sim.dim() == 2 else sim
+
+    return _PylateEngine()
+
+
+def _load_engine(engine: str, model_name: str, device: str):
+    if engine == "pylate":
+        return _load_pylate_engine(model_name, device)
+    if engine == "minimal":
+        return _load_minimal(model_name, device)
+    raise SystemExit(f"Unknown --engine: {engine!r}; expected 'pylate' or 'minimal'.")
+
+
 def _encode_haystack(
-    model,
+    engine,
     cfg: VstashConfig,
     session_ids: list[str],
     sessions: list[list[dict]],
@@ -96,37 +164,27 @@ def _encode_haystack(
     if not flat_chunks:
         return flat_session_ids, None
 
-    embeddings = model.encode(
-        flat_chunks,
-        is_query=False,
-        batch_size=encode_batch_size,
-        show_progress_bar=False,
-    )
+    embeddings = engine.encode_docs(flat_chunks, batch_size=encode_batch_size)
     return flat_session_ids, embeddings
 
 
 def _retrieve_top_chunks(
-    model,
+    engine,
     query_text: str,
     doc_embeddings,
     top_k_chunks: int,
 ):
     """Return the indices of the top-k chunks by ColBERT MaxSim."""
-    from pylate import scores as colbert_scores  # type: ignore
+    import numpy as np
 
-    q_emb = model.encode(
-        [query_text],
-        is_query=True,
-        show_progress_bar=False,
-    )
-    sim = colbert_scores.colbert_scores(q_emb, doc_embeddings)  # shape (1, n_docs)
-    sim_row = sim[0].cpu().numpy() if hasattr(sim[0], "cpu") else sim[0]
+    q_emb = engine.encode_query(query_text)
+    sim_row = engine.score(q_emb, doc_embeddings)
+    if hasattr(sim_row, "cpu"):
+        sim_row = sim_row.cpu().numpy()
     n = len(sim_row)
     k = min(top_k_chunks, n)
     # argpartition + sort the top-k slice; cheaper than full argsort
     # when n is large (a long haystack hits ~hundreds of chunks).
-    import numpy as np
-
     if k >= n:
         idx = np.argsort(-sim_row)
     else:
@@ -156,10 +214,11 @@ def run(
     model_name: str,
     device: str,
     encode_batch_size: int,
+    engine: str = "pylate",
 ) -> dict:
     cfg = VstashConfig()
-    print(f"Loading {model_name} on {device}...", flush=True)
-    model = _load_pylate(model_name, device)
+    print(f"Loading {model_name} on {device} (engine={engine})...", flush=True)
+    model = _load_engine(engine, model_name, device)
     print("Loaded.", flush=True)
 
     data = json.loads(DATA_PATH.read_text())
@@ -298,6 +357,16 @@ def main() -> None:
     p.add_argument("--model", type=str, default="colbert-ir/colbertv2.0")
     p.add_argument("--device", choices=["cpu", "cuda"], default="cuda")
     p.add_argument("--encode-batch-size", type=int, default=32)
+    p.add_argument(
+        "--engine",
+        choices=["pylate", "minimal"],
+        default="pylate",
+        help="ColBERT inference backend.  'pylate' is the default (full-featured, "
+        "depends on sentence-transformers).  'minimal' is the raw-HF fallback "
+        "(experiments/colbert_minimal.py) -- no pylate, no sentence-transformers, "
+        "needs only torch + transformers.  Use it on Colab when the pylate / "
+        "sentence-transformers / torchcodec dependency cascade gets unstable.",
+    )
     args = p.parse_args()
     n = None if args.all else args.n
     run(
@@ -307,6 +376,7 @@ def main() -> None:
         output=args.output,
         seed_offset=args.offset,
         stratify_per_type=args.stratify,
+        engine=args.engine,
         model_name=args.model,
         device=args.device,
         encode_batch_size=args.encode_batch_size,

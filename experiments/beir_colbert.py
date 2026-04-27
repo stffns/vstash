@@ -42,18 +42,85 @@ from experiments.beir_benchmark import (
 DEFAULT_MODEL = "colbert-ir/colbertv2.0"
 
 
-def _load_pylate(model_name: str, device: str):
-    try:
-        from pylate import models  # type: ignore
-    except ImportError as exc:
-        raise SystemExit(
-            "pylate is required.  Install with: pip install pylate"
-        ) from exc
-    return models.ColBERT(model_name_or_path=model_name, device=device)
+def _load_engine(engine: str, model_name: str, device: str):
+    """Engine-agnostic loader. Returns an object with encode_query /
+    encode_docs / score on top of either pylate or the raw-HF
+    MinimalColBERT (see experiments/colbert_minimal.py).
+    """
+    if engine == "pylate":
+        try:
+            from pylate import models  # type: ignore
+        except ImportError as exc:
+            raise SystemExit(
+                "pylate is required for --engine pylate. Install with: "
+                "pip install pylate, or pass --engine minimal to use the "
+                "raw-HF fallback (no pylate / sentence-transformers needed)."
+            ) from exc
+
+        pylate_model = models.ColBERT(model_name_or_path=model_name, device=device)
+
+        class _PylateEngine:
+            def encode_queries(self, texts, batch_size=64):
+                return pylate_model.encode(
+                    texts, is_query=True, batch_size=batch_size, show_progress_bar=False
+                )
+
+            def encode_docs(self, texts, batch_size=64):
+                return pylate_model.encode(
+                    texts, is_query=False, batch_size=batch_size, show_progress_bar=True
+                )
+
+            def score(self, q_batch, d_all):
+                from pylate import scores as colbert_scores  # type: ignore
+
+                return colbert_scores.colbert_scores(q_batch, d_all)
+
+        return _PylateEngine()
+
+    if engine == "minimal":
+        from experiments.colbert_minimal import MinimalColBERT
+
+        impl = MinimalColBERT(model_name=model_name, device=device)
+
+        class _MinimalEngine:
+            def encode_queries(self, texts, batch_size=64):
+                # MinimalColBERT.encode_queries returns list of (seq_q, 128)
+                # We pad them into a single tensor for batched matmul.
+                import torch
+
+                emb_list = impl.encode_queries(texts, batch_size=batch_size)
+                if not emb_list:
+                    return torch.empty(0, 0, 128, device=impl.device)
+                max_len = max(e.shape[0] for e in emb_list)
+                padded = []
+                for e in emb_list:
+                    pad = max_len - e.shape[0]
+                    if pad:
+                        e = torch.nn.functional.pad(e, (0, 0, 0, pad))
+                    padded.append(e)
+                return torch.stack(padded, dim=0)
+
+            def encode_docs(self, texts, batch_size=64):
+                doc_embs, _ = impl.encode_documents(texts, batch_size=batch_size)
+                return doc_embs
+
+            def score(self, q_batch, d_all):
+                # q_batch: (n_q, seq_q, 128); d_all: (n_d, seq_d, 128).
+                # Returns (n_q, n_d).  einsum is the cleanest way.
+                import torch
+
+                # For each query, compute MaxSim against every doc.
+                sims = torch.einsum("qmh,dnh->qdmn", q_batch, d_all)
+                # MaxSim: max over d-tokens, sum over q-tokens.
+                return sims.max(dim=3).values.sum(dim=2)
+
+        return _MinimalEngine()
+
+    raise SystemExit(f"Unknown --engine: {engine!r}; expected 'pylate' or 'minimal'.")
 
 
 def evaluate_colbert(
-    model,
+    engine,
     corpus: dict,
     queries: dict,
     qrels: dict,
@@ -72,8 +139,6 @@ def evaluate_colbert(
     fits in 4-8 GB of T4 VRAM with the default batch sizes; FiQA at
     57K docs is the tight upper bound.
     """
-    from pylate import scores as colbert_scores  # type: ignore
-
     doc_ids = list(corpus.keys())
     doc_texts = [
         (corpus[d].get("title", "") + "\n" + corpus[d].get("text", "")).strip()
@@ -81,24 +146,14 @@ def evaluate_colbert(
     ]
 
     t0 = time.perf_counter()
-    doc_emb = model.encode(
-        doc_texts,
-        is_query=False,
-        batch_size=encode_batch_size,
-        show_progress_bar=True,
-    )
+    doc_emb = engine.encode_docs(doc_texts, batch_size=encode_batch_size)
     encode_corpus_s = time.perf_counter() - t0
     print(f"  [ColBERT] encoded {len(doc_ids)} docs in {encode_corpus_s:.1f}s")
 
     test_qids = list(qrels.keys())
     query_texts = [queries[qid] for qid in test_qids]
     t0 = time.perf_counter()
-    query_emb = model.encode(
-        query_texts,
-        is_query=True,
-        batch_size=query_batch_size,
-        show_progress_bar=False,
-    )
+    query_emb = engine.encode_queries(query_texts, batch_size=query_batch_size)
     encode_queries_s = time.perf_counter() - t0
 
     ndcgs: list[float] = []
@@ -115,7 +170,7 @@ def evaluate_colbert(
     for start in range(0, len(test_qids), BATCH):
         end = min(start + BATCH, len(test_qids))
         qb = query_emb[start:end]
-        sim = colbert_scores.colbert_scores(qb, doc_emb)
+        sim = engine.score(qb, doc_emb)
         sim_np = sim.cpu().numpy() if hasattr(sim, "cpu") else np.asarray(sim)
         for j, qid in enumerate(test_qids[start:end]):
             row = sim_np[j]
@@ -153,10 +208,19 @@ def main() -> None:
     p.add_argument("--query-batch-size", type=int, default=64)
     p.add_argument("--output", type=Path,
                    default=Path("experiments/results/beir_colbertv2.json"))
+    p.add_argument(
+        "--engine",
+        choices=["pylate", "minimal"],
+        default="pylate",
+        help="ColBERT inference backend.  'minimal' is the raw-HF fallback "
+        "(experiments/colbert_minimal.py) -- no pylate, no sentence-transformers, "
+        "needs only torch + transformers.  Use it when Colab's pylate / "
+        "sentence-transformers / torchcodec dependency cascade is unstable.",
+    )
     args = p.parse_args()
 
-    print(f"Loading {args.model} on {args.device}...", flush=True)
-    model = _load_pylate(args.model, args.device)
+    print(f"Loading {args.model} on {args.device} (engine={args.engine})...", flush=True)
+    engine = _load_engine(args.engine, args.model, args.device)
     print("Loaded.", flush=True)
 
     os.makedirs(args.output.parent, exist_ok=True)
@@ -174,7 +238,7 @@ def main() -> None:
             continue
 
         metrics = evaluate_colbert(
-            model,
+            engine,
             corpus,
             queries,
             qrels,
