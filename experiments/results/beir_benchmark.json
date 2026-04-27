@@ -1,65 +1,65 @@
 {
-  "timestamp": "2026-04-17T16:13:38+0000",
-  "model": "Stffens/bge-small-rrf-v2",
+  "timestamp": "2026-04-27T12:06:28+0200",
+  "model": "BAAI/bge-small-en-v1.5",
   "results": [
     {
       "dataset": "scifact",
       "docs": 5183,
       "queries": 300,
-      "model": "Stffens/bge-small-rrf-v2",
+      "model": "BAAI/bge-small-en-v1.5",
       "vstash": {
-        "ndcg_10": 0.7438,
-        "mrr": 0.7102,
-        "recall_10": 0.8736,
-        "latency_ms": 23.7
+        "ndcg_10": 0.7286,
+        "mrr": 0.7017,
+        "recall_10": 0.8416,
+        "latency_ms": 10.7
       }
     },
     {
       "dataset": "nfcorpus",
       "docs": 3633,
       "queries": 323,
-      "model": "Stffens/bge-small-rrf-v2",
+      "model": "BAAI/bge-small-en-v1.5",
       "vstash": {
-        "ndcg_10": 0.409,
-        "mrr": 0.6281,
-        "recall_10": 0.1934,
-        "latency_ms": 8.9
+        "ndcg_10": 0.3597,
+        "mrr": 0.574,
+        "recall_10": 0.1694,
+        "latency_ms": 3.7
       }
     },
     {
       "dataset": "fiqa",
       "docs": 57638,
       "queries": 648,
-      "model": "Stffens/bge-small-rrf-v2",
+      "model": "BAAI/bge-small-en-v1.5",
       "vstash": {
-        "ndcg_10": 0.3767,
-        "mrr": 0.4675,
-        "recall_10": 0.4251,
-        "latency_ms": 223.2
+        "ndcg_10": 0.3919,
+        "mrr": 0.4808,
+        "recall_10": 0.4446,
+        "latency_ms": 85.6
       }
     },
     {
       "dataset": "scidocs",
       "docs": 25657,
       "queries": 1000,
-      "model": "Stffens/bge-small-rrf-v2",
+      "model": "BAAI/bge-small-en-v1.5",
       "vstash": {
-        "ndcg_10": 0.1969,
-        "mrr": 0.3419,
-        "recall_10": 0.2046,
-        "latency_ms": 84.8
+        "ndcg_10": 0.196,
+        "mrr": 0.3415,
+        "recall_10": 0.2028,
+        "latency_ms": 36.4
       }
     },
     {
       "dataset": "arguana",
       "docs": 8674,
       "queries": 1406,
-      "model": "Stffens/bge-small-rrf-v2",
+      "model": "BAAI/bge-small-en-v1.5",
       "vstash": {
-        "ndcg_10": 0.44,
-        "mrr": 0.3042,
-        "recall_10": 0.8599,
-        "latency_ms": 911.1
+        "ndcg_10": 0.4357,
+        "mrr": 0.3021,
+        "recall_10": 0.8485,
+        "latency_ms": 647.0
       }
     }
   ]
