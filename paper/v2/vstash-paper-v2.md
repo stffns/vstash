@@ -14,65 +14,45 @@
 
 ## Abstract
 
-We present **vstash**, a local-first document memory system that combines
-vector similarity search with full-text keyword matching via Reciprocal Rank
-Fusion (RRF) and adaptive per-query IDF weighting.  All data resides in a
-single SQLite file using sqlite-vec for approximate nearest neighbor search
-and FTS5 for keyword matching.
+We present **vstash**, a local-first document memory system that
+combines vector similarity search with full-text keyword matching
+via Reciprocal Rank Fusion (RRF) in a single SQLite file.  vstash v2
+introduces four primary contributions:
 
-vstash v2 makes seven contributions, four of which (**1**, **2**, **3**, **7**)
-appeared in v1 and three of which (**4**, **5**, **6**) are new.
+**(1) Self-supervised embedding refinement.** Across 753 BEIR queries
+on SciFact, NFCorpus, and FiQA, 74.5% produce top-10 disagreement
+between vector-heavy and FTS-heavy search, providing a training
+signal without human labels.  Fine-tuning BGE-small with MNRL on 76K
+disagreement triples improves NDCG@10 on all 5 BEIR datasets, up to
++19.5% on NFCorpus.
 
-**(1) Self-supervised embedding refinement** via hybrid retrieval
-disagreement: across 753 BEIR queries on SciFact, NFCorpus, and FiQA,
-74.5% produce top-10 disagreement between vector-heavy and FTS-heavy
-search, providing a free training signal without human labels.
-Fine-tuning BGE-small (33M params) with MultipleNegativesRankingLoss on
-76K disagreement triples improves NDCG@10 on all 5 BEIR datasets (up to
-+19.5% on NFCorpus, Section 5).  The model is published as
-`Stffens/bge-small-rrf-v2`.
+**(2) Adaptive RRF** with per-query IDF weighting improves NDCG@10
+on all 5 BEIR datasets versus fixed weights, up to +21.4% on
+ArguAna, and reaches 0.7263 on SciFact with BGE-small.
 
-**(2) Adaptive RRF** with per-query IDF weighting improves NDCG@10 on
-all 5 BEIR datasets (up to +21.4% on ArguAna), achieving 0.7263 on
-SciFact with BGE-small (Section 4).
+**(3) Eval-gated domain fine-tuning via labeled queries.** A new
+labeled-retrain mode accepts user-supplied `(query, relevant_paths)`
+JSONL files for both training and held-out evaluation; candidates
+that regress NDCG@10 on the holdout are not saved.  To our
+knowledge this is the first integration of a refuse-to-save eval
+gate with user-supplied labels in an open-source retrieval CLI.
 
-**(3) A negative result on post-RRF scoring**: frequency+decay,
-history-augmented recall, and cross-encoder reranking all failed to
-improve NDCG (Section 7).
+**(4) The first in-tree evidence that BEIR-tuned weights damage
+chat-memory retrieval, motivating per-domain models.** The v1 BEIR
+fine-tune loses to vanilla BGE-small by -2.45pp NDCG@10 on a 102-
+query LongMemEval-s holdout.  Training a chat-memory specialist
+(`bge-small-rrf-lme-v1`) on 398 labeled queries via the new mode
+lifts holdout R@1 by +3.4pp, R@5 by +3.8pp; R@10 saturates at 0.96
+for both arms (ranking, not coverage, is the lever).  In a same-
+machine head-to-head against a faithful HuggingFace re-implementation
+of ColBERTv2, the chat-tuned model leads by +5.68pp R@1 raw and by
++1.6pp R@1 post-calibration, where the +0.04 NDCG@10 calibration
+band is derived from BEIR-published reference numbers.  Search
+latency is 27 ms median on the LongMemEval stores -- approximately
+3x faster than ColBERTv2 measured on a T4 GPU, despite vstash
+running on CPU.
 
-**(4) Eval-gated domain fine-tuning via labeled queries (NEW).** The
-`vstash retrain` CLI now accepts `--training-queries` and
-`--eval-queries` JSONL files of `(query, relevant_paths)` labels,
-routing through a labeled-batched miner (the v5 recipe).  Training
-refuses to save the candidate when held-out NDCG@10 regresses, making
-domain fine-tuning safe for end users (Section 5.6, PR #299).
-
-**(5) First in-tree evidence that "best on BEIR" does not transfer to
-"best on chat memory" (NEW).** On LongMemEval-s (Wu et al. 2024,
-multi-session chat with ~115K-token haystacks), the BEIR-tuned v2 model
-loses to vanilla BGE-small by -0.0245 NDCG@10 on a 102-query stratified
-holdout.  This motivates a domain-specific fine-tune (Section 6).
-
-**(6) `bge-small-rrf-lme-v1`: a chat-memory specialist (NEW).** Fine-
-tuning vanilla BGE-small on 398 labeled LongMemEval queries via the
-labeled-batched miner produces a model that lifts holdout R@1 by
-+3.4pp, R@3 by +3.0pp, R@5 by +3.8pp over vanilla.  R@10 saturates at
-0.96 for both -- ranking, not coverage, is the lever.  Per-type, the
-gain concentrates on multi-session (R@5 +6.9pp) and temporal-reasoning
-(R@5 +5.6pp), the two categories that the failure analysis identified
-as bottlenecks.  Reproducible across two seeded runs (NDCG@10 0.6872
-vs 0.6878, delta 0.0006).  Same-machine head-to-head against a
-faithful HuggingFace re-implementation of ColBERTv2 yields a +5.68pp
-R@1 advantage that survives a +0.04 NDCG@10 calibration band derived
-from BEIR (Section 6, Section 8.8).
-
-**(7) A production-grade substrate** with integrity checking, schema
-versioning, ranking diagnostics, and a distance-based relevance signal
-validated on 50,425 relevance-judged queries across the 5 BEIR datasets.
-
-Search latency remains 20.9 ms median at 50K chunks and 27 ms median
-on the LongMemEval per-question stores (50 sessions, ~150 chunks).  The
-two fine-tuned models (`bge-small-rrf-v2` for BEIR-style retrieval,
+The two fine-tuned models (`bge-small-rrf-v2` for BEIR retrieval,
 `bge-small-rrf-lme-v1` for chat memory) are published on HuggingFace.
 All code, data, models, and reproducible experiment scripts are
 open-source.
@@ -116,8 +96,9 @@ candidates that regress on a held-out slice; **(5)** the first
 in-tree evidence that BEIR-tuned weights actively damage chat-memory
 retrieval, motivating per-domain models; **(6)** a chat-memory
 specialist model `bge-small-rrf-lme-v1` validated against ColBERTv2
-under a calibrated head-to-head; and (7) a production-grade substrate
-with integrity, schema versioning, and ranking diagnostics.
+under a calibrated head-to-head; and (7) a deployable substrate
+with integrity checking, schema versioning, observability, and
+ranking diagnostics.
 
 Secondary contributions include intra-document MMR deduplication,
 context expansion, distance-based relevance signaling, hybrid code-
@@ -226,21 +207,18 @@ base model and the fine-tuned candidate, and the candidate is
 promoted to `output_path` only if `delta_ndcg >= --min-gain`
 (default 0.0).  Failed candidates are retained at
 `output_path.candidate/` for inspection but never replace the
-user's active model.  This is the first time, to our knowledge,
-a vector-DB CLI ships a refuse-to-save eval gate by default for
-user-supplied labels.
+user's active model.  To our knowledge, refuse-to-save eval gates
+with user-supplied labels have not been integrated into open-
+source retrieval CLIs prior to this work; existing domain
+adaptation tools (GPL, Promptagator) lack a comparable promotion
+guard.
 
-**Implementation.** PR #299 (merged 2026-04-25) adds `--eval-queries`
-as a CLI flag in `vstash/cli.py`.  A shared
-`_load_labeled_queries_jsonl` helper validates the JSONL shape
-(non-empty `query` string, non-empty list of non-empty
-`relevant_paths` strings, line-numbered errors), warns when
-`relevant_paths` reference docs absent from the store, and is
-mutually-exclusive with `--no-eval`.  Eleven CLI tests cover the
-loader and forwarding paths; eighty-nine tests in the broader
-retrain suite continue to pass.
+The labeled-query retrain mode is implemented as a CLI flag in
+`vstash/cli.py` with input validation, store-side path checks,
+and forwarding tests; full implementation details and test
+inventory are in Appendix E.
 
-The labeled mode is the foundation for Section 6.
+This labeled mode enables the case study in Section 6.
 
 ### 5.7  Why labeled mode matters: BEIR-tuned weights damage chat memory
 
@@ -385,29 +363,14 @@ We anticipate four reviewer questions and pre-empt them:
    are partially memorisation.  We disclose them in the appendix
    but the headline claims rest only on the 102-query holdout.
 
-### 6.6  Reproducing the case study
+### 6.6  Reproducibility
 
-```bash
-# 1. Data prep (~9 min, Mac local) -- ingest + emit JSONLs
-python -m experiments.lme_prepare_retrain \
-    --output-db    experiments/lme_retrain_full.db \
-    --output-train experiments/results/lme_train.jsonl \
-    --output-eval  experiments/results/lme_eval.jsonl \
-    --output-meta  experiments/results/lme_retrain_meta.json
-
-# 2. Train on Colab T4 (~12 min) with the eval gate
-VSTASH_DB_PATH=experiments/lme_retrain_full.db vstash retrain \
-    --training-queries experiments/results/lme_train.jsonl \
-    --eval-queries     experiments/results/lme_eval.jsonl \
-    --base-model       BAAI/bge-small-en-v1.5 \
-    --output           ~/.vstash/models/bge-small-rrf-lme-v1 \
-    --bulk-mine --bulk-mine-device cuda
-
-# 3. Score on full LongMemEval-s for the appendix table (~9 min)
-python -m experiments.longmemeval_retrieval --all \
-    --model ~/.vstash/models/bge-small-rrf-lme-v1 \
-    --output experiments/results/lme_full_500_lme-v1.json
-```
+Three commands reproduce the case study end-to-end: corpus
+preparation (~9 min on a 2024 Apple Silicon Mac), labeled retrain
+on a Colab T4 GPU (~12 min wall), and full-set scoring (~9 min
+local).  The exact commands and the JSONL schemas are in
+Appendix E.  Per-question result JSONs and the corpus database
+are committed under `experiments/results/`.
 
 ---
 
@@ -540,14 +503,17 @@ datasets, Mac Apple Silicon for vstash and Colab T4 for ColBERTv2:
 | SciDocs    |         0.1960 |                         0.1546 |                          0.154 |
 | ArguAna    |         0.4357 |                         0.3319 |                          0.463 |
 
-vstash hybrid (vanilla BGE-small) beats minimal-HF ColBERTv2 on
-**5 of 5** BEIR datasets in same-machine evaluation.  Against the
-Stanford published numbers, vstash beats on 3 of 5 (SciFact +5.1%,
-NFCorpus +4.6%, FiQA +10.1%, SciDocs +27.3%) and loses on ArguAna
-(-5.9%).  ArguAna is a known outlier in cross-implementation
-comparisons (Wachsmuth 2018 corpus near-duplicates; Thakur 2021
-BEIR variance discussion); we report both numbers transparently
-rather than picking the friendlier comparison.
+In same-machine same-corpus evaluation against the minimal-HF
+re-implementation, vstash hybrid (vanilla BGE-small) outperforms
+ColBERTv2 on 5 of 5 BEIR datasets.  Against the Stanford published
+reference numbers (which reflect the optimized pylate / PLAID
+inference path and not the minimal-HF re-implementation), vstash
+wins on 4 of 5 (SciFact +5.1%, NFCorpus +4.6%, FiQA +10.1%,
+SciDocs +27.3%) and loses on ArguAna (-5.9%).  ArguAna is a known
+outlier in cross-implementation comparisons (Wachsmuth et al. 2018
+on near-duplicate query/corpus structure; Thakur et al. 2021 on
+BEIR variance across implementations); we report both
+comparisons transparently rather than picking the friendlier one.
 
 ---
 
@@ -600,13 +566,13 @@ adjustment improves NDCG@10 on all 5 BEIR datasets.
 decay, cross-encoder reranking, and history-augmented recall do
 not improve NDCG.
 
-**[v2 NEW] Eval-gated labeled retrain.**  `vstash retrain
---training-queries train.jsonl --eval-queries eval.jsonl` accepts
-real `(query, gold-doc)` labels and refuses to save candidates
-that regress on a held-out slice.  PR #299 ships this as a
-production-grade CLI.  The labeled mode foundationalises the rest
-of v2 because it makes domain-specific fine-tuning safe by
-default.
+**[v2 NEW] Eval-gated labeled retrain.** The retrain CLI accepts
+user-supplied `(query, gold-doc)` JSONL files for both training
+and held-out evaluation, and refuses to save candidates that
+regress NDCG@10 on the holdout.  This labeled mode underpins
+the v2 contributions: domain-specific fine-tuning becomes safe
+by default, and per-domain models become a deployable artifact
+rather than a research-paper artifact.
 
 **[v2 NEW] Domain matters more than universal model quality.**
 The v1 BEIR fine-tune *loses* to vanilla BGE-small on
@@ -616,24 +582,26 @@ target for a memory layer hosting heterogeneous corpora.
 
 **[v2 NEW] `bge-small-rrf-lme-v1`: chat-memory specialist.**  398
 labeled LongMemEval queries via the labeled retrain CLI lift
-holdout R@1 by +3.4pp, R@5 by +3.8pp.  Same-machine head-to-head
-against minimal-HF ColBERTv2 yields a +1.6pp R@1 advantage that
-survives a +0.04 NDCG@10 calibration band.  vstash also delivers
-this at 3-4x lower P50 latency than ColBERTv2, **on CPU vs the
-ColBERT GPU baseline**.
+holdout R@1 by +3.4pp and R@5 by +3.8pp.  In a same-machine
+head-to-head against a minimal-HF ColBERTv2 re-implementation,
+the chat-tuned model leads R@1 by +5.68pp raw and by +1.6pp
+post-calibration (where the +0.04 NDCG@10 band is derived from
+BEIR reference numbers, Appendix D).  Median search latency on
+the LongMemEval per-question stores is approximately 3x lower
+than ColBERTv2 measured on a T4 GPU, despite vstash running on
+CPU.
 
 **Future work.** Three concrete next steps: (a) re-evaluate
 ColBERTv2 via the official Stanford codebase to remove the
 calibration band; (b) add a cross-encoder reranker over top-10 to
 close the R@1 gap (currently 73% of the structural ceiling);
 (c) extend the labeled retrain mode to support LoRA adapters so
-that domain fine-tunes can be composed with v3-class encoders
-without parameter-level forking.
+that domain fine-tunes can be composed with general-purpose
+encoders without parameter-level forking.
 
-The system includes 16 MCP tools, a Python SDK, CLI, and Claude
-Code hook.  All code, data, both fine-tuned models
-(`Stffens/bge-small-rrf-v2`, `Stffens/bge-small-rrf-lme-v1`), and
-reproducible experiment scripts are open-source.
+All code, both fine-tuned models (`Stffens/bge-small-rrf-v2`,
+`Stffens/bge-small-rrf-lme-v1`), and reproducible experiment
+scripts are open-source.
 
 ---
 
@@ -697,16 +665,116 @@ disclosure if asked.
 
 ---
 
+## Appendix E: Implementation Details and Reproduction (NEW in v2)
+
+This appendix consolidates the engineering material that does not
+belong in the body but is necessary for reproduction.
+
+### E.1  Labeled-query retrain CLI
+
+The `--training-queries` and `--eval-queries` flags accept JSONL
+files where each line is a single query record:
+
+```jsonl
+{"query": "what is the meaning of life", "relevant_paths": ["/notes/answer.md"]}
+{"query": "how do mitochondria work", "relevant_paths": ["/biology/cell.md", "/biology/atp.md"]}
+```
+
+A shared loader (`_load_labeled_queries_jsonl` in `vstash/cli.py`)
+validates that each record has a non-empty `query` string and a
+non-empty list of non-empty `relevant_paths` strings, with line-
+numbered errors on failure.  The loader is mutually-exclusive
+with the existing `--no-eval` flag, and emits a warning when
+`relevant_paths` reference document paths absent from the active
+store (those queries would otherwise score zero in NDCG silently).
+
+The CLI test suite (`tests/test_cli_retrain.py`) covers the
+loader and the forwarding path with a monkey-patched `run_retrain`
+stub: 16 cases including invalid JSON, missing required keys,
+empty file, blank query strings, non-string relevant paths, a
+directory path passed instead of a file, and a parse error with
+line-numbered reporting.
+
+### E.2  Reproducing the LongMemEval case study
+
+Three commands reproduce Section 6 end-to-end.  Approximate wall-
+clock times are for a 2024 Apple Silicon Mac (corpus prep, full-
+set scoring) and a Colab T4 GPU (training):
+
+```bash
+# 1. Data prep (~9 min): ingest haystacks into one VstashStore
+#    and emit train.jsonl + eval.jsonl
+python -m experiments.lme_prepare_retrain \
+    --output-db    experiments/lme_retrain_full.db \
+    --output-train experiments/results/lme_train.jsonl \
+    --output-eval  experiments/results/lme_eval.jsonl \
+    --output-meta  experiments/results/lme_retrain_meta.json
+
+# 2. Train on Colab T4 (~12 min) with the eval gate active
+VSTASH_DB_PATH=experiments/lme_retrain_full.db \
+vstash retrain \
+    --training-queries experiments/results/lme_train.jsonl \
+    --eval-queries     experiments/results/lme_eval.jsonl \
+    --base-model       BAAI/bge-small-en-v1.5 \
+    --output           ~/.vstash/models/bge-small-rrf-lme-v1 \
+    --bulk-mine --bulk-mine-device cuda
+
+# 3. Score on full LongMemEval-s for the appendix table (~9 min)
+python -m experiments.longmemeval_retrieval --all \
+    --model ~/.vstash/models/bge-small-rrf-lme-v1 \
+    --output experiments/results/lme_full_500_lme-v1.json
+```
+
+### E.3  Path namespacing for chat-memory ingest
+
+LongMemEval session ids recur across questions (4,300 sessions
+appear in two or more haystacks).  Ingesting with
+`path = session_id` causes the store to deduplicate sessions
+across questions, losing the per-question gold semantics.  The
+prep script uses `path = "{question_id}:{session_id}"` to
+preserve cross-question isolation while still allowing direct
+mapping from labeled-query gold ids to store paths.
+
+### E.4  ColBERTv2 minimal HF re-implementation
+
+The minimal HF re-implementation (`experiments/colbert_minimal.py`,
+~80 LOC) loads the published `colbert-ir/colbertv2.0` checkpoint
+via `transformers.AutoModel`, manually loads the 768->128 linear
+projection from `model.safetensors`, inserts `[Q]` / `[D]` marker
+tokens at position 1 after `[CLS]`, computes per-token L2-
+normalized embeddings, and scores via batched einsum MaxSim.  It
+needs only `torch` and `transformers` -- both pre-shipped on
+Colab T4 -- and avoids the `pylate -> fast-plaid -> torch==2.9.0`
+dependency cascade that broke five Colab install attempts during
+development.  The chunked-einsum score function avoids a 48 GB
+allocation on FiQA's 57k-doc corpus by iterating over docs in
+slices of 128 with halving-retry on OOM.
+
+The calibration table (Appendix D) is computed by running the same
+minimal HF on the 5 BEIR datasets and comparing against Santhanam
+et al. (2022) reference NDCG@10.
+
+---
+
 ## References
 
 [v1 references retained.]  v2 adds:
 
-  - Wu et al. 2024.  *LongMemEval: Benchmarking Chat Assistants on
-    Long-Term Interactive Memory*.  arXiv:2410.10813.
+  - Khattab and Zaharia 2020.  *ColBERT: Efficient and Effective
+    Passage Search via Contextualized Late Interaction over BERT*.
+    SIGIR.
   - Santhanam et al. 2022.  *ColBERTv2: Effective and Efficient
     Retrieval via Lightweight Late Interaction*.  NAACL.
+  - Santhanam et al. 2022b.  *PLAID: An Efficient Engine for Late
+    Interaction Retrieval*.  CIKM.
+  - Reimers and Gurevych 2019.  *Sentence-BERT: Sentence Embeddings
+    using Siamese BERT-Networks*.  EMNLP.
+  - Wu et al. 2024.  *LongMemEval: Benchmarking Chat Assistants on
+    Long-Term Interactive Memory*.  arXiv:2410.10813.
   - Wachsmuth et al. 2018.  *Retrieval of the Best Counterargument
     without Prior Topic Knowledge*.  ACL.
+  - Thakur et al. 2021.  *BEIR: A Heterogeneous Benchmark for Zero-
+    shot Evaluation of Information Retrieval Models*.  NeurIPS.
   - Wang et al. 2022.  *GPL: Generative Pseudo Labeling for
     Unsupervised Domain Adaptation of Dense Retrieval*.  NAACL.
   - Dai et al. 2022.  *Promptagator: Few-shot Dense Retrieval From
