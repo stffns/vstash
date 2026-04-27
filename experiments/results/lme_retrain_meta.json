@@ -1,0 +1,39 @@
+{
+  "data_path": "/Users/jaysonsteffens/Desktop/Personal/Projects/vex/experiments/data/longmemeval/longmemeval_s",
+  "seed": 42,
+  "holdout_fraction": 0.2,
+  "subset_per_type": null,
+  "n_train_questions": 398,
+  "n_holdout_questions": 102,
+  "n_train_docs": 19012,
+  "n_holdout_docs": 4857,
+  "n_train_qrels": 398,
+  "n_eval_qrels": 102,
+  "embedding_model": "BAAI/bge-small-en-v1.5",
+  "by_type": {
+    "knowledge-update": {
+      "train": 62,
+      "holdout": 16
+    },
+    "multi-session": {
+      "train": 106,
+      "holdout": 27
+    },
+    "single-session-assistant": {
+      "train": 44,
+      "holdout": 12
+    },
+    "single-session-preference": {
+      "train": 24,
+      "holdout": 6
+    },
+    "single-session-user": {
+      "train": 56,
+      "holdout": 14
+    },
+    "temporal-reasoning": {
+      "train": 106,
+      "holdout": 27
+    }
+  }
+}

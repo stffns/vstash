@@ -1,0 +1,1718 @@
+{
+  "source_results": "experiments/results/lme_full_500_v3.json",
+  "model": "Stffens/bge-small-rrf-v3",
+  "retrieval_mode": "hybrid",
+  "fail_threshold_k": 10,
+  "n_total": 500,
+  "n_failed": 31,
+  "drop_stage_by_type": {
+    "single-session-user": {
+      "retrieved": 1,
+      "rrf_fusion": 1,
+      "distance_cutoff": 1
+    },
+    "multi-session": {
+      "distance_cutoff": 16,
+      "retrieved": 16,
+      "rrf_fusion": 2,
+      "mmr_dedup": 5
+    },
+    "single-session-preference": {
+      "mmr_dedup": 2
+    },
+    "temporal-reasoning": {
+      "retrieved": 15,
+      "distance_cutoff": 11,
+      "mmr_dedup": 6,
+      "rrf_fusion": 2
+    }
+  },
+  "dist_stats_by_drop_stage": {
+    "retrieved": {
+      "n": 32,
+      "mean": 0.4628,
+      "median": 0.454,
+      "max": 0.6824
+    },
+    "rrf_fusion": {
+      "n": 5,
+      "mean": 0.7378,
+      "median": 0.757,
+      "max": 0.7769
+    },
+    "distance_cutoff": {
+      "n": 28,
+      "mean": 0.5753,
+      "median": 0.581,
+      "max": 0.7473
+    },
+    "mmr_dedup": {
+      "n": 13,
+      "mean": 0.657,
+      "median": 0.6596,
+      "max": 0.7539
+    }
+  },
+  "failures": [
+    {
+      "question_id": "5d3d2817",
+      "question_type": "single-session-user",
+      "question": "What was my previous occupation?",
+      "gold_session_ids": [
+        "answer_235eb6fb"
+      ],
+      "actual_top_k_sessions": [
+        "sharegpt_ipLglky_48",
+        "sharegpt_ebWP6Hz_0",
+        "ultrachat_371333",
+        "ultrachat_86927",
+        "ultrachat_121159",
+        "e00298a6_1",
+        "670ca40e",
+        "sharegpt_BKl952A_23",
+        "ultrachat_106114",
+        "sharegpt_bTDMt3m_64"
+      ],
+      "first_gold_rank": 12,
+      "recall@10": 0.0,
+      "gold_traces": [
+        {
+          "session_id": "answer_235eb6fb",
+          "appeared_in_results": true,
+          "final_rank": 7,
+          "dropped_at": null,
+          "best_chunk_id": 71,
+          "best_chunk_cos_dist": 0.6432,
+          "suggestions": [
+            "The expected document IS in top-k but at rank 8/10 (near-miss tier). It's competitive but being outranked by other chunks. Consider a more specific query, or raise top_k to get more headroom."
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "726462e0",
+      "question_type": "single-session-user",
+      "question": "What was the discount I got on my first purchase from the new clothing brand?",
+      "gold_session_ids": [
+        "answer_f38f679b"
+      ],
+      "actual_top_k_sessions": [
+        "cdd9704d_1",
+        "741c6781_1",
+        "5b83c26e_1",
+        "sharegpt_IxOWCIE_9",
+        "sharegpt_GGZMs1q_0",
+        "7e4dab66_1",
+        "082889ba_1",
+        "d7f17dba",
+        "ultrachat_450587",
+        "6f7485fa"
+      ],
+      "first_gold_rank": 17,
+      "recall@10": 0.0,
+      "gold_traces": [
+        {
+          "session_id": "answer_f38f679b",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "rrf_fusion",
+          "best_chunk_id": 40,
+          "best_chunk_cos_dist": 0.757,
+          "suggestions": [
+            "Most likely the metadata filter (collection/project/layer) excluded this document.  Re-run miss_analysis without filters to confirm."
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "577d4d32",
+      "question_type": "single-session-user",
+      "question": "What time do I stop checking work emails and messages?",
+      "gold_session_ids": [
+        "answer_0dd4d99a"
+      ],
+      "actual_top_k_sessions": [
+        "dc700e27",
+        "f60245ed",
+        "26f9a255_1",
+        "ultrachat_489067",
+        "sharegpt_jltxhMe_53",
+        "sharegpt_1ByFFwm_0",
+        "b283f9eb_1",
+        "ultrachat_342034",
+        "cba89032",
+        "2c0d04d6_1"
+      ],
+      "first_gold_rank": 19,
+      "recall@10": 0.0,
+      "gold_traces": [
+        {
+          "session_id": "answer_0dd4d99a",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "distance_cutoff",
+          "best_chunk_id": 123,
+          "best_chunk_cos_dist": 0.7473,
+          "suggestions": [
+            "Distance cutoff dropped the chunk just past threshold. Would have passed with distance_cutoff \u2265 1.38. Pass distance_cutoff=2.0 (or higher) to relax the cutoff."
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "6d550036",
+      "question_type": "multi-session",
+      "question": "How many projects have I led or am currently leading?",
+      "gold_session_ids": [
+        "answer_ec904b3c_1",
+        "answer_ec904b3c_4",
+        "answer_ec904b3c_3",
+        "answer_ec904b3c_2"
+      ],
+      "actual_top_k_sessions": [
+        "2e4430d8_2",
+        "e255d6fc_2",
+        "sharegpt_nVi6tIt_0",
+        "answer_ec904b3c_1",
+        "dae3906e_2",
+        "answer_ec904b3c_4",
+        "f6246b5f",
+        "sharegpt_J7ZAFLd_0",
+        "ultrachat_184799",
+        "eb682e52_2"
+      ],
+      "first_gold_rank": 4,
+      "recall@10": 0.5,
+      "gold_traces": [
+        {
+          "session_id": "answer_ec904b3c_1",
+          "appeared_in_results": true,
+          "final_rank": 7,
+          "dropped_at": "distance_cutoff",
+          "best_chunk_id": 15,
+          "best_chunk_cos_dist": 0.6105,
+          "suggestions": [
+            "The expected document IS in top-k but at rank 8/10 (near-miss tier). It's competitive but being outranked by other chunks. Consider a more specific query, or raise top_k to get more headroom."
+          ]
+        },
+        {
+          "session_id": "answer_ec904b3c_4",
+          "appeared_in_results": true,
+          "final_rank": 9,
+          "dropped_at": "distance_cutoff",
+          "best_chunk_id": 49,
+          "best_chunk_cos_dist": 0.5415,
+          "suggestions": [
+            "The expected document IS in top-k but at rank 10/10 (near-miss tier). It's competitive but being outranked by other chunks. Consider a more specific query, or raise top_k to get more headroom."
+          ]
+        },
+        {
+          "session_id": "answer_ec904b3c_3",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "distance_cutoff",
+          "best_chunk_id": 74,
+          "best_chunk_cos_dist": 0.5823,
+          "suggestions": [
+            "Distance cutoff dropped the chunk just past threshold. Would have passed with distance_cutoff \u2265 1.50. Pass distance_cutoff=2.0 (or higher) to relax the cutoff."
+          ]
+        },
+        {
+          "session_id": "answer_ec904b3c_2",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "distance_cutoff",
+          "best_chunk_id": 111,
+          "best_chunk_cos_dist": 0.5479,
+          "suggestions": [
+            "Distance cutoff dropped the chunk just past threshold. Would have passed with distance_cutoff \u2265 1.41. Pass distance_cutoff=2.0 (or higher) to relax the cutoff."
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "gpt4_7fce9456",
+      "question_type": "multi-session",
+      "question": "How many properties did I view before making an offer on the townhouse in the Brookside neighborhood?",
+      "gold_session_ids": [
+        "answer_a679a86a_5",
+        "answer_a679a86a_4",
+        "answer_a679a86a_2",
+        "answer_a679a86a_3",
+        "answer_a679a86a_1"
+      ],
+      "actual_top_k_sessions": [
+        "answer_a679a86a_3",
+        "answer_a679a86a_5",
+        "answer_a679a86a_4",
+        "answer_a679a86a_1",
+        "sharegpt_OjaM9hX_225",
+        "67154fb2_1",
+        "1da409cd_1",
+        "191e1832",
+        "cca30919",
+        "288e7d30"
+      ],
+      "first_gold_rank": 1,
+      "recall@10": 0.8,
+      "gold_traces": [
+        {
+          "session_id": "answer_a679a86a_5",
+          "appeared_in_results": true,
+          "final_rank": 1,
+          "dropped_at": null,
+          "best_chunk_id": 61,
+          "best_chunk_cos_dist": 0.4925,
+          "suggestions": [
+            "The expected document IS in the top-k. No miss to analyze."
+          ]
+        },
+        {
+          "session_id": "answer_a679a86a_4",
+          "appeared_in_results": true,
+          "final_rank": 2,
+          "dropped_at": null,
+          "best_chunk_id": 81,
+          "best_chunk_cos_dist": 0.5442,
+          "suggestions": [
+            "The expected document IS in the top-k. No miss to analyze."
+          ]
+        },
+        {
+          "session_id": "answer_a679a86a_2",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "distance_cutoff",
+          "best_chunk_id": 85,
+          "best_chunk_cos_dist": 0.7221,
+          "suggestions": [
+            "Distance cutoff dropped the chunk just past threshold. Would have passed with distance_cutoff \u2265 1.56. Pass distance_cutoff=2.0 (or higher) to relax the cutoff.",
+            "FTS5 already matched this chunk \u2014 raising fts_weight would rescue it without needing to relax the distance cutoff."
+          ]
+        },
+        {
+          "session_id": "answer_a679a86a_3",
+          "appeared_in_results": true,
+          "final_rank": 0,
+          "dropped_at": null,
+          "best_chunk_id": 106,
+          "best_chunk_cos_dist": 0.4626,
+          "suggestions": [
+            "The expected document IS in the top-k. No miss to analyze."
+          ]
+        },
+        {
+          "session_id": "answer_a679a86a_1",
+          "appeared_in_results": true,
+          "final_rank": 7,
+          "dropped_at": "distance_cutoff",
+          "best_chunk_id": 118,
+          "best_chunk_cos_dist": 0.6838,
+          "suggestions": [
+            "The expected document IS in top-k but at rank 8/10 (near-miss tier). It's competitive but being outranked by other chunks. Consider a more specific query, or raise top_k to get more headroom."
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "2ce6a0f2",
+      "question_type": "multi-session",
+      "question": "How many different art-related events did I attend in the past month?",
+      "gold_session_ids": [
+        "answer_901a6763_2",
+        "answer_901a6763_4",
+        "answer_901a6763_1",
+        "answer_901a6763_3"
+      ],
+      "actual_top_k_sessions": [
+        "answer_901a6763_1",
+        "ultrachat_36844",
+        "answer_901a6763_4",
+        "23ddce03_1",
+        "9a297400_2",
+        "e4bacbcd_1",
+        "97f67bff",
+        "ultrachat_355740",
+        "c1634164_2",
+        "a1714d2c_2"
+      ],
+      "first_gold_rank": 1,
+      "recall@10": 0.5,
+      "gold_traces": [
+        {
+          "session_id": "answer_901a6763_2",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "distance_cutoff",
+          "best_chunk_id": 21,
+          "best_chunk_cos_dist": 0.4353,
+          "suggestions": [
+            "Distance cutoff dropped the chunk just past threshold. Would have passed with distance_cutoff \u2265 1.77. Pass distance_cutoff=2.0 (or higher) to relax the cutoff."
+          ]
+        },
+        {
+          "session_id": "answer_901a6763_4",
+          "appeared_in_results": true,
+          "final_rank": 3,
+          "dropped_at": "distance_cutoff",
+          "best_chunk_id": 67,
+          "best_chunk_cos_dist": 0.3853,
+          "suggestions": [
+            "The expected document IS in the top-k. No miss to analyze."
+          ]
+        },
+        {
+          "session_id": "answer_901a6763_1",
+          "appeared_in_results": true,
+          "final_rank": 0,
+          "dropped_at": null,
+          "best_chunk_id": 106,
+          "best_chunk_cos_dist": 0.2457,
+          "suggestions": [
+            "The expected document IS in the top-k. No miss to analyze."
+          ]
+        },
+        {
+          "session_id": "answer_901a6763_3",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "distance_cutoff",
+          "best_chunk_id": 112,
+          "best_chunk_cos_dist": 0.3466,
+          "suggestions": [
+            "Distance cutoff dropped the chunk just past threshold. Would have passed with distance_cutoff \u2265 1.41. Pass distance_cutoff=2.0 (or higher) to relax the cutoff."
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "gpt4_194be4b3",
+      "question_type": "multi-session",
+      "question": "How many musical instruments do I currently own?",
+      "gold_session_ids": [
+        "answer_3826dc55_1",
+        "answer_3826dc55_3",
+        "answer_3826dc55_5",
+        "answer_3826dc55_2",
+        "answer_3826dc55_4"
+      ],
+      "actual_top_k_sessions": [
+        "answer_3826dc55_5",
+        "answer_3826dc55_3",
+        "answer_3826dc55_4",
+        "answer_3826dc55_2",
+        "ultrachat_474217",
+        "31403c51",
+        "sharegpt_VO7dTG3_0",
+        "ultrachat_58180",
+        "sharegpt_UbMVpdp_137",
+        "ultrachat_385467"
+      ],
+      "first_gold_rank": 1,
+      "recall@10": 0.8,
+      "gold_traces": [
+        {
+          "session_id": "answer_3826dc55_1",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "distance_cutoff",
+          "best_chunk_id": 4,
+          "best_chunk_cos_dist": 0.5209,
+          "suggestions": [
+            "Distance cutoff dropped the chunk just past threshold. Would have passed with distance_cutoff \u2265 1.42. Pass distance_cutoff=2.0 (or higher) to relax the cutoff.",
+            "FTS5 already matched this chunk \u2014 raising fts_weight would rescue it without needing to relax the distance cutoff."
+          ]
+        },
+        {
+          "session_id": "answer_3826dc55_3",
+          "appeared_in_results": true,
+          "final_rank": 1,
+          "dropped_at": null,
+          "best_chunk_id": 23,
+          "best_chunk_cos_dist": 0.3657,
+          "suggestions": [
+            "The expected document IS in the top-k. No miss to analyze."
+          ]
+        },
+        {
+          "session_id": "answer_3826dc55_5",
+          "appeared_in_results": true,
+          "final_rank": 0,
+          "dropped_at": null,
+          "best_chunk_id": 31,
+          "best_chunk_cos_dist": 0.3915,
+          "suggestions": [
+            "The expected document IS in the top-k. No miss to analyze."
+          ]
+        },
+        {
+          "session_id": "answer_3826dc55_2",
+          "appeared_in_results": true,
+          "final_rank": 3,
+          "dropped_at": null,
+          "best_chunk_id": 37,
+          "best_chunk_cos_dist": 0.4405,
+          "suggestions": [
+            "The expected document IS in the top-k. No miss to analyze."
+          ]
+        },
+        {
+          "session_id": "answer_3826dc55_4",
+          "appeared_in_results": true,
+          "final_rank": 2,
+          "dropped_at": null,
+          "best_chunk_id": 113,
+          "best_chunk_cos_dist": 0.4478,
+          "suggestions": [
+            "The expected document IS in the top-k. No miss to analyze."
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "10d9b85a",
+      "question_type": "multi-session",
+      "question": "How many days did I spend attending workshops, lectures, and conferences in April?",
+      "gold_session_ids": [
+        "answer_e0585cb5_2",
+        "answer_e0585cb5_1"
+      ],
+      "actual_top_k_sessions": [
+        "c51583cd_3",
+        "answer_e0585cb5_2",
+        "8dd2fca2",
+        "4e59fb02_2",
+        "84889496_1",
+        "aa6afba8",
+        "45823393_2",
+        "cbd1fe79_2",
+        "ultrachat_441391",
+        "9c5fa973"
+      ],
+      "first_gold_rank": 2,
+      "recall@10": 0.5,
+      "gold_traces": [
+        {
+          "session_id": "answer_e0585cb5_2",
+          "appeared_in_results": true,
+          "final_rank": 1,
+          "dropped_at": null,
+          "best_chunk_id": 89,
+          "best_chunk_cos_dist": 0.4802,
+          "suggestions": [
+            "The expected document IS in the top-k. No miss to analyze."
+          ]
+        },
+        {
+          "session_id": "answer_e0585cb5_1",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "rrf_fusion",
+          "best_chunk_id": 121,
+          "best_chunk_cos_dist": 0.7361,
+          "suggestions": [
+            "Most likely the metadata filter (collection/project/layer) excluded this document.  Re-run miss_analysis without filters to confirm."
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "1a8a66a6",
+      "question_type": "multi-session",
+      "question": "How many magazine subscriptions do I currently have?",
+      "gold_session_ids": [
+        "answer_2bd23659_3",
+        "answer_2bd23659_2",
+        "answer_2bd23659_4",
+        "answer_2bd23659_1"
+      ],
+      "actual_top_k_sessions": [
+        "answer_2bd23659_1",
+        "d6792df8",
+        "f829b530_3",
+        "sharegpt_lsiJM0Y_0",
+        "b01aafcb_2",
+        "02042eab_2",
+        "6177ea96_2",
+        "dc71023e",
+        "ebb5d262",
+        "54aa4875"
+      ],
+      "first_gold_rank": 1,
+      "recall@10": 0.25,
+      "gold_traces": [
+        {
+          "session_id": "answer_2bd23659_3",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "mmr_dedup",
+          "best_chunk_id": 5,
+          "best_chunk_cos_dist": 0.6568,
+          "suggestions": [
+            "MMR deduplication eliminated this chunk because another chunk from the same document was already selected and they're too similar. Try a higher mmr_lambda (>0.50) for less aggressive dedup, or mmr_lambda=1.0 to disable MMR entirely."
+          ]
+        },
+        {
+          "session_id": "answer_2bd23659_2",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "distance_cutoff",
+          "best_chunk_id": 27,
+          "best_chunk_cos_dist": 0.6177,
+          "suggestions": [
+            "Distance cutoff dropped the chunk just past threshold. Would have passed with distance_cutoff \u2265 1.36. Pass distance_cutoff=2.0 (or higher) to relax the cutoff.",
+            "FTS5 already matched this chunk \u2014 raising fts_weight would rescue it without needing to relax the distance cutoff."
+          ]
+        },
+        {
+          "session_id": "answer_2bd23659_4",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "distance_cutoff",
+          "best_chunk_id": 29,
+          "best_chunk_cos_dist": 0.6332,
+          "suggestions": [
+            "Distance cutoff dropped the chunk just past threshold. Would have passed with distance_cutoff \u2265 1.39. Pass distance_cutoff=2.0 (or higher) to relax the cutoff."
+          ]
+        },
+        {
+          "session_id": "answer_2bd23659_1",
+          "appeared_in_results": true,
+          "final_rank": 0,
+          "dropped_at": null,
+          "best_chunk_id": 110,
+          "best_chunk_cos_dist": 0.4542,
+          "suggestions": [
+            "The expected document IS in the top-k. No miss to analyze."
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "81507db6",
+      "question_type": "multi-session",
+      "question": "How many graduation ceremonies have I attended in the past three months?",
+      "gold_session_ids": [
+        "answer_da3c1266_3",
+        "answer_da3c1266_4",
+        "answer_da3c1266_1",
+        "answer_da3c1266_5",
+        "answer_da3c1266_2"
+      ],
+      "actual_top_k_sessions": [
+        "9071ba70_3",
+        "answer_da3c1266_5",
+        "ultrachat_254248",
+        "answer_da3c1266_3",
+        "0f6b9698_2",
+        "2ca99347_2",
+        "sharegpt_xLtmCeT_0",
+        "answer_da3c1266_2",
+        "answer_da3c1266_4",
+        "090b107f_1"
+      ],
+      "first_gold_rank": 2,
+      "recall@10": 0.8,
+      "gold_traces": [
+        {
+          "session_id": "answer_da3c1266_3",
+          "appeared_in_results": true,
+          "final_rank": 3,
+          "dropped_at": null,
+          "best_chunk_id": 10,
+          "best_chunk_cos_dist": 0.5592,
+          "suggestions": [
+            "The expected document IS in the top-k. No miss to analyze."
+          ]
+        },
+        {
+          "session_id": "answer_da3c1266_4",
+          "appeared_in_results": true,
+          "final_rank": 7,
+          "dropped_at": "mmr_dedup",
+          "best_chunk_id": 25,
+          "best_chunk_cos_dist": 0.6265,
+          "suggestions": [
+            "The expected document IS in top-k but at rank 8/10 (near-miss tier). It's competitive but being outranked by other chunks. Consider a more specific query, or raise top_k to get more headroom."
+          ]
+        },
+        {
+          "session_id": "answer_da3c1266_1",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "distance_cutoff",
+          "best_chunk_id": 42,
+          "best_chunk_cos_dist": 0.6659,
+          "suggestions": [
+            "Distance cutoff dropped the chunk just past threshold. Would have passed with distance_cutoff \u2265 1.32. Pass distance_cutoff=2.0 (or higher) to relax the cutoff.",
+            "FTS5 already matched this chunk \u2014 raising fts_weight would rescue it without needing to relax the distance cutoff."
+          ]
+        },
+        {
+          "session_id": "answer_da3c1266_5",
+          "appeared_in_results": true,
+          "final_rank": 1,
+          "dropped_at": null,
+          "best_chunk_id": 77,
+          "best_chunk_cos_dist": 0.5779,
+          "suggestions": [
+            "The expected document IS in the top-k. No miss to analyze."
+          ]
+        },
+        {
+          "session_id": "answer_da3c1266_2",
+          "appeared_in_results": true,
+          "final_rank": 6,
+          "dropped_at": null,
+          "best_chunk_id": 86,
+          "best_chunk_cos_dist": 0.6155,
+          "suggestions": [
+            "The expected document IS in top-k but at rank 7/10 (near-miss tier). It's competitive but being outranked by other chunks. Consider a more specific query, or raise top_k to get more headroom."
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "75832dbd",
+      "question_type": "single-session-preference",
+      "question": "Can you recommend some recent publications or conferences that I might find interesting?",
+      "gold_session_ids": [
+        "answer_d87a6ef8"
+      ],
+      "actual_top_k_sessions": [
+        "sharegpt_xni9yYO_6",
+        "sharegpt_FYqt26U_0",
+        "c51583cd_1",
+        "6172cc72_1",
+        "be753d18",
+        "27d9e492_2",
+        "47ec1674_2",
+        "sharegpt_E0YL5SX_157",
+        "6a3b5c13_3",
+        "2bac8799_3"
+      ],
+      "first_gold_rank": 13,
+      "recall@10": 0.0,
+      "gold_traces": [
+        {
+          "session_id": "answer_d87a6ef8",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "mmr_dedup",
+          "best_chunk_id": 18,
+          "best_chunk_cos_dist": 0.5324,
+          "suggestions": [
+            "MMR deduplication eliminated this chunk because another chunk from the same document was already selected and they're too similar. Try a higher mmr_lambda (>0.50) for less aggressive dedup, or mmr_lambda=1.0 to disable MMR entirely."
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "d6233ab6",
+      "question_type": "single-session-preference",
+      "question": "I've been feeling nostalgic lately. Do you think it would be a good idea to attend my high school reunion?",
+      "gold_session_ids": [
+        "answer_b0fac439"
+      ],
+      "actual_top_k_sessions": [
+        "e419b7c3_4",
+        "94bc18df_3",
+        "cf7aad73_3",
+        "ultrachat_237324",
+        "f916c63a_2",
+        "0e726047",
+        "911f859b_5",
+        "sharegpt_xni9yYO_6",
+        "ultrachat_329160",
+        "e064120a"
+      ],
+      "first_gold_rank": 26,
+      "recall@10": 0.0,
+      "gold_traces": [
+        {
+          "session_id": "answer_b0fac439",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "mmr_dedup",
+          "best_chunk_id": 28,
+          "best_chunk_cos_dist": 0.7388,
+          "suggestions": [
+            "MMR deduplication eliminated this chunk because another chunk from the same document was already selected and they're too similar. Try a higher mmr_lambda (>0.50) for less aggressive dedup, or mmr_lambda=1.0 to disable MMR entirely."
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "ba358f49",
+      "question_type": "multi-session",
+      "question": "How many years will I be when my friend Rachel gets married?",
+      "gold_session_ids": [
+        "answer_cbd08e3c_1",
+        "answer_cbd08e3c_2"
+      ],
+      "actual_top_k_sessions": [
+        "4ea6f550",
+        "9cc709cb",
+        "answer_cbd08e3c_1",
+        "385683f0_2",
+        "fb0f2ac2",
+        "f6859b48_2",
+        "sharegpt_c2LF3xK_12",
+        "ultrachat_465468",
+        "95cb552e_1",
+        "31419155"
+      ],
+      "first_gold_rank": 3,
+      "recall@10": 0.5,
+      "gold_traces": [
+        {
+          "session_id": "answer_cbd08e3c_1",
+          "appeared_in_results": true,
+          "final_rank": 4,
+          "dropped_at": null,
+          "best_chunk_id": 24,
+          "best_chunk_cos_dist": 0.6824,
+          "suggestions": [
+            "The expected document IS in the top-k. No miss to analyze."
+          ]
+        },
+        {
+          "session_id": "answer_cbd08e3c_2",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "rrf_fusion",
+          "best_chunk_id": 94,
+          "best_chunk_cos_dist": 0.7769,
+          "suggestions": [
+            "Most likely the metadata filter (collection/project/layer) excluded this document.  Re-run miss_analysis without filters to confirm."
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "bc149d6b",
+      "question_type": "multi-session",
+      "question": "What is the total weight of the new feed I purchased in the past two months?",
+      "gold_session_ids": [
+        "answer_92147866_1",
+        "answer_92147866_2"
+      ],
+      "actual_top_k_sessions": [
+        "answer_92147866_1",
+        "dcb18b9b_1",
+        "7211c69e",
+        "sharegpt_bmEgv3O_12",
+        "451ecb23_3",
+        "05be3ff0_3",
+        "86935301_2",
+        "1b474144",
+        "sharegpt_FDDY7hu_7",
+        "27d378b2_3"
+      ],
+      "first_gold_rank": 1,
+      "recall@10": 0.5,
+      "gold_traces": [
+        {
+          "session_id": "answer_92147866_1",
+          "appeared_in_results": true,
+          "final_rank": 0,
+          "dropped_at": null,
+          "best_chunk_id": 26,
+          "best_chunk_cos_dist": 0.3288,
+          "suggestions": [
+            "The expected document IS in the top-k. No miss to analyze."
+          ]
+        },
+        {
+          "session_id": "answer_92147866_2",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "distance_cutoff",
+          "best_chunk_id": 31,
+          "best_chunk_cos_dist": 0.4838,
+          "suggestions": [
+            "Distance cutoff dropped the chunk just past threshold. Would have passed with distance_cutoff \u2265 1.47. Pass distance_cutoff=2.0 (or higher) to relax the cutoff."
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "157a136e",
+      "question_type": "multi-session",
+      "question": "How many years older is my grandma than me?",
+      "gold_session_ids": [
+        "answer_8de18468_2",
+        "answer_8de18468_1"
+      ],
+      "actual_top_k_sessions": [
+        "answer_8de18468_2",
+        "a2e2cb72_5",
+        "7614c21f_2",
+        "ultrachat_264419",
+        "ultrachat_255132",
+        "377f8fd9_4",
+        "d161536e",
+        "7746ba1b_1",
+        "sharegpt_Xjav4Y7_0",
+        "da485e66"
+      ],
+      "first_gold_rank": 1,
+      "recall@10": 0.5,
+      "gold_traces": [
+        {
+          "session_id": "answer_8de18468_2",
+          "appeared_in_results": true,
+          "final_rank": 0,
+          "dropped_at": null,
+          "best_chunk_id": 107,
+          "best_chunk_cos_dist": 0.5423,
+          "suggestions": [
+            "The expected document IS in the top-k. No miss to analyze."
+          ]
+        },
+        {
+          "session_id": "answer_8de18468_1",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "mmr_dedup",
+          "best_chunk_id": 127,
+          "best_chunk_cos_dist": 0.7112,
+          "suggestions": [
+            "MMR deduplication eliminated this chunk because another chunk from the same document was already selected and they're too similar. Try a higher mmr_lambda (>0.50) for less aggressive dedup, or mmr_lambda=1.0 to disable MMR entirely."
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "c18a7dc8",
+      "question_type": "multi-session",
+      "question": "How many years older am I than when I graduated from college?",
+      "gold_session_ids": [
+        "answer_2e2085fa_2",
+        "answer_2e2085fa_1"
+      ],
+      "actual_top_k_sessions": [
+        "5022812c",
+        "9d5a389d",
+        "ultrachat_418857",
+        "sharegpt_Gebs6W5_12",
+        "ultrachat_353377",
+        "sharegpt_ysMparQ_13",
+        "ultrachat_276899",
+        "81b971b8_2",
+        "sharegpt_ErOTMZ3_149",
+        "35dcacdc_3"
+      ],
+      "first_gold_rank": 12,
+      "recall@10": 0.0,
+      "gold_traces": [
+        {
+          "session_id": "answer_2e2085fa_2",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "distance_cutoff",
+          "best_chunk_id": 65,
+          "best_chunk_cos_dist": 0.6864,
+          "suggestions": [
+            "Distance cutoff dropped the chunk just past threshold. Would have passed with distance_cutoff \u2265 1.36. Pass distance_cutoff=2.0 (or higher) to relax the cutoff.",
+            "FTS5 already matched this chunk \u2014 raising fts_weight would rescue it without needing to relax the distance cutoff."
+          ]
+        },
+        {
+          "session_id": "answer_2e2085fa_1",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "distance_cutoff",
+          "best_chunk_id": 91,
+          "best_chunk_cos_dist": 0.6769,
+          "suggestions": [
+            "Distance cutoff dropped the chunk just past threshold. Would have passed with distance_cutoff \u2265 1.34. Pass distance_cutoff=2.0 (or higher) to relax the cutoff.",
+            "FTS5 already matched this chunk \u2014 raising fts_weight would rescue it without needing to relax the distance cutoff."
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "ba358f49_abs",
+      "question_type": "multi-session",
+      "question": "How old will Rachel be when I get married?",
+      "gold_session_ids": [
+        "answer_cbd08e3c_abs_1",
+        "answer_cbd08e3c_abs_2"
+      ],
+      "actual_top_k_sessions": [
+        "07ebc271",
+        "33706ad0",
+        "0254514e_1",
+        "sharegpt_XWLA0IO_0",
+        "9b3a7f2c_2",
+        "answer_cbd08e3c_abs_1",
+        "9844f740",
+        "40648965",
+        "20ea9554_1",
+        "102ff8ab"
+      ],
+      "first_gold_rank": 6,
+      "recall@10": 0.5,
+      "gold_traces": [
+        {
+          "session_id": "answer_cbd08e3c_abs_1",
+          "appeared_in_results": true,
+          "final_rank": 4,
+          "dropped_at": "mmr_dedup",
+          "best_chunk_id": 29,
+          "best_chunk_cos_dist": 0.6864,
+          "suggestions": [
+            "The expected document IS in the top-k. No miss to analyze."
+          ]
+        },
+        {
+          "session_id": "answer_cbd08e3c_abs_2",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "mmr_dedup",
+          "best_chunk_id": 109,
+          "best_chunk_cos_dist": 0.7086,
+          "suggestions": [
+            "MMR deduplication eliminated this chunk because another chunk from the same document was already selected and they're too similar. Try a higher mmr_lambda (>0.50) for less aggressive dedup, or mmr_lambda=1.0 to disable MMR entirely."
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "gpt4_7abb270c",
+      "question_type": "temporal-reasoning",
+      "question": "What is the order of the six museums I visited from earliest to latest?",
+      "gold_session_ids": [
+        "answer_7093d898_1",
+        "answer_7093d898_2",
+        "answer_7093d898_3",
+        "answer_7093d898_4",
+        "answer_7093d898_5",
+        "answer_7093d898_6"
+      ],
+      "actual_top_k_sessions": [
+        "answer_7093d898_5",
+        "answer_7093d898_6",
+        "answer_7093d898_1",
+        "253742b4_1",
+        "answer_7093d898_2",
+        "1bfd5a8b_2",
+        "5808284e",
+        "sharegpt_W6t3Ck0_0",
+        "087d2b0a_2",
+        "ultrachat_41971"
+      ],
+      "first_gold_rank": 1,
+      "recall@10": 0.6666666666666666,
+      "gold_traces": [
+        {
+          "session_id": "answer_7093d898_1",
+          "appeared_in_results": true,
+          "final_rank": 2,
+          "dropped_at": null,
+          "best_chunk_id": 21,
+          "best_chunk_cos_dist": 0.3688,
+          "suggestions": [
+            "The expected document IS in the top-k. No miss to analyze."
+          ]
+        },
+        {
+          "session_id": "answer_7093d898_2",
+          "appeared_in_results": true,
+          "final_rank": 4,
+          "dropped_at": null,
+          "best_chunk_id": 29,
+          "best_chunk_cos_dist": 0.4073,
+          "suggestions": [
+            "The expected document IS in the top-k. No miss to analyze."
+          ]
+        },
+        {
+          "session_id": "answer_7093d898_3",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "distance_cutoff",
+          "best_chunk_id": 44,
+          "best_chunk_cos_dist": 0.4986,
+          "suggestions": [
+            "Distance cutoff dropped the chunk just past threshold. Would have passed with distance_cutoff \u2265 1.46. Pass distance_cutoff=2.0 (or higher) to relax the cutoff.",
+            "FTS5 already matched this chunk \u2014 raising fts_weight would rescue it without needing to relax the distance cutoff."
+          ]
+        },
+        {
+          "session_id": "answer_7093d898_4",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "distance_cutoff",
+          "best_chunk_id": 58,
+          "best_chunk_cos_dist": 0.4694,
+          "suggestions": [
+            "Distance cutoff dropped the chunk just past threshold. Would have passed with distance_cutoff \u2265 1.38. Pass distance_cutoff=2.0 (or higher) to relax the cutoff.",
+            "FTS5 already matched this chunk \u2014 raising fts_weight would rescue it without needing to relax the distance cutoff."
+          ]
+        },
+        {
+          "session_id": "answer_7093d898_5",
+          "appeared_in_results": true,
+          "final_rank": 0,
+          "dropped_at": null,
+          "best_chunk_id": 92,
+          "best_chunk_cos_dist": 0.3405,
+          "suggestions": [
+            "The expected document IS in the top-k. No miss to analyze."
+          ]
+        },
+        {
+          "session_id": "answer_7093d898_6",
+          "appeared_in_results": true,
+          "final_rank": 1,
+          "dropped_at": null,
+          "best_chunk_id": 126,
+          "best_chunk_cos_dist": 0.3516,
+          "suggestions": [
+            "The expected document IS in the top-k. No miss to analyze."
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "gpt4_e061b84f",
+      "question_type": "temporal-reasoning",
+      "question": "What is the order of the three sports events I participated in during the past month, from earliest to latest?",
+      "gold_session_ids": [
+        "answer_8c64ce25_2",
+        "answer_8c64ce25_1",
+        "answer_8c64ce25_3"
+      ],
+      "actual_top_k_sessions": [
+        "answer_8c64ce25_3",
+        "78d28576_2",
+        "3275acf9",
+        "answer_8c64ce25_1",
+        "9345f7dc_4",
+        "sharegpt_8ns7j9U_0",
+        "77974d02",
+        "539c2346_3",
+        "ultrachat_129606",
+        "bab3f409"
+      ],
+      "first_gold_rank": 1,
+      "recall@10": 0.6666666666666666,
+      "gold_traces": [
+        {
+          "session_id": "answer_8c64ce25_2",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "mmr_dedup",
+          "best_chunk_id": 55,
+          "best_chunk_cos_dist": 0.5559,
+          "suggestions": [
+            "MMR deduplication eliminated this chunk because another chunk from the same document was already selected and they're too similar. Try a higher mmr_lambda (>0.50) for less aggressive dedup, or mmr_lambda=1.0 to disable MMR entirely."
+          ]
+        },
+        {
+          "session_id": "answer_8c64ce25_1",
+          "appeared_in_results": true,
+          "final_rank": 6,
+          "dropped_at": null,
+          "best_chunk_id": 59,
+          "best_chunk_cos_dist": 0.5119,
+          "suggestions": [
+            "The expected document IS in top-k but at rank 7/10 (near-miss tier). It's competitive but being outranked by other chunks. Consider a more specific query, or raise top_k to get more headroom."
+          ]
+        },
+        {
+          "session_id": "answer_8c64ce25_3",
+          "appeared_in_results": true,
+          "final_rank": 0,
+          "dropped_at": null,
+          "best_chunk_id": 84,
+          "best_chunk_cos_dist": 0.4537,
+          "suggestions": [
+            "The expected document IS in the top-k. No miss to analyze."
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "gpt4_e061b84g",
+      "question_type": "temporal-reasoning",
+      "question": "I mentioned participating in a sports event two weeks ago. What was the event?",
+      "gold_session_ids": [
+        "answer_8c64ce26_2",
+        "answer_8c64ce26_1",
+        "answer_8c64ce26_3"
+      ],
+      "actual_top_k_sessions": [
+        "9dac9e37_1",
+        "answer_8c64ce26_3",
+        "sharegpt_cUXo8S0_0",
+        "3929e6cc_1",
+        "sharegpt_i33zh1e_15",
+        "answer_8c64ce26_1",
+        "ae15e8b6_1",
+        "68705467_1",
+        "sharegpt_rB6IP4G_0",
+        "sharegpt_783Lb5V_0"
+      ],
+      "first_gold_rank": 2,
+      "recall@10": 0.6666666666666666,
+      "gold_traces": [
+        {
+          "session_id": "answer_8c64ce26_2",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "distance_cutoff",
+          "best_chunk_id": 33,
+          "best_chunk_cos_dist": 0.5797,
+          "suggestions": [
+            "Distance cutoff dropped the chunk just past threshold. Would have passed with distance_cutoff \u2265 1.35. Pass distance_cutoff=2.0 (or higher) to relax the cutoff.",
+            "FTS5 already matched this chunk \u2014 raising fts_weight would rescue it without needing to relax the distance cutoff."
+          ]
+        },
+        {
+          "session_id": "answer_8c64ce26_1",
+          "appeared_in_results": true,
+          "final_rank": 5,
+          "dropped_at": null,
+          "best_chunk_id": 85,
+          "best_chunk_cos_dist": 0.5397,
+          "suggestions": [
+            "The expected document IS in the top-k. No miss to analyze."
+          ]
+        },
+        {
+          "session_id": "answer_8c64ce26_3",
+          "appeared_in_results": true,
+          "final_rank": 1,
+          "dropped_at": null,
+          "best_chunk_id": 98,
+          "best_chunk_cos_dist": 0.43,
+          "suggestions": [
+            "The expected document IS in the top-k. No miss to analyze."
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "gpt4_1e4a8aec",
+      "question_type": "temporal-reasoning",
+      "question": "What gardening-related activity did I do two weeks ago?",
+      "gold_session_ids": [
+        "answer_16bd5ea6_1",
+        "answer_16bd5ea6_2"
+      ],
+      "actual_top_k_sessions": [
+        "answer_16bd5ea6_1",
+        "9f1f3bf4",
+        "a8086137",
+        "b1265fd7_1",
+        "1c662b7b_1",
+        "4c8455cb_2",
+        "sharegpt_9JZCfee_0",
+        "1c177942_1",
+        "b34a52aa_3",
+        "e675c69a_1"
+      ],
+      "first_gold_rank": 1,
+      "recall@10": 0.5,
+      "gold_traces": [
+        {
+          "session_id": "answer_16bd5ea6_1",
+          "appeared_in_results": true,
+          "final_rank": 0,
+          "dropped_at": null,
+          "best_chunk_id": 79,
+          "best_chunk_cos_dist": 0.3178,
+          "suggestions": [
+            "The expected document IS in the top-k. No miss to analyze."
+          ]
+        },
+        {
+          "session_id": "answer_16bd5ea6_2",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "distance_cutoff",
+          "best_chunk_id": 121,
+          "best_chunk_cos_dist": 0.4256,
+          "suggestions": [
+            "Distance cutoff dropped the chunk just past threshold. Would have passed with distance_cutoff \u2265 1.34. Pass distance_cutoff=2.0 (or higher) to relax the cutoff."
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "gpt4_468eb064",
+      "question_type": "temporal-reasoning",
+      "question": "Who did I meet with during the lunch last Tuesday?",
+      "gold_session_ids": [
+        "answer_9b09d95b_1"
+      ],
+      "actual_top_k_sessions": [
+        "1e5bd28d_2",
+        "ultrachat_531313",
+        "sharegpt_wrwD6bG_0",
+        "ad12a3a2_3",
+        "25e5b797_1",
+        "a2f0054f",
+        "sharegpt_C2Qfdn8_0",
+        "9c479e89_2",
+        "c035d5e3",
+        "1d74a734"
+      ],
+      "first_gold_rank": 16,
+      "recall@10": 0.0,
+      "gold_traces": [
+        {
+          "session_id": "answer_9b09d95b_1",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "mmr_dedup",
+          "best_chunk_id": 39,
+          "best_chunk_cos_dist": 0.6596,
+          "suggestions": [
+            "MMR deduplication eliminated this chunk because another chunk from the same document was already selected and they're too similar. Try a higher mmr_lambda (>0.50) for less aggressive dedup, or mmr_lambda=1.0 to disable MMR entirely."
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "eac54add",
+      "question_type": "temporal-reasoning",
+      "question": "What was the significant buisiness milestone I mentioned four weeks ago?",
+      "gold_session_ids": [
+        "answer_0d4d0348_1",
+        "answer_0d4d0348_2"
+      ],
+      "actual_top_k_sessions": [
+        "369695b4_2",
+        "7bb01253",
+        "ultrachat_91693",
+        "c3023a45_5",
+        "577da76d_2",
+        "8f2e0a53_2",
+        "e58109ed_2",
+        "sharegpt_5YtukCb_0",
+        "a1166ecc_3",
+        "773aebbd_3"
+      ],
+      "first_gold_rank": 18,
+      "recall@10": 0.0,
+      "gold_traces": [
+        {
+          "session_id": "answer_0d4d0348_1",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "mmr_dedup",
+          "best_chunk_id": 28,
+          "best_chunk_cos_dist": 0.6313,
+          "suggestions": [
+            "MMR deduplication eliminated this chunk because another chunk from the same document was already selected and they're too similar. Try a higher mmr_lambda (>0.50) for less aggressive dedup, or mmr_lambda=1.0 to disable MMR entirely."
+          ]
+        },
+        {
+          "session_id": "answer_0d4d0348_2",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "rrf_fusion",
+          "best_chunk_id": 102,
+          "best_chunk_cos_dist": 0.6593,
+          "suggestions": [
+            "The chunk was eliminated before RRF fusion.  Inspect the vector_search and fts_search verdicts for detail."
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "4dfccbf8",
+      "question_type": "temporal-reasoning",
+      "question": "What did I do with Rachel on the Wednesday two months ago?",
+      "gold_session_ids": [
+        "answer_4bebc783_1",
+        "answer_4bebc783_2"
+      ],
+      "actual_top_k_sessions": [
+        "0ae4c9b0_2",
+        "87317e05_1",
+        "1c177942_4",
+        "sharegpt_3D3oQC0_213",
+        "c37c26d6_1",
+        "sharegpt_oXgiN7q_131",
+        "7db28e68_1",
+        "953aaad5_3",
+        "1bc87711_1",
+        "0943dee1"
+      ],
+      "first_gold_rank": 21,
+      "recall@10": 0.0,
+      "gold_traces": [
+        {
+          "session_id": "answer_4bebc783_1",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "mmr_dedup",
+          "best_chunk_id": 123,
+          "best_chunk_cos_dist": 0.7539,
+          "suggestions": [
+            "MMR deduplication eliminated this chunk because another chunk from the same document was already selected and they're too similar. Try a higher mmr_lambda (>0.50) for less aggressive dedup, or mmr_lambda=1.0 to disable MMR entirely."
+          ]
+        },
+        {
+          "session_id": "answer_4bebc783_2",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "rrf_fusion",
+          "best_chunk_id": 132,
+          "best_chunk_cos_dist": 0.7597,
+          "suggestions": [
+            "The chunk was eliminated before RRF fusion.  Inspect the vector_search and fts_search verdicts for detail."
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "6e984302",
+      "question_type": "temporal-reasoning",
+      "question": "I mentioned an investment for a competition four weeks ago? What did I buy?",
+      "gold_session_ids": [
+        "answer_88841f27_1",
+        "answer_88841f27_2"
+      ],
+      "actual_top_k_sessions": [
+        "answer_88841f27_1",
+        "7cd7c296_1",
+        "c03fc56c_1",
+        "7285299a_8",
+        "41dc5d45_1",
+        "b7702ee4_1",
+        "96c743d0_2",
+        "6efebca9",
+        "cf3dc165_1",
+        "33a39aa7_3"
+      ],
+      "first_gold_rank": 1,
+      "recall@10": 0.5,
+      "gold_traces": [
+        {
+          "session_id": "answer_88841f27_1",
+          "appeared_in_results": true,
+          "final_rank": 0,
+          "dropped_at": null,
+          "best_chunk_id": 52,
+          "best_chunk_cos_dist": 0.5271,
+          "suggestions": [
+            "The expected document IS in the top-k. No miss to analyze."
+          ]
+        },
+        {
+          "session_id": "answer_88841f27_2",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "mmr_dedup",
+          "best_chunk_id": 119,
+          "best_chunk_cos_dist": 0.677,
+          "suggestions": [
+            "MMR deduplication eliminated this chunk because another chunk from the same document was already selected and they're too similar. Try a higher mmr_lambda (>0.50) for less aggressive dedup, or mmr_lambda=1.0 to disable MMR entirely."
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "gpt4_8279ba03",
+      "question_type": "temporal-reasoning",
+      "question": "What kitchen appliance did I buy 10 days ago?",
+      "gold_session_ids": [
+        "answer_56521e66_1"
+      ],
+      "actual_top_k_sessions": [
+        "bb107057_2",
+        "b357fb8b_2",
+        "49b78a55_1",
+        "50d66391_4",
+        "652c0717_3",
+        "ultrachat_526748",
+        "864a563d_5",
+        "2ef55f49_3",
+        "d1a1b9ea_1",
+        "518d26d3_4"
+      ],
+      "first_gold_rank": 16,
+      "recall@10": 0.0,
+      "gold_traces": [
+        {
+          "session_id": "answer_56521e66_1",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "mmr_dedup",
+          "best_chunk_id": 100,
+          "best_chunk_cos_dist": 0.6026,
+          "suggestions": [
+            "MMR deduplication eliminated this chunk because another chunk from the same document was already selected and they're too similar. Try a higher mmr_lambda (>0.50) for less aggressive dedup, or mmr_lambda=1.0 to disable MMR entirely."
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "gpt4_68e94288",
+      "question_type": "temporal-reasoning",
+      "question": "What was the social media activity I participated 5 days ago?",
+      "gold_session_ids": [
+        "answer_9793daa4_2",
+        "answer_9793daa4_1"
+      ],
+      "actual_top_k_sessions": [
+        "c99dcd81",
+        "ba80721c",
+        "4c49e37f",
+        "ultrachat_396489",
+        "sharegpt_6SbI5YJ_0",
+        "sharegpt_wWUI4SO_7",
+        "128f4e4d_2",
+        "answer_9793daa4_1",
+        "9d2fdc71",
+        "cff08ec1_1"
+      ],
+      "first_gold_rank": 8,
+      "recall@10": 0.5,
+      "gold_traces": [
+        {
+          "session_id": "answer_9793daa4_2",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "distance_cutoff",
+          "best_chunk_id": 95,
+          "best_chunk_cos_dist": 0.6513,
+          "suggestions": [
+            "Distance cutoff dropped the chunk just past threshold. Would have passed with distance_cutoff \u2265 1.43. Pass distance_cutoff=2.0 (or higher) to relax the cutoff."
+          ]
+        },
+        {
+          "session_id": "answer_9793daa4_1",
+          "appeared_in_results": true,
+          "final_rank": 9,
+          "dropped_at": "distance_cutoff",
+          "best_chunk_id": 101,
+          "best_chunk_cos_dist": 0.651,
+          "suggestions": [
+            "The expected document IS in top-k but at rank 10/10 (near-miss tier). It's competitive but being outranked by other chunks. Consider a more specific query, or raise top_k to get more headroom."
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "bbf86515",
+      "question_type": "temporal-reasoning",
+      "question": "How many days before the 'Rack Fest' did I participate in the 'Turbocharged Tuesdays' event?",
+      "gold_session_ids": [
+        "answer_b3763b6b_1",
+        "answer_b3763b6b_2"
+      ],
+      "actual_top_k_sessions": [
+        "75b98d2a_1",
+        "sharegpt_d1Rh99l_63",
+        "592cb8d2",
+        "sharegpt_Wi7Op1u_50",
+        "e6fad20f",
+        "answer_b3763b6b_1",
+        "e9e19917_1",
+        "sharegpt_KOczjDP_24",
+        "df003c93_2",
+        "sharegpt_6ObOZhW_0"
+      ],
+      "first_gold_rank": 6,
+      "recall@10": 0.5,
+      "gold_traces": [
+        {
+          "session_id": "answer_b3763b6b_1",
+          "appeared_in_results": true,
+          "final_rank": 5,
+          "dropped_at": null,
+          "best_chunk_id": 88,
+          "best_chunk_cos_dist": 0.5942,
+          "suggestions": [
+            "The expected document IS in the top-k. No miss to analyze."
+          ]
+        },
+        {
+          "session_id": "answer_b3763b6b_2",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "distance_cutoff",
+          "best_chunk_id": 102,
+          "best_chunk_cos_dist": 0.6343,
+          "suggestions": [
+            "Distance cutoff dropped the chunk just past threshold. Would have passed with distance_cutoff \u2265 1.34. Pass distance_cutoff=2.0 (or higher) to relax the cutoff.",
+            "FTS5 already matched this chunk \u2014 raising fts_weight would rescue it without needing to relax the distance cutoff."
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "gpt4_93f6379c",
+      "question_type": "temporal-reasoning",
+      "question": "Which group did I join first, 'Page Turners' or 'Marketing Professionals'?",
+      "gold_session_ids": [
+        "answer_544fe66c_2",
+        "answer_544fe66c_1",
+        "answer_544fe66c_3"
+      ],
+      "actual_top_k_sessions": [
+        "answer_544fe66c_3",
+        "answer_544fe66c_2",
+        "1b9b2960_3",
+        "82e27408_1",
+        "b8a688f6",
+        "sharegpt_cfESFSo_0",
+        "e06c6d99_5",
+        "50e8f2b5_1",
+        "ultrachat_429804",
+        "c07b8034"
+      ],
+      "first_gold_rank": 1,
+      "recall@10": 0.6666666666666666,
+      "gold_traces": [
+        {
+          "session_id": "answer_544fe66c_2",
+          "appeared_in_results": true,
+          "final_rank": 1,
+          "dropped_at": null,
+          "best_chunk_id": 14,
+          "best_chunk_cos_dist": 0.516,
+          "suggestions": [
+            "The expected document IS in the top-k. No miss to analyze."
+          ]
+        },
+        {
+          "session_id": "answer_544fe66c_1",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "distance_cutoff",
+          "best_chunk_id": 45,
+          "best_chunk_cos_dist": 0.5798,
+          "suggestions": [
+            "Distance cutoff dropped the chunk just past threshold. Would have passed with distance_cutoff \u2265 1.42. Pass distance_cutoff=2.0 (or higher) to relax the cutoff.",
+            "FTS5 already matched this chunk \u2014 raising fts_weight would rescue it without needing to relax the distance cutoff."
+          ]
+        },
+        {
+          "session_id": "answer_544fe66c_3",
+          "appeared_in_results": true,
+          "final_rank": 0,
+          "dropped_at": null,
+          "best_chunk_id": 114,
+          "best_chunk_cos_dist": 0.4086,
+          "suggestions": [
+            "The expected document IS in the top-k. No miss to analyze."
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "6613b389",
+      "question_type": "temporal-reasoning",
+      "question": "How many months before my anniversary did Rachel get engaged?",
+      "gold_session_ids": [
+        "answer_aaf71ce2_3",
+        "answer_aaf71ce2_2",
+        "answer_aaf71ce2_1"
+      ],
+      "actual_top_k_sessions": [
+        "answer_aaf71ce2_2",
+        "e3d8da67",
+        "f1cc1ddb_1",
+        "answer_aaf71ce2_3",
+        "2780323d_3",
+        "55bc2e1e",
+        "86c8f348_1",
+        "e87aa998_1",
+        "20d6c376_1",
+        "1a65880d"
+      ],
+      "first_gold_rank": 1,
+      "recall@10": 0.6666666666666666,
+      "gold_traces": [
+        {
+          "session_id": "answer_aaf71ce2_3",
+          "appeared_in_results": true,
+          "final_rank": 4,
+          "dropped_at": "distance_cutoff",
+          "best_chunk_id": 9,
+          "best_chunk_cos_dist": 0.5266,
+          "suggestions": [
+            "The expected document IS in the top-k. No miss to analyze."
+          ]
+        },
+        {
+          "session_id": "answer_aaf71ce2_2",
+          "appeared_in_results": true,
+          "final_rank": 0,
+          "dropped_at": null,
+          "best_chunk_id": 41,
+          "best_chunk_cos_dist": 0.335,
+          "suggestions": [
+            "The expected document IS in the top-k. No miss to analyze."
+          ]
+        },
+        {
+          "session_id": "answer_aaf71ce2_1",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "distance_cutoff",
+          "best_chunk_id": 85,
+          "best_chunk_cos_dist": 0.6281,
+          "suggestions": [
+            "Distance cutoff dropped the chunk just past threshold. Would have passed with distance_cutoff \u2265 1.87. Pass distance_cutoff=2.0 (or higher) to relax the cutoff."
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "982b5123_abs",
+      "question_type": "temporal-reasoning",
+      "question": "When did I book the Airbnb in Sacramento?",
+      "gold_session_ids": [
+        "answer_ab603dd5_abs_1",
+        "answer_ab603dd5_abs_2"
+      ],
+      "actual_top_k_sessions": [
+        "answer_ab603dd5_abs_1",
+        "3fc2244f",
+        "sharegpt_syHzISp_0",
+        "4f3b0353_2",
+        "b1793bba",
+        "ultrachat_359846",
+        "ultrachat_280342",
+        "147381f2_3",
+        "bd00a24d_1",
+        "sharegpt_WYQSZ3n_0"
+      ],
+      "first_gold_rank": 1,
+      "recall@10": 0.5,
+      "gold_traces": [
+        {
+          "session_id": "answer_ab603dd5_abs_1",
+          "appeared_in_results": true,
+          "final_rank": 0,
+          "dropped_at": null,
+          "best_chunk_id": 130,
+          "best_chunk_cos_dist": 0.4343,
+          "suggestions": [
+            "The expected document IS in the top-k. No miss to analyze."
+          ]
+        },
+        {
+          "session_id": "answer_ab603dd5_abs_2",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "distance_cutoff",
+          "best_chunk_id": 135,
+          "best_chunk_cos_dist": 0.577,
+          "suggestions": [
+            "Distance cutoff dropped the chunk just past threshold. Would have passed with distance_cutoff \u2265 1.33. Pass distance_cutoff=2.0 (or higher) to relax the cutoff."
+          ]
+        }
+      ]
+    }
+  ]
+}

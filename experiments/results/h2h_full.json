@@ -1,0 +1,463 @@
+{
+  "lme_arms": {
+    "base BGE": {
+      "n_questions": 500,
+      "top_k_chunks": 200,
+      "retrieval_mode": "hybrid",
+      "embedding_model": "BAAI/bge-small-en-v1.5",
+      "chunking": {
+        "size": 1024,
+        "overlap": 128
+      },
+      "macro": {
+        "recall@1": 0.5479,
+        "recall@3": 0.8619,
+        "recall@5": 0.9200666666666667,
+        "recall@10": 0.9657,
+        "recall@20": 0.9826666666666667,
+        "recall@50": 1.0
+      },
+      "by_question_type": {
+        "single-session-user": {
+          "n": 70,
+          "recall@1": 0.8,
+          "recall@3": 0.9,
+          "recall@5": 0.9285714285714286,
+          "recall@10": 0.9714285714285714,
+          "recall@20": 0.9857142857142858,
+          "recall@50": 1.0
+        },
+        "multi-session": {
+          "n": 133,
+          "recall@1": 0.3705513784461153,
+          "recall@3": 0.8106516290726817,
+          "recall@5": 0.8976190476190476,
+          "recall@10": 0.9681704260651629,
+          "recall@20": 0.9843358395989975,
+          "recall@50": 1.0
+        },
+        "single-session-preference": {
+          "n": 30,
+          "recall@1": 0.7666666666666667,
+          "recall@3": 0.9333333333333333,
+          "recall@5": 0.9333333333333333,
+          "recall@10": 0.9333333333333333,
+          "recall@20": 0.9333333333333333,
+          "recall@50": 1.0
+        },
+        "temporal-reasoning": {
+          "n": 133,
+          "recall@1": 0.40350877192982454,
+          "recall@3": 0.7791979949874687,
+          "recall@5": 0.8657894736842106,
+          "recall@10": 0.9367167919799498,
+          "recall@20": 0.9730576441102757,
+          "recall@50": 1.0
+        },
+        "knowledge-update": {
+          "n": 78,
+          "recall@1": 0.47435897435897434,
+          "recall@3": 0.9294871794871795,
+          "recall@5": 0.9807692307692307,
+          "recall@10": 0.9935897435897436,
+          "recall@20": 1.0,
+          "recall@50": 1.0
+        },
+        "single-session-assistant": {
+          "n": 56,
+          "recall@1": 0.9821428571428571,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "recall@20": 1.0,
+          "recall@50": 1.0
+        }
+      },
+      "total_elapsed_s": 925.1
+    },
+    "v3 (BEIR-tuned)": {
+      "n_questions": 500,
+      "top_k_chunks": 200,
+      "retrieval_mode": "hybrid",
+      "embedding_model": "Stffens/bge-small-rrf-v3",
+      "chunking": {
+        "size": 1024,
+        "overlap": 128
+      },
+      "macro": {
+        "recall@1": 0.538,
+        "recall@3": 0.8601666666666666,
+        "recall@5": 0.9175,
+        "recall@10": 0.9619666666666666,
+        "recall@20": 0.9854333333333334,
+        "recall@50": 1.0
+      },
+      "by_question_type": {
+        "single-session-user": {
+          "n": 70,
+          "recall@1": 0.7571428571428571,
+          "recall@3": 0.9142857142857143,
+          "recall@5": 0.9428571428571428,
+          "recall@10": 0.9571428571428572,
+          "recall@20": 1.0,
+          "recall@50": 1.0
+        },
+        "multi-session": {
+          "n": 133,
+          "recall@1": 0.35964912280701755,
+          "recall@3": 0.7853383458646617,
+          "recall@5": 0.8954887218045112,
+          "recall@10": 0.956015037593985,
+          "recall@20": 0.9778195488721805,
+          "recall@50": 1.0
+        },
+        "single-session-preference": {
+          "n": 30,
+          "recall@1": 0.7666666666666667,
+          "recall@3": 0.9,
+          "recall@5": 0.9,
+          "recall@10": 0.9333333333333333,
+          "recall@20": 0.9666666666666667,
+          "recall@50": 1.0
+        },
+        "temporal-reasoning": {
+          "n": 133,
+          "recall@1": 0.41854636591478694,
+          "recall@3": 0.7942355889724311,
+          "recall@5": 0.8582706766917293,
+          "recall@10": 0.9385964912280702,
+          "recall@20": 0.974937343358396,
+          "recall@50": 1.0
+        },
+        "knowledge-update": {
+          "n": 78,
+          "recall@1": 0.4551282051282051,
+          "recall@3": 0.9358974358974359,
+          "recall@5": 0.9807692307692307,
+          "recall@10": 1.0,
+          "recall@20": 1.0,
+          "recall@50": 1.0
+        },
+        "single-session-assistant": {
+          "n": 56,
+          "recall@1": 0.9642857142857143,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "recall@20": 1.0,
+          "recall@50": 1.0
+        }
+      },
+      "total_elapsed_s": 526.5
+    },
+    "lme-v1 (chat from base)": {
+      "n_questions": 500,
+      "top_k_chunks": 200,
+      "retrieval_mode": "hybrid",
+      "embedding_model": "/Users/jaysonsteffens/Downloads/lme_models/bge-small-rrf-lme-v1",
+      "chunking": {
+        "size": 1024,
+        "overlap": 128
+      },
+      "macro": {
+        "recall@1": 0.5762333333333334,
+        "recall@3": 0.9075333333333333,
+        "recall@5": 0.9551333333333333,
+        "recall@10": 0.9815333333333334,
+        "recall@20": 0.9886666666666667,
+        "recall@50": 1.0
+      },
+      "by_question_type": {
+        "single-session-user": {
+          "n": 70,
+          "recall@1": 0.8285714285714286,
+          "recall@3": 0.9571428571428572,
+          "recall@5": 0.9571428571428572,
+          "recall@10": 1.0,
+          "recall@20": 1.0,
+          "recall@50": 1.0
+        },
+        "multi-session": {
+          "n": 133,
+          "recall@1": 0.3880952380952381,
+          "recall@3": 0.8591478696741854,
+          "recall@5": 0.9473684210526315,
+          "recall@10": 0.9800751879699248,
+          "recall@20": 0.9924812030075187,
+          "recall@50": 1.0
+        },
+        "single-session-preference": {
+          "n": 30,
+          "recall@1": 0.8,
+          "recall@3": 0.9333333333333333,
+          "recall@5": 0.9333333333333333,
+          "recall@10": 0.9666666666666667,
+          "recall@20": 0.9666666666666667,
+          "recall@50": 1.0
+        },
+        "temporal-reasoning": {
+          "n": 133,
+          "recall@1": 0.462406015037594,
+          "recall@3": 0.849624060150376,
+          "recall@5": 0.9215538847117795,
+          "recall@10": 0.9580200501253133,
+          "recall@20": 0.9724310776942355,
+          "recall@50": 1.0
+        },
+        "knowledge-update": {
+          "n": 78,
+          "recall@1": 0.47435897435897434,
+          "recall@3": 0.967948717948718,
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "recall@20": 1.0,
+          "recall@50": 1.0
+        },
+        "single-session-assistant": {
+          "n": 56,
+          "recall@1": 1.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "recall@20": 1.0,
+          "recall@50": 1.0
+        }
+      },
+      "total_elapsed_s": 1013.4
+    },
+    "lme-v1-from-v3 (chat from v3)": {
+      "n_questions": 500,
+      "top_k_chunks": 200,
+      "retrieval_mode": "hybrid",
+      "embedding_model": "/Users/jaysonsteffens/Downloads/lme_models/bge-small-rrf-lme-v1-from-v3",
+      "chunking": {
+        "size": 1024,
+        "overlap": 128
+      },
+      "macro": {
+        "recall@1": 0.5768333333333333,
+        "recall@3": 0.9056333333333333,
+        "recall@5": 0.9573666666666667,
+        "recall@10": 0.9780333333333333,
+        "recall@20": 0.9913333333333333,
+        "recall@50": 1.0
+      },
+      "by_question_type": {
+        "single-session-user": {
+          "n": 70,
+          "recall@1": 0.8571428571428571,
+          "recall@3": 0.9428571428571428,
+          "recall@5": 0.9857142857142858,
+          "recall@10": 0.9857142857142858,
+          "recall@20": 0.9857142857142858,
+          "recall@50": 1.0
+        },
+        "multi-session": {
+          "n": 133,
+          "recall@1": 0.3880952380952381,
+          "recall@3": 0.8604010025062656,
+          "recall@5": 0.9394736842105263,
+          "recall@10": 0.9763157894736842,
+          "recall@20": 0.9887218045112782,
+          "recall@50": 1.0
+        },
+        "single-session-preference": {
+          "n": 30,
+          "recall@1": 0.8,
+          "recall@3": 0.9,
+          "recall@5": 0.9666666666666667,
+          "recall@10": 0.9666666666666667,
+          "recall@20": 1.0,
+          "recall@50": 1.0
+        },
+        "temporal-reasoning": {
+          "n": 133,
+          "recall@1": 0.46090225563909776,
+          "recall@3": 0.856265664160401,
+          "recall@5": 0.919047619047619,
+          "recall@10": 0.956140350877193,
+          "recall@20": 0.9862155388471178,
+          "recall@50": 1.0
+        },
+        "knowledge-update": {
+          "n": 78,
+          "recall@1": 0.4807692307692308,
+          "recall@3": 0.967948717948718,
+          "recall@5": 0.9935897435897436,
+          "recall@10": 1.0,
+          "recall@20": 1.0,
+          "recall@50": 1.0
+        },
+        "single-session-assistant": {
+          "n": 56,
+          "recall@1": 0.9642857142857143,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "recall@20": 1.0,
+          "recall@50": 1.0
+        }
+      },
+      "total_elapsed_s": 484.2
+    },
+    "ColBERTv2": {
+      "n_questions": 500,
+      "top_k_chunks": 200,
+      "retrieval_engine": "colbertv2",
+      "embedding_model": "colbert-ir/colbertv2.0",
+      "device": "cuda",
+      "chunking": {
+        "size": 1024,
+        "overlap": 128
+      },
+      "macro": {
+        "recall@1": 0.5194,
+        "recall@3": 0.8499666666666666,
+        "recall@5": 0.9072333333333333,
+        "recall@10": 0.9551,
+        "recall@20": 0.9836666666666667,
+        "recall@50": 1.0
+      },
+      "by_question_type": {
+        "single-session-user": {
+          "n": 70,
+          "recall@1": 0.6714285714285714,
+          "recall@3": 0.8285714285714286,
+          "recall@5": 0.8428571428571429,
+          "recall@10": 0.9142857142857143,
+          "recall@20": 0.9857142857142858,
+          "recall@50": 1.0
+        },
+        "multi-session": {
+          "n": 133,
+          "recall@1": 0.381203007518797,
+          "recall@3": 0.8307017543859649,
+          "recall@5": 0.9098997493734335,
+          "recall@10": 0.9627819548872181,
+          "recall@20": 0.9887218045112782,
+          "recall@50": 1.0
+        },
+        "single-session-preference": {
+          "n": 30,
+          "recall@1": 0.5333333333333333,
+          "recall@3": 0.6333333333333333,
+          "recall@5": 0.8333333333333334,
+          "recall@10": 0.8666666666666667,
+          "recall@20": 0.9333333333333333,
+          "recall@50": 1.0
+        },
+        "temporal-reasoning": {
+          "n": 133,
+          "recall@1": 0.42105263157894735,
+          "recall@3": 0.8308270676691729,
+          "recall@5": 0.8954887218045112,
+          "recall@10": 0.9511278195488722,
+          "recall@20": 0.9724310776942355,
+          "recall@50": 1.0
+        },
+        "knowledge-update": {
+          "n": 78,
+          "recall@1": 0.47435897435897434,
+          "recall@3": 0.9230769230769231,
+          "recall@5": 0.9551282051282052,
+          "recall@10": 0.9871794871794872,
+          "recall@20": 1.0,
+          "recall@50": 1.0
+        },
+        "single-session-assistant": {
+          "n": 56,
+          "recall@1": 0.9464285714285714,
+          "recall@3": 0.9821428571428571,
+          "recall@5": 0.9821428571428571,
+          "recall@10": 1.0,
+          "recall@20": 1.0,
+          "recall@50": 1.0
+        }
+      },
+      "total_elapsed_s": 1045.2,
+      "caveats": "ColBERTv2 truncates documents at ~220 tokens internally; vstash's BGE-small caps at 512.  Identical chunking is applied on both sides (vstash chunk_text 1024 char / 128 overlap), but long chunks are slightly more penalised on the ColBERT side."
+    }
+  },
+  "beir_arms": {
+    "vstash": {
+      "scifact": {
+        "ndcg_10": 0.7286,
+        "mrr": 0.7017,
+        "recall_10": 0.8416,
+        "latency_ms": 10.7
+      },
+      "nfcorpus": {
+        "ndcg_10": 0.3597,
+        "mrr": 0.574,
+        "recall_10": 0.1694,
+        "latency_ms": 3.7
+      },
+      "fiqa": {
+        "ndcg_10": 0.3919,
+        "mrr": 0.4808,
+        "recall_10": 0.4446,
+        "latency_ms": 85.6
+      },
+      "scidocs": {
+        "ndcg_10": 0.196,
+        "mrr": 0.3415,
+        "recall_10": 0.2028,
+        "latency_ms": 36.4
+      },
+      "arguana": {
+        "ndcg_10": 0.4357,
+        "mrr": 0.3021,
+        "recall_10": 0.8485,
+        "latency_ms": 647.0
+      }
+    },
+    "ColBERTv2": {
+      "scifact": {
+        "ndcg_10": 0.6554,
+        "mrr": 0.6224,
+        "recall_10": 0.7824,
+        "latency_ms": 0.055,
+        "encode_corpus_s": 55.0,
+        "encode_queries_s": 1.17,
+        "search_total_s": 1.04
+      },
+      "nfcorpus": {
+        "ndcg_10": 0.3251,
+        "mrr": 0.5399,
+        "recall_10": 0.153,
+        "latency_ms": 0.046,
+        "encode_corpus_s": 40.8,
+        "encode_queries_s": 0.96,
+        "search_total_s": 0.72
+      },
+      "fiqa": {
+        "ndcg_10": 0.3177,
+        "mrr": 0.3917,
+        "recall_10": 0.3797,
+        "latency_ms": 0.245,
+        "encode_corpus_s": 730.5,
+        "encode_queries_s": 1.7,
+        "search_total_s": 23.63
+      },
+      "scidocs": {
+        "ndcg_10": 0.1546,
+        "mrr": 0.2824,
+        "recall_10": 0.1585,
+        "latency_ms": 0.125,
+        "encode_corpus_s": 323.5,
+        "encode_queries_s": 2.6,
+        "search_total_s": 16.61
+      },
+      "arguana": {
+        "ndcg_10": 0.3319,
+        "mrr": 0.2214,
+        "recall_10": 0.6799,
+        "latency_ms": 0.065,
+        "encode_corpus_s": 111.0,
+        "encode_queries_s": 3.09,
+        "search_total_s": 8.73
+      }
+    }
+  },
+  "table": "LongMemEval-s (Recall@K, session-level, n=500):\n  Model                            |    R@1 |    R@3 |    R@5 |   R@10 |   R@20 |   R@50\n  --------------------------------------------------------------------------------------\n  base BGE                         | 0.5479 | 0.8619 | 0.9201 | 0.9657 | 0.9827 | 1.0000\n  v3 (BEIR-tuned)                  | 0.5380 | 0.8602 | 0.9175 | 0.9620 | 0.9854 | 1.0000\n  lme-v1 (chat from base)          | 0.5762 | 0.9075 | 0.9551 | 0.9815 | 0.9887 | 1.0000\n  lme-v1-from-v3 (chat from v3)    | 0.5768 | 0.9056 | 0.9574 | 0.9780 | 0.9913 | 1.0000\n  ColBERTv2                        | 0.5194 | 0.8500 | 0.9072 | 0.9551 | 0.9837 | 1.0000\n\nLongMemEval per question_type (Recall@10):\n  Type                            n |       base BGE | v3 (BEIR-tuned | lme-v1 (chat f | lme-v1-from-v3 |      ColBERTv2\n  ----------------------------------------------------------------------------------------------------------------------\n  single-session-user            70 |         0.9714 |         0.9571 |         1.0000 |         0.9857 |         0.9143\n  single-session-assistant       56 |         1.0000 |         1.0000 |         1.0000 |         1.0000 |         1.0000\n  single-session-preference      30 |         0.9333 |         0.9333 |         0.9667 |         0.9667 |         0.8667\n  multi-session                 133 |         0.9682 |         0.9560 |         0.9801 |         0.9763 |         0.9628\n  knowledge-update               78 |         0.9936 |         1.0000 |         1.0000 |         1.0000 |         0.9872\n  temporal-reasoning            133 |         0.9367 |         0.9386 |         0.9580 |         0.9561 |         0.9511\n\nLongMemEval-s per-query search latency (ms, n=500):\n  Model                            |     P50 |     P99 |    mean\n  --------------------------------------------------------------\n  base BGE                         |    21.0 |    52.0 |    28.1\n  v3 (BEIR-tuned)                  |    26.0 |   223.0 |    32.6\n  lme-v1 (chat from base)          |    27.0 |    70.0 |    30.2\n  lme-v1-from-v3 (chat from v3)    |    26.0 |   105.0 |    29.9\n  ColBERTv2                        |    87.0 |   432.0 |   107.0\n\nBEIR (NDCG@10):\n  Dataset    |         vstash |      ColBERTv2\n  --------------------------------------------\n  scifact    |         0.7286 |         0.6554\n  nfcorpus   |         0.3597 |         0.3251\n  fiqa       |         0.3919 |         0.3177\n  scidocs    |         0.1960 |         0.1546\n  arguana    |         0.4357 |         0.3319\n\nBEIR (Recall@10):\n  Dataset    |         vstash |      ColBERTv2\n  --------------------------------------------\n  scifact    |         0.8416 |         0.7824\n  nfcorpus   |         0.1694 |         0.1530\n  fiqa       |         0.4446 |         0.3797\n  scidocs    |         0.2028 |         0.1585\n  arguana    |         0.8485 |         0.6799"
+}
