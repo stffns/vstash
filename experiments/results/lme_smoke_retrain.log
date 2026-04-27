@@ -1,0 +1,9 @@
+vstash retrain
+  Store:        2899 docs, 8039 chunks
+  Base model:   BAAI/bge-small-en-v1.5
+  Max queries:  200
+  Query source: chunk prefix (legacy)
+  Eval gate:    disabled
+
+  Training queries: 48 labeled from experiments/results/lme_train_smoke.jsonl
+x --eval-queries and --no-eval are mutually exclusive. Drop one.

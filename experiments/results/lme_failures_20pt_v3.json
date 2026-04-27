@@ -1,0 +1,224 @@
+{
+  "source_results": "experiments/results/lme_stratified_20pt_v3.json",
+  "model": "Stffens/bge-small-rrf-v3",
+  "retrieval_mode": "hybrid",
+  "fail_threshold_k": 10,
+  "n_total": 120,
+  "n_failed": 4,
+  "drop_stage_by_type": {
+    "multi-session": {
+      "distance_cutoff": 4
+    },
+    "single-session-preference": {
+      "mmr_dedup": 1
+    },
+    "single-session-user": {
+      "retrieved": 1,
+      "rrf_fusion": 1
+    }
+  },
+  "dist_stats_by_drop_stage": {
+    "distance_cutoff": {
+      "n": 4,
+      "mean": 0.5705,
+      "median": 0.5651,
+      "max": 0.6105
+    },
+    "mmr_dedup": {
+      "n": 1,
+      "mean": 0.5324,
+      "median": 0.5324,
+      "max": 0.5324
+    },
+    "retrieved": {
+      "n": 1,
+      "mean": 0.6432,
+      "median": 0.6432,
+      "max": 0.6432
+    },
+    "rrf_fusion": {
+      "n": 1,
+      "mean": 0.757,
+      "median": 0.757,
+      "max": 0.757
+    }
+  },
+  "failures": [
+    {
+      "question_id": "6d550036",
+      "question_type": "multi-session",
+      "question": "How many projects have I led or am currently leading?",
+      "gold_session_ids": [
+        "answer_ec904b3c_1",
+        "answer_ec904b3c_4",
+        "answer_ec904b3c_3",
+        "answer_ec904b3c_2"
+      ],
+      "actual_top_k_sessions": [
+        "2e4430d8_2",
+        "e255d6fc_2",
+        "sharegpt_nVi6tIt_0",
+        "answer_ec904b3c_1",
+        "dae3906e_2",
+        "answer_ec904b3c_4",
+        "f6246b5f",
+        "sharegpt_J7ZAFLd_0",
+        "ultrachat_184799",
+        "eb682e52_2"
+      ],
+      "first_gold_rank": 4,
+      "recall@10": 0.5,
+      "gold_traces": [
+        {
+          "session_id": "answer_ec904b3c_1",
+          "appeared_in_results": true,
+          "final_rank": 7,
+          "dropped_at": "distance_cutoff",
+          "best_chunk_id": 15,
+          "best_chunk_cos_dist": 0.6105,
+          "suggestions": [
+            "The expected document IS in top-k but at rank 8/10 (near-miss tier). It's competitive but being outranked by other chunks. Consider a more specific query, or raise top_k to get more headroom."
+          ]
+        },
+        {
+          "session_id": "answer_ec904b3c_4",
+          "appeared_in_results": true,
+          "final_rank": 9,
+          "dropped_at": "distance_cutoff",
+          "best_chunk_id": 49,
+          "best_chunk_cos_dist": 0.5415,
+          "suggestions": [
+            "The expected document IS in top-k but at rank 10/10 (near-miss tier). It's competitive but being outranked by other chunks. Consider a more specific query, or raise top_k to get more headroom."
+          ]
+        },
+        {
+          "session_id": "answer_ec904b3c_3",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "distance_cutoff",
+          "best_chunk_id": 74,
+          "best_chunk_cos_dist": 0.5823,
+          "suggestions": [
+            "Distance cutoff dropped the chunk just past threshold. Would have passed with distance_cutoff \u2265 1.50. Pass distance_cutoff=2.0 (or higher) to relax the cutoff."
+          ]
+        },
+        {
+          "session_id": "answer_ec904b3c_2",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "distance_cutoff",
+          "best_chunk_id": 111,
+          "best_chunk_cos_dist": 0.5479,
+          "suggestions": [
+            "Distance cutoff dropped the chunk just past threshold. Would have passed with distance_cutoff \u2265 1.41. Pass distance_cutoff=2.0 (or higher) to relax the cutoff."
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "75832dbd",
+      "question_type": "single-session-preference",
+      "question": "Can you recommend some recent publications or conferences that I might find interesting?",
+      "gold_session_ids": [
+        "answer_d87a6ef8"
+      ],
+      "actual_top_k_sessions": [
+        "sharegpt_xni9yYO_6",
+        "sharegpt_FYqt26U_0",
+        "c51583cd_1",
+        "6172cc72_1",
+        "be753d18",
+        "27d9e492_2",
+        "47ec1674_2",
+        "sharegpt_E0YL5SX_157",
+        "6a3b5c13_3",
+        "2bac8799_3"
+      ],
+      "first_gold_rank": 13,
+      "recall@10": 0.0,
+      "gold_traces": [
+        {
+          "session_id": "answer_d87a6ef8",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "mmr_dedup",
+          "best_chunk_id": 18,
+          "best_chunk_cos_dist": 0.5324,
+          "suggestions": [
+            "MMR deduplication eliminated this chunk because another chunk from the same document was already selected and they're too similar. Try a higher mmr_lambda (>0.50) for less aggressive dedup, or mmr_lambda=1.0 to disable MMR entirely."
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "5d3d2817",
+      "question_type": "single-session-user",
+      "question": "What was my previous occupation?",
+      "gold_session_ids": [
+        "answer_235eb6fb"
+      ],
+      "actual_top_k_sessions": [
+        "sharegpt_ipLglky_48",
+        "sharegpt_ebWP6Hz_0",
+        "ultrachat_371333",
+        "ultrachat_86927",
+        "ultrachat_121159",
+        "e00298a6_1",
+        "670ca40e",
+        "sharegpt_BKl952A_23",
+        "ultrachat_106114",
+        "sharegpt_bTDMt3m_64"
+      ],
+      "first_gold_rank": 12,
+      "recall@10": 0.0,
+      "gold_traces": [
+        {
+          "session_id": "answer_235eb6fb",
+          "appeared_in_results": true,
+          "final_rank": 7,
+          "dropped_at": null,
+          "best_chunk_id": 71,
+          "best_chunk_cos_dist": 0.6432,
+          "suggestions": [
+            "The expected document IS in top-k but at rank 8/10 (near-miss tier). It's competitive but being outranked by other chunks. Consider a more specific query, or raise top_k to get more headroom."
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "726462e0",
+      "question_type": "single-session-user",
+      "question": "What was the discount I got on my first purchase from the new clothing brand?",
+      "gold_session_ids": [
+        "answer_f38f679b"
+      ],
+      "actual_top_k_sessions": [
+        "cdd9704d_1",
+        "741c6781_1",
+        "5b83c26e_1",
+        "sharegpt_IxOWCIE_9",
+        "sharegpt_GGZMs1q_0",
+        "7e4dab66_1",
+        "082889ba_1",
+        "d7f17dba",
+        "ultrachat_450587",
+        "6f7485fa"
+      ],
+      "first_gold_rank": 17,
+      "recall@10": 0.0,
+      "gold_traces": [
+        {
+          "session_id": "answer_f38f679b",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "rrf_fusion",
+          "best_chunk_id": 40,
+          "best_chunk_cos_dist": 0.757,
+          "suggestions": [
+            "Most likely the metadata filter (collection/project/layer) excluded this document.  Re-run miss_analysis without filters to confirm."
+          ]
+        }
+      ]
+    }
+  ]
+}

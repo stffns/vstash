@@ -1,0 +1,12 @@
+{"query": "How many bikes do I currently own?", "relevant_paths": ["89941a93:answer_e1403127_1", "89941a93:answer_e1403127_2"], "query_id": "89941a93"}
+{"query": "What was the amount I was pre-approved for when I got my mortgage from Wells Fargo?", "relevant_paths": ["852ce960:answer_3a6f1e82_1", "852ce960:answer_3a6f1e82_2"], "query_id": "852ce960"}
+{"query": "How many days did I spend on camping trips in the United States this year?", "relevant_paths": ["b5ef892d:answer_a8b4290f_3", "b5ef892d:answer_a8b4290f_1", "b5ef892d:answer_a8b4290f_2"], "query_id": "b5ef892d"}
+{"query": "How many plants did I acquire in the last month?", "relevant_paths": ["3a704032:answer_c2204106_2", "3a704032:answer_c2204106_3", "3a704032:answer_c2204106_1"], "query_id": "3a704032"}
+{"query": "I think we discussed work from home jobs for seniors earlier. Can you remind me what was the 7th job in the list you provided?", "relevant_paths": ["1903aded:answer_sharegpt_hA7AkP3_0"], "query_id": "1903aded"}
+{"query": "I remember you told me about the refining processes at CITGO's three refineries earlier. Can you remind me what kind of processes are used at the Lake Charles Refinery?", "relevant_paths": ["6ae235be:answer_sharegpt_IUWQYGQ_0"], "query_id": "6ae235be"}
+{"query": "My kitchen's becoming a bit of a mess again. Any tips for keeping it clean?", "relevant_paths": ["afdc33df:answer_8549e5e0"], "query_id": "afdc33df"}
+{"query": "I've been struggling with my slow cooker recipes. Any advice on getting better results?", "relevant_paths": ["caf03d32:answer_2fc6aabb"], "query_id": "caf03d32"}
+{"query": "Where did I buy my new tennis racket from?", "relevant_paths": ["f8c5f88b:answer_c3567066"], "query_id": "f8c5f88b"}
+{"query": "Where do I take yoga classes?", "relevant_paths": ["6ade9755:answer_9398da02"], "query_id": "6ade9755"}
+{"query": "How many days ago did I attend the Maundy Thursday service at the Episcopal Church?", "relevant_paths": ["gpt4_b5700ca9:answer_a17423e7_1"], "query_id": "gpt4_b5700ca9"}
+{"query": "How many days passed between my visit to the Museum of Modern Art (MoMA) and the 'Ancient Civilizations' exhibit at the Metropolitan Museum of Art?", "relevant_paths": ["gpt4_59149c77:answer_d00ba6d0_1", "gpt4_59149c77:answer_d00ba6d0_2"], "query_id": "gpt4_59149c77"}

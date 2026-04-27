@@ -1,0 +1,151 @@
+{
+  "source_results": "experiments/results/lme_stratified_5pt_v3.json",
+  "model": "Stffens/bge-small-rrf-v3",
+  "retrieval_mode": "hybrid",
+  "fail_threshold_k": 10,
+  "n_total": 30,
+  "n_failed": 2,
+  "drop_stage_by_type": {
+    "multi-session": {
+      "distance_cutoff": 2,
+      "rrf_fusion": 2
+    },
+    "single-session-preference": {
+      "mmr_dedup": 1
+    }
+  },
+  "dist_stats_by_drop_stage": {
+    "distance_cutoff": {
+      "n": 2,
+      "mean": 0.5792,
+      "median": 0.5792,
+      "max": 0.6105
+    },
+    "rrf_fusion": {
+      "n": 2,
+      "mean": 0.5619,
+      "median": 0.5619,
+      "max": 0.5823
+    },
+    "mmr_dedup": {
+      "n": 1,
+      "mean": 0.5324,
+      "median": 0.5324,
+      "max": 0.5324
+    }
+  },
+  "failures": [
+    {
+      "question_id": "6d550036",
+      "question_type": "multi-session",
+      "question": "How many projects have I led or am currently leading?",
+      "gold_session_ids": [
+        "answer_ec904b3c_1",
+        "answer_ec904b3c_4",
+        "answer_ec904b3c_3",
+        "answer_ec904b3c_2"
+      ],
+      "actual_top_k_sessions": [
+        "2e4430d8_2",
+        "e255d6fc_2",
+        "sharegpt_nVi6tIt_0",
+        "answer_ec904b3c_1",
+        "dae3906e_2",
+        "answer_ec904b3c_4",
+        "f6246b5f",
+        "sharegpt_J7ZAFLd_0",
+        "ultrachat_184799",
+        "eb682e52_2"
+      ],
+      "first_gold_rank": 4,
+      "recall@10": 0.5,
+      "gold_traces": [
+        {
+          "session_id": "answer_ec904b3c_1",
+          "appeared_in_results": true,
+          "final_rank": 7,
+          "dropped_at": "distance_cutoff",
+          "target_resolution": "best_of_n",
+          "total_chunks_in_doc": 4,
+          "best_chunk_cos_dist": 0.6105,
+          "suggestions": [
+            "The expected document IS in top-k but at rank 8/10 (near-miss tier). It's competitive but being outranked by other chunks. Consider a more specific query, or raise top_k to get more headroom."
+          ]
+        },
+        {
+          "session_id": "answer_ec904b3c_4",
+          "appeared_in_results": true,
+          "final_rank": 9,
+          "dropped_at": "rrf_fusion",
+          "target_resolution": "best_of_n",
+          "total_chunks_in_doc": 4,
+          "best_chunk_cos_dist": 0.5415,
+          "suggestions": [
+            "The expected document IS in top-k but at rank 10/10 (near-miss tier). It's competitive but being outranked by other chunks. Consider a more specific query, or raise top_k to get more headroom."
+          ]
+        },
+        {
+          "session_id": "answer_ec904b3c_3",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "rrf_fusion",
+          "target_resolution": "best_of_n",
+          "total_chunks_in_doc": 4,
+          "best_chunk_cos_dist": 0.5823,
+          "suggestions": [
+            "The chunk was eliminated before RRF fusion.  Inspect the vector_search and fts_search verdicts for detail."
+          ]
+        },
+        {
+          "session_id": "answer_ec904b3c_2",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "distance_cutoff",
+          "target_resolution": "best_of_n",
+          "total_chunks_in_doc": 4,
+          "best_chunk_cos_dist": 0.5479,
+          "suggestions": [
+            "Distance cutoff dropped the chunk just past threshold. Would have passed with distance_cutoff \u2265 1.63. Pass distance_cutoff=2.0 (or higher) to relax the cutoff.",
+            "FTS5 already matched this chunk \u2014 raising fts_weight would rescue it without needing to relax the distance cutoff."
+          ]
+        }
+      ]
+    },
+    {
+      "question_id": "75832dbd",
+      "question_type": "single-session-preference",
+      "question": "Can you recommend some recent publications or conferences that I might find interesting?",
+      "gold_session_ids": [
+        "answer_d87a6ef8"
+      ],
+      "actual_top_k_sessions": [
+        "sharegpt_xni9yYO_6",
+        "sharegpt_FYqt26U_0",
+        "c51583cd_1",
+        "6172cc72_1",
+        "be753d18",
+        "27d9e492_2",
+        "47ec1674_2",
+        "sharegpt_E0YL5SX_157",
+        "6a3b5c13_3",
+        "2bac8799_3"
+      ],
+      "first_gold_rank": 13,
+      "recall@10": 0.0,
+      "gold_traces": [
+        {
+          "session_id": "answer_d87a6ef8",
+          "appeared_in_results": false,
+          "final_rank": null,
+          "dropped_at": "mmr_dedup",
+          "target_resolution": "best_of_n",
+          "total_chunks_in_doc": 4,
+          "best_chunk_cos_dist": 0.5324,
+          "suggestions": [
+            "MMR deduplication eliminated this chunk because another chunk from the same document was already selected and they're too similar. Try a higher mmr_lambda (>0.50) for less aggressive dedup, or mmr_lambda=1.0 to disable MMR entirely."
+          ]
+        }
+      ]
+    }
+  ]
+}
