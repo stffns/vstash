@@ -45,26 +45,57 @@ _ST_FALLBACK_MODELS = {"Stffens/bge-small-rrf-v3"}
 
 
 class _STEncoder:
-    """Minimal SentenceTransformer adapter to the Encoder protocol."""
+    """Minimal SentenceTransformer adapter to the Encoder protocol.
 
-    def __init__(self, model_name: str) -> None:
+    ``device`` is honoured so callers on Colab T4 can pin the model to
+    ``cuda``; FastEmbed has no CUDA wheel and pegs the Colab CPU at
+    ~1 ingest per minute on LongMemEval-scale haystacks (~50x slower
+    than even Apple-Silicon CPU).
+    """
+
+    def __init__(self, model_name: str, device: str | None = None) -> None:
         from sentence_transformers import SentenceTransformer
 
-        self._m = SentenceTransformer(model_name)
+        self._m = SentenceTransformer(model_name, device=device) if device else SentenceTransformer(model_name)
         self.embedding_dim = self._m.get_sentence_embedding_dimension()
 
     def encode(self, texts: list[str]):
-        return self._m.encode(texts, normalize_embeddings=True)
+        return self._m.encode(texts, normalize_embeddings=True, show_progress_bar=False)
 
 
 _st_cache: dict[str, _STEncoder] = {}
+# Process-global override for the device every _STEncoder picks up.
+# Set by run() when --device cuda is on; falls back to ST default
+# (auto-detect) when None.
+_st_device_override: str | None = None
+# When True the resolver claims every model_name -- used to route the
+# default cfg.embeddings.model through ST on CUDA instead of FastEmbed
+# on CPU.
+_st_force_for_all = False
+
+
+def _is_local_st_model(model_name: str) -> bool:
+    """Detect a local SentenceTransformer model directory.
+
+    A local path is anything that resolves to an existing directory and
+    has the SentenceTransformer markers we expect (``modules.json`` is
+    the cheapest discriminator -- HF model names never contain it as
+    a path component because they go through the HF cache, not raw
+    filesystem).
+    """
+    p = Path(model_name).expanduser()
+    return p.is_dir() and (p / "modules.json").is_file()
 
 
 def _st_resolver(model_name: str):
-    if model_name not in _ST_FALLBACK_MODELS:
+    if (
+        not _st_force_for_all
+        and model_name not in _ST_FALLBACK_MODELS
+        and not _is_local_st_model(model_name)
+    ):
         return None
     if model_name not in _st_cache:
-        _st_cache[model_name] = _STEncoder(model_name)
+        _st_cache[model_name] = _STEncoder(model_name, device=_st_device_override)
     return _st_cache[model_name]
 
 
@@ -174,12 +205,24 @@ def run(
     stratify_per_type: int | None = None,
     model: str | None = None,
     distance_cutoff: float = 1.3225,
+    device: str | None = None,
 ) -> dict:
+    global _st_device_override, _st_force_for_all
     cfg = VstashConfig()
     if model is not None:
         cfg = cfg.model_copy(update={"embeddings": cfg.embeddings.model_copy(update={"model": model})})
+
+    # When --device cuda is set, route EVERY model through the
+    # SentenceTransformer-CUDA path -- otherwise FastEmbed (no CUDA
+    # wheel) stays on CPU and an ingest of LongMemEval's ~150 chunks
+    # per question takes ~55s on Colab vs ~1s on Apple Silicon CPU.
     resolver_registered = False
-    if cfg.embeddings.model in _ST_FALLBACK_MODELS:
+    if device == "cuda":
+        _st_device_override = "cuda"
+        _st_force_for_all = True
+        register_encoder_resolver(_st_resolver)
+        resolver_registered = True
+    elif cfg.embeddings.model in _ST_FALLBACK_MODELS or _is_local_st_model(cfg.embeddings.model):
         register_encoder_resolver(_st_resolver)
         resolver_registered = True
     try:
@@ -197,6 +240,8 @@ def run(
     finally:
         if resolver_registered:
             unregister_encoder_resolver(_st_resolver)
+        _st_force_for_all = False
+        _st_device_override = None
 
 
 def _run_locked(
@@ -385,6 +430,14 @@ def main() -> None:
         "(default 1.3225 matches v0.34+ cosine semantics). Pass a large "
         "value (e.g. 100.0) to effectively disable the cutoff.",
     )
+    p.add_argument(
+        "--device",
+        choices=["cpu", "cuda"],
+        default=None,
+        help="Pin the embedder to a device. 'cuda' on Colab T4 is ~50x "
+        "faster than the FastEmbed CPU default (FastEmbed has no CUDA "
+        "wheel).  Defaults to FastEmbed's auto on the local Mac.",
+    )
     args = p.parse_args()
 
     n = None if args.all else args.n
@@ -397,6 +450,7 @@ def main() -> None:
         seed_offset=args.offset,
         stratify_per_type=args.stratify,
         model=args.model,
+        device=args.device,
     )
 
 
