@@ -1,0 +1,82 @@
+[
+  {
+    "dataset": "scifact",
+    "docs": 5183,
+    "queries": 300,
+    "model": "colbert-ir/colbertv2.0",
+    "device": "cuda",
+    "colbertv2": {
+      "ndcg_10": 0.6554,
+      "mrr": 0.6224,
+      "recall_10": 0.7824,
+      "latency_ms": 0.055,
+      "encode_corpus_s": 55.0,
+      "encode_queries_s": 1.17,
+      "search_total_s": 1.04
+    }
+  },
+  {
+    "dataset": "nfcorpus",
+    "docs": 3633,
+    "queries": 323,
+    "model": "colbert-ir/colbertv2.0",
+    "device": "cuda",
+    "colbertv2": {
+      "ndcg_10": 0.3251,
+      "mrr": 0.5399,
+      "recall_10": 0.153,
+      "latency_ms": 0.046,
+      "encode_corpus_s": 40.8,
+      "encode_queries_s": 0.96,
+      "search_total_s": 0.72
+    }
+  },
+  {
+    "dataset": "fiqa",
+    "docs": 57638,
+    "queries": 648,
+    "model": "colbert-ir/colbertv2.0",
+    "device": "cuda",
+    "colbertv2": {
+      "ndcg_10": 0.3177,
+      "mrr": 0.3917,
+      "recall_10": 0.3797,
+      "latency_ms": 0.245,
+      "encode_corpus_s": 730.5,
+      "encode_queries_s": 1.7,
+      "search_total_s": 23.63
+    }
+  },
+  {
+    "dataset": "scidocs",
+    "docs": 25657,
+    "queries": 1000,
+    "model": "colbert-ir/colbertv2.0",
+    "device": "cuda",
+    "colbertv2": {
+      "ndcg_10": 0.1546,
+      "mrr": 0.2824,
+      "recall_10": 0.1585,
+      "latency_ms": 0.125,
+      "encode_corpus_s": 323.5,
+      "encode_queries_s": 2.6,
+      "search_total_s": 16.61
+    }
+  },
+  {
+    "dataset": "arguana",
+    "docs": 8674,
+    "queries": 1406,
+    "model": "colbert-ir/colbertv2.0",
+    "device": "cuda",
+    "colbertv2": {
+      "ndcg_10": 0.3319,
+      "mrr": 0.2214,
+      "recall_10": 0.6799,
+      "latency_ms": 0.065,
+      "encode_corpus_s": 111.0,
+      "encode_queries_s": 3.09,
+      "search_total_s": 8.73
+    }
+  }
+]

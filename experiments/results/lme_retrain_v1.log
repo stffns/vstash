@@ -1,0 +1,28 @@
+vstash retrain
+  Store:        23869 docs, 67036 chunks
+  Base model:   BAAI/bge-small-en-v1.5
+  Max queries:  5000
+  Query source: chunk prefix (legacy)
+  Eval gate:    min-gain=+0.0000, fraction=0.15, noise=1000
+
+  Training queries: 398 labeled from experiments/results/lme_train.jsonl
+  Eval queries:     102 labeled from experiments/results/lme_eval.jsonl (gate 
+uses these instead of internal split)
+Loading weights:   0%|          | 0/199 [00:00<?, ?it/s]Loading weights: 100%|██████████| 199/199 [00:00<00:00, 8722.15it/s]
+[1mBertModel LOAD REPORT[0m from: BAAI/bge-small-en-v1.5
+Key                     | Status     |  | 
+------------------------+------------+--+-
+embeddings.position_ids | UNEXPECTED |  | 
+
+Notes:
+- UNEXPECTED:	can be ignored when loading from different task/architecture; not ok if you expect identical arch.
+Loading weights:   0%|          | 0/199 [00:00<?, ?it/s]Loading weights: 100%|██████████| 199/199 [00:00<00:00, 14603.30it/s]
+[1mBertModel LOAD REPORT[0m from: BAAI/bge-small-en-v1.5
+Key                     | Status     |  | 
+------------------------+------------+--+-
+embeddings.position_ids | UNEXPECTED |  | 
+
+Notes:
+- UNEXPECTED:	can be ignored when loading from different task/architecture; not ok if you expect identical arch.
+/Users/jaysonsteffens/.pyenv/versions/3.12.1/lib/python3.12/multiprocessing/resource_tracker.py:254: UserWarning: resource_tracker: There appear to be 1 leaked semaphore objects to clean up at shutdown
+  warnings.warn('resource_tracker: There appear to be %d '

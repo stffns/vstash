@@ -2,6 +2,37 @@
 
 All notable changes to vstash are documented here.
 
+## [Unreleased]
+
+## [0.35.0] - 2026-04-27
+
+### Removed (breaking)
+
+- **``fts_only=True`` bool parameter on ``search`` / ``ask``** (#281).  Deprecated in v0.33.0 with a ``DeprecationWarning`` and retained through v0.34.0; removed from every public surface in v0.35.0:
+
+  - ``VstashStore.search(..., fts_only=...)``
+  - ``Memory.search(..., fts_only=...)`` and ``Memory.ask(..., fts_only=...)``
+  - MCP tools ``vstash_search`` and ``vstash_ask``
+
+  Callers still passing it hit a ``TypeError`` from Python's argument binder.  The migration is a straight rename to ``retrieval_mode="fts_only"``.  Everything else about the three-mode enum (``"hybrid"`` | ``"vec_only"`` | ``"fts_only"``) is unchanged.
+
+### Added
+
+- **`vstash retrain --eval-queries` flag** (#299).  The retrain CLI now accepts a held-out labeled JSONL (`{"query": str, "relevant_paths": [str, ...]}` per line) for the eval gate, in addition to the training JSONL.  Drives a refuse-to-save policy: a candidate is promoted to `--output` only if its NDCG@10 on the holdout exceeds the active model by `--min-gain` (default 0.0).  Failed candidates are retained at `output.candidate/` for inspection but never replace the user's deployed model.  This is the deployable surface of the **gated domain-adaptation loop** documented in the v2 paper draft.
+
+### Changed
+
+- ``VstashStore._resolve_retrieval_mode`` is now single-argument (only the ``retrieval_mode`` string).  The removal of the legacy bool also removed the ``"conflicts with fts_only=True"`` ``ValueError`` branch since that combination is no longer expressible.
+- ``_coerce_bool`` helper in ``vstash.mcp`` removed; no remaining callers.
+
+### Research artifacts (this release)
+
+- **Paper v2 draft** -- `paper/v2/vstash-paper-v2.md`, full markdown draft of "vstash v2: Eval-Gated Domain Adaptation for Local-First LLM Memory" (1749 lines), with bootstrap CIs on the LongMemEval holdout, Mermaid figures, and the gated-domain-adaptation thesis as central contribution.  LaTeX conversion to `paper/arxiv/vstash-v2.tex` for arXiv submission is the next milestone.
+- **`bge-small-rrf-lme-v1` model** -- chat-memory specialist embedding (33M params, 384-dim) trained via the new `--eval-queries` gate on 398 LongMemEval-s questions.  Holdout NDCG@10 0.6878 vs vanilla BGE-small 0.6143 (+0.0735 absolute, +11.85% relative); R@5 +3.79pp [95% CI +1.72, +6.19] paired bootstrap on n=102.  Published at https://huggingface.co/Stffens/bge-small-rrf-lme-v1.
+- **LongMemEval head-to-head harness** -- `experiments/longmemeval_retrieval.py`, `experiments/longmemeval_colbert.py`, `experiments/colbert_minimal.py` (faithful HF ColBERTv2 re-implementation; raw `BertModel` + 768->128 linear projection + manual MaxSim einsum), and `experiments/h2h_combine.py` for 5-arm result aggregation.  Calibration band derived from 5-dataset BEIR run (`experiments/beir_colbert.py`), ArguAna outlier disclosed.
+- **Eval-gated retrain reproducibility** -- `experiments/lme_prepare_retrain.py` (deterministic 80/20 stratified split), `experiments/lme_holdout_bootstrap.py` (paired bootstrap CIs, B=1000, seed 42), `experiments/results/lme_eval.jsonl` + `lme_train.jsonl` + `lme_retrain_meta.json` (eval-gate proof), `experiments/results/lme_full_500_*.json` (5 arms).
+- **Cross-domain transfer failure evidence** -- `Stffens/bge-small-rrf-v3` (BEIR-tuned, v0.34.0 release) regresses -2.45pp NDCG@10 on the LongMemEval holdout vs vanilla BGE-small.  This is the v2 paper's core empirical claim and the motivation for per-domain retrain.
+
 ## [0.34.0] - 2026-04-24
 
 ### Fixed

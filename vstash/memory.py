@@ -282,7 +282,6 @@ class Memory:
         mmr_lambda: float = 0.5,
         vec_weight: float | None = None,
         fts_weight: float | None = None,
-        fts_only: bool = False,
         retrieval_mode: Literal["hybrid", "vec_only", "fts_only"] | None = None,
         exact_match: str | None = None,
         exact_match_case_sensitive: bool = False,
@@ -318,12 +317,6 @@ class Memory:
                 survive. #106, 2026-04-21.
             exact_match_case_sensitive: Whether ``exact_match`` is
                 case-sensitive. Default False (casefold compare).
-            fts_only: DEPRECATED in v0.33.0, use
-                ``retrieval_mode="fts_only"`` instead. Still honoured
-                for this release with a ``DeprecationWarning``. Will
-                be removed in a future release. Same short-circuit
-                semantics: skip the vector ANN scan, distance cutoff,
-                and adaptive RRF.
             retrieval_mode: Which search branches to run (default
                 ``"hybrid"``). Three values:
 
@@ -352,10 +345,7 @@ class Memory:
             Ranked list of SearchResult ordered by relevance.
         """
         q_embedding = embed_query(query, self._cfg.embeddings.model)
-        # Resolve the mode at this layer so the deprecation warning
-        # fires at the Memory call site (not the store layer, which
-        # would show our own memory.py in the stacklevel).
-        _mode = self._store._resolve_retrieval_mode(retrieval_mode, fts_only)
+        _mode = self._store._resolve_retrieval_mode(retrieval_mode)
         # When a non-hybrid mode is active, drop any caller-supplied
         # weight arguments before they reach the store's validator.
         # The store will force the weights to (0.0, 1.0) or (1.0, 0.0)
@@ -499,7 +489,6 @@ class Memory:
         history: list[dict[str, str]] | None = None,
         vec_weight: float | None = None,
         fts_weight: float | None = None,
-        fts_only: bool = False,
         retrieval_mode: Literal["hybrid", "vec_only", "fts_only"] | None = None,
     ) -> str:
         """Search memory + generate an LLM answer.
@@ -518,7 +507,6 @@ class Memory:
             vec_weight: Pin the RRF vector weight on the retrieval
                 call. See :meth:`search` for full semantics.
             fts_weight: Pin the RRF FTS weight on the retrieval call.
-            fts_only: DEPRECATED, use ``retrieval_mode="fts_only"``.
             retrieval_mode: ``"hybrid"`` (default), ``"vec_only"``, or
                 ``"fts_only"``. See :meth:`search` for full semantics.
 
@@ -537,7 +525,6 @@ class Memory:
             layer=layer,
             vec_weight=vec_weight,
             fts_weight=fts_weight,
-            fts_only=fts_only,
             retrieval_mode=retrieval_mode,
         )
         return _chat_ask(query, chunks, self._cfg, history)

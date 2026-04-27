@@ -205,6 +205,198 @@ smoke tests). Override with `--min-gain -1` to always save the
 candidate (useful when you want to inspect a known-regression
 model for debugging).
 
+### Labeled training and eval queries (BEIR-style)
+
+When you have real `(query, relevant_doc_paths)` labels --
+BEIR qrels, search-log clicks, manual annotations -- pass them
+to `vstash retrain` directly. Both flags accept JSONL files
+where each line is one labeled query:
+
+```jsonl
+{"query": "what is the meaning of life", "relevant_paths": ["/notes/answer.md"]}
+{"query": "how do mitochondria work", "relevant_paths": ["/biology/cell.md", "/biology/atp.md"]}
+```
+
+```bash
+vstash retrain \
+    --training-queries train.jsonl \
+    --eval-queries eval.jsonl \
+    --base-model BAAI/bge-small-en-v1.5 \
+    --output ~/.vstash/models/my-fine-tune
+```
+
+What changes vs. the default flow:
+
+- **Training pairs** come from real (query, gold) labels via
+  `generate_labeled_triples_batched` instead of chunk-prefix
+  pseudo-queries. This reuses the v5 recipe that produced
+  `Stffens/bge-small-rrf-v2` and `bge-small-rrf-v3`. Pass
+  `--training-pair-source labeled` to refuse to fall back to
+  chunk-prefix when no training labels are present (forces a
+  hard error rather than silent regression).
+- **Eval gate** scores baseline and fine-tuned on `eval.jsonl`
+  rather than the internal chunk-prefix split. This matters
+  whenever you care about specific query distributions: the
+  internal split's pseudo-queries are statement-shaped, so a
+  +0.05 NDCG there can hide a regression on real questions.
+- `--eval-fraction` is ignored (the held-out set is the file
+  you provide). `--eval-noise` still applies and controls how
+  many distractor chunks join the eval index.
+- `--no-eval` and `--eval-queries` are mutually exclusive: pick
+  one. If both are set the CLI exits non-zero.
+
+#### Building a stratified holdout from BEIR-style qrels
+
+`vstash.retrain.qrels_to_eval_queries` converts the standard
+`(queries, qrels)` dicts into the JSONL shape above:
+
+```python
+import json
+from vstash.retrain import qrels_to_eval_queries
+
+queries = {"q1": "what is the meaning of life", ...}
+qrels   = {"q1": {"answer.md": 1}, ...}
+
+records = qrels_to_eval_queries(queries, qrels, path_for_doc_id=lambda d: d)
+
+# 80/20 split
+train, holdout = records[: int(len(records) * 0.8)], records[int(len(records) * 0.8) :]
+with open("train.jsonl", "w") as fh:
+    for r in train: fh.write(json.dumps(r) + "\n")
+with open("eval.jsonl", "w") as fh:
+    for r in holdout: fh.write(json.dumps(r) + "\n")
+```
+
+If your data is multi-domain (e.g., LongMemEval question types),
+stratify the split by the relevant key before slicing -- a
+random 80/20 over a heterogeneous benchmark hides per-category
+regressions. The Python API (`retrain(..., eval_queries=...)`)
+also accepts the records directly without writing JSONL.
+
+#### Working from chat-style JSON (e.g., LongMemEval)
+
+`vstash` does not ship a dedicated chat-JSON ingester -- the
+schema varies too much across products. The pattern is:
+
+1. **Reduce each chat session to a text blob** (one document).
+   Concatenating turns with role markers
+   (`[USER]\n...\n[ASSISTANT]\n...`) is a reasonable default;
+   richer schemas may need timestamps or tool-call markup.
+2. **Use the session id as the document path** so labeled
+   queries can reference it directly in `relevant_paths`.
+3. Ingest the blobs via the standard `Memory.remember` /
+   `VstashStore.add_documents_batch` paths.
+
+```python
+# Sketch: turns -> blob -> doc, one per session
+def _format_session(turns: list[dict]) -> str:
+    return "\n\n".join(f"[{t['role'].upper()}]\n{t['content']}" for t in turns)
+
+for session_id, turns in chat_sessions.items():
+    text = _format_session(turns)
+    chunks = chunk_text(text, cfg.chunking.size, cfg.chunking.overlap)
+    embeddings = embed_texts(chunks, cfg.embeddings.model)
+    store.add_documents_batch([{
+        "path": session_id,
+        "title": session_id,
+        "chunks": chunks,
+        "embeddings": embeddings,
+        "source_type": "chat",
+        "collection": "my-chats",
+    }])
+```
+
+The labeled-query JSONL then references each `session_id`
+directly in `relevant_paths`.
+
+### Case study: LongMemEval chat memory (+8pp NDCG@10 in 30 minutes)
+
+We validated the labeled-retrain workflow end-to-end on LongMemEval-s,
+a public chat-memory benchmark (Wu et al., 2024) with 500 questions
+across six question types and ~115k tokens of haystack per question.
+
+**Setup.** Stratified 80/20 split by `question_type` with a
+deterministic seed: 398 train queries, 102 holdout. The 102-query
+holdout is disjoint from training; the eval gate scores baseline +
+candidate on it. ~25k unique haystack sessions ingested into one
+vstash corpus, with paths namespaced as `{question_id}:{session_id}`
+to handle the ~4300 sessions LongMemEval reuses across questions.
+
+**Eval gate (102-query holdout, disjoint from train):**
+
+| Model                             | NDCG@10 | Delta vs base |
+|-----------------------------------|--------:|--------------:|
+| BAAI/bge-small-en-v1.5 (vanilla)  | 0.6143  |   --          |
+| Stffens/bge-small-rrf-v3          | 0.5898  | -0.0245       |
+| **bge-small-rrf-lme-v1**          | 0.6878  | **+0.0735**   |
+
+The chat fine-tune lifts NDCG@10 by 11.85% relative over vanilla
+BGE. Two seeded runs with the same data and seed=42 produced 0.6872
+and 0.6878 (delta 0.0006), confirming reproducibility. The gate
+auto-passes both candidates over the `min_gain=0.0` threshold.
+
+**Surprising finding.** Stffens/bge-small-rrf-v3, which we trained on
+BEIR (SciFact + NFCorpus + FiQA) and which beats vanilla BGE on those
+benchmarks, **loses** to vanilla on LongMemEval (-0.0245 NDCG@10,
+-0.028 R@5 on temporal-reasoning specifically). This is the first
+clean in-tree evidence that "best on BEIR" does not transfer to
+"best on chat memory" -- domain matters more than absolute model
+quality. The eval gate would have rejected v3 as a chat-memory
+retriever even though it is a strict improvement on BEIR.
+
+**Where the lift concentrates (per-type R@5, holdout):**
+
+| Type                        | n  | base   | lme-v1 | delta    |
+|-----------------------------|----|--------|--------|----------|
+| single-session-user         | 14 | 0.929  | 0.929  |  0.000   |
+| single-session-assistant    | 12 | 1.000  | 1.000  |  0.000   |
+| single-session-preference   |  6 | 1.000  | 1.000  |  0.000   |
+| **multi-session**           | 27 | 0.869  | 0.938  | **+0.069** |
+| knowledge-update            | 16 | 0.969  | 1.000  | +0.031   |
+| **temporal-reasoning**      | 27 | 0.774  | 0.829  | **+0.056** |
+
+The chat fine-tune does its work where the failure analysis
+predicted: multi-session (multiple gold sessions to surface) and
+temporal-reasoning (cross-session date resolution). Single-session
+types saturate at R@5 even on vanilla -- there was no headroom to
+move there.
+
+**Mechanism.** Pre-fine-tune failure analysis showed gold chunks
+sitting at cosine distance 0.46-0.61 to the query (geometrically far
+in embedding space). The fine-tune compresses (query, gold-chunk)
+pairs in cosine space so the same gold sessions rank higher in
+hybrid RRF. R@50 stays at 1.000 across all arms -- the embedder
+already retrieves the gold; ranking is the lever, not coverage.
+
+**Reproducing the case study end-to-end:**
+
+```bash
+# 1. Data prep (~9 min, Mac local) -- ingests haystacks + emits JSONLs
+python -m experiments.lme_prepare_retrain \
+    --output-db    experiments/lme_retrain_full.db \
+    --output-train experiments/results/lme_train.jsonl \
+    --output-eval  experiments/results/lme_eval.jsonl \
+    --output-meta  experiments/results/lme_retrain_meta.json
+
+# 2. Train on Colab T4 (~12 min) with the eval gate
+VSTASH_DB_PATH=experiments/lme_retrain_full.db vstash retrain \
+    --training-queries experiments/results/lme_train.jsonl \
+    --eval-queries     experiments/results/lme_eval.jsonl \
+    --base-model       BAAI/bge-small-en-v1.5 \
+    --output           ~/.vstash/models/bge-small-rrf-lme-v1 \
+    --bulk-mine --bulk-mine-device cuda
+
+# 3. Score the trained model on the full LongMemEval-s for the
+#    appendix table (Mac local, ~9 min)
+python -m experiments.longmemeval_retrieval --all \
+    --model ~/.vstash/models/bge-small-rrf-lme-v1 \
+    --output experiments/results/lme_full_500_lme-v1.json
+```
+
+The full 4-arm comparison + reproducibility scripts are in
+`experiments/`; the canonical paragraph + auditable tables for paper
+v2 live at `paper/v2/chat_memory_paragraph.md`.
+
 ---
 
 ## Multi-corpus: `vstash retrain-multi`

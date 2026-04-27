@@ -278,12 +278,12 @@ class TestMemorySearch:
 
     @requires_sqlite_vec
     def test_search_fts_only_skips_vector_path(self, tmp_path: Path) -> None:
-        """fts_only=True must bypass the vector ANN entirely (#152).
+        """retrieval_mode="fts_only" must bypass the vector ANN entirely (#152).
 
         The direct observable signal: a chunk that is keyword-matchable
         via FTS5 but whose embedding is orthogonal to the query MUST
-        still surface under fts_only=True even with the strictest
-        vector distance cutoff, because the vector path is not run.
+        still surface under fts_only even with the strictest vector
+        distance cutoff, because the vector path is not run.
         """
         # Doc A: contains the literal query term "kubernetes" once but
         # otherwise talks about something unrelated.
@@ -304,32 +304,26 @@ class TestMemorySearch:
 
             # fts_only MUST find the kubernetes-bearing doc regardless
             # of vector distance, because the vector path is skipped.
-            # Assert on the chunk text, not the auto-generated title —
+            # Assert on the chunk text, not the auto-generated title --
             # vstash derives titles from filenames when no frontmatter
             # is present, which is not what this test is about.
-            results = mem.search("kubernetes", fts_only=True)
+            results = mem.search("kubernetes", retrieval_mode="fts_only")
             assert len(results) > 0
             assert any("kubernetes" in r.text.lower() for r in results), (
-                f"fts_only=True failed to surface the FTS-matching doc; "
+                f"retrieval_mode='fts_only' failed to surface the FTS-matching doc; "
                 f"got {[(r.title, r.text[:60]) for r in results]}"
             )
             # The distractor doc has no keyword match, so only one doc
             # should appear in the FTS-only result set.
             assert all("kubernetes" in r.text.lower() for r in results), (
-                "fts_only=True leaked a non-matching chunk into results"
+                "retrieval_mode='fts_only' leaked a non-matching chunk into results"
             )
 
     @requires_sqlite_vec
     def test_search_forwards_retrieval_mode_to_store(self, tmp_path: Path) -> None:
-        """Memory.search resolves fts_only/retrieval_mode and forwards the
-        enum value to VstashStore.search (#152, #275).
-
-        The legacy ``fts_only=True`` path is expected to emit a
-        DeprecationWarning, which we filter here -- we only care that
-        the resolved enum lands on the store side.
+        """Memory.search resolves retrieval_mode and forwards the enum
+        value to VstashStore.search (#152, #275, #281).
         """
-        import warnings
-
         (tmp_path / "doc.md").write_text("Spy test content.")
         with Memory(db=tmp_path / "test.db") as mem:
             mem.add(tmp_path / "doc.md")
@@ -343,32 +337,30 @@ class TestMemorySearch:
 
             mem._store.search = spy_search  # type: ignore[method-assign]
 
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", DeprecationWarning)
-                mem.search("content", fts_only=True)
-                mem.search("content", retrieval_mode="vec_only")
-                mem.search("content")  # default -> hybrid
+            mem.search("content", retrieval_mode="fts_only")
+            mem.search("content", retrieval_mode="vec_only")
+            mem.search("content")  # default -> hybrid
 
             assert len(captured) == 3
             assert captured[0]["retrieval_mode"] == "fts_only"
             assert captured[1]["retrieval_mode"] == "vec_only"
             assert captured[2]["retrieval_mode"] == "hybrid"
-            # fts_only bool must NOT be forwarded to the store any more:
-            # the mode enum is the single source of truth at the store
-            # boundary.
+            # The legacy fts_only bool kwarg was removed in v0.35.0
+            # (#281); it must not reach the store under any call path.
             for call in captured:
                 assert "fts_only" not in call
 
     @requires_sqlite_vec
     def test_search_fts_only_skips_distance_signal(self, tmp_path: Path) -> None:
-        """fts_only=True must set last_best_distance to the worst value.
+        """retrieval_mode='fts_only' must set last_best_distance to
+        the worst value.
 
         The vector-search branch normally records the best cosine
         distance into ``self._store.last_best_distance`` so the
-        relevance-tier signal can render "high / medium / low". In
+        relevance-tier signal can render "high / medium / low".  In
         fts_only mode that signal is meaningless, so the store
         explicitly sets ``last_best_distance = 2.0`` (the worst
-        possible cosine distance). This is an observable contract
+        possible cosine distance).  This is an observable contract
         that proves the vector block was skipped without relying on
         monkey-patching the read-only sqlite3 execute method.
         """
@@ -387,37 +379,42 @@ class TestMemorySearch:
             # FTS-only on the same query: last_best_distance must
             # be exactly 2.0 (worst case), proving the vector path
             # was bypassed.
-            mem.search("rust", top_k=3, fts_only=True)
+            mem.search("rust", top_k=3, retrieval_mode="fts_only")
             fts_distance = mem._store.last_best_distance
             assert fts_distance == 2.0, (
-                f"fts_only=True should leave last_best_distance == 2.0, got {fts_distance}"
+                f"retrieval_mode='fts_only' should leave last_best_distance == 2.0, "
+                f"got {fts_distance}"
             )
 
     @requires_sqlite_vec
     def test_search_fts_only_overrides_explicit_weights(self, tmp_path: Path) -> None:
-        """fts_only must strip explicit vec_weight/fts_weight before validation.
+        """retrieval_mode='fts_only' must strip explicit
+        vec_weight/fts_weight before validation.
 
-        Passing ``fts_only=True, vec_weight=1.5`` is semantically
-        ``fts_only=True`` — the weights are ignored. It must NOT raise
-        ``RRFWeightOutOfRangeError`` because of a stale value the
-        caller did not intend to validate.
+        Passing ``retrieval_mode="fts_only", vec_weight=1.5`` is
+        semantically fts_only -- the weights are ignored.  It must NOT
+        raise ``RRFWeightOutOfRangeError`` because of a stale value
+        the caller did not intend to validate.
         """
         (tmp_path / "doc.md").write_text("Some searchable text here.")
         with Memory(db=tmp_path / "test.db") as mem:
             mem.add(tmp_path / "doc.md")
             # Would raise RRFWeightOutOfRangeError without the
-            # Memory.search override.
+            # Memory.search override that strips weights when the mode
+            # is non-hybrid.
             results = mem.search(
                 "text",
-                fts_only=True,
-                vec_weight=1.5,  # out of range — would normally raise
+                retrieval_mode="fts_only",
+                vec_weight=1.5,  # out of range -- would normally raise
                 fts_weight=-0.2,  # ditto
             )
             assert isinstance(results, list)
 
     @requires_sqlite_vec
-    def test_ask_forwards_fts_only(self, tmp_path: Path) -> None:
-        """Memory.ask() must forward fts_only to its internal search call (#152)."""
+    def test_ask_forwards_retrieval_mode(self, tmp_path: Path) -> None:
+        """Memory.ask() must forward retrieval_mode to its internal
+        search call (#152, #281).
+        """
         captured: dict[str, object] = {}
 
         class _SpyMemory(Memory):
@@ -429,10 +426,10 @@ class TestMemorySearch:
         with _SpyMemory(db=tmp_path / "test.db") as mem:
             mem.add(tmp_path / "a.md")
             try:
-                mem.ask("anything", fts_only=True)
+                mem.ask("anything", retrieval_mode="fts_only")
             except Exception:
                 pass  # inference backend optional
-        assert captured.get("fts_only") is True
+        assert captured.get("retrieval_mode") == "fts_only"
 
 
 # ------------------------------------------------------------------ #

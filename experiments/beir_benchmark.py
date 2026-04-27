@@ -25,8 +25,55 @@ import time
 import urllib.request
 import zipfile
 
-from vstash.embed import embed_query, embed_texts, get_embedding_dim
+from vstash.embed import (
+    embed_query,
+    embed_texts,
+    get_embedding_dim,
+    register_encoder_resolver,
+    unregister_encoder_resolver,
+)
 from vstash.store import VstashStore
+
+
+# ------------------------------------------------------------------ #
+# Optional CUDA encoder resolver (used by Colab T4 runs).             #
+# ------------------------------------------------------------------ #
+# FastEmbed (vstash's default embedder) has no CUDA wheel, so when
+# this script runs on Colab it pegs the shared CPU and FiQA's 57k-doc
+# embed step takes hours.  --device cuda routes every embed_texts /
+# embed_query call through SentenceTransformer pinned to T4 instead,
+# matching what we did in experiments/longmemeval_retrieval.py.
+
+_st_cache: dict = {}
+
+
+class _STEncoder:
+    """Minimal SentenceTransformer adapter to vstash's Encoder protocol."""
+
+    def __init__(self, model_name: str, device: str | None = None) -> None:
+        from sentence_transformers import SentenceTransformer
+
+        self._m = (
+            SentenceTransformer(model_name, device=device)
+            if device
+            else SentenceTransformer(model_name)
+        )
+        self.embedding_dim = self._m.get_sentence_embedding_dimension()
+
+    def encode(self, texts: list[str]):
+        return self._m.encode(texts, normalize_embeddings=True, show_progress_bar=False)
+
+
+def _make_cuda_resolver(device: str):
+    """Return a resolver that claims any model_name and serves it via ST on ``device``."""
+
+    def resolver(model_name: str):
+        if model_name not in _st_cache:
+            _st_cache[model_name] = _STEncoder(model_name, device=device)
+        return _st_cache[model_name]
+
+    return resolver
+
 
 # ------------------------------------------------------------------ #
 # Configuration                                                        #
@@ -235,9 +282,23 @@ def main() -> None:
     )
     parser.add_argument("--model", default=DEFAULT_MODEL, help="Embedding model")
     parser.add_argument("--no-chroma", action="store_true", help="Skip Chroma comparison")
+    parser.add_argument(
+        "--device",
+        choices=["cpu", "cuda"],
+        default=None,
+        help="Pin the embedder to a device.  --device cuda registers a "
+        "SentenceTransformer-on-CUDA resolver so the embed step uses "
+        "T4 instead of FastEmbed CPU (FastEmbed has no CUDA wheel).  "
+        "On the local Mac the FastEmbed default is faster -- leave unset.",
+    )
     args = parser.parse_args()
 
     model_id = args.model
+    resolver = None
+    if args.device == "cuda":
+        resolver = _make_cuda_resolver("cuda")
+        register_encoder_resolver(resolver)
+        print(f"  Registered SentenceTransformer-CUDA resolver for {model_id}")
     dim = get_embedding_dim(model_id)
     run_chroma = not args.no_chroma
 
@@ -414,6 +475,9 @@ def main() -> None:
             indent=2,
         )
     print(f"\n  Results saved to {output_path}")
+
+    if resolver is not None:
+        unregister_encoder_resolver(resolver)
 
 
 if __name__ == "__main__":

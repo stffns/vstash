@@ -493,6 +493,15 @@ _hf_onnx_cache: dict[str, tuple] = {}  # model_name -> (session, tokenizer, max_
 _hf_onnx_lock = threading.Lock()
 _hf_st_cache: dict[str, object] = {}  # model_name -> SentenceTransformer
 _hf_st_lock = threading.Lock()
+# Models whose ONNX init has failed in this process.  Deliberately
+# unlocked: ``set.__contains__`` and ``set.add`` are atomic under the
+# GIL, and a real guard against duplicate slow-path init attempts
+# would have to span the ``_init_hf_onnx`` call itself -- which would
+# serialize every fallback embed through a single mutex.  The check-
+# then-add race across threads is observably benign (worst case: two
+# threads both fail to init the same model before either writes the
+# marker; each independently falls back to sentence-transformers for
+# that call, then subsequent calls see the marker).
 _hf_onnx_unavailable: set[str] = set()
 
 

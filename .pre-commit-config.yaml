@@ -1,0 +1,60 @@
+# pre-commit-config.yaml
+#
+# Runs the exact same two ruff checks that ``.github/workflows/ci.yml``
+# runs on every push / PR.  Matching the versions is what keeps the
+# feedback loop tight: a local ``ruff format .`` with a different
+# version than CI silently passes locally and then fails the remote
+# ``lint`` job.  See also the v0.34.0 cycle where a 0.14 -> 0.15 drift
+# made every feature PR re-push twice.
+#
+# Install once per clone:
+#     pip install pre-commit
+#     pre-commit install
+#
+# Run manually against every file without committing:
+#     pre-commit run --all-files
+#
+# Skip a hook on a single commit (rarely -- the whole point is not to):
+#     SKIP=ruff git commit ...
+#
+# Update pinned versions:
+#     pre-commit autoupdate
+
+minimum_pre_commit_version: "3.5.0"
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    # Keep in lockstep with the ``ruff`` pulled by CI.  Bump both at
+    # the same time and re-run ``pre-commit run --all-files`` when
+    # doing so -- minor versions occasionally reformat.
+    rev: v0.15.11
+    hooks:
+      - id: ruff-check
+        args: [--exit-non-zero-on-fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      # Fail fast on obvious footguns in non-Python files that neither
+      # ruff nor pytest would catch.  Keep this list short: every
+      # extra hook is a cache miss when the worktree is clean.
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      # ``benchmark/corpus/`` holds third-party public-domain texts
+      # (Alice in Wonderland, Art of War) used as fixed inputs for
+      # chunking / latency benchmarks.  Rewriting their whitespace
+      # would invalidate the benchmark baselines, so exclude them.
+      - id: end-of-file-fixer
+        exclude: |
+          (?x)^(
+            .*\.(ipynb|json)|
+            benchmark/corpus/.*
+          )$
+      - id: trailing-whitespace
+        exclude: |
+          (?x)^(
+            .*\.(md|ipynb)|
+            benchmark/corpus/.*
+          )$

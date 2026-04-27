@@ -41,8 +41,28 @@ experiments/data/arxiv_cache/
 experiments/data/hf_cache/
 experiments/data/snapvec_bench_cache/
 experiments/data/wikipedia_corpus.json
+experiments/data/longmemeval/
 
 # Large test files
 experiments/*.pdf
 experiments/results/rrf_training_pairs.jsonl
 experiments/results/rrf_training_pairs.stats.json
+
+# Large LME corpus snapshots (regenerate via experiments.lme_prepare_retrain)
+experiments/lme_retrain_full.db.gz
+experiments/lme_retrain_smoke.db
+
+# SQLite WAL / shared-memory runtime files
+*.db-wal
+*.db-shm
+
+# LaTeX build artifacts
+paper/arxiv/*.aux
+paper/arxiv/*.log
+paper/arxiv/*.out
+paper/arxiv/*.toc
+paper/arxiv/*.bbl
+paper/arxiv/*.blg
+
+# Claude scheduled-task lock
+.claude/scheduled_tasks.lock

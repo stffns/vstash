@@ -215,11 +215,12 @@ class TestVstashSearch:
         mock_store: MagicMock,
         mock_embed: MagicMock,
     ) -> None:
-        """vstash_search MCP tool must forward vec_weight/fts_weight/fts_only
-        kwargs all the way to VstashStore.search (#159).
+        """vstash_search MCP tool must forward vec_weight/fts_weight/
+        retrieval_mode kwargs all the way to VstashStore.search
+        (#159, #281).
 
         Spy on the store.search call and assert the exact kwargs arrive
-        with the coerced values. Mirrors the SDK spy test pattern from
+        with the coerced values.  Mirrors the SDK spy test pattern from
         test_search_forwards_rrf_weights_to_store in test_memory.py so
         the two surfaces stay symmetric.
         """
@@ -230,13 +231,13 @@ class TestVstashSearch:
         mock_store.return_value.record_search_event.return_value = 1
         mock_config.return_value.embeddings.model = "BAAI/bge-small-en-v1.5"
 
-        vstash_search("test query", vec_weight=0.9, fts_weight=0.1, fts_only=False)
+        vstash_search("test query", vec_weight=0.9, fts_weight=0.1)
 
         _, kwargs = mock_store.return_value.search.call_args
         assert kwargs["vec_weight"] == 0.9
         assert kwargs["fts_weight"] == 0.1
         # #275: MCP forwards the resolved retrieval_mode enum to the
-        # store now. fts_only=False resolves to "hybrid".
+        # store.  Default (no mode set) resolves to "hybrid".
         assert kwargs["retrieval_mode"] == "hybrid"
         assert "fts_only" not in kwargs
 
@@ -275,19 +276,14 @@ class TestVstashSearch:
         mock_store: MagicMock,
         mock_embed: MagicMock,
     ) -> None:
-        """MCP clients can send strings where floats/bools are expected.
+        """MCP clients can send strings where floats are expected.
         vstash_search must coerce them defensively instead of 422'ing.
 
         This is the defensive pattern documented in
-        _coerce_optional_float / _coerce_bool — mirrors the existing
-        ``top_k = int(top_k)`` / ``recency_boost = float(recency_boost)``
-        coercions elsewhere in this module.
-
-        NOTE: weight coercion and fts_only coercion are tested
-        separately here because fts_only=True wins precedence and
-        zeros out the weights (see test_search_fts_only_ignores_
-        invalid_weights), so passing all three as strings in one
-        call would assert the wrong thing for the weight path.
+        ``_coerce_optional_float`` / ``_coerce_retrieval_mode`` and
+        mirrors the existing ``top_k = int(top_k)`` /
+        ``recency_boost = float(recency_boost)`` coercions elsewhere
+        in this module.
         """
         chunks = [_make_search_result("hit", "Doc1")]
         mock_store.return_value.search.return_value = chunks
@@ -307,13 +303,9 @@ class TestVstashSearch:
         assert kwargs["fts_weight"] == 0.2
         assert kwargs["retrieval_mode"] == "hybrid"
 
-        # fts_only as a string coerces + resolves to retrieval_mode='fts_only'.
+        # retrieval_mode as a string coerces via _coerce_retrieval_mode.
         mock_store.return_value.search.reset_mock()
-        import warnings
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            vstash_search("test", fts_only="true")  # type: ignore[arg-type]
+        vstash_search("test", retrieval_mode="fts_only")
         _, kwargs = mock_store.return_value.search.call_args
         assert kwargs["retrieval_mode"] == "fts_only"
 
@@ -336,16 +328,12 @@ class TestVstashSearch:
         assert "error" in result
         assert "vec_weight" in result["error"]
 
-        result2 = json.loads(vstash_search("test", fts_only="maybe"))  # type: ignore[arg-type]
-        assert "error" in result2
-        assert "fts_only" in result2["error"]
-
-        # Unknown retrieval_mode string surfaces as structured error too.
-        result3 = json.loads(
+        # Unknown retrieval_mode string surfaces as structured error.
+        result2 = json.loads(
             vstash_search("test", retrieval_mode="semantic")  # type: ignore[arg-type]
         )
-        assert "error" in result3
-        assert "retrieval_mode" in result3["error"]
+        assert "error" in result2
+        assert "retrieval_mode" in result2["error"]
 
     @patch("vstash.mcp.embed_query", return_value=[0.1] * 384)
     @patch("vstash.mcp._get_store")
@@ -377,21 +365,21 @@ class TestVstashSearch:
     @patch("vstash.mcp.embed_query", return_value=[0.1] * 384)
     @patch("vstash.mcp._get_store")
     @patch("vstash.mcp._get_config")
-    def test_search_fts_only_ignores_invalid_weights(
+    def test_retrieval_mode_fts_only_ignores_invalid_weights(
         self,
         mock_config: MagicMock,
         mock_store: MagicMock,
         mock_embed: MagicMock,
     ) -> None:
         """Precedence rule (documented in docs/mcp-server.md): when
-        ``fts_only=true``, ``vec_weight`` and ``fts_weight`` are
-        dropped before coercion and validation. A caller who sends
-        ``fts_only=true`` together with an invalid or out-of-range
-        weight should still get a successful FTS-only query.
+        ``retrieval_mode="fts_only"``, ``vec_weight`` and ``fts_weight``
+        are dropped before coercion and validation.  A caller who sends
+        an invalid or out-of-range weight together with fts_only mode
+        should still get a successful FTS-only query.
 
-        Flagged in the #168 review — without this fix, the weight
-        coercion would run first and raise ``ValueError`` before
-        fts_only was even looked at.
+        Flagged in the #168 review -- without this fix, the weight
+        coercion would run first and raise ``ValueError`` before the
+        mode was even looked at.
         """
         chunks = [_make_search_result("hit", "Doc1")]
         mock_store.return_value.search.return_value = chunks
@@ -401,10 +389,7 @@ class TestVstashSearch:
         mock_config.return_value.embeddings.model = "BAAI/bge-small-en-v1.5"
 
         # Every one of these combinations would fail coercion on its
-        # own but must succeed when paired with fts_only=true (deprecated)
-        # or retrieval_mode="fts_only".
-        import warnings
-
+        # own but must succeed when paired with retrieval_mode="fts_only".
         for bad_vec, bad_fts in [
             ("not_a_number", None),
             ("nan", None),
@@ -412,18 +397,16 @@ class TestVstashSearch:
             ("10.0", "5.0"),  # out of [0, 1] -- but never reaches validator
         ]:
             mock_store.return_value.search.reset_mock()
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", DeprecationWarning)
-                result = json.loads(
-                    vstash_search(
-                        "test",
-                        fts_only=True,
-                        vec_weight=bad_vec,  # type: ignore[arg-type]
-                        fts_weight=bad_fts,  # type: ignore[arg-type]
-                    )
+            result = json.loads(
+                vstash_search(
+                    "test",
+                    retrieval_mode="fts_only",
+                    vec_weight=bad_vec,  # type: ignore[arg-type]
+                    fts_weight=bad_fts,  # type: ignore[arg-type]
                 )
+            )
             assert "error" not in result, (
-                f"fts_only=True should have dropped invalid weights "
+                f"retrieval_mode='fts_only' should have dropped invalid weights "
                 f"vec_weight={bad_vec!r}, fts_weight={bad_fts!r}, "
                 f"but got {result}"
             )
@@ -536,15 +519,15 @@ class TestVstashAsk:
     @patch("vstash.mcp.embed_query", return_value=[0.1] * 384)
     @patch("vstash.mcp._get_store")
     @patch("vstash.mcp._get_config")
-    def test_ask_forwards_rrf_weights_and_fts_only(
+    def test_ask_forwards_rrf_weights_and_mode(
         self,
         mock_config: MagicMock,
         mock_store: MagicMock,
         mock_embed: MagicMock,
     ) -> None:
-        """vstash_ask must forward vec_weight/fts_weight/fts_only to the
-        retrieval step (#159). Symmetric with the SDK ``Memory.ask()``
-        forwarding test.
+        """vstash_ask must forward vec_weight / fts_weight /
+        retrieval_mode to the retrieval step (#159, #281).  Symmetric
+        with the SDK ``Memory.ask()`` forwarding test.
         """
         chunks = [_make_search_result("context", "Doc1")]
         store_inst = mock_store.return_value
@@ -558,13 +541,11 @@ class TestVstashAsk:
                 "query",
                 vec_weight=0.3,
                 fts_weight=0.7,
-                fts_only=False,
             )
 
         _, kwargs = store_inst.search.call_args
         assert kwargs["vec_weight"] == 0.3
         assert kwargs["fts_weight"] == 0.7
-        # #275: retrieval_mode replaces fts_only at the store boundary.
         assert kwargs["retrieval_mode"] == "hybrid"
         assert "fts_only" not in kwargs
 
@@ -579,9 +560,6 @@ class TestVstashAsk:
     ) -> None:
         """vstash_ask must defensively coerce string kwargs from MCP
         clients the same way vstash_search does (#159).
-
-        Tested separately from fts_only because fts_only=True wins
-        precedence and zeros out the weights.
         """
         chunks = [_make_search_result("context", "Doc1")]
         store_inst = mock_store.return_value
@@ -590,7 +568,7 @@ class TestVstashAsk:
         store_inst.expand_context.return_value = chunks
         mock_config.return_value.embeddings.model = "BAAI/bge-small-en-v1.5"
 
-        # Weights as strings, fts_only omitted.
+        # Weights as strings, no mode set (default hybrid).
         with patch("vstash.chat.ask", return_value="answer"):
             vstash_ask(
                 "query",
@@ -602,14 +580,10 @@ class TestVstashAsk:
         assert kwargs["fts_weight"] == 0.9
         assert kwargs["retrieval_mode"] == "hybrid"
 
-        # fts_only as a string coerces + resolves to retrieval_mode='fts_only'.
+        # retrieval_mode as a string coerces via _coerce_retrieval_mode.
         store_inst.search.reset_mock()
-        import warnings
-
         with patch("vstash.chat.ask", return_value="answer"):
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", DeprecationWarning)
-                vstash_ask("query", fts_only="TRUE")  # type: ignore[arg-type]
+            vstash_ask("query", retrieval_mode="fts_only")
         _, kwargs = store_inst.search.call_args
         assert kwargs["retrieval_mode"] == "fts_only"
 
