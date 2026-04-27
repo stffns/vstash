@@ -87,15 +87,37 @@ def _is_local_st_model(model_name: str) -> bool:
     return p.is_dir() and (p / "modules.json").is_file()
 
 
+_st_unavailable_reason: str | None = None
+
+
 def _st_resolver(model_name: str):
+    global _st_unavailable_reason
     if (
         not _st_force_for_all
         and model_name not in _ST_FALLBACK_MODELS
         and not _is_local_st_model(model_name)
     ):
         return None
+    # Once we've confirmed sentence_transformers cannot import in this
+    # process (torch/torchvision/transformers ABI mismatch on a fresh
+    # Colab kernel is the typical cause), stop retrying per-call and
+    # return ``None`` so vstash falls through to FastEmbed cleanly --
+    # otherwise the same multi-frame traceback fires for every chunk.
+    if _st_unavailable_reason is not None:
+        return None
     if model_name not in _st_cache:
-        _st_cache[model_name] = _STEncoder(model_name, device=_st_device_override)
+        try:
+            _st_cache[model_name] = _STEncoder(model_name, device=_st_device_override)
+        except (ImportError, RuntimeError) as exc:
+            _st_unavailable_reason = str(exc)
+            print(
+                f"sentence_transformers unavailable ({type(exc).__name__}: "
+                f"{exc}); falling back to FastEmbed for the rest of the run.  "
+                "On Colab this usually means torch / torchvision were "
+                "force-upgraded out of sync -- restart runtime and avoid "
+                "pip-installing torch directly."
+            )
+            return None
     return _st_cache[model_name]
 
 
