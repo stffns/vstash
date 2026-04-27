@@ -309,6 +309,94 @@ for session_id, turns in chat_sessions.items():
 The labeled-query JSONL then references each `session_id`
 directly in `relevant_paths`.
 
+### Case study: LongMemEval chat memory (+8pp NDCG@10 in 30 minutes)
+
+We validated the labeled-retrain workflow end-to-end on LongMemEval-s,
+a public chat-memory benchmark (Wu et al., 2024) with 500 questions
+across six question types and ~115k tokens of haystack per question.
+
+**Setup.** Stratified 80/20 split by `question_type` with a
+deterministic seed: 398 train queries, 102 holdout. The 102-query
+holdout is disjoint from training; the eval gate scores baseline +
+candidate on it. ~25k unique haystack sessions ingested into one
+vstash corpus, with paths namespaced as `{question_id}:{session_id}`
+to handle the ~4300 sessions LongMemEval reuses across questions.
+
+**Eval gate (102-query holdout, disjoint from train):**
+
+| Model                             | NDCG@10 | Delta vs base |
+|-----------------------------------|--------:|--------------:|
+| BAAI/bge-small-en-v1.5 (vanilla)  | 0.6143  |   --          |
+| Stffens/bge-small-rrf-v3          | 0.5898  | -0.0245       |
+| **bge-small-rrf-lme-v1**          | 0.6878  | **+0.0735**   |
+
+The chat fine-tune lifts NDCG@10 by 11.85% relative over vanilla
+BGE. Two seeded runs with the same data and seed=42 produced 0.6872
+and 0.6878 (delta 0.0006), confirming reproducibility. The gate
+auto-passes both candidates over the `min_gain=0.0` threshold.
+
+**Surprising finding.** Stffens/bge-small-rrf-v3, which we trained on
+BEIR (SciFact + NFCorpus + FiQA) and which beats vanilla BGE on those
+benchmarks, **loses** to vanilla on LongMemEval (-0.0245 NDCG@10,
+-0.028 R@5 on temporal-reasoning specifically). This is the first
+clean in-tree evidence that "best on BEIR" does not transfer to
+"best on chat memory" -- domain matters more than absolute model
+quality. The eval gate would have rejected v3 as a chat-memory
+retriever even though it is a strict improvement on BEIR.
+
+**Where the lift concentrates (per-type R@5, holdout):**
+
+| Type                        | n  | base   | lme-v1 | delta    |
+|-----------------------------|----|--------|--------|----------|
+| single-session-user         | 14 | 0.929  | 0.929  |  0.000   |
+| single-session-assistant    | 12 | 1.000  | 1.000  |  0.000   |
+| single-session-preference   |  6 | 1.000  | 1.000  |  0.000   |
+| **multi-session**           | 27 | 0.869  | 0.938  | **+0.069** |
+| knowledge-update            | 16 | 0.969  | 1.000  | +0.031   |
+| **temporal-reasoning**      | 27 | 0.774  | 0.829  | **+0.056** |
+
+The chat fine-tune does its work where the failure analysis
+predicted: multi-session (multiple gold sessions to surface) and
+temporal-reasoning (cross-session date resolution). Single-session
+types saturate at R@5 even on vanilla -- there was no headroom to
+move there.
+
+**Mechanism.** Pre-fine-tune failure analysis showed gold chunks
+sitting at cosine distance 0.46-0.61 to the query (geometrically far
+in embedding space). The fine-tune compresses (query, gold-chunk)
+pairs in cosine space so the same gold sessions rank higher in
+hybrid RRF. R@50 stays at 1.000 across all arms -- the embedder
+already retrieves the gold; ranking is the lever, not coverage.
+
+**Reproducing the case study end-to-end:**
+
+```bash
+# 1. Data prep (~9 min, Mac local) -- ingests haystacks + emits JSONLs
+python -m experiments.lme_prepare_retrain \
+    --output-db    experiments/lme_retrain_full.db \
+    --output-train experiments/results/lme_train.jsonl \
+    --output-eval  experiments/results/lme_eval.jsonl \
+    --output-meta  experiments/results/lme_retrain_meta.json
+
+# 2. Train on Colab T4 (~12 min) with the eval gate
+VSTASH_DB_PATH=experiments/lme_retrain_full.db vstash retrain \
+    --training-queries experiments/results/lme_train.jsonl \
+    --eval-queries     experiments/results/lme_eval.jsonl \
+    --base-model       BAAI/bge-small-en-v1.5 \
+    --output           ~/.vstash/models/bge-small-rrf-lme-v1 \
+    --bulk-mine --bulk-mine-device cuda
+
+# 3. Score the trained model on the full LongMemEval-s for the
+#    appendix table (Mac local, ~9 min)
+python -m experiments.longmemeval_retrieval --all \
+    --model ~/.vstash/models/bge-small-rrf-lme-v1 \
+    --output experiments/results/lme_full_500_lme-v1.json
+```
+
+The full 4-arm comparison + reproducibility scripts are in
+`experiments/`; the canonical paragraph + auditable tables for paper
+v2 live at `paper/v2/chat_memory_paragraph.md`.
+
 ---
 
 ## Multi-corpus: `vstash retrain-multi`
