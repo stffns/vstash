@@ -104,25 +104,41 @@ def _load_engine(engine: str, model_name: str, device: str):
                 doc_embs, _ = impl.encode_documents(texts, batch_size=batch_size)
                 return doc_embs
 
-            def score(self, q_batch, d_all, doc_chunk: int = 256):
+            def score(self, q_batch, d_all, doc_chunk: int = 128):
                 # q_batch: (Q, seq_q, 128); d_all: (D, seq_d, 128).
                 # Returns (Q, D).
                 #
                 # Naive einsum allocates (Q, D, seq_q, seq_d) which is
                 # ~48 GB for FiQA (Q=32, D=57k, seq_q=33, seq_d=220).
                 # Chunk over docs so the live tensor is only
-                # (Q, doc_chunk, seq_q, seq_d) = O(0.25 GB) on T4.
+                # (Q, doc_chunk, seq_q, seq_d) = O(0.12 GB) on T4
+                # at doc_chunk=128.  If memory is fragmented from a
+                # prior allocation we halve doc_chunk and retry until
+                # the iteration fits or doc_chunk hits 1.
                 import torch
 
                 Q, seq_q, _ = q_batch.shape
                 D = d_all.shape[0]
                 out = torch.empty(Q, D, device=q_batch.device, dtype=q_batch.dtype)
-                for start in range(0, D, doc_chunk):
-                    end = min(start + doc_chunk, D)
-                    sims = torch.einsum("qmh,dnh->qdmn", q_batch, d_all[start:end])
-                    out[:, start:end] = sims.max(dim=3).values.sum(dim=2)
-                    del sims
-                return out
+
+                def _run(chunk: int) -> None:
+                    for start in range(0, D, chunk):
+                        end = min(start + chunk, D)
+                        sims = torch.einsum("qmh,dnh->qdmn", q_batch, d_all[start:end])
+                        out[:, start:end] = sims.max(dim=3).values.sum(dim=2)
+                        del sims
+
+                cur = doc_chunk
+                while True:
+                    try:
+                        _run(cur)
+                        return out
+                    except torch.cuda.OutOfMemoryError:
+                        torch.cuda.empty_cache()
+                        if cur <= 1:
+                            raise
+                        cur = max(1, cur // 2)
+                        print(f"  [ColBERT] OOM at doc_chunk={cur * 2}, retrying at {cur}")
 
         return _MinimalEngine()
 
