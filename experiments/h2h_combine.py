@@ -95,6 +95,48 @@ def render_lme_macro(arms: dict[str, dict]) -> list[str]:
     return lines
 
 
+def _percentile(values: list[float], pct: float) -> float:
+    """Linear-interp percentile (numpy-free) on a sorted copy."""
+    if not values:
+        return float("nan")
+    s = sorted(values)
+    if len(s) == 1:
+        return s[0]
+    rank = (pct / 100.0) * (len(s) - 1)
+    low = int(rank)
+    frac = rank - low
+    if low + 1 >= len(s):
+        return s[-1]
+    return s[low] + frac * (s[low + 1] - s[low])
+
+
+def render_lme_latency(arms_per_question: dict[str, list[dict]]) -> list[str]:
+    """Per-query latency (ms) -- P50, P99, mean.
+
+    Read from each arm's ``per_question`` rows; the harness records
+    ``search_s`` per question for both vstash and the minimal ColBERT
+    engine.  Reports search latency only -- ingest / corpus encoding
+    is excluded since in production the index is persistent.
+    """
+    lines = ["", "LongMemEval-s per-query search latency (ms, n=500):"]
+    header = f"  {'Model':<32} | {'P50':>7} | {'P99':>7} | {'mean':>7}"
+    lines.append(header)
+    lines.append("  " + "-" * (len(header) - 2))
+    for label, rows in arms_per_question.items():
+        if not rows:
+            lines.append(f"  {label:<32} |       - |       - |       -")
+            continue
+        ms = [r["search_s"] * 1000 for r in rows if "search_s" in r and r["search_s"] is not None]
+        if not ms:
+            lines.append(f"  {label:<32} |       - |       - |       -")
+            continue
+        p50 = _percentile(ms, 50)
+        p99 = _percentile(ms, 99)
+        mean = sum(ms) / len(ms)
+        lines.append(f"  {label:<32} | {p50:>7.1f} | {p99:>7.1f} | {mean:>7.1f}")
+    return lines
+
+
 def render_lme_by_type(arms: dict[str, dict]) -> list[str]:
     lines = ["", "LongMemEval per question_type (Recall@10):"]
     header = f"  {'Type':<28} {'n':>4}" + "".join(
@@ -157,10 +199,12 @@ def main() -> None:
 
     # LongMemEval arms in canonical display order.
     lme_arms: dict[str, dict] = {}
+    lme_arms_per_question: dict[str, list[dict]] = {}
     for fname, label in LME_LABEL_BY_FILE.items():
         data = _load_lme(rd / fname)
         if data is not None:
             lme_arms[label] = data["summary"]
+            lme_arms_per_question[label] = data.get("per_question", [])
 
     # BEIR arms.
     beir_v_path = rd / "beir_benchmark.json"
@@ -181,6 +225,7 @@ def main() -> None:
     if lme_arms:
         lines += render_lme_macro(lme_arms)
         lines += render_lme_by_type(lme_arms)
+        lines += render_lme_latency(lme_arms_per_question)
     if beir_arms:
         lines += render_beir(beir_arms)
 

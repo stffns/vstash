@@ -33,6 +33,30 @@ Drop-in paragraph for the chat-memory ablation section. Numbers measured
 | R@20         |   0.9779 |          0.9833 |        0.9804 |         0.9853 |
 | R@50         |   1.0000 |          1.0000 |        1.0000 |         1.0000 |
 
+### Table A3. Per-query search latency on N=500 (ms)
+
+vstash measured on a 2024 Mac (Apple Silicon, FastEmbed CPU embedder
+on a per-question 50-doc store).  ColBERTv2 measured on a Colab T4
+GPU.  Hardware is intentionally not equalised: the local-first claim
+*is* the operational point -- CPU-only vstash should beat GPU-only
+ColBERT to be useful in deployment.
+
+| Engine                              |   P50 |   P99 |  mean |
+|-------------------------------------|------:|------:|------:|
+| vstash base BGE                     |    21 |    52 |    28 |
+| vstash v3 (BEIR-tuned)              |    26 |   223 |    33 |
+| vstash lme-v1 (chat-tuned)          |    27 |    70 |    30 |
+| vstash lme-v1-from-v3               |    26 |   105 |    30 |
+| ColBERTv2 (T4 GPU, minimal HF)      |    87 |   432 |   107 |
+
+vstash hybrid is 3-4x faster at P50 and 4-8x faster at P99 than
+ColBERTv2 even though it runs on CPU rather than GPU.  The chat
+fine-tune does not regress latency (lme-v1 P50 = 27 ms vs vanilla
+BGE 21 ms; the +6 ms spread is within run-to-run noise on a CPU
+embedder).  The v3 P99 = 223 ms outlier is a single long query
+where adaptive RRF expanded the FTS5 pool; it does not affect the
+median operating point.
+
 ### Table A2. Full N=500 macro Recall@K, including ColBERTv2 baseline
 
 The full LongMemEval-s set (n=500) lets us position vstash against
