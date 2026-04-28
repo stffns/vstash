@@ -196,6 +196,7 @@ def evaluate_vstash(
     """Evaluate vstash on a BEIR dataset."""
     test_qids = list(qrels.keys())
     ndcgs, mrrs, recalls, latencies = [], [], [], []
+    per_query: list[dict] = []
 
     for qid in test_qids:
         qe = embed_query(queries[qid], model_id)
@@ -204,15 +205,25 @@ def evaluate_vstash(
         elapsed = (time.perf_counter() - t0) * 1000
         latencies.append(elapsed)
         ranked = [doc_id_map.get(r.path, "") for r in results]
-        ndcgs.append(ndcg_at_k(ranked, qrels[qid], TOP_K))
-        mrrs.append(mrr(ranked, qrels[qid]))
-        recalls.append(recall_at_k(ranked, qrels[qid], TOP_K))
+        q_ndcg = ndcg_at_k(ranked, qrels[qid], TOP_K)
+        q_mrr = mrr(ranked, qrels[qid])
+        q_recall = recall_at_k(ranked, qrels[qid], TOP_K)
+        ndcgs.append(q_ndcg)
+        mrrs.append(q_mrr)
+        recalls.append(q_recall)
+        per_query.append({
+            "qid": qid,
+            "ndcg_10": round(q_ndcg, 6),
+            "mrr": round(q_mrr, 6),
+            "recall_10": round(q_recall, 6),
+        })
 
     return {
         "ndcg_10": round(statistics.mean(ndcgs), 4),
         "mrr": round(statistics.mean(mrrs), 4),
         "recall_10": round(statistics.mean(recalls), 4),
         "latency_ms": round(statistics.mean(latencies), 1),
+        "per_query": per_query,
     }
 
 
@@ -295,10 +306,10 @@ def main() -> None:
 
     model_id = args.model
     resolver = None
-    if args.device == "cuda":
-        resolver = _make_cuda_resolver("cuda")
+    if args.device in ("cuda", "cpu"):
+        resolver = _make_cuda_resolver(args.device)
         register_encoder_resolver(resolver)
-        print(f"  Registered SentenceTransformer-CUDA resolver for {model_id}")
+        print(f"  Registered SentenceTransformer-{args.device.upper()} resolver for {model_id}")
     dim = get_embedding_dim(model_id)
     run_chroma = not args.no_chroma
 
@@ -462,19 +473,53 @@ def main() -> None:
         line += f" {r['vstash']['latency_ms']:>7.1f}ms"
         print(line)
 
-    # Save
+    # Save -- aggregate (compact, no per-query) goes to canonical path,
+    # per-query NDCG goes to a sidecar JSON keyed by model slug for paired
+    # bootstrap analysis (see experiments/paired_bootstrap_beir.py).
+    model_slug = model_id.replace("/", "_").replace(" ", "_")
+    timestamp = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+
+    aggregate_results = []
+    perquery_results = []
+    for r in all_results:
+        v = dict(r["vstash"])
+        v_pq = v.pop("per_query", None)
+        compact = dict(r)
+        compact["vstash"] = v
+        aggregate_results.append(compact)
+        if v_pq is not None:
+            perquery_results.append({
+                "dataset": r["dataset"],
+                "docs": r["docs"],
+                "queries": r["queries"],
+                "per_query": v_pq,
+            })
+
     output_path = "experiments/results/beir_benchmark.json"
     with open(output_path, "w") as f:
         json.dump(
             {
-                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                "timestamp": timestamp,
                 "model": model_id,
-                "results": all_results,
+                "results": aggregate_results,
             },
             f,
             indent=2,
         )
     print(f"\n  Results saved to {output_path}")
+
+    perquery_path = f"experiments/results/beir_perquery_{model_slug}.json"
+    with open(perquery_path, "w") as f:
+        json.dump(
+            {
+                "timestamp": timestamp,
+                "model": model_id,
+                "results": perquery_results,
+            },
+            f,
+            indent=2,
+        )
+    print(f"  Per-query NDCG saved to {perquery_path}")
 
     if resolver is not None:
         unregister_encoder_resolver(resolver)
