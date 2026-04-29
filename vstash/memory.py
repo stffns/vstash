@@ -18,9 +18,10 @@ from pathlib import Path
 from types import TracebackType
 from typing import Literal
 
+from ._store_open import open_store_for_config
 from .chat import ask as _chat_ask
 from .config import VstashConfig, load_config
-from .embed import embed_query, get_embedding_dim
+from .embed import embed_query
 from .ingest import ingest
 from .models import (
     ChunkInfo,
@@ -30,7 +31,6 @@ from .models import (
     SearchResult,
     StoreStats,
 )
-from .store import VstashStore
 
 # Sentinel for distinguishing "parameter not provided" from explicit None.
 _UNSET = object()
@@ -93,21 +93,10 @@ class Memory:
         self._chunk_overlap = chunk_overlap
 
         # Resolution: explicit db param > unified resolve_db_path chain
-        if db:
-            db_path = str(db)
-        else:
-            from .profile import resolve_db_path
-
-            db_path = str(resolve_db_path(profile, config_db_path=self._cfg.storage.db_path))
-        dim = get_embedding_dim(self._cfg.embeddings.model)
-        self._store = VstashStore(
-            db_path,
-            embedding_dim=dim,
-            vector_backend=self._cfg.storage.vector_backend,
-            snapvec_bits=self._cfg.storage.snapvec_bits,
-            observability=self._cfg.observability,
-            limits=self._cfg.limits,
-            cache=self._cfg.cache,
+        self._store = open_store_for_config(
+            self._cfg,
+            db_path=str(db) if db else None,
+            profile=profile,
         )
         # Silent killer defense: warn if the DB was built with a
         # different embedding model or a fastembed version that changed

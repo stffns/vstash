@@ -20,8 +20,12 @@ import re
 import shutil
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .models import SearchResult
+
+if TYPE_CHECKING:
+    from .config import VstashConfig
 
 logger = logging.getLogger(__name__)
 
@@ -230,9 +234,7 @@ def federated_search(
     query_embedding: list[float],
     query_text: str,
     *,
-    embedding_dim: int,
-    vector_backend: str = "sqlite-vec",
-    snapvec_bits: int = 4,
+    cfg: VstashConfig,
     top_k: int = 5,
     collection: str | None = None,
     project: str | None = None,
@@ -244,15 +246,17 @@ def federated_search(
     Opens each profile's VstashStore, runs the query, and merges
     results using Reciprocal Rank Fusion (k=60).  When *expand_window*
     is > 0 each store expands its results with adjacent chunks before
-    closing — this is the only opportunity to expand because the stores
+    closing -- this is the only opportunity to expand because the stores
     are closed after the parallel search phase.
 
     Args:
         query_embedding: Pre-computed query embedding.
         query_text: Raw query text for FTS.
-        embedding_dim: Embedding dimension for stores.
-        vector_backend: Vector backend name.
-        snapvec_bits: Quantization bits for snapvec.
+        cfg: Loaded ``VstashConfig``. Provides every per-profile
+            ``VstashStore`` knob (vector backend, IVFPQ tuning,
+            observability, limits, cache) via ``open_store_for_config``,
+            so all profiles search with the same configuration as the
+            primary store (#297).
         top_k: Number of results to return.
         collection: Optional collection filter.
         project: Optional project filter.
@@ -263,7 +267,7 @@ def federated_search(
         List of (profile_name, SearchResult) tuples sorted by merged score.
         Profile name is "default" for the global database.
     """
-    from .store import VstashStore
+    from ._store_open import open_store_for_config
 
     # Collect all profile db paths (deduplicated by resolved path)
     profiles: list[tuple[str, Path]] = []
@@ -293,12 +297,7 @@ def federated_search(
     def _search_one(item: tuple[str, Path]) -> list[tuple[str, SearchResult]]:
         name, db_path = item
         try:
-            store = VstashStore(
-                str(db_path),
-                embedding_dim=embedding_dim,
-                vector_backend=vector_backend,
-                snapvec_bits=snapvec_bits,
-            )
+            store = open_store_for_config(cfg, db_path=str(db_path))
             try:
                 results = store.search(
                     query_embedding=query_embedding,

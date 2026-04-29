@@ -29,10 +29,10 @@ from rich.panel import Panel
 from rich.table import Table
 
 from . import chat as chat_module
+from ._store_open import open_store_for_config
 from .config import VstashConfig, load_config
-from .embed import embed_query, get_embedding_dim, warmup
+from .embed import embed_query, warmup
 from .ingest import ingest, ingest_directory
-from .profile import resolve_db_path
 from .store import VstashStore, relevance_tier
 
 from . import __version__
@@ -297,20 +297,7 @@ def _get_store(
         cfg = load_config()
     if warm:
         warmup(cfg.embeddings.model)
-    dim = get_embedding_dim(cfg.embeddings.model)
-    db_path = str(resolve_db_path(profile, config_db_path=cfg.storage.db_path))
-    store = VstashStore(
-        db_path,
-        embedding_dim=dim,
-        vector_backend=cfg.storage.vector_backend,
-        snapvec_bits=cfg.storage.snapvec_bits,
-        ivfpq_nlist=cfg.storage.ivfpq_nlist,
-        ivfpq_M=cfg.storage.ivfpq_M,
-        ivfpq_K=cfg.storage.ivfpq_K,
-        ivfpq_rerank_candidates=cfg.storage.ivfpq_rerank_candidates,
-        ivfpq_nprobe=cfg.storage.ivfpq_nprobe,
-        cache=cfg.cache,
-    )
+    store = open_store_for_config(cfg, profile=profile)
     atexit.register(store.close)
     return cfg, store
 
@@ -456,9 +443,7 @@ def ask(
                 tagged = federated_search(
                     query_embedding=q_embedding,
                     query_text=query,
-                    embedding_dim=get_embedding_dim(cfg.embeddings.model),
-                    vector_backend=cfg.storage.vector_backend,
-                    snapvec_bits=cfg.storage.snapvec_bits,
+                    cfg=cfg,
                     top_k=k,
                     collection=collection,
                     project=project,
@@ -717,9 +702,7 @@ def search(
                 tagged = federated_search(
                     query_embedding=q_embedding,
                     query_text=query,
-                    embedding_dim=get_embedding_dim(cfg.embeddings.model),
-                    vector_backend=cfg.storage.vector_backend,
-                    snapvec_bits=cfg.storage.snapvec_bits,
+                    cfg=cfg,
                     top_k=k,
                     collection=collection,
                     project=project,
@@ -1416,13 +1399,10 @@ def reindex(
 
     # Open store with current dim (to read existing data)
     current_dim = get_embedding_dim(cfg.embeddings.model) if model else new_dim
-    db_path = str(resolve_db_path(_profile_from_ctx(ctx), config_db_path=cfg.storage.db_path))
-    store = VstashStore(
-        db_path,
+    store = open_store_for_config(
+        cfg,
+        profile=_profile_from_ctx(ctx),
         embedding_dim=current_dim,
-        vector_backend=cfg.storage.vector_backend,
-        snapvec_bits=cfg.storage.snapvec_bits,
-        cache=cfg.cache,
     )
 
     with store:
@@ -2474,18 +2454,7 @@ def retrain_multi_cmd(
                     "Each --store must use a unique name."
                 )
                 raise typer.Exit(code=1)
-            extra_store = VstashStore(
-                path,
-                embedding_dim=dim,
-                vector_backend=cfg.storage.vector_backend,
-                snapvec_bits=cfg.storage.snapvec_bits,
-                ivfpq_nlist=cfg.storage.ivfpq_nlist,
-                ivfpq_M=cfg.storage.ivfpq_M,
-                ivfpq_K=cfg.storage.ivfpq_K,
-                ivfpq_rerank_candidates=cfg.storage.ivfpq_rerank_candidates,
-                ivfpq_nprobe=cfg.storage.ivfpq_nprobe,
-                cache=cfg.cache,
-            )
+            extra_store = open_store_for_config(cfg, db_path=path, embedding_dim=dim)
             opened_extra.append(extra_store)
             stores[alias] = extra_store
 
