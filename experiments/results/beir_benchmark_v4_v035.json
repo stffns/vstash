@@ -1,0 +1,66 @@
+{
+  "timestamp": "2026-04-28T18:21:03+0200",
+  "model": "/Users/jaysonsteffens/.vstash/models/retrained_v4_post_v034",
+  "results": [
+    {
+      "dataset": "scifact",
+      "docs": 5183,
+      "queries": 300,
+      "model": "/Users/jaysonsteffens/.vstash/models/retrained_v4_post_v034",
+      "vstash": {
+        "ndcg_10": 0.7575,
+        "mrr": 0.728,
+        "recall_10": 0.8749,
+        "latency_ms": 10.6
+      }
+    },
+    {
+      "dataset": "nfcorpus",
+      "docs": 3633,
+      "queries": 323,
+      "model": "/Users/jaysonsteffens/.vstash/models/retrained_v4_post_v034",
+      "vstash": {
+        "ndcg_10": 0.3707,
+        "mrr": 0.5822,
+        "recall_10": 0.177,
+        "latency_ms": 3.7
+      }
+    },
+    {
+      "dataset": "fiqa",
+      "docs": 57638,
+      "queries": 648,
+      "model": "/Users/jaysonsteffens/.vstash/models/retrained_v4_post_v034",
+      "vstash": {
+        "ndcg_10": 0.4455,
+        "mrr": 0.5444,
+        "recall_10": 0.5108,
+        "latency_ms": 92.7
+      }
+    },
+    {
+      "dataset": "scidocs",
+      "docs": 25657,
+      "queries": 1000,
+      "model": "/Users/jaysonsteffens/.vstash/models/retrained_v4_post_v034",
+      "vstash": {
+        "ndcg_10": 0.1971,
+        "mrr": 0.3412,
+        "recall_10": 0.2027,
+        "latency_ms": 34.8
+      }
+    },
+    {
+      "dataset": "arguana",
+      "docs": 8674,
+      "queries": 1406,
+      "model": "/Users/jaysonsteffens/.vstash/models/retrained_v4_post_v034",
+      "vstash": {
+        "ndcg_10": 0.4386,
+        "mrr": 0.3027,
+        "recall_10": 0.8592,
+        "latency_ms": 646.8
+      }
+    }
+  ]
+}
