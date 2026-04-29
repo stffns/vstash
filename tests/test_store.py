@@ -1390,6 +1390,24 @@ class TestAdaptiveRRF:
             "will collapse to ~0 NDCG."
         )
 
+        # Opt-out parity with hybrid: an explicit adaptive_rrf=False from
+        # the caller must disable the relaxation, so the far doc gets
+        # filtered again. Without this gate, vec_only would silently
+        # ignore the user's adaptive_rrf=False.
+        opt_out_results = sample_store.search(
+            query_emb,
+            long_query,
+            retrieval_mode="vec_only",
+            distance_cutoff=1.15,
+            adaptive_rrf=False,
+        )
+        opt_out_paths = {r.path for r in opt_out_results}
+        assert "/test/far.md" not in opt_out_paths, (
+            "vec_only applied the long-query relaxation even though the "
+            "caller passed adaptive_rrf=False. Opt-out must mirror the "
+            "hybrid path semantics."
+        )
+
     def test_idf_weighting_shifts_fts_weight(self, populated_store: VstashStore) -> None:
         """IDF weighting must produce measurably different weights for rare vs common
         terms, and these weights must flow through to search results via explain.
