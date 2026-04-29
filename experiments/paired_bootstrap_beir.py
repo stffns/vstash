@@ -47,9 +47,7 @@ def assert_pairable(base: dict, tuned: dict) -> list[str]:
     """Verify the same datasets and the same qids per dataset are present."""
 
     if set(base) != set(tuned):
-        raise ValueError(
-            f"Dataset mismatch: base={sorted(base)} vs tuned={sorted(tuned)}"
-        )
+        raise ValueError(f"Dataset mismatch: base={sorted(base)} vs tuned={sorted(tuned)}")
     for ds in base:
         if set(base[ds]) != set(tuned[ds]):
             missing_in_tuned = set(base[ds]) - set(tuned[ds])
@@ -82,12 +80,8 @@ def bootstrap_paired(
 
     qids_per_ds = {ds: sorted(base[ds]) for ds in datasets}
 
-    point_base = {
-        ds: statistics.mean(base[ds].values()) for ds in datasets
-    }
-    point_tuned = {
-        ds: statistics.mean(tuned[ds].values()) for ds in datasets
-    }
+    point_base = {ds: statistics.mean(base[ds].values()) for ds in datasets}
+    point_tuned = {ds: statistics.mean(tuned[ds].values()) for ds in datasets}
     point_delta = {ds: point_tuned[ds] - point_base[ds] for ds in datasets}
     point_macro_base = statistics.mean(point_base[ds] for ds in datasets)
     point_macro_tuned = statistics.mean(point_tuned[ds] for ds in datasets)
@@ -149,7 +143,9 @@ def bootstrap_paired(
     }
 
 
-def apply_decision_rule(macro: dict, *, threshold: float = ROBUST_DELTA_THRESHOLD) -> tuple[str, str]:
+def apply_decision_rule(
+    macro: dict, *, threshold: float = ROBUST_DELTA_THRESHOLD
+) -> tuple[str, str]:
     """Apply the pre-committed decision rule from asymmetry_decision_2026_04_28.md."""
 
     delta = macro["delta_point"]

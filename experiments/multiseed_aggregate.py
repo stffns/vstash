@@ -27,8 +27,6 @@ from __future__ import annotations
 import argparse
 import glob
 import json
-import os
-import random
 import re
 import statistics
 import sys
@@ -104,12 +102,16 @@ def main() -> int:
     print(f"Cross-seed aggregation over {len(deltas)} seeds:")
     print(f"  base macro NDCG@10:        {base_macro:.4f}")
     print(
-        f"  tuned macro per seed:      "
-        + ", ".join(f"s{s}={seed_summary['tuned_macro_per_seed'][s]:.4f}" for s in seed_summary["seeds"])
+        "  tuned macro per seed:      "
+        + ", ".join(
+            f"s{s}={seed_summary['tuned_macro_per_seed'][s]:.4f}" for s in seed_summary["seeds"]
+        )
     )
     print(f"  delta_macro mean:          {seed_summary['delta_macro_mean']:+.4f}")
     print(f"  delta_macro stdev:         {seed_summary['delta_macro_stdev']:.4f}")
-    print(f"  delta_macro range [min,max]: [{seed_summary['delta_macro_min']:+.4f}, {seed_summary['delta_macro_max']:+.4f}]")
+    print(
+        f"  delta_macro range [min,max]: [{seed_summary['delta_macro_min']:+.4f}, {seed_summary['delta_macro_max']:+.4f}]"
+    )
     print()
     print("  Per-seed eval-stochastic CIs (paired bootstrap of per-query NDCG@10):")
     for s in seed_summary["seeds"]:

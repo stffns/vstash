@@ -212,12 +212,14 @@ def evaluate_vstash(
         ndcgs.append(q_ndcg)
         mrrs.append(q_mrr)
         recalls.append(q_recall)
-        per_query.append({
-            "qid": qid,
-            "ndcg_10": round(q_ndcg, 6),
-            "mrr": round(q_mrr, 6),
-            "recall_10": round(q_recall, 6),
-        })
+        per_query.append(
+            {
+                "qid": qid,
+                "ndcg_10": round(q_ndcg, 6),
+                "mrr": round(q_mrr, 6),
+                "recall_10": round(q_recall, 6),
+            }
+        )
 
     return {
         "ndcg_10": round(statistics.mean(ndcgs), 4),
@@ -414,7 +416,11 @@ def main() -> None:
 
         embed_query("warmup", model_id)
         v_metrics = evaluate_vstash(
-            store, vstash_id_map, queries, qrels, model_id,
+            store,
+            vstash_id_map,
+            queries,
+            qrels,
+            model_id,
             retrieval_mode=args.retrieval_mode,
         )
         store.close()
@@ -502,12 +508,14 @@ def main() -> None:
         compact["vstash"] = v
         aggregate_results.append(compact)
         if v_pq is not None:
-            perquery_results.append({
-                "dataset": r["dataset"],
-                "docs": r["docs"],
-                "queries": r["queries"],
-                "per_query": v_pq,
-            })
+            perquery_results.append(
+                {
+                    "dataset": r["dataset"],
+                    "docs": r["docs"],
+                    "queries": r["queries"],
+                    "per_query": v_pq,
+                }
+            )
 
     output_path = "experiments/results/beir_benchmark.json"
     with open(output_path, "w") as f:
