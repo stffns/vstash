@@ -64,7 +64,7 @@ class _STEncoder:
         return self._m.encode(texts, normalize_embeddings=True, show_progress_bar=False)
 
 
-def _make_cuda_resolver(device: str):
+def _make_st_resolver(device: str):
     """Return a resolver that claims any model_name and serves it via ST on ``device``."""
 
     def resolver(model_name: str):
@@ -192,6 +192,7 @@ def evaluate_vstash(
     queries: dict[str, str],
     qrels: dict[str, dict[str, int]],
     model_id: str,
+    retrieval_mode: str = "hybrid",
 ) -> dict:
     """Evaluate vstash on a BEIR dataset."""
     test_qids = list(qrels.keys())
@@ -201,7 +202,7 @@ def evaluate_vstash(
     for qid in test_qids:
         qe = embed_query(queries[qid], model_id)
         t0 = time.perf_counter()
-        results = store.search(qe, queries[qid], top_k=TOP_K)
+        results = store.search(qe, queries[qid], top_k=TOP_K, retrieval_mode=retrieval_mode)
         elapsed = (time.perf_counter() - t0) * 1000
         latencies.append(elapsed)
         ranked = [doc_id_map.get(r.path, "") for r in results]
@@ -292,6 +293,14 @@ def main() -> None:
         help="Datasets to evaluate",
     )
     parser.add_argument("--model", default=DEFAULT_MODEL, help="Embedding model")
+    parser.add_argument(
+        "--retrieval-mode",
+        choices=["hybrid", "vec_only", "fts_only"],
+        default="hybrid",
+        help="Retrieval mode: hybrid (default, RRF over vector + FTS5), "
+        "vec_only (semantic-only, skip FTS5), fts_only (keyword-only, skip vector). "
+        "Used to isolate substrate contribution in apples-to-apples evaluations.",
+    )
     parser.add_argument("--no-chroma", action="store_true", help="Skip Chroma comparison")
     parser.add_argument(
         "--device",
@@ -307,7 +316,7 @@ def main() -> None:
     model_id = args.model
     resolver = None
     if args.device in ("cuda", "cpu"):
-        resolver = _make_cuda_resolver(args.device)
+        resolver = _make_st_resolver(args.device)
         register_encoder_resolver(resolver)
         print(f"  Registered SentenceTransformer-{args.device.upper()} resolver for {model_id}")
     dim = get_embedding_dim(model_id)
@@ -404,7 +413,10 @@ def main() -> None:
         print(f"  [vstash] Embed + ingest in {v_ingest:.1f}s ({len(doc_ids)} docs)")
 
         embed_query("warmup", model_id)
-        v_metrics = evaluate_vstash(store, vstash_id_map, queries, qrels, model_id)
+        v_metrics = evaluate_vstash(
+            store, vstash_id_map, queries, qrels, model_id,
+            retrieval_mode=args.retrieval_mode,
+        )
         store.close()
         os.unlink(db_path)
 
@@ -477,6 +489,8 @@ def main() -> None:
     # per-query NDCG goes to a sidecar JSON keyed by model slug for paired
     # bootstrap analysis (see experiments/paired_bootstrap_beir.py).
     model_slug = model_id.replace("/", "_").replace(" ", "_")
+    if args.retrieval_mode != "hybrid":
+        model_slug = f"{model_slug}_{args.retrieval_mode}"
     timestamp = time.strftime("%Y-%m-%dT%H:%M:%S%z")
 
     aggregate_results = []
