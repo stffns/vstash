@@ -2195,6 +2195,17 @@ class VstashStore:
                 vec_weight = 1.0
                 fts_weight = 0.0
                 adaptive_rrf = False
+                # Long-query cutoff relaxation must still fire here.
+                # _compute_adaptive_rrf_params owns the 25.0 cosine cutoff
+                # for >50-word queries, but it's gated on adaptive_rrf
+                # which we just turned off. Without this, ArguAna-style
+                # long queries collapse to ~0 NDCG in vec_only mode
+                # (best_dist ~0.2 in cosine, default cutoff 1.3225 yields
+                # threshold ~0.265, rejecting nearly every candidate
+                # past rank 0). Mirror the hybrid long-query relaxation
+                # so vec_only ablations are honest.
+                if len(query_text.split()) > _ADAPTIVE_RRF_LONG_QUERY:
+                    distance_cutoff = 25.0
 
             # Adaptive RRF: compute weights from query characteristics (IDF + length)
             # Skip if caller provided explicit weights

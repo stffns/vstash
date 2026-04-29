@@ -1314,6 +1314,82 @@ class TestAdaptiveRRF:
                 "this would break ArguAna BEIR gains"
             )
 
+    def test_long_query_cutoff_relaxation_fires_in_vec_only(
+        self, sample_store: VstashStore
+    ) -> None:
+        """vec_only mode must still relax distance_cutoff for long queries.
+
+        Regression for the latent bug surfaced in the v0.35 vec_only BEIR
+        ablation: ArguAna collapsed to NDCG=0.0013 (1403/1406 zero) because
+        vec_only forces adaptive_rrf=False, which previously skipped the
+        long-query cutoff relaxation owned by _compute_adaptive_rrf_params.
+        With the default 1.3225 cutoff and best_dist ~0.2 (typical for
+        diffuse long-query embeddings under cosine), the threshold ~0.265
+        rejected nearly every candidate past rank 0.
+        """
+        dim = sample_store.embedding_dim
+
+        # Mimic the diffuse long-query regime that motivates the 25.0
+        # cutoff: best_distance is non-trivial (~0.3 in cosine), and the
+        # far doc sits at ~1.0. Under a 1.15x cutoff the far doc is
+        # filtered; under the 25.0 long-query relaxation it survives.
+        query_emb = [0.0] * dim
+        query_emb[0] = 1.0
+        close_emb = [0.0] * dim
+        close_emb[0] = 0.7
+        close_emb[1] = 0.7
+        far_emb = [0.0] * dim
+        far_emb[1] = 1.0
+        sample_store.add_document(
+            path="/test/close.md",
+            title="Close Doc",
+            chunks=["close content about programming"],
+            embeddings=[close_emb],
+            source_type="markdown",
+        )
+        sample_store.add_document(
+            path="/test/far.md",
+            title="Far Doc",
+            chunks=["far content about programming"],
+            embeddings=[far_emb],
+            source_type="markdown",
+        )
+
+        long_query = " ".join(["programming"] * 60)
+        short_query = "programming"
+
+        # Baseline: in vec_only mode, a SHORT query with a tight cutoff
+        # drops the far doc (cutoff is honored, no long-query escape).
+        short_results = sample_store.search(
+            query_emb,
+            short_query,
+            retrieval_mode="vec_only",
+            distance_cutoff=1.15,
+        )
+        short_paths = {r.path for r in short_results}
+        assert "/test/far.md" not in short_paths, (
+            "Test setup is wrong: tight cutoff did not drop the far doc "
+            "for a short query, so the long-query relaxation effect is "
+            "untestable."
+        )
+
+        # A LONG query in vec_only must trigger the same 25.0 cutoff
+        # relaxation that hybrid mode gets via _compute_adaptive_rrf_params,
+        # recovering the far doc despite the same explicit tight cutoff.
+        long_results = sample_store.search(
+            query_emb,
+            long_query,
+            retrieval_mode="vec_only",
+            distance_cutoff=1.15,
+        )
+        long_paths = {r.path for r in long_results}
+        assert "/test/far.md" in long_paths, (
+            "vec_only with a >50-word query dropped the far document. "
+            "The long-query distance_cutoff relaxation (25.0) is not "
+            "being applied in vec_only mode -- ArguAna-style ablations "
+            "will collapse to ~0 NDCG."
+        )
+
     def test_idf_weighting_shifts_fts_weight(self, populated_store: VstashStore) -> None:
         """IDF weighting must produce measurably different weights for rare vs common
         terms, and these weights must flow through to search results via explain.
