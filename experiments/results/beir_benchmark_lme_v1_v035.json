@@ -1,0 +1,66 @@
+{
+  "timestamp": "2026-04-28T13:27:08+0200",
+  "model": "Stffens/bge-small-rrf-lme-v1",
+  "results": [
+    {
+      "dataset": "scifact",
+      "docs": 5183,
+      "queries": 300,
+      "model": "Stffens/bge-small-rrf-lme-v1",
+      "vstash": {
+        "ndcg_10": 0.7185,
+        "mrr": 0.6871,
+        "recall_10": 0.8382,
+        "latency_ms": 10.4
+      }
+    },
+    {
+      "dataset": "nfcorpus",
+      "docs": 3633,
+      "queries": 323,
+      "model": "Stffens/bge-small-rrf-lme-v1",
+      "vstash": {
+        "ndcg_10": 0.3586,
+        "mrr": 0.5754,
+        "recall_10": 0.1712,
+        "latency_ms": 3.8
+      }
+    },
+    {
+      "dataset": "fiqa",
+      "docs": 57638,
+      "queries": 648,
+      "model": "Stffens/bge-small-rrf-lme-v1",
+      "vstash": {
+        "ndcg_10": 0.3885,
+        "mrr": 0.4747,
+        "recall_10": 0.4485,
+        "latency_ms": 83.6
+      }
+    },
+    {
+      "dataset": "scidocs",
+      "docs": 25657,
+      "queries": 1000,
+      "model": "Stffens/bge-small-rrf-lme-v1",
+      "vstash": {
+        "ndcg_10": 0.194,
+        "mrr": 0.3423,
+        "recall_10": 0.1996,
+        "latency_ms": 36.3
+      }
+    },
+    {
+      "dataset": "arguana",
+      "docs": 8674,
+      "queries": 1406,
+      "model": "Stffens/bge-small-rrf-lme-v1",
+      "vstash": {
+        "ndcg_10": 0.4354,
+        "mrr": 0.3019,
+        "recall_10": 0.8478,
+        "latency_ms": 648.1
+      }
+    }
+  ]
+}

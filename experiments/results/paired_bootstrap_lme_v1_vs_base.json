@@ -1,0 +1,72 @@
+{
+  "macro": {
+    "base_macro_ndcg_10": 0.421431,
+    "tuned_macro_ndcg_10": 0.418992,
+    "delta_point": -0.002438,
+    "ci_2_5": -0.005025,
+    "ci_97_5": 0.000153,
+    "ci_excludes_zero": false,
+    "B": 1000,
+    "seed": 42
+  },
+  "per_dataset": {
+    "arguana": {
+      "n_queries": 1406,
+      "base_ndcg_10": 0.436702,
+      "tuned_ndcg_10": 0.435397,
+      "delta_point": -0.001306,
+      "ci_2_5": -0.005094,
+      "ci_97_5": 0.00255,
+      "ci_excludes_zero": false,
+      "direction": "base > tuned"
+    },
+    "fiqa": {
+      "n_queries": 648,
+      "base_ndcg_10": 0.391709,
+      "tuned_ndcg_10": 0.388493,
+      "delta_point": -0.003217,
+      "ci_2_5": -0.011354,
+      "ci_97_5": 0.00459,
+      "ci_excludes_zero": false,
+      "direction": "base > tuned"
+    },
+    "nfcorpus": {
+      "n_queries": 323,
+      "base_ndcg_10": 0.359059,
+      "tuned_ndcg_10": 0.358561,
+      "delta_point": -0.000498,
+      "ci_2_5": -0.005237,
+      "ci_97_5": 0.004032,
+      "ci_excludes_zero": false,
+      "direction": "base > tuned"
+    },
+    "scidocs": {
+      "n_queries": 1000,
+      "base_ndcg_10": 0.194538,
+      "tuned_ndcg_10": 0.194024,
+      "delta_point": -0.000515,
+      "ci_2_5": -0.003158,
+      "ci_97_5": 0.00205,
+      "ci_excludes_zero": false,
+      "direction": "base > tuned"
+    },
+    "scifact": {
+      "n_queries": 300,
+      "base_ndcg_10": 0.725145,
+      "tuned_ndcg_10": 0.718488,
+      "delta_point": -0.006656,
+      "ci_2_5": -0.013863,
+      "ci_97_5": 2.8e-05,
+      "ci_excludes_zero": false,
+      "direction": "base > tuned"
+    }
+  },
+  "decision": {
+    "label": "ARTIFACT",
+    "rationale": "CI lower bound crosses zero. Retire the asymmetry claim. The original v2 thesis ('BEIR-tune regresses on chat') is still supported by S5.7 / S6 evidence; the reverse direction is not.",
+    "threshold_delta": 0.04,
+    "rule_source": "experiments/results/asymmetry_decision_2026_04_28.md",
+    "base_input": "experiments/results/beir_perquery_BAAI_bge-small-en-v1.5.json",
+    "tuned_input": "experiments/results/beir_perquery_Stffens_bge-small-rrf-lme-v1.json"
+  }
+}
