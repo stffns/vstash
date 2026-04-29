@@ -272,6 +272,12 @@ RRF_K = 60
 # typically semantic paraphrases where keywords add noise.
 _ADAPTIVE_RRF_LONG_QUERY = 50
 
+# Long-query distance_cutoff. 25.0 = 5.0^2: the squared cosine equivalent
+# of the legacy v1 L2 5.0x cutoff (#272). Diffuse long-query embeddings
+# compress distances; without this relaxation the default 1.3225 cutoff
+# rejects nearly every candidate past rank 0.
+_LONG_QUERY_DISTANCE_CUTOFF = 25.0
+
 
 class VstashStore:
     """SQLite-backed vector + FTS5 hybrid store with RRF ranking.
@@ -2194,6 +2200,19 @@ class VstashStore:
             elif _vec_only:
                 vec_weight = 1.0
                 fts_weight = 0.0
+                # Long-query cutoff relaxation must still fire here.
+                # _compute_adaptive_rrf_params owns the cutoff for
+                # >50-word queries, but it's gated on adaptive_rrf which
+                # we're about to turn off. Without this, ArguAna-style
+                # long queries collapse to ~0 NDCG in vec_only mode
+                # (best_dist ~0.2 in cosine, default cutoff 1.3225 yields
+                # threshold ~0.265, rejecting nearly every candidate
+                # past rank 0). Mirror the hybrid long-query relaxation
+                # so vec_only ablations are honest, and gate it on
+                # adaptive_rrf so an explicit adaptive_rrf=False from
+                # the caller still opts out (parity with hybrid).
+                if adaptive_rrf and len(query_text.split()) > _ADAPTIVE_RRF_LONG_QUERY:
+                    distance_cutoff = _LONG_QUERY_DISTANCE_CUTOFF
                 adaptive_rrf = False
 
             # Adaptive RRF: compute weights from query characteristics (IDF + length)
@@ -4218,15 +4237,11 @@ class VstashStore:
 
         # Long queries: favor vector + relax distance cutoff
         # (diffuse embeddings from long text compress distance range).
-        # 25.0 = 5.0^2: same squaring relationship as the main
-        # ``default_cutoff`` between v1 L2 space and v2 cosine space
-        # (#272); preserves the ArguAna-class "effectively disabled"
-        # semantics where long-query best_dist was ~0.8 under L2 so
-        # 5*best was always past the L2 ceiling of 2.  Under cosine
-        # best_dist is ~0.2 so we need 25*best to keep the cutoff
-        # from rejecting true positives at rank > 0.
+        # See ``_LONG_QUERY_DISTANCE_CUTOFF`` for the squaring rationale
+        # (#272). The vec_only branch in ``search`` mirrors this same
+        # relaxation; both must use the same constant.
         if n_words > _ADAPTIVE_RRF_LONG_QUERY:
-            return 0.9, 0.1, 25.0
+            return 0.9, 0.1, _LONG_QUERY_DISTANCE_CUTOFF
 
         idf_dict, total_chunks = self._build_idf_cache()
 
