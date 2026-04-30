@@ -26,9 +26,10 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, StreamingResponse
 from starlette.routing import Route
 
+from ._store_open import open_store_for_config
 from .chat import stream as chat_stream
 from .config import VstashConfig, load_config
-from .embed import embed_query, get_embedding_dim
+from .embed import embed_query
 from .ingest import ingest
 from .models import SearchResult
 from .store import VstashStore, relevance_tier
@@ -53,20 +54,8 @@ def _get_config() -> VstashConfig:
 def _get_store() -> VstashStore:
     global _store  # noqa: PLW0603
     if _store is None:
-        from .profile import resolve_db_path
-
         cfg = _get_config()
-        dim = get_embedding_dim(cfg.embeddings.model)
-        db_path = str(resolve_db_path(config_db_path=cfg.storage.db_path))
-        _store = VstashStore(
-            db_path,
-            embedding_dim=dim,
-            vector_backend=cfg.storage.vector_backend,
-            snapvec_bits=cfg.storage.snapvec_bits,
-            observability=cfg.observability,
-            limits=cfg.limits,
-            cache=cfg.cache,
-        )
+        _store = open_store_for_config(cfg)
         # Detect embedding model drift on non-empty stores.
         if _store.stats().chunks > 0:
             drift_msg = _store.check_embedding_drift(cfg.embeddings.model)

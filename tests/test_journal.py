@@ -350,8 +350,7 @@ class TestMemoryJournal:
         from unittest.mock import patch
 
         with (
-            patch("vstash.memory.get_embedding_dim", return_value=384),
-            patch("vstash.memory.VstashStore"),
+            patch("vstash.memory.open_store_for_config"),
             patch("vstash.memory.load_config"),
         ):
             from vstash.memory import Memory
@@ -374,8 +373,7 @@ class TestMemoryJournal:
         from unittest.mock import patch
 
         with (
-            patch("vstash.memory.get_embedding_dim", return_value=384),
-            patch("vstash.memory.VstashStore"),
+            patch("vstash.memory.open_store_for_config"),
             patch("vstash.memory.load_config"),
         ):
             from vstash.memory import Memory
@@ -395,8 +393,7 @@ class TestMemoryJournal:
         from unittest.mock import patch
 
         with (
-            patch("vstash.memory.get_embedding_dim", return_value=384),
-            patch("vstash.memory.VstashStore"),
+            patch("vstash.memory.open_store_for_config"),
             patch("vstash.memory.load_config"),
         ):
             from vstash.memory import Memory
@@ -418,8 +415,7 @@ class TestMemoryJournal:
         from unittest.mock import patch
 
         with (
-            patch("vstash.memory.get_embedding_dim", return_value=384),
-            patch("vstash.memory.VstashStore"),
+            patch("vstash.memory.open_store_for_config"),
             patch("vstash.memory.load_config"),
         ):
             from vstash.memory import Memory

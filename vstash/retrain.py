@@ -871,6 +871,11 @@ def evaluate_model(
             tmp_parent / f"retrain_eval_{int(time.time() * 1000)}_{random.randint(0, 1 << 30)}.db"
         )
 
+        # Direct construction (not open_store_for_config) on purpose: this
+        # is a throwaway eval-only DB. The retrain pipeline ingests chunks,
+        # runs NDCG@10, then deletes the file. sqlite-vec defaults are
+        # intentional -- IVFPQ / observability / cache add overhead with
+        # no benefit at the small N evaluated here.
         eval_store = VstashStore(str(tmp_db), embedding_dim=dim)
 
         # Group chunks by document path, then batch-ingest all docs in a

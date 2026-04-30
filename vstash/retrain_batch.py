@@ -548,6 +548,8 @@ def evaluate_model_batched(
             tmp_parent
             / f"retrain_eval_batched_{int(_time.time() * 1000)}_{_random.randint(0, 1 << 30)}.db"
         )
+        # Throwaway eval-only DB; sqlite-vec defaults are intentional.
+        # See vstash/retrain.py for rationale.
         eval_store = VstashStore(str(tmp_db), embedding_dim=dim)
 
         # Ingest so FTS5 is populated. We feed zero-vectors for the

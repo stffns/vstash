@@ -28,8 +28,9 @@ except ImportError as _exc:
         "MCP server requires the mcp package. Install it with: pip install vstash[mcp]"
     ) from _exc
 
+from ._store_open import open_store_for_config
 from .config import VstashConfig, load_config
-from .embed import embed_query, get_embedding_dim, warmup
+from .embed import embed_query, warmup
 from .models import DocumentInfo, IngestResult, SearchResult, StoreStats
 from .store import VstashStore, relevance_tier
 
@@ -107,20 +108,8 @@ def _get_store() -> VstashStore:
     if _store is None:
         with _lock:
             if _store is None:
-                from .profile import resolve_db_path
-
                 cfg = _get_config()
-                dim = get_embedding_dim(cfg.embeddings.model)
-                db_path = str(resolve_db_path(config_db_path=cfg.storage.db_path))
-                _store = VstashStore(
-                    db_path,
-                    embedding_dim=dim,
-                    vector_backend=cfg.storage.vector_backend,
-                    snapvec_bits=cfg.storage.snapvec_bits,
-                    observability=cfg.observability,
-                    limits=cfg.limits,
-                    cache=cfg.cache,
-                )
+                _store = open_store_for_config(cfg)
                 # Detect embedding model drift on non-empty stores.
                 if _store.stats().chunks > 0:
                     drift_msg = _store.check_embedding_drift(cfg.embeddings.model)
@@ -285,20 +274,9 @@ def _run_directory_job(
     Opens its own VstashStore connection to avoid sharing SQLite across threads.
     """
     try:
-        from .embed import get_embedding_dim
         from .ingest import ingest_directory
 
-        from .profile import resolve_db_path
-
-        dim = get_embedding_dim(cfg.embeddings.model)
-        db_path = str(resolve_db_path(config_db_path=cfg.storage.db_path))
-        store = VstashStore(
-            db_path,
-            embedding_dim=dim,
-            vector_backend=cfg.storage.vector_backend,
-            snapvec_bits=cfg.storage.snapvec_bits,
-            cache=cfg.cache,
-        )
+        store = open_store_for_config(cfg)
         try:
             results = ingest_directory(
                 directory,

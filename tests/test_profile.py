@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from vstash.config import VstashConfig
 from vstash.profile import (
     PROFILES_DIR,
     active_profile_info,
@@ -338,7 +339,7 @@ class TestFederatedSearch:
         results = federated_search(
             query_embedding=[0.15] * dim,
             query_text="machine learning",
-            embedding_dim=dim,
+            cfg=VstashConfig(),
             top_k=5,
         )
 
@@ -359,7 +360,7 @@ class TestFederatedSearch:
         results = federated_search(
             query_embedding=[0.1] * 384,
             query_text="test",
-            embedding_dim=384,
+            cfg=VstashConfig(),
         )
         assert results == []
 
@@ -386,7 +387,7 @@ class TestFederatedSearch:
         results = federated_search(
             query_embedding=[0.5] * dim,
             query_text="solo content",
-            embedding_dim=dim,
+            cfg=VstashConfig(),
         )
         assert len(results) == 1
         assert results[0][0] == "default"
@@ -423,7 +424,7 @@ class TestFederatedSearch:
         results = federated_search(
             query_embedding=embedding,
             query_text="shared",
-            embedding_dim=dim,
+            cfg=VstashConfig(),
             top_k=5,
         )
 
@@ -458,7 +459,7 @@ class TestFederatedSearch:
         results = federated_search(
             query_embedding=[0.5] * dim,
             query_text="content",
-            embedding_dim=dim,
+            cfg=VstashConfig(),
         )
         assert len(results) == 1
         # Score should be the RRF score, not the original store score
@@ -510,7 +511,7 @@ class TestFederatedSearch:
         results = federated_search(
             query_embedding=embedding,
             query_text="tail content",
-            embedding_dim=dim,
+            cfg=VstashConfig(),
             top_k=5,
         )
 
@@ -642,17 +643,17 @@ class TestMemoryProfile:
         db_file = tmp_path / "custom.db"
         db_file.touch()
 
-        # Mock the store and config to avoid real embedding initialization
+        # Mock the store opener and config to avoid real embedding initialization
         with (
-            patch("vstash.memory.get_embedding_dim", return_value=384),
-            patch("vstash.memory.VstashStore") as mock_store,
+            patch("vstash.memory.open_store_for_config") as mock_open,
             patch("vstash.memory.load_config"),
         ):
             from vstash.memory import Memory
 
             mem = Memory(db=str(db_file), profile="ignored")
-            # The store should have been called with the db path, not the profile path
-            assert mock_store.call_args[0][0] == str(db_file)
+            # The opener should have been called with the explicit db path, not
+            # the profile path (db param wins over profile in resolution).
+            assert mock_open.call_args.kwargs["db_path"] == str(db_file)
             mem.close()
 
 
@@ -699,7 +700,7 @@ class TestFederatedContextExpansion:
         results_no_expand = federated_search(
             query_embedding=emb_middle,
             query_text="chapter two",
-            embedding_dim=dim,
+            cfg=VstashConfig(),
             top_k=1,
             expand_window=0,
         )
@@ -710,7 +711,7 @@ class TestFederatedContextExpansion:
         results_expanded = federated_search(
             query_embedding=emb_middle,
             query_text="chapter two",
-            embedding_dim=dim,
+            cfg=VstashConfig(),
             top_k=1,
             expand_window=1,
         )
@@ -748,7 +749,7 @@ class TestFederatedContextExpansion:
         results = federated_search(
             query_embedding=[0.9] * dim,
             query_text="target",
-            embedding_dim=dim,
+            cfg=VstashConfig(),
             top_k=1,
             expand_window=0,
         )

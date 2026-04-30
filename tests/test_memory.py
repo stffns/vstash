@@ -732,33 +732,31 @@ class TestSdkDbResolution:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """Memory() without explicit db= delegates to resolve_db_path."""
-        from vstash.profile import resolve_db_path
-
         custom_db = tmp_path / "custom.db"
         monkeypatch.delenv("VSTASH_DB_PATH", raising=False)
         monkeypatch.delenv("VSTASH_PROFILE", raising=False)
         monkeypatch.chdir(tmp_path)
 
-        expected = str(resolve_db_path(config_db_path=str(custom_db)))
-
-        with patch("vstash.memory.VstashStore") as mock_store:
-            mock_store.return_value.close = lambda: None
+        with patch("vstash.memory.open_store_for_config") as mock_open:
+            mock_open.return_value.close = lambda: None
             cfg = VstashConfig()
             # Simulate custom storage.db_path
             storage_cfg = cfg.storage.model_copy(update={"db_path": str(custom_db)})
             custom_cfg = cfg.model_copy(update={"storage": storage_cfg})
             with patch("vstash.memory._load_config_from", return_value=custom_cfg):
                 mem = Memory()
-                assert mock_store.call_args[0][0] == expected
+                # db_path=None lets the helper run resolve_db_path against
+                # the config-provided storage.db_path.
+                assert mock_open.call_args.kwargs["db_path"] is None
                 mem.close()
 
     def test_sdk_explicit_db_overrides_all(self, tmp_path: Path) -> None:
         """Memory(db=...) always uses that path, regardless of config."""
         explicit = str(tmp_path / "explicit.db")
-        with patch("vstash.memory.VstashStore") as mock_store:
-            mock_store.return_value.close = lambda: None
+        with patch("vstash.memory.open_store_for_config") as mock_open:
+            mock_open.return_value.close = lambda: None
             mem = Memory(db=explicit)
-            assert mock_store.call_args[0][0] == explicit
+            assert mock_open.call_args.kwargs["db_path"] == explicit
             mem.close()
 
 
