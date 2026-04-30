@@ -66,3 +66,14 @@ paper/arxiv/*.blg
 
 # Claude scheduled-task lock
 .claude/scheduled_tasks.lock
+
+# macOS iCloud sync collision artefacts (e.g. "foo 2.py", "foo 3.json").
+# These are auto-generated when iCloud cannot reconcile the same file
+# across devices and never represent real work; the un-suffixed file
+# is canonical. iCloud starts numbering at 2, so "* 1.*" / "* 0.*"
+# are NOT collision markers and stay tracked (e.g. "Figure 1.png",
+# "version 0.json"). Multi-digit covers the rare 10+ collision case.
+* [2-9].*
+* [2-9]
+* [0-9][0-9].*
+* [0-9][0-9]
