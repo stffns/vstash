@@ -33,6 +33,7 @@ from ._store_open import open_store_for_config
 from .config import VstashConfig, load_config
 from .embed import embed_query, warmup
 from .ingest import ingest, ingest_directory
+from .services import search_with_embedding
 from .store import VstashStore, relevance_tier
 
 from . import __version__
@@ -433,13 +434,14 @@ def ask(
     with store:
         k = top_k or cfg.chunking.top_k
 
-        # Embed query
+        # Embed + search via the services layer for the single-store
+        # path; federated still embeds once up front because
+        # federated_search wants the embedding pre-computed.
         with console.status("[dim]Searching memory...[/dim]", spinner="dots"):
-            q_embedding = embed_query(query, cfg.embeddings.model)
-
             if all_profiles:
                 from .profile import federated_search
 
+                q_embedding = embed_query(query, cfg.embeddings.model)
                 tagged = federated_search(
                     query_embedding=q_embedding,
                     query_text=query,
@@ -452,10 +454,12 @@ def ask(
                 )
                 chunks = [r for _, r in tagged]
             else:
-                chunks = store.search(
-                    q_embedding,
-                    query,
+                chunks = search_with_embedding(
+                    cfg=cfg,
+                    store=store,
+                    query=query,
                     top_k=k,
+                    expand_window=0,
                     collection=collection,
                     project=project,
                     layer=layer,
@@ -951,15 +955,24 @@ def chat(
                     _maybe_dismiss()
                     break
 
-                # Search
-                q_embedding = embed_query(query, cfg.embeddings.model)
-                chunks = store.search(q_embedding, query, top_k=k)
+                # Search via the services layer: embed + validate +
+                # search + expand_context in one call. expand_window=1
+                # gives the LLM adjacent context, same as before.
+                chunks = search_with_embedding(
+                    cfg=cfg,
+                    store=store,
+                    query=query,
+                    top_k=k,
+                    expand_window=1,
+                )
 
                 if not chunks:
                     console.print("[yellow]No relevant context found.[/yellow]")
                     continue
 
-                # Tiered relevance signal
+                # Tiered relevance signal (post-expand, mirroring the
+                # MCP migration pattern -- semantically identical to
+                # the old pre-expand placement).
                 tier = relevance_tier(store.last_best_distance)
                 last_event_id = store.record_search_event(
                     query=query,
@@ -972,9 +985,6 @@ def chat(
                     console.print("[dim]⚠ Low relevance — context may not match well.[/dim]")
                 elif tier == "medium":
                     console.print("[dim]? Uncertain relevance — results may be tangential.[/dim]")
-
-                # Expand context with adjacent chunks
-                chunks = store.expand_context(chunks, window=1)
 
                 source_list = list({c.title for c in chunks})
                 console.print(f"[dim]Sources: {', '.join(source_list)}[/dim]\n")
