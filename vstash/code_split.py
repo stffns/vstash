@@ -22,14 +22,14 @@ _HAS_TREE_SITTER = False
 _HAS_PARSO = False
 
 try:
-    from tree_sitter_language_pack import get_parser  # noqa: F401
+    from tree_sitter_language_pack import get_parser
 
     _HAS_TREE_SITTER = True
 except ImportError:
     pass
 
 try:
-    import parso as _parso  # noqa: F401
+    import parso as _parso
 
     _HAS_PARSO = True
 except ImportError:

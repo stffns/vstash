@@ -135,7 +135,7 @@ class TestGetChunkSDK:
             ids = [r.chunk_id for r in results]
             chunks = mem.get_chunks(ids)
             assert len(chunks) == len(ids)
-            for chunk, expected_id in zip(chunks, ids):
+            for chunk, expected_id in zip(chunks, ids, strict=False):
                 assert chunk.chunk_id == expected_id
 
 

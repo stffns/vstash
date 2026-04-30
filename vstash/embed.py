@@ -20,7 +20,8 @@ import os
 import platform
 import threading
 import urllib.request
-from typing import TYPE_CHECKING, Callable, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
+from collections.abc import Callable
 
 if TYPE_CHECKING:
     from fastembed import TextEmbedding
@@ -72,11 +73,11 @@ class Encoder(Protocol):
 #: order.  Each resolver receives a ``model_name`` string and returns
 #: an :class:`Encoder` if it handles that name, otherwise ``None`` to
 #: defer to the built-in backends.  See :func:`register_encoder_resolver`.
-_encoder_resolvers: list[Callable[[str], "Encoder | None"]] = []
+_encoder_resolvers: list[Callable[[str], Encoder | None]] = []
 _encoder_resolvers_lock = threading.Lock()
 
 
-def register_encoder_resolver(resolver: Callable[[str], "Encoder | None"]) -> None:
+def register_encoder_resolver(resolver: Callable[[str], Encoder | None]) -> None:
     """Register a custom encoder resolver.
 
     Resolvers are consulted **before** every built-in embedding path
@@ -105,7 +106,7 @@ def register_encoder_resolver(resolver: Callable[[str], "Encoder | None"]) -> No
             _encoder_resolvers.append(resolver)
 
 
-def unregister_encoder_resolver(resolver: Callable[[str], "Encoder | None"]) -> None:
+def unregister_encoder_resolver(resolver: Callable[[str], Encoder | None]) -> None:
     """Remove a previously-registered resolver.
 
     Identity-based match: removes the entry ``r`` where ``r is resolver``.
@@ -119,7 +120,7 @@ def unregister_encoder_resolver(resolver: Callable[[str], "Encoder | None"]) -> 
                 return
 
 
-def _resolve_custom_encoder(model_name: str) -> "Encoder | None":
+def _resolve_custom_encoder(model_name: str) -> Encoder | None:
     """Walk the resolver list and return the first valid encoder that
     claims ``model_name``.
 
@@ -161,7 +162,7 @@ def _resolve_custom_encoder(model_name: str) -> "Encoder | None":
     return None
 
 
-def _embed_via_custom(texts: list[str], encoder: "Encoder") -> list[list[float]]:
+def _embed_via_custom(texts: list[str], encoder: Encoder) -> list[list[float]]:
     """Run a custom encoder and normalise its output to ``list[list[float]]``.
 
     Accepts numpy arrays, nested lists, or any object with ``tolist``.
@@ -394,7 +395,7 @@ def _is_gemma_model(model_name: str) -> bool:
 
 def _init_gemma() -> tuple:
     """Lazily initialize EmbeddingGemma ONNX session and tokenizer."""
-    global _gemma_session, _gemma_tokenizer  # noqa: PLW0603
+    global _gemma_session, _gemma_tokenizer
     if _gemma_session is None:
         with _gemma_lock:
             if _gemma_session is None:
@@ -746,7 +747,7 @@ _active_backend: Literal["onnx", "mlx"] | None = None
 
 def _resolve(backend: BackendType = "auto") -> Literal["onnx", "mlx"]:
     """Resolve and cache the active backend."""
-    global _active_backend  # noqa: PLW0603
+    global _active_backend
     if _active_backend is None:
         _active_backend = resolve_backend(backend)
     return _active_backend
@@ -800,7 +801,7 @@ def _check_daemon() -> str | None:
     """
     if _is_daemon:
         return None
-    global _daemon_checked, _daemon_available, _daemon_url  # noqa: PLW0603
+    global _daemon_checked, _daemon_available, _daemon_url
     if _daemon_checked:
         return _daemon_url if _daemon_available else None
     with _daemon_lock:
@@ -826,7 +827,7 @@ def _mark_daemon_unavailable() -> None:
     daemon crashes gracefully: one failed request triggers a re-probe
     instead of paying the full HTTP timeout on every subsequent call.
     """
-    global _daemon_checked, _daemon_available  # noqa: PLW0603
+    global _daemon_checked, _daemon_available
     _daemon_available = False
     _daemon_checked = False
 

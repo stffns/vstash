@@ -130,7 +130,7 @@ This is enough content to generate at least one chunk for the embedding pipeline
 
         assert result.status == "ok"
         # Title should contain slugified words from content, not "note"
-        assert "note" != result.title
+        assert result.title != "note"
         assert "oauth2" in result.title
         # Source path should match
         call_kwargs = store.add_document.call_args

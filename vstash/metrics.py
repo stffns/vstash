@@ -91,7 +91,7 @@ class Histogram:
     is computed lazily in ``snapshot()``.
     """
 
-    __slots__ = ("_buckets_upper", "_bucket_counts", "_sum", "_count")
+    __slots__ = ("_bucket_counts", "_buckets_upper", "_count", "_sum")
 
     def __init__(self, buckets_ms: tuple[float, ...] = _DEFAULT_BUCKETS_MS) -> None:
         self._buckets_upper: tuple[float, ...] = buckets_ms
@@ -131,7 +131,7 @@ class Histogram:
         """
         cumulative = 0
         buckets: list[dict[str, Any]] = []
-        for upper, count in zip(self._buckets_upper, self._bucket_counts):
+        for upper, count in zip(self._buckets_upper, self._bucket_counts, strict=True):
             cumulative += count
             buckets.append(
                 {

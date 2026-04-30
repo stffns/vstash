@@ -910,7 +910,7 @@ def chat(
         )
 
         history: list[dict[str, str]] = []
-        import tiktoken  # noqa: PLC0415 — lazy import, only needed for chat
+        import tiktoken
 
         _enc = tiktoken.get_encoding("cl100k_base")
         _MAX_HISTORY_TOKENS = 8192
@@ -1023,7 +1023,7 @@ def list_docs(
     layer: str | None = typer.Option(None, "--layer", "-l", help="Filter by layer"),
 ) -> None:
     """List all documents in memory."""
-    cfg, store = _get_store(profile=_profile_from_ctx(ctx))
+    _cfg, store = _get_store(profile=_profile_from_ctx(ctx))
 
     with store:
         docs = store.list_documents(
@@ -1083,7 +1083,7 @@ def export(
     import csv
     import json
 
-    cfg, store = _get_store(profile=_profile_from_ctx(ctx))
+    _cfg, store = _get_store(profile=_profile_from_ctx(ctx))
 
     with store:
         chunks = store.export_chunks(
@@ -1234,7 +1234,7 @@ def forget(
     path: str = typer.Argument(..., help="File path or URL to remove from memory"),
 ) -> None:
     """Remove a document from memory."""
-    cfg, store = _get_store(profile=_profile_from_ctx(ctx))
+    _cfg, store = _get_store(profile=_profile_from_ctx(ctx))
 
     with store:
         source = str(Path(path).resolve()) if Path(path).exists() else path
@@ -1273,7 +1273,7 @@ def check(
     """
     import json as _json
 
-    cfg, store = _get_store(profile=_profile_from_ctx(ctx))
+    _cfg, store = _get_store(profile=_profile_from_ctx(ctx))
     with store:
         results = store.integrity_check()
         repairs: list = []

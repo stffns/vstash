@@ -38,7 +38,7 @@ def _downgrade(db_path: str, dim: int) -> None:
     conn.close()
 
 
-def _open_worker(db_path: str, dim: int, result_q: "mp.Queue[tuple[str, str]]") -> None:
+def _open_worker(db_path: str, dim: int, result_q: mp.Queue[tuple[str, str]]) -> None:
     """Open the store -- blocks on BEGIN IMMEDIATE if another process is mid-migration."""
     try:
         store = VstashStore(db_path, embedding_dim=dim)

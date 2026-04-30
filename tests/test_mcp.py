@@ -622,12 +622,15 @@ class TestVstashAdd:
         assert result["chunks"] == 2
 
     def test_add_nonexistent_path_returns_error(self) -> None:
-        with patch("vstash.mcp._get_config"), patch("vstash.mcp._get_store"):
-            with patch(
+        with (
+            patch("vstash.mcp._get_config"),
+            patch("vstash.mcp._get_store"),
+            patch(
                 "vstash.ingest.ingest",
                 side_effect=FileNotFoundError("not found"),
-            ):
-                result = json.loads(vstash_add("/nonexistent/file.txt"))
+            ),
+        ):
+            result = json.loads(vstash_add("/nonexistent/file.txt"))
 
         assert "error" in result
         assert "not found" in result["error"].lower()

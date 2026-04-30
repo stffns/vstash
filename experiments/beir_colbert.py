@@ -117,7 +117,7 @@ def _load_engine(engine: str, model_name: str, device: str):
                 # the iteration fits or doc_chunk hits 1.
                 import torch
 
-                Q, seq_q, _ = q_batch.shape
+                Q, _seq_q, _ = q_batch.shape
                 D = d_all.shape[0]
                 out = torch.empty(Q, D, device=q_batch.device, dtype=q_batch.dtype)
 
@@ -200,7 +200,7 @@ def evaluate_colbert(
         for j, qid in enumerate(test_qids[start:end]):
             row = sim_np[j]
             t0 = time.perf_counter()
-            if TOP_K >= len(row):
+            if len(row) <= TOP_K:
                 idx = np.argsort(-row)
             else:
                 part = np.argpartition(-row, TOP_K - 1)[:TOP_K]

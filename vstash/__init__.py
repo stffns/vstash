@@ -14,12 +14,12 @@ from .models import (
 )
 
 __all__ = [
-    "Memory",
     "AskResult",
     "ChunkInfo",
     "DocumentInfo",
     "ExplainInfo",
     "IngestResult",
+    "Memory",
     "SearchResult",
     "StoreStats",
 ]

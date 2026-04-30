@@ -220,7 +220,7 @@ class TestCosineSim:
         b = [random.gauss(0, 1) for _ in range(384)]
 
         # Naive reference
-        dot = sum(x * y for x, y in zip(a, b))
+        dot = sum(x * y for x, y in zip(a, b, strict=False))
         norm_a = math.sqrt(sum(x * x for x in a))
         norm_b = math.sqrt(sum(x * x for x in b))
         expected = dot / (norm_a * norm_b)
@@ -338,7 +338,7 @@ class TestMMRDedup:
         # Sanity: the single-chunk doc must still be present (it would
         # be selected under the reference implementation too because
         # its norm_score is non-zero).
-        assert any("Single" == r.title for r in r1), (
+        assert any(r.title == "Single" for r in r1), (
             f"single-chunk doc missing from results: {[r.title for r in r1]}"
         )
 
@@ -562,7 +562,7 @@ class TestExpandContext:
         # For every original hit we must see the prev and next chunk
         # text merged into expanded.text, including hits whose tuples
         # landed in the second (or later) SQL batch.
-        for original, exp in zip(results, expanded):
+        for original, exp in zip(results, expanded, strict=False):
             prev_text = texts[original.chunk - 1]
             next_text = texts[original.chunk + 1]
             assert prev_text in exp.text, (
@@ -583,7 +583,7 @@ class TestAdaptiveRelevanceThreshold:
 
     def test_fallback_with_few_samples(self, sample_store: VstashStore) -> None:
         """Should return fallback when fewer than 10 spreads."""
-        for i in range(5):
+        for _i in range(5):
             sample_store.record_spread(0.3)
         assert sample_store.adaptive_relevance_threshold(fallback=0.15) == 0.15
 
@@ -1000,10 +1000,10 @@ class TestAdaptiveRRF:
     def test_rare_terms_boost_fts(self, populated_store: VstashStore) -> None:
         """OOV / very rare terms should increase FTS weight."""
         # Use a term unlikely to be in the test corpus
-        vec_w_rare, fts_w_rare, _ = populated_store._compute_adaptive_rrf_params(
+        _vec_w_rare, fts_w_rare, _ = populated_store._compute_adaptive_rrf_params(
             "XYZZY_UNKNOWN_TERM"
         )
-        vec_w_common, fts_w_common, _ = populated_store._compute_adaptive_rrf_params("Python")
+        _vec_w_common, fts_w_common, _ = populated_store._compute_adaptive_rrf_params("Python")
         # Rare term should give higher FTS weight than common term
         assert fts_w_rare > fts_w_common
 
@@ -1468,7 +1468,7 @@ class TestAdaptiveRRF:
 class TestBatchMode:
     """Tests for ``VstashStore.batch_mode()`` context manager."""
 
-    def test_single_invalidation_during_batch(self, sample_store: "VstashStore"):
+    def test_single_invalidation_during_batch(self, sample_store: VstashStore):
         """Inside batch_mode, _invalidate_idf_cache defers the actual clear."""
         dim = sample_store.embedding_dim
 
@@ -1506,7 +1506,7 @@ class TestBatchMode:
         assert sample_store._idf_cache is None
         assert sample_store._batch_dirty is False
 
-    def test_no_invalidation_when_batch_clean(self, sample_store: "VstashStore"):
+    def test_no_invalidation_when_batch_clean(self, sample_store: VstashStore):
         """If no mutations happen inside batch_mode, cache stays intact."""
         dim = sample_store.embedding_dim
         sample_store.add_document(
@@ -1523,7 +1523,7 @@ class TestBatchMode:
 
         assert sample_store._idf_cache is not None, "Cache was invalidated despite no mutations"
 
-    def test_nested_batch_mode(self, sample_store: "VstashStore"):
+    def test_nested_batch_mode(self, sample_store: VstashStore):
         """Nested batch_mode defers invalidation until outermost exits."""
         dim = sample_store.embedding_dim
         sample_store.add_document(
@@ -1551,7 +1551,7 @@ class TestBatchMode:
         assert sample_store._idf_cache is None
         assert sample_store._batch_depth == 0
 
-    def test_batch_mode_exception_still_invalidates(self, sample_store: "VstashStore"):
+    def test_batch_mode_exception_still_invalidates(self, sample_store: VstashStore):
         """If an exception occurs inside batch_mode, cache is still invalidated."""
         dim = sample_store.embedding_dim
         sample_store.add_document(
@@ -1578,7 +1578,7 @@ class TestBatchMode:
         assert sample_store._batch_depth == 0
         assert sample_store._batch_dirty is False
 
-    def test_search_works_after_batch(self, sample_store: "VstashStore"):
+    def test_search_works_after_batch(self, sample_store: VstashStore):
         """Search returns correct results after batch_mode exits."""
         dim = sample_store.embedding_dim
 
@@ -1594,7 +1594,7 @@ class TestBatchMode:
         assert len(results) >= 1
         assert results[0].path == "/doc.md"
 
-    def test_delete_inside_batch(self, sample_store: "VstashStore"):
+    def test_delete_inside_batch(self, sample_store: VstashStore):
         """delete_document inside batch_mode defers cache invalidation."""
         dim = sample_store.embedding_dim
         sample_store.add_document(
@@ -1614,7 +1614,7 @@ class TestBatchMode:
 
         assert sample_store._idf_cache is None
 
-    def test_delete_by_prefix_inside_batch(self, sample_store: "VstashStore"):
+    def test_delete_by_prefix_inside_batch(self, sample_store: VstashStore):
         """delete_by_path_prefix inside batch_mode defers cache invalidation."""
         dim = sample_store.embedding_dim
         for i in range(3):
@@ -1634,7 +1634,7 @@ class TestBatchMode:
 
         assert sample_store._idf_cache is None
 
-    def test_nested_exception_with_recovery(self, sample_store: "VstashStore"):
+    def test_nested_exception_with_recovery(self, sample_store: VstashStore):
         """Inner batch raises, outer batch catches and continues normally."""
         dim = sample_store.embedding_dim
         sample_store.add_document(
@@ -1688,7 +1688,7 @@ class TestBatchMode:
 class TestRecencyBoost:
     """Tests for recency_boost parameter in search()."""
 
-    def test_recency_boost_zero_is_noop(self, populated_store: "VstashStore"):
+    def test_recency_boost_zero_is_noop(self, populated_store: VstashStore):
         """recency_boost=0.0 should not change result ordering."""
         dim = populated_store.embedding_dim
         q = [0.1] * dim
@@ -1696,7 +1696,7 @@ class TestRecencyBoost:
         normal = populated_store.search(q, "Python", top_k=5)
         assert [r.chunk_id for r in base] == [r.chunk_id for r in normal]
 
-    def test_recency_boost_favors_recent(self, sample_store: "VstashStore"):
+    def test_recency_boost_favors_recent(self, sample_store: VstashStore):
         """Chunks created recently should rank higher with recency_boost > 0."""
         dim = sample_store.embedding_dim
         from datetime import datetime, timedelta, timezone
@@ -1733,7 +1733,7 @@ class TestRecencyBoost:
         results_boosted = sample_store.search(q, "Python programming", top_k=5, recency_boost=2.0)
         assert results_boosted[0].path == "/new.md"
 
-    def test_recency_boost_preserves_results(self, populated_store: "VstashStore"):
+    def test_recency_boost_preserves_results(self, populated_store: VstashStore):
         """recency_boost should not add or remove results, only reorder."""
         dim = populated_store.embedding_dim
         q = [0.15] * dim
@@ -1745,7 +1745,7 @@ class TestRecencyBoost:
 class TestTemporalFilters:
     """Tests for added_after/added_before date filters."""
 
-    def test_added_after_filters_old_docs(self, sample_store: "VstashStore"):
+    def test_added_after_filters_old_docs(self, sample_store: VstashStore):
         """added_after should exclude documents added before the cutoff."""
         dim = sample_store.embedding_dim
 
@@ -1775,7 +1775,7 @@ class TestTemporalFilters:
         assert "/new.md" in paths
         assert "/old.md" not in paths
 
-    def test_added_before_filters_new_docs(self, sample_store: "VstashStore"):
+    def test_added_before_filters_new_docs(self, sample_store: VstashStore):
         """added_before should exclude documents added after the cutoff."""
         dim = sample_store.embedding_dim
 
@@ -1803,7 +1803,7 @@ class TestTemporalFilters:
         assert "/old.md" in paths
         assert "/new.md" not in paths
 
-    def test_date_range_filter(self, sample_store: "VstashStore"):
+    def test_date_range_filter(self, sample_store: VstashStore):
         """Combining added_after and added_before creates a date range."""
         dim = sample_store.embedding_dim
 
@@ -1829,7 +1829,7 @@ class TestTemporalFilters:
         assert "/jan.md" not in paths
         assert "/new.md" not in paths
 
-    def test_no_filter_returns_all(self, populated_store: "VstashStore"):
+    def test_no_filter_returns_all(self, populated_store: VstashStore):
         """Without temporal filters, all documents are returned."""
         dim = populated_store.embedding_dim
         q = [0.15] * dim

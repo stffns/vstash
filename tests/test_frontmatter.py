@@ -177,7 +177,7 @@ class TestStoreMetadataFilter:
     def test_no_metadata_returns_none(self, store_with_metadata: object) -> None:
         store = store_with_metadata  # type: ignore[assignment]
         docs = store.list_documents()
-        readme = [d for d in docs if d.title == "Readme"][0]
+        readme = next(d for d in docs if d.title == "Readme")
         assert readme.project is None
         assert readme.layer is None
         assert readme.tags is None

@@ -252,7 +252,7 @@ class TestApiUpload:
             mock_upload.return_value = IngestResult(status="ok", source="/x", title="x", chunks=1)
             files = {"file": ("report.md", io.BytesIO(b"body"), "text/markdown")}
             client.post("/api/upload", files=files)
-        args, kwargs = mock_upload.call_args
+        args, _kwargs = mock_upload.call_args
         # _do_upload(file_bytes, suffix, original_name)
         assert args[0] == b"body"
         assert args[1] == ".md"

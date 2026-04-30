@@ -115,7 +115,7 @@ def _ensure_bert_config(model_dir: Path) -> None:
             f"fetched {base_url} -> {root_config} (fallback; model_dir "
             "had no root or nested config.json with model_type)"
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise FileNotFoundError(
             f"{model_dir} has no usable config.json anywhere, and the "
             f"base-model fallback download failed: {exc}"

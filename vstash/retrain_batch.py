@@ -303,7 +303,7 @@ def generate_triples_batched(
         for start in range(0, query_vecs.size(0), matmul_batch_queries):
             batch = query_vecs[start : start + matmul_batch_queries]
             sims = batch @ corpus_vecs.T  # (B, N)
-            top_scores, top_idx = sims.topk(min(TOP_K, sims.size(1)), dim=1)
+            _top_scores, top_idx = sims.topk(min(TOP_K, sims.size(1)), dim=1)
             idx_cpu = top_idx.cpu().tolist()
             for row in idx_cpu:
                 all_vec_topk.append([corpus_ids[i] for i in row])
@@ -319,7 +319,7 @@ def generate_triples_batched(
     pairs: list[dict] = []
     disagreements = 0
     t0 = time.perf_counter()
-    for q_idx, (query_text, source) in enumerate(zip(query_texts, query_sources)):
+    for q_idx, (query_text, source) in enumerate(zip(query_texts, query_sources, strict=True)):
         vec_top = all_vec_topk[q_idx]
         fts_top = _fts_top_k(store._conn, query_text, TOP_K)
         # A chunk id can appear in fts_top but not in corpus slice only
@@ -624,7 +624,7 @@ def evaluate_model_batched(
             for start in range(0, query_vecs.size(0), matmul_batch_queries):
                 batch = query_vecs[start : start + matmul_batch_queries]
                 sims = batch @ corpus_vecs.T
-                top_scores, top_idx = sims.topk(min(_EVAL_RECALL_K, sims.size(1)), dim=1)
+                _top_scores, top_idx = sims.topk(min(_EVAL_RECALL_K, sims.size(1)), dim=1)
                 idx_cpu = top_idx.cpu().tolist()
                 for matmul_indices in idx_cpu:
                     all_vec_topk.append(
@@ -641,7 +641,7 @@ def evaluate_model_batched(
         # ranking to unique paths in first-occurrence order before
         # scoring. Without this, a relevant doc surfacing twice in
         # top-10 would be counted twice and push NDCG above 1.0.
-        for q, vec_top in zip(normalized_queries, all_vec_topk):
+        for q, vec_top in zip(normalized_queries, all_vec_topk, strict=True):
             fts_top = _fts_top_k(eval_store._conn, q["query"], _EVAL_RECALL_K)
             fts_top = [cid for cid in fts_top if cid in chunk_id_to_path]
 
@@ -885,7 +885,7 @@ def generate_labeled_triples_batched(
         for start in range(0, query_vecs.size(0), matmul_batch_queries):
             batch = query_vecs[start : start + matmul_batch_queries]
             sims = batch @ corpus_vecs.T
-            top_scores, top_idx = sims.topk(min(TOP_K, sims.size(1)), dim=1)
+            _top_scores, top_idx = sims.topk(min(TOP_K, sims.size(1)), dim=1)
             idx_cpu = top_idx.cpu().tolist()
             for matmul_indices in idx_cpu:
                 all_vec_topk.append([corpus_ids[i] for i in matmul_indices])
@@ -906,7 +906,7 @@ def generate_labeled_triples_batched(
     pairs: list[dict] = []
     total_disagreements = 0
     try:
-        for q, vec_top in zip(filtered, all_vec_topk):
+        for q, vec_top in zip(filtered, all_vec_topk, strict=True):
             qtext = q["query"]
             gold_paths = set(q["relevant_paths"])
 

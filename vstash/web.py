@@ -45,14 +45,14 @@ _store: VstashStore | None = None
 
 
 def _get_config() -> VstashConfig:
-    global _config  # noqa: PLW0603
+    global _config
     if _config is None:
         _config = load_config()
     return _config
 
 
 def _get_store() -> VstashStore:
-    global _store  # noqa: PLW0603
+    global _store
     if _store is None:
         cfg = _get_config()
         _store = open_store_for_config(cfg)
@@ -541,7 +541,7 @@ async def api_metrics(request: Request) -> JSONResponse:
 
 
 @asynccontextmanager
-async def _lifespan(app: Starlette):  # noqa: ARG001
+async def _lifespan(app: Starlette):
     """Close the store on shutdown.
 
     Without an explicit close(), the sqlite3 connection and the
@@ -551,11 +551,11 @@ async def _lifespan(app: Starlette):  # noqa: ARG001
     alive avoids that race.
     """
     yield
-    global _store  # noqa: PLW0603
+    global _store
     if _store is not None:
         try:
             _store.close()
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.warning("store.close() failed during shutdown", exc_info=True)
         _store = None
 

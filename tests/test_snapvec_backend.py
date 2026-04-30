@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import numpy as np  # noqa: E402
+import numpy as np
 import pytest
 
 pytest.importorskip("snapvec", reason="snapvec not installed")
 
-from vstash.store import VstashStore, _HAS_SNAPVEC  # noqa: E402
+from vstash.store import VstashStore, _HAS_SNAPVEC
 
 
 DIM = 32  # small dim for fast tests
