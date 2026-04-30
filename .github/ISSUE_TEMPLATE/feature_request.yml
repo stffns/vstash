@@ -37,5 +37,5 @@ body:
       options:
         - label: I have searched existing issues and the request is not already open.
           required: true
-        - label: I have read [docs/roadmap.md](../docs/roadmap.md) and confirmed this is not already planned.
+        - label: I have checked the [professionalization roadmap](https://github.com/stffns/vstash/blob/main/docs/professionalization-roadmap.md) and confirmed this is not already planned.
           required: false

@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         Thanks for the report. Please run through the checks below before submitting.
-        For security issues, see [SECURITY.md](../SECURITY.md) instead -- do not file a public bug.
+        For security issues, see [SECURITY.md](https://github.com/stffns/vstash/blob/main/SECURITY.md) instead; do not file a public bug.
 
   - type: input
     id: version

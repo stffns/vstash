@@ -23,7 +23,7 @@ Thanks for sending a PR. Please make sure:
 <!-- Checklist of tests run / manual verification steps. -->
 - [ ] `python -m pytest tests/ -x -q`
 - [ ] `ruff check . && ruff format --check .`
-- [ ]
+- [ ] Manual verification (if applicable; describe below)
 
 ## Risk / blast radius
 

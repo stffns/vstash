@@ -3,13 +3,13 @@
 ## Supported versions
 
 vstash is pre-1.0 (Beta). Only the latest minor release on PyPI receives
-security fixes. Older versions (0.X-1 and below) are not patched; upgrade
-to the current release before reporting.
+security fixes. Older minors are not patched; upgrade to the current
+release (`pip install --upgrade vstash`) before reporting.
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 0.36.x  | :white_check_mark: |
-| < 0.36  | :x:                |
+| Version                | Supported          |
+| ---------------------- | ------------------ |
+| Latest minor on PyPI   | :white_check_mark: |
+| Older minors           | :x:                |
 
 ## Reporting a vulnerability
 

@@ -6,10 +6,10 @@ body:
     attributes:
       value: |
         Performance issues benefit massively from a reproducible probe.
-        See `notes/` and the `perf-cliff-debug` skill -- the discipline is
-        **probe first, fix second**: a micro-benchmark sweeping the
-        suspected parameter usually tells us the bug shape before any
-        code change.
+        The discipline we follow is **probe first, fix second**: a small
+        micro-benchmark that sweeps the suspected parameter usually
+        tells us the bug shape (linear, quadratic, cliff at some N)
+        before any code change. Please include one whenever you can.
 
   - type: textarea
     id: shape
