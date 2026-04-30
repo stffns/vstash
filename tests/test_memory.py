@@ -747,6 +747,38 @@ class TestMemoryAsk:
                 # Second arg is the chunks list
                 assert isinstance(mock.call_args[0][1], list)
 
+    @requires_sqlite_vec
+    def test_ask_full_routes_through_chat_ask_full(self, tmp_path: Path) -> None:
+        """Memory.ask_full() must dispatch to chat.ask_full (#303), not
+        chat.ask. Same retrieval, different LLM call."""
+        from vstash.models import AskResult
+
+        doc = tmp_path / "askable.md"
+        doc.write_text("Python is a high-level language for general purpose programming.")
+
+        fake = AskResult(
+            content="mocked answer",
+            reasoning="step 1: think",
+            usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            backend="cerebras",
+            model="gpt-oss-120b",
+        )
+        with Memory(db=tmp_path / "test.db") as mem:
+            mem.add(doc)
+            with (
+                patch("vstash.memory._chat_ask_full", return_value=fake) as mock_full,
+                patch("vstash.memory._chat_ask") as mock_plain,
+            ):
+                result = mem.ask_full("what is python?")
+                # Plain ask must NOT have fired -- this is the whole point.
+                mock_plain.assert_not_called()
+                mock_full.assert_called_once()
+                assert mock_full.call_args[0][0] == "what is python?"
+                assert isinstance(mock_full.call_args[0][1], list)
+            assert isinstance(result, AskResult)
+            assert result.reasoning == "step 1: think"
+            assert result.usage["total_tokens"] == 15
+
 
 # ------------------------------------------------------------------ #
 # SDK DB resolution consistency                                        #

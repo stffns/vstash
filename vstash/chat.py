@@ -18,7 +18,7 @@ from collections.abc import Callable, Generator
 from typing import ParamSpec, TypeVar
 
 from .config import VstashConfig
-from .models import SearchResult
+from .models import AskResult, SearchResult
 
 T = TypeVar("T")
 P = ParamSpec("P")
@@ -96,6 +96,27 @@ Rules:
 - For code questions, provide working code examples from the context."""
 
 
+def _normalize_usage(raw: object) -> dict[str, int] | None:
+    """Coerce an SDK ``usage`` object into ``{prompt, completion, total}_tokens``.
+
+    Cerebras / OpenAI return a Pydantic-ish object; some compat servers
+    return a plain dict; older SDKs may omit it entirely. We accept any
+    of those shapes and keep only int fields we recognise.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        get = raw.get
+    else:
+        get = lambda k, default=None: getattr(raw, k, default)  # noqa: E731
+    out: dict[str, int] = {}
+    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        value = get(key)
+        if isinstance(value, int):
+            out[key] = value
+    return out or None
+
+
 def _build_prompt(query: str, chunks: list[SearchResult]) -> str:
     """Build user prompt from query and retrieved context chunks.
 
@@ -154,7 +175,7 @@ def _ask_cerebras(
     chunks: list[SearchResult],
     cfg: VstashConfig,
     history: list[dict[str, str]] | None = None,
-) -> str:
+) -> AskResult:
     """Send query to Cerebras API and return the response.
 
     Args:
@@ -164,7 +185,7 @@ def _ask_cerebras(
         history: Prior conversation turns.
 
     Returns:
-        Model response text.
+        AskResult with content + (when present) reasoning + usage.
 
     Raises:
         ValueError: If API key is missing.
@@ -187,15 +208,25 @@ def _ask_cerebras(
 
     client = Cerebras(api_key=api_key)
     messages = _build_messages(query, chunks, history)
+    model = cfg.inference.model
 
     try:
         response = client.chat.completions.create(
-            model=cfg.inference.model,
+            model=model,
             messages=messages,
             max_tokens=2048,
             temperature=0.2,
         )
-        return response.choices[0].message.content  # type: ignore[return-value]
+        message = response.choices[0].message
+        # gpt-oss-* surfaces hidden CoT here; older models / SDKs omit it.
+        reasoning = getattr(message, "reasoning", None) or None
+        return AskResult(
+            content=message.content or "",
+            reasoning=reasoning,
+            usage=_normalize_usage(getattr(response, "usage", None)),
+            backend="cerebras",
+            model=model,
+        )
     except Exception as exc:
         raise ConnectionError(f"Cerebras API error: {exc}") from exc
 
@@ -261,7 +292,7 @@ def _ask_ollama(
     chunks: list[SearchResult],
     cfg: VstashConfig,
     history: list[dict[str, str]] | None = None,
-) -> str:
+) -> AskResult:
     """Send query to Ollama local server and return the response.
 
     Args:
@@ -271,7 +302,7 @@ def _ask_ollama(
         history: Prior conversation turns.
 
     Returns:
-        Model response text.
+        AskResult with content + (qwen3 thinking-mode) reasoning + usage.
 
     Raises:
         ConnectionError: If Ollama server is unreachable.
@@ -286,14 +317,36 @@ def _ask_ollama(
 
     client = ollama.Client(host=cfg.ollama.host)
     messages = _build_messages(query, chunks, history)
+    model = cfg.ollama.model
 
     try:
         response = client.chat(
-            model=cfg.ollama.model,
+            model=model,
             messages=messages,
             options={"temperature": 0.2},
         )
-        return response["message"]["content"]  # type: ignore[index]
+        message = response["message"]
+        # qwen3 thinking-enabled models surface CoT here; absent otherwise.
+        reasoning = message.get("thinking") if isinstance(message, dict) else None
+        # Ollama exposes prompt_eval_count + eval_count on the response root.
+        prompt = response.get("prompt_eval_count") if hasattr(response, "get") else None
+        completion = response.get("eval_count") if hasattr(response, "get") else None
+        usage: dict[str, int] | None = None
+        if isinstance(prompt, int) or isinstance(completion, int):
+            p = prompt if isinstance(prompt, int) else 0
+            c = completion if isinstance(completion, int) else 0
+            usage = {
+                "prompt_tokens": p,
+                "completion_tokens": c,
+                "total_tokens": p + c,
+            }
+        return AskResult(
+            content=message["content"] if isinstance(message, dict) else "",
+            reasoning=reasoning or None,
+            usage=usage,
+            backend="ollama",
+            model=model,
+        )
     except Exception as exc:
         raise ConnectionError(f"Ollama error: {exc}") from exc
 
@@ -353,7 +406,7 @@ def _ask_openai(
     chunks: list[SearchResult],
     cfg: VstashConfig,
     history: list[dict[str, str]] | None = None,
-) -> str:
+) -> AskResult:
     """Send query to OpenAI API (or compatible endpoint) and return the response.
 
     Args:
@@ -363,7 +416,9 @@ def _ask_openai(
         history: Prior conversation turns.
 
     Returns:
-        Model response text.
+        AskResult. ``reasoning`` is populated only when the underlying
+        endpoint surfaces a non-standard reasoning channel (some
+        OpenAI-compatible servers do; vanilla GPT-4 does not).
 
     Raises:
         ValueError: If API key is missing.
@@ -396,7 +451,15 @@ def _ask_openai(
             temperature=0.2,
             extra_body=cfg.openai.extra_body,
         )
-        return response.choices[0].message.content or ""
+        message = response.choices[0].message
+        reasoning = getattr(message, "reasoning", None) or None
+        return AskResult(
+            content=message.content or "",
+            reasoning=reasoning,
+            usage=_normalize_usage(getattr(response, "usage", None)),
+            backend="openai",
+            model=model,
+        )
     except Exception as exc:
         raise ConnectionError(f"OpenAI API error: {exc}") from exc
 
@@ -575,13 +638,18 @@ def _resolve_local_config(cfg: VstashConfig) -> VstashConfig:
         )
 
 
-def ask(
+def ask_full(
     query: str,
     chunks: list[SearchResult],
     cfg: VstashConfig,
     history: list[dict[str, str]] | None = None,
-) -> str:
-    """Send query + context chunks to the configured inference backend.
+) -> AskResult:
+    """Like :func:`ask`, but returns the full normalized result.
+
+    Surfaces the reasoning channel and token usage that ``ask()`` drops.
+    Driven by Merken Phase 2 distillation (see issue #303); generally
+    useful for trace-aware logging or evaluation. ``ask()`` is now a
+    thin wrapper that returns ``ask_full(...).content``.
 
     Args:
         query: The user's question.
@@ -590,7 +658,8 @@ def ask(
         history: Prior conversation turns for multi-turn chat.
 
     Returns:
-        Model response text.
+        AskResult with content + (when surfaced) reasoning + usage +
+        resolved backend / model.
 
     Raises:
         ValueError: If the configured backend is unknown.
@@ -610,6 +679,30 @@ def ask(
 
     ask_fn, _ = backend_funcs
     return _retry_call(ask_fn, query, chunks, cfg, history)
+
+
+def ask(
+    query: str,
+    chunks: list[SearchResult],
+    cfg: VstashConfig,
+    history: list[dict[str, str]] | None = None,
+) -> str:
+    """Send query + context chunks to the configured inference backend.
+
+    Args:
+        query: The user's question.
+        chunks: Retrieved context chunks.
+        cfg: Vex configuration.
+        history: Prior conversation turns for multi-turn chat.
+
+    Returns:
+        Model response text. Use :func:`ask_full` if you also need the
+        reasoning trace and usage counts.
+
+    Raises:
+        ValueError: If the configured backend is unknown.
+    """
+    return ask_full(query, chunks, cfg, history).content
 
 
 def stream(

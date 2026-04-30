@@ -3,10 +3,19 @@
 __version__ = "0.35.0"
 
 from .memory import Memory
-from .models import ChunkInfo, DocumentInfo, ExplainInfo, IngestResult, SearchResult, StoreStats
+from .models import (
+    AskResult,
+    ChunkInfo,
+    DocumentInfo,
+    ExplainInfo,
+    IngestResult,
+    SearchResult,
+    StoreStats,
+)
 
 __all__ = [
     "Memory",
+    "AskResult",
     "ChunkInfo",
     "DocumentInfo",
     "ExplainInfo",

@@ -20,10 +20,12 @@ from typing import Literal
 
 from ._store_open import open_store_for_config
 from .chat import ask as _chat_ask
+from .chat import ask_full as _chat_ask_full
 from .config import VstashConfig, load_config
 from .embed import embed_query
 from .ingest import ingest
 from .models import (
+    AskResult,
     ChunkInfo,
     DocumentInfo,
     IngestResult,
@@ -525,6 +527,50 @@ class Memory:
             retrieval_mode=retrieval_mode,
         )
         return _chat_ask(query, chunks, self._cfg, history)
+
+    def ask_full(
+        self,
+        query: str,
+        *,
+        top_k: int = 5,
+        collection: object = _UNSET,
+        project: object = _UNSET,
+        layer: str | None = None,
+        history: list[dict[str, str]] | None = None,
+        vec_weight: float | None = None,
+        fts_weight: float | None = None,
+        retrieval_mode: Literal["hybrid", "vec_only", "fts_only"] | None = None,
+    ) -> AskResult:
+        """Like :meth:`ask`, but returns content + reasoning + usage.
+
+        Same retrieval and prompt construction as :meth:`ask`; the only
+        difference is that the LLM call goes through
+        :func:`vstash.chat.ask_full` so the reasoning channel and token
+        counts are preserved (issue #303). Drives Merken Phase 2
+        distillation (``Q -> reasoning_trace -> A`` shape).
+
+        Args:
+            See :meth:`ask` -- arguments are identical.
+
+        Returns:
+            AskResult. ``reasoning`` is populated when the backend
+            surfaces it (Cerebras gpt-oss-*, Ollama qwen3 thinking).
+
+        Raises:
+            ValueError: If no inference backend is configured.
+            ConnectionError: If the inference API fails.
+        """
+        chunks = self.search(
+            query,
+            top_k=top_k,
+            collection=collection,
+            project=project,
+            layer=layer,
+            vec_weight=vec_weight,
+            fts_weight=fts_weight,
+            retrieval_mode=retrieval_mode,
+        )
+        return _chat_ask_full(query, chunks, self._cfg, history)
 
     def remove(self, source: str | Path) -> bool:
         """Remove a document from memory.

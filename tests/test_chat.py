@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
 import pytest
 
-from vstash.chat import _build_messages, _build_prompt, _is_retryable, _retry_call
+from vstash.chat import _build_messages, _build_prompt, _is_retryable, _retry_call, ask, ask_full
 from vstash.config import VstashConfig
-from vstash.models import SearchResult
+from vstash.models import AskResult, SearchResult
 
 
 def _make_chunk(text: str, title: str = "TestDoc") -> SearchResult:
@@ -147,3 +150,178 @@ class TestRetryLogic:
         with pytest.raises(ConnectionError, match="401"):
             _retry_call(auth_error)
         assert call_count == 1
+
+
+# ------------------------------------------------------------------ #
+# ask_full() / AskResult (#303)                                        #
+# ------------------------------------------------------------------ #
+
+
+def _cerebras_response(content: str, *, reasoning: str | None = None, usage: dict | None = None):
+    """Mimic the shape ``cerebras.cloud.sdk.Cerebras.chat.completions.create``
+    returns: ``response.choices[0].message.{content,reasoning}`` plus
+    ``response.usage``."""
+    msg = SimpleNamespace(content=content)
+    if reasoning is not None:
+        msg.reasoning = reasoning
+    choice = SimpleNamespace(message=msg)
+    usage_obj = SimpleNamespace(**usage) if usage else None
+    return SimpleNamespace(choices=[choice], usage=usage_obj)
+
+
+def _cfg_cerebras(model: str = "gpt-oss-120b") -> VstashConfig:
+    return VstashConfig.model_validate(
+        {
+            "inference": {"backend": "cerebras", "model": model},
+            "cerebras": {"api_key": "test-key"},
+        }
+    )
+
+
+class TestAskFullCerebras:
+    """Cerebras is the priority backend (Merken Phase 2 driver)."""
+
+    def test_populates_reasoning_and_usage_when_present(self) -> None:
+        cfg = _cfg_cerebras("gpt-oss-120b")
+        chunks = [_make_chunk("ctx")]
+        client = MagicMock()
+        client.chat.completions.create.return_value = _cerebras_response(
+            "the answer",
+            reasoning="step 1: ... step 2: ...",
+            usage={"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150},
+        )
+        with patch("cerebras.cloud.sdk.Cerebras", return_value=client):
+            result = ask_full("q", chunks, cfg)
+        assert isinstance(result, AskResult)
+        assert result.content == "the answer"
+        assert result.reasoning == "step 1: ... step 2: ..."
+        assert result.usage == {
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "total_tokens": 150,
+        }
+        assert result.backend == "cerebras"
+        assert result.model == "gpt-oss-120b"
+
+    def test_reasoning_none_when_model_omits_it(self) -> None:
+        """llama3.1-8b on Cerebras has no reasoning channel; result.reasoning
+        must be None, not empty string."""
+        cfg = _cfg_cerebras("llama3.1-8b")
+        chunks = [_make_chunk("ctx")]
+        client = MagicMock()
+        # No ``reasoning`` attribute on the mocked message at all.
+        client.chat.completions.create.return_value = _cerebras_response("plain answer")
+        with patch("cerebras.cloud.sdk.Cerebras", return_value=client):
+            result = ask_full("q", chunks, cfg)
+        assert result.content == "plain answer"
+        assert result.reasoning is None
+        assert result.backend == "cerebras"
+        assert result.model == "llama3.1-8b"
+
+    def test_empty_string_reasoning_collapses_to_none(self) -> None:
+        """``message.reasoning = ""`` (some SDK versions) must collapse to None,
+        not become a valid empty trace."""
+        cfg = _cfg_cerebras("gpt-oss-120b")
+        chunks = [_make_chunk("ctx")]
+        client = MagicMock()
+        client.chat.completions.create.return_value = _cerebras_response("answer", reasoning="")
+        with patch("cerebras.cloud.sdk.Cerebras", return_value=client):
+            result = ask_full("q", chunks, cfg)
+        assert result.reasoning is None
+
+
+class TestAskFullOpenAI:
+    """OpenAI / OpenAI-compat. Reasoning channel is non-standard so the
+    common case is ``reasoning=None``; usage is always populated."""
+
+    def test_no_reasoning_for_vanilla_openai(self) -> None:
+        cfg = VstashConfig.model_validate(
+            {
+                "inference": {"backend": "openai"},
+                "openai": {"api_key": "k", "model": "gpt-4o-mini"},
+            }
+        )
+        chunks = [_make_chunk("ctx")]
+        client = MagicMock()
+        msg = SimpleNamespace(content="hello")
+        choice = SimpleNamespace(message=msg)
+        usage_obj = SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+        client.chat.completions.create.return_value = SimpleNamespace(
+            choices=[choice], usage=usage_obj
+        )
+        with patch("openai.OpenAI", return_value=client):
+            result = ask_full("q", chunks, cfg)
+        assert result.content == "hello"
+        assert result.reasoning is None
+        assert result.usage == {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+        }
+        assert result.backend == "openai"
+        assert result.model == "gpt-4o-mini"
+
+
+class TestAskFullOllama:
+    """Ollama exposes thinking content for qwen3 thinking-enabled models."""
+
+    def test_with_thinking_and_eval_counts(self) -> None:
+        cfg = VstashConfig.model_validate(
+            {
+                "inference": {"backend": "ollama"},
+                "ollama": {"host": "http://localhost:11434", "model": "qwen3:8b"},
+            }
+        )
+        chunks = [_make_chunk("ctx")]
+        client = MagicMock()
+        client.chat.return_value = {
+            "message": {"content": "answer", "thinking": "trace..."},
+            "prompt_eval_count": 30,
+            "eval_count": 12,
+        }
+        with patch("ollama.Client", return_value=client):
+            result = ask_full("q", chunks, cfg)
+        assert result.content == "answer"
+        assert result.reasoning == "trace..."
+        assert result.usage == {
+            "prompt_tokens": 30,
+            "completion_tokens": 12,
+            "total_tokens": 42,
+        }
+        assert result.backend == "ollama"
+        assert result.model == "qwen3:8b"
+
+    def test_without_thinking_returns_none(self) -> None:
+        cfg = VstashConfig.model_validate(
+            {
+                "inference": {"backend": "ollama"},
+                "ollama": {"host": "http://localhost:11434", "model": "llama3:8b"},
+            }
+        )
+        chunks = [_make_chunk("ctx")]
+        client = MagicMock()
+        client.chat.return_value = {
+            "message": {"content": "plain answer"},
+            "prompt_eval_count": 5,
+            "eval_count": 3,
+        }
+        with patch("ollama.Client", return_value=client):
+            result = ask_full("q", chunks, cfg)
+        assert result.reasoning is None
+        assert result.content == "plain answer"
+
+
+class TestAskBackwardCompat:
+    """``ask()`` keeps its ``-> str`` contract via ``ask_full().content``."""
+
+    def test_ask_returns_plain_string(self) -> None:
+        cfg = _cfg_cerebras("gpt-oss-120b")
+        chunks = [_make_chunk("ctx")]
+        client = MagicMock()
+        client.chat.completions.create.return_value = _cerebras_response(
+            "the answer", reasoning="hidden cot"
+        )
+        with patch("cerebras.cloud.sdk.Cerebras", return_value=client):
+            result = ask("q", chunks, cfg)
+        assert isinstance(result, str)
+        assert result == "the answer"
