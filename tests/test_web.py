@@ -405,6 +405,34 @@ class TestDoUploadPersistence:
         assert len(path.name) < 200
         assert path.suffix == ".md"
 
+    def test_caps_long_suffix_too(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+        """A 1KB suffix must not survive the cap intact -- the basename
+        budget covers safe_name + suffix together (CodeRabbit on #309)."""
+        import vstash.web as web_mod
+
+        uploads_dir = tmp_path / "uploads"
+        monkeypatch.setattr(web_mod, "_UPLOADS_DIR", uploads_dir)
+        monkeypatch.setattr(web_mod, "_get_config", lambda: MagicMock())
+        monkeypatch.setattr(web_mod, "_get_store", lambda: MagicMock())
+        captured: list = []
+        monkeypatch.setattr(
+            web_mod,
+            "ingest",
+            lambda path, *_a, **_kw: (
+                captured.append(path) or IngestResult(status="ok", source=path, title="t", chunks=1)
+            ),
+        )
+
+        adversarial_suffix = "." + ("a" * 1024)
+        web_mod._do_upload(b"body", adversarial_suffix, "ok.md")
+
+        from pathlib import Path
+
+        path = Path(captured[0])
+        # Final basename stays under the OS limit even when the suffix
+        # itself is pathological.
+        assert len(path.name) < 200
+
 
 # ------------------------------------------------------------------ #
 # HTML index + observability                                           #

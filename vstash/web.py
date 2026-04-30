@@ -142,12 +142,26 @@ def _do_upload(file_bytes: bytes, suffix: str, original_name: str | None = None)
     raw_name = original_name or "upload"
     src_name = raw_name.replace("\\", "/").rsplit("/", 1)[-1] or "upload"
     safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in src_name)
-    # Cap the basename length so an adversarial filename can't blow
-    # past ENAMETOOLONG (255 on most filesystems). Keep the suffix.
-    if len(safe_name) > 128:
-        safe_name = safe_name[:128]
-    if not safe_name.endswith(suffix):
-        safe_name += suffix
+    # Cap the FINAL basename (incl. suffix) so an adversarial filename or
+    # suffix can't blow past ENAMETOOLONG (255 on most filesystems). The
+    # uuid12 prefix + dash add 13 chars to the on-disk name; keep margin.
+    _MAX_BASENAME = 128
+    safe_suffix = "".join(c if c.isalnum() or c in "._-" else "_" for c in (suffix or ""))
+    if safe_suffix and not safe_suffix.startswith("."):
+        safe_suffix = "." + safe_suffix
+    # If the suffix alone exceeds the cap, truncate it; never let it eat
+    # the whole budget.
+    if len(safe_suffix) >= _MAX_BASENAME:
+        safe_suffix = safe_suffix[: _MAX_BASENAME - 1]
+    # Strip an existing copy of the suffix so we always re-append it
+    # exactly once at the cap boundary.
+    if safe_suffix and safe_name.endswith(safe_suffix):
+        safe_name = safe_name[: -len(safe_suffix)]
+    if safe_suffix:
+        keep = max(1, _MAX_BASENAME - len(safe_suffix))
+        safe_name = safe_name[:keep] + safe_suffix
+    elif len(safe_name) > _MAX_BASENAME:
+        safe_name = safe_name[:_MAX_BASENAME]
     target = _UPLOADS_DIR / f"{uuid.uuid4().hex[:12]}-{safe_name}"
     target.write_bytes(file_bytes)
     return ingest(str(target), cfg, store, force=True)
