@@ -399,7 +399,7 @@ class VstashStore:
             self._vector_backend = "sqlite-vec"
             return
 
-        from ._ivfpq_backend import IVFPQBackend
+        from .vectorbackend.snapvec_ivfpq import IVFPQBackend
 
         nlist = self._ivfpq_nlist or self._derive_nlist()
         kwargs = dict(
@@ -459,7 +459,7 @@ class VstashStore:
 
         import numpy as np
 
-        from ._ivfpq_backend import IVFPQBackend
+        from .vectorbackend.snapvec_ivfpq import IVFPQBackend
 
         # Stream vec_chunks into a pre-allocated float32 matrix so peak
         # memory stays bounded at ~N * dim * 4 bytes (e.g. ~150 MB at
@@ -2285,7 +2285,7 @@ class VstashStore:
                 #   conversion here.
                 # - ``snapvec-ivfpq`` (``IVFPQBackend``) already
                 #   applies ``1 - similarity`` inside its own
-                #   ``search()`` (see ``_ivfpq_backend.py``) and
+                #   ``search()`` (see ``vectorbackend/snapvec_ivfpq.py``) and
                 #   must not be double-inverted.
                 #
                 # ``min / max`` clamps keep the invariant that

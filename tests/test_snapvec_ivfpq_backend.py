@@ -7,8 +7,8 @@ import pytest
 
 pytest.importorskip("snapvec", reason="snapvec not installed")
 
-from vstash._ivfpq_backend import IVFPQBackend
 from vstash.store import VstashStore
+from vstash.vectorbackend import IVFPQBackend
 
 DIM = 96  # multiple of ivfpq_M so no param juggling is needed
 N = 400  # big enough for the default nlist without overfitting warnings
@@ -168,7 +168,7 @@ class TestVstashStoreIVFPQIntegration:
         """Regression test for #289: the per-backend branch in
         ``VstashStore.search`` must not double-invert ``IVFPQBackend
         .search`` output.  ``IVFPQBackend`` already returns cosine
-        distance in ``[0, 2]`` (see ``_ivfpq_backend.py``), so a same-
+        distance in ``[0, 2]`` (see ``vectorbackend/snapvec_ivfpq.py``), so a same-
         vector query under ``snapvec-ivfpq`` must land in the
         ``"high"`` tier, not the ``"low"`` tier that double-inversion
         would produce.
