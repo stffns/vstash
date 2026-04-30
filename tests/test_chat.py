@@ -167,7 +167,7 @@ class TestRetryLogic:
 
 class TestNormalizeUsage:
     """Lock in the contract for the helper that flattens SDK ``usage``
-    objects into a plain dict."""
+    objects into a complete dict (or None)."""
 
     def test_none_in_none_out(self) -> None:
         assert _normalize_usage(None) is None
@@ -185,9 +185,22 @@ class TestNormalizeUsage:
             "total_tokens": 9,
         }
 
-    def test_partial_keys_kept(self) -> None:
-        """Missing fields are simply dropped, not coerced to 0."""
-        assert _normalize_usage({"prompt_tokens": 7}) == {"prompt_tokens": 7}
+    def test_total_derived_when_missing(self) -> None:
+        """If prompt + completion are present but total is missing, we
+        derive total = prompt + completion locally rather than discarding
+        the partial data."""
+        assert _normalize_usage({"prompt_tokens": 4, "completion_tokens": 5}) == {
+            "prompt_tokens": 4,
+            "completion_tokens": 5,
+            "total_tokens": 9,
+        }
+
+    def test_partial_returns_none_not_partial_dict(self) -> None:
+        """Missing prompt OR completion -> None. We never emit a partial
+        usage dict so consumers don't have to defensively probe each key."""
+        assert _normalize_usage({"prompt_tokens": 7}) is None
+        assert _normalize_usage({"completion_tokens": 7}) is None
+        assert _normalize_usage({"total_tokens": 14}) is None
 
     def test_empty_dict_collapses_to_none(self) -> None:
         """No recognised int fields -> None, so consumers can distinguish

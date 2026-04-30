@@ -111,23 +111,40 @@ def _extract_reasoning(message: object) -> str | None:
 
 
 def _normalize_usage(raw: object) -> dict[str, int] | None:
-    """Coerce an SDK ``usage`` object into ``{prompt, completion, total}_tokens``.
+    """Coerce an SDK ``usage`` object into a complete ``{prompt,
+    completion, total}_tokens`` triple, or ``None`` if we can't.
 
     Cerebras / OpenAI return a Pydantic-ish object; some compat servers
-    return a plain dict; older SDKs may omit it entirely. We accept any
-    of those shapes and keep only int fields we recognise.
+    return a plain dict; older SDKs may omit ``usage`` entirely or skip
+    individual fields.  We refuse to return a partial dict so consumers
+    don't have to defensively probe each key; ``None`` always means
+    "no usage telemetry available".
+
+    If ``prompt_tokens`` and ``completion_tokens`` are both present but
+    ``total_tokens`` is missing, we derive the total locally rather
+    than discarding the data.
     """
     if raw is None:
         return None
-    out: dict[str, int] = {}
-    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+
+    def _read(key: str) -> object:
         if isinstance(raw, dict):
-            value = raw.get(key)
-        else:
-            value = getattr(raw, key, None)
-        if isinstance(value, int):
-            out[key] = value
-    return out or None
+            return raw.get(key)
+        return getattr(raw, key, None)
+
+    prompt = _read("prompt_tokens")
+    completion = _read("completion_tokens")
+    total = _read("total_tokens")
+
+    if not (isinstance(prompt, int) and isinstance(completion, int)):
+        return None
+    if not isinstance(total, int):
+        total = prompt + completion
+    return {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": total,
+    }
 
 
 def _build_prompt(query: str, chunks: list[SearchResult]) -> str:
