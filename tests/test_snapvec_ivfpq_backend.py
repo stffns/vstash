@@ -352,3 +352,95 @@ class TestVstashStoreIVFPQIntegration:
         results = store3.search(v1[0].tolist(), "c0", top_k=3)
         assert len(results) > 0
         store3.close()
+
+    def test_stale_ivfpq_index_downgrades_after_delete_too(self, tmp_path, caplog):
+        """Issue #329 (CR follow-up): asymmetric mismatch must also fire.
+
+        The reverse case of test_stale_ivfpq_index_downgrades_to_unfitted:
+        if a crash leaves ``.snpi`` LARGER than ``vec_chunks`` (delete
+        happened, .snpi flush did not), the index still carries
+        tombstoned ids. Those consume ANN candidate slots and reduce
+        recall because hits get filtered out at the path-resolution
+        stage. CodeRabbit caught this asymmetry on PR #332. The init
+        path must treat ``sqlite_n != snap_n`` as stale, not just
+        ``sqlite_n > snap_n``.
+
+        Repro:
+
+        1. Open, ingest 2 batches, fit, close (.snpi has N + 50).
+        2. Reopen, delete one batch's rows from vec_chunks via SQL
+           (mimicking a delete that did not yet reach the snap save).
+        3. Drop snap + close conn without store.close().
+        4. Reopen. .snpi has N+50 entries; vec_chunks has N. The
+           init path must downgrade.
+        """
+        import logging
+
+        db_path = str(tmp_path / "stale_delete.db")
+
+        store1 = VstashStore(
+            db_path,
+            embedding_dim=DIM,
+            vector_backend="snapvec-ivfpq",
+            ivfpq_M=24,
+            ivfpq_K=32,
+            ivfpq_nlist=16,
+        )
+        rng = np.random.default_rng(11)
+        v1 = _unit_vectors(rng, N, DIM)
+        v2 = _unit_vectors(rng, 50, DIM)
+        store1.add_document(
+            path="/t/keep.md",
+            title="keep",
+            chunks=[f"k{i}" for i in range(N)],
+            embeddings=v1.tolist(),
+            source_type="text",
+        )
+        store1.add_document(
+            path="/t/extra.md",
+            title="extra",
+            chunks=[f"e{i}" for i in range(50)],
+            embeddings=v2.tolist(),
+            source_type="text",
+        )
+        store1.fit_ivfpq(training_sample=N + 50)
+        store1.close()  # .snpi has N + 50.
+
+        # 2. Reopen and delete the "extra" doc via the public API,
+        # but skip the snap-save flush by dropping the reference and
+        # closing the conn directly.
+        store2 = VstashStore(
+            db_path,
+            embedding_dim=DIM,
+            vector_backend="snapvec-ivfpq",
+            ivfpq_M=24,
+            ivfpq_K=32,
+            ivfpq_nlist=16,
+        )
+        assert store2._snap.fitted
+        assert len(store2._snap) == N + 50
+        # Delete the extra doc -- vec_chunks loses 50 rows.
+        store2.delete_document("/t/extra.md")
+        # .snpi still claims N + 50 because we never flushed.
+        # Drop snap + close conn without calling store.close().
+        store2._snap = None
+        store2._conn.close()
+
+        # 3. Reopen. With the asymmetric fix, this must fire.
+        with caplog.at_level(logging.WARNING, logger="vstash.store"):
+            store3 = VstashStore(
+                db_path,
+                embedding_dim=DIM,
+                vector_backend="snapvec-ivfpq",
+                ivfpq_M=24,
+                ivfpq_K=32,
+                ivfpq_nlist=16,
+            )
+
+        assert any("stale" in r.message.lower() for r in caplog.records), (
+            f"staleness warning not emitted on delete-then-crash; got: "
+            f"{[r.message for r in caplog.records]}"
+        )
+        assert not store3._snap.fitted
+        assert len(store3._snap) == 0
+        store3.close()

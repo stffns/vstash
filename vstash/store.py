@@ -440,9 +440,22 @@ class VstashStore:
             return
 
         # Staleness check (issue #329): mirrors the FLAT precedent at
-        # _init_snapvec. If the on-disk index reports fewer routable
-        # vectors than vec_chunks, downgrade to unfitted so search
-        # falls back to sqlite-vec. Skip when the index is unfitted
+        # _init_snapvec. ANY count mismatch is stale, in either
+        # direction:
+        #
+        # - sqlite_n > snap_n: the canonical add_document case. Crash
+        #   after writing to vec_chunks but before .snpi flush; the
+        #   index is missing the last write burst.
+        # - sqlite_n < snap_n: the delete case. Crash after
+        #   delete_document removed rows from vec_chunks but before
+        #   .snpi flush; the index still carries the deleted ids,
+        #   which then consume ANN candidate slots and reduce recall
+        #   (search returns hits for tombstoned chunk_ids that the
+        #   path map filters out, so top-K is partial).
+        #
+        # In both cases the right answer is to downgrade to unfitted
+        # and let sqlite-vec answer until the user runs `vstash
+        # snapvec fit` to rebuild. Skip when the index is unfitted
         # (len == 0 by contract) or the file did not exist (load
         # returns an unfitted instance in that case too).
         if self._snap.fitted:
@@ -451,10 +464,10 @@ class VstashStore:
             except sqlite3.Error:
                 sqlite_n = 0
             snap_n = len(self._snap)
-            if sqlite_n > snap_n:
+            if sqlite_n != snap_n:
                 logger.warning(
                     "IVFPQ index at %s is stale: %d routable vectors vs %d in "
-                    "vec_chunks (likely a crash between add_document and "
+                    "vec_chunks (likely a crash between add_document/delete and "
                     "close()). Downgrading to unfitted; search will fall back "
                     "to sqlite-vec until you run 'vstash snapvec fit' to "
                     "rebuild from current vec_chunks.",
