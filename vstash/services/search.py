@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Literal
 
 from ..embed import embed_query
-from ..validation import validate_search_input
+from ..validation import LimitError, validate_search_input
 
 if TYPE_CHECKING:
     from ..config import VstashConfig
@@ -100,10 +100,15 @@ def search_with_embedding(
     # Validate the cheap-to-check public knobs BEFORE embed_query so
     # an invalid expand_window or retrieval_mode does not pay for a
     # daemon round-trip just to crash inside store.search later.
+    # These raise LimitError (not ValueError) so they honour the
+    # function's documented "Raises: LimitError" contract and so
+    # web/MCP handlers that catch LimitError specifically (api_search,
+    # api_chat) map them to HTTP 400 / MCP error rather than letting
+    # them propagate as 500 / unhandled exception.
     if not isinstance(expand_window, int) or isinstance(expand_window, bool) or expand_window < 0:
-        raise ValueError(f"expand_window must be a non-negative int, got {expand_window!r}")
+        raise LimitError(f"expand_window must be a non-negative int, got {expand_window!r}")
     if retrieval_mode is not None and retrieval_mode not in _VALID_RETRIEVAL_MODES:
-        raise ValueError(
+        raise LimitError(
             f"retrieval_mode must be one of "
             f"{sorted(_VALID_RETRIEVAL_MODES)} or None, got {retrieval_mode!r}"
         )

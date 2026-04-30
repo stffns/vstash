@@ -243,7 +243,12 @@ class TestSearchService:
         # rejected before the daemon round-trip just like top_k.
         # bool is a tricky case because `isinstance(True, int)` is
         # True in Python; we have to special-case it.
-        with pytest.raises(ValueError, match="expand_window"):
+        # The error must be LimitError (not bare ValueError) so it
+        # honours the function's documented Raises: contract and is
+        # caught by the LimitError -> HTTP 400 mapping in web.py.
+        # LimitError is itself a ValueError subclass, so consumers
+        # that catch ValueError keep working.
+        with pytest.raises(LimitError, match="expand_window"):
             search_with_embedding(
                 cfg=sample_config,
                 store=populated_store,
@@ -259,8 +264,9 @@ class TestSearchService:
     ):
         # retrieval_mode is the second cheap-to-validate public knob.
         # The Literal type alias does not enforce at runtime, so the
-        # service has to.
-        with pytest.raises(ValueError, match="retrieval_mode"):
+        # service has to. LimitError (not ValueError) so it honours
+        # the documented Raises: contract.
+        with pytest.raises(LimitError, match="retrieval_mode"):
             search_with_embedding(
                 cfg=sample_config,
                 store=populated_store,
