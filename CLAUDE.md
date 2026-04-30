@@ -25,7 +25,7 @@ vstash stats
 
 ```
 vstash/
-  __init__.py       # version (__version__ = "0.32.0")
+  __init__.py       # version (__version__ = "0.36.0")
   cli.py            # typer CLI — add, search, ask, chat, list, stats, forget, reindex, watch, config, export, remember, profile, journal, retrain, serve, check, snapvec
   retrain.py        # Eval-gated self-supervised embedding fine-tuning. Composes split_corpus_for_eval, evaluate_model, generate_triples, train_mnrl. Refuses to save a model that regresses on held-out NDCG@10.
   retrain_synth.py  # LLM query synthesis for retrain training pairs (OpenAI-compat, Ollama). JSONL cache keyed by (chunk_id, prompt_hash, model).
@@ -84,6 +84,9 @@ docs/               # User-facing documentation
 - **Batched ingest + deferred FTS (v0.31)**: `add_documents_batch` + `batch_mode(defer_fts=True)` collect FTS5 inserts in memory and flush in one bulk pass on exit. 5x speedup on `ingest_directory` at 500 docs.
 - **Embedder daemon (v0.32)**: `vstash serve --warm` pre-loads the embedding model and exposes `/api/embed` on localhost:8585. CLI and SDK clients auto-detect a running daemon and delegate. Drops cold start from ~2 s to ~5 ms. Fallback is transparent local embedding. Override via `VSTASH_EMBED_URL`.
 - **`retrieval_mode` enum (v0.33)**: `Literal["hybrid", "vec_only", "fts_only"] = "hybrid"` on `VstashStore.search`, `Memory.search`, `Memory.ask`, MCP tools, and `VstashRetriever`. `vec_only` is the new symmetric branch to `fts_only` (skip FTS5, force `(1.0, 0.0)` weights). Default stays `hybrid` -- paper / README / v3 model numbers all measured against it. Legacy `fts_only=True` bool is deprecated in v0.33.0 with a `DeprecationWarning`.
+- **`chat.ask_full()` returning `AskResult` (v0.36)** (#303/#310): Public API that surfaces the reasoning channel and token usage that `ask()` discards. `_ask_cerebras` / `_ask_ollama` / `_ask_openai` now return `AskResult` internally; `ask()` is a thin wrapper returning `.content` so the existing `-> str` contract is preserved with zero call-site changes. Cerebras `gpt-oss-120b` populates `message.reasoning`; Ollama qwen3 thinking-mode uses `message.thinking`; OpenAI-compat servers (vLLM, DeepSeek, Together, xAI Grok, OpenAI o1/o3) read `message.reasoning_content`. Shared helpers `_extract_reasoning` (accepts both field names) and `_normalize_usage` (returns complete dict or `None`, never partial). `Memory.ask_full()` mirrors `Memory.ask()`; `Memory.ask` itself routes through `ask_full(...).content` so retrieval / LLM plumbing live in a single load-bearing path. Drives Merken Phase 2 distillation (`Q -> reasoning_trace -> A` shape).
+- **Centralized store construction (v0.36)** (#297/#306): `vstash._store_open.open_store_for_config(cfg)` is the single entry point used by CLI, MCP, web, SDK, journal, and `federated_search`. Replaces the previous per-surface `VstashStore(...)` wiring that silently dropped IVFPQ tuning fields on some paths.
+- **`vec_only` long-query distance cutoff (v0.36)** (#304): `retrieval_mode="vec_only"` now applies the same long-query distance-cutoff relaxation as `hybrid`. Previously it forced `adaptive_rrf=False` and skipped the relaxation; ArguAna `vec_only` had been collapsing to NDCG@10 = 0.0013 (1403/1406 zero) and is now 0.4250. Hybrid mode and all paper / model-card numbers untouched.
 - **`vstash why` miss analysis (v0.33)**: CLI + `/debug/why` HTTP route + auto-logged `miss_hint` on empty / low-relevance searches. `vstash why "<q>" --expect <path>` traces where a target chunk was eliminated in the pipeline (vector pool, distance cutoff, FTS match, RRF fusion, MMR, context expansion) and suggests the parameter that would have surfaced it. `vstash why --recent` lists recent misses from the auto-log.
 - **Eval-gated retrain (v0.33 complete: T1.1 / T1.3 / T1.4 / T1.5 / H-R1 / H-R5 / H-R7 / H-R8)**: `retrain()` composes `split_corpus_for_eval` + `evaluate_model` + `generate_triples` + `train_mnrl` + atomic `.candidate`/`.old` promote. Refuses to save a candidate whose held-out NDCG@10 is worse than the baseline. `qrels_to_eval_queries` converts BEIR-style labels. Multi-corpus training with temperature sampling (T1.4), GPU-batched mining + eval (T1.4b/c), labeled-query mining from BEIR qrels (T1.5), auto-promoted eval queries (H-R1), bulk mining on single-corpus (H-R8), full eval observability + seed reproducibility (H-R5/H-R7). Validated in Colab at +5.00% macro NDCG@10. v3 model on HF as `Stffens/bge-small-rrf-v3`.
 - **HF ONNX fallback (v0.32+)**: `_init_hf_onnx` wraps ort init in a broad except; on failure the model gets routed through `SentenceTransformer` for safetensors loading. Added because `Stffens/bge-small-rrf-v2` shipped an ONNX stub referencing an external data file that was never uploaded to the repo. The fallback is cached per-model so we only take the ONNX-path hit once.
@@ -103,7 +106,7 @@ docs/               # User-facing documentation
 - **Pydantic v2** for all config and data models (frozen=True)
 - **Type hints** on all public functions
 - **ruff** for linting and formatting (enforced in CI)
-- **pytest** for testing (900+ tests as of v0.32.0, benchmark regression tests marker-gated off by default)
+- **pytest** for testing (900+ tests as of v0.35.0, benchmark regression tests marker-gated off by default)
 - **Conventional commits** with emoji prefixes (feat, fix, docs, chore, perf)
 - **No AI co-author lines** — do NOT add `Co-Authored-By` or any AI attribution to commit messages
 
