@@ -32,7 +32,7 @@ from pathlib import Path
 
 from experiments.beir_benchmark import download_beir, load_beir
 from experiments.snapvec_backends_bench import embed_dataset
-from vstash.embed import embed_query
+from vstash.embed import embed_query, get_embedding_dim
 from vstash.store import VstashStore
 
 MODEL = "BAAI/bge-small-en-v1.5"
@@ -61,10 +61,24 @@ def _build_corpus(n: int) -> tuple[list[dict], dict, dict]:
 
     Uses :func:`embed_dataset` from the snapvec backends bench, which
     caches BGE embeddings on disk -- second-run is near-instant.
+
+    Raises:
+        ValueError: if ``n`` is smaller than the SciFact corpus
+            (5183 docs). Truncating below this would drop relevant
+            documents that qrels still reference, making NDCG@10
+            meaningless. The caller can pass ``n=5183`` to test on
+            SciFact alone or ``n>=10000`` for realistic padding.
     """
     sf_cache = download_beir("scifact")
     sf_corpus, sf_queries, sf_qrels = load_beir(sf_cache)
     sf_vecs, sf_doc_ids = embed_dataset("scifact")
+    if n < len(sf_doc_ids):
+        raise ValueError(
+            f"n={n} is smaller than the SciFact corpus ({len(sf_doc_ids)} docs). "
+            f"Truncating below this drops relevant docs that qrels still "
+            f"reference, making NDCG@10 incomparable to the published baseline. "
+            f"Use n>={len(sf_doc_ids)} (no padding) or n>=10000 (with FIQA padding)."
+        )
 
     docs: list[dict] = []
     for did, vec in zip(sf_doc_ids, sf_vecs, strict=True):
@@ -118,8 +132,20 @@ def _eval_mode(store: VstashStore, queries: dict, qrels: dict, mode: str) -> dic
     latencies: list[float] = []
     ndcgs: list[float] = []
     queries_with_qrel = [(qid, qtext) for qid, qtext in queries.items() if qid in qrels]
+    if not queries_with_qrel:
+        # Empty qrels (or empty intersection with queries) means the
+        # caller built a corpus that has no measurable retrieval. Return
+        # zeros rather than crashing in statistics.median([]).
+        return {
+            "n_queries": 0,
+            "latency_p50_ms": 0.0,
+            "latency_p95_ms": 0.0,
+            "latency_mean_ms": 0.0,
+            "ndcg10_mean": 0.0,
+            "ndcg10_zero_count": 0,
+        }
 
-    # Warmup: 3 untimed queries.
+    # Warmup: up to 3 untimed queries.
     for qid, qtext in queries_with_qrel[:3]:
         qe = embed_query(qtext, MODEL)
         store.search(query_embedding=qe, query_text=qtext, top_k=TOP_K, retrieval_mode=mode)
@@ -138,15 +164,16 @@ def _eval_mode(store: VstashStore, queries: dict, qrels: dict, mode: str) -> dic
                 ranked.append(r.path.split("/")[-1])
         ndcgs.append(ndcg_at_k(ranked, qrels[qid], TOP_K))
 
+    sorted_lat = sorted(latencies)
+    n = len(sorted_lat)
+    p95_idx = min(n - 1, max(0, round(0.95 * (n - 1))))
     return {
-        "n_queries": len(latencies),
+        "n_queries": n,
         "latency_p50_ms": round(statistics.median(latencies), 2),
-        "latency_p95_ms": round(
-            sorted(latencies)[max(0, round(0.95 * (len(latencies) - 1)))], 2
-        ),
+        "latency_p95_ms": round(sorted_lat[p95_idx], 2),
         "latency_mean_ms": round(statistics.mean(latencies), 2),
         "ndcg10_mean": round(statistics.mean(ndcgs), 4),
-        "ndcg10_zero_count": sum(1 for n in ndcgs if n == 0.0),
+        "ndcg10_zero_count": sum(1 for x in ndcgs if x == 0.0),
     }
 
 
@@ -176,7 +203,6 @@ def main() -> None:
     qrel_count = sum(1 for qid in queries if qid in qrels)
     print(f"    {len(docs)} docs ready; {qrel_count} judged queries")
 
-    from vstash.embed import get_embedding_dim
     dim = get_embedding_dim(MODEL)
 
     out: dict = {
