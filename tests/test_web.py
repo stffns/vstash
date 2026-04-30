@@ -334,6 +334,77 @@ class TestDoUploadPersistence:
         # Falls back to "upload" when no filename was provided.
         assert "upload" in path.name
 
+    @pytest.mark.parametrize(
+        "client_name",
+        [
+            "subdir/leaked.md",
+            "/etc/passwd",
+            "C:\\Users\\jay\\secret.md",
+            "..\\..\\sneaky.md",
+        ],
+    )
+    def test_strips_client_path_fragments_to_basename(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path,
+        client_name: str,
+    ) -> None:
+        """Filenames with path separators must be reduced to their basename
+        before sanitization, so client path fragments never reach the
+        persisted name (CodeRabbit on #309)."""
+        import vstash.web as web_mod
+
+        uploads_dir = tmp_path / "uploads"
+        monkeypatch.setattr(web_mod, "_UPLOADS_DIR", uploads_dir)
+        monkeypatch.setattr(web_mod, "_get_config", lambda: MagicMock())
+        monkeypatch.setattr(web_mod, "_get_store", lambda: MagicMock())
+        captured: list = []
+        monkeypatch.setattr(
+            web_mod,
+            "ingest",
+            lambda path, *_a, **_kw: (
+                captured.append(path) or IngestResult(status="ok", source=path, title="t", chunks=1)
+            ),
+        )
+
+        web_mod._do_upload(b"body", ".md", client_name)
+
+        from pathlib import Path
+
+        path = Path(captured[0])
+        # No directory separators (raw or sanitised) survive in the basename.
+        assert "/" not in path.name and "\\" not in path.name
+        # Path fragments must not be flattened into underscores either.
+        assert "subdir" not in path.name
+        assert "etc" not in path.name
+        assert "Users" not in path.name
+
+    def test_caps_extremely_long_filenames(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+        """A 1KB adversarial filename must not blow past ENAMETOOLONG."""
+        import vstash.web as web_mod
+
+        uploads_dir = tmp_path / "uploads"
+        monkeypatch.setattr(web_mod, "_UPLOADS_DIR", uploads_dir)
+        monkeypatch.setattr(web_mod, "_get_config", lambda: MagicMock())
+        monkeypatch.setattr(web_mod, "_get_store", lambda: MagicMock())
+        captured: list = []
+        monkeypatch.setattr(
+            web_mod,
+            "ingest",
+            lambda path, *_a, **_kw: (
+                captured.append(path) or IngestResult(status="ok", source=path, title="t", chunks=1)
+            ),
+        )
+
+        web_mod._do_upload(b"body", ".md", "a" * 1024 + ".md")
+
+        from pathlib import Path
+
+        path = Path(captured[0])
+        # 12-char uuid prefix + dash + capped basename + suffix < 255.
+        assert len(path.name) < 200
+        assert path.suffix == ".md"
+
 
 # ------------------------------------------------------------------ #
 # HTML index + observability                                           #

@@ -136,8 +136,16 @@ def _do_upload(file_bytes: bytes, suffix: str, original_name: str | None = None)
     cfg = _get_config()
     store = _get_store()
     _UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
-    src_name = original_name or "upload"
+    # Strip any path fragments a client may have included (POSIX or
+    # Windows separators) before sanitization so we never persist
+    # ``a/b/leaked.md`` as ``a_b_leaked.md``.
+    raw_name = original_name or "upload"
+    src_name = raw_name.replace("\\", "/").rsplit("/", 1)[-1] or "upload"
     safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in src_name)
+    # Cap the basename length so an adversarial filename can't blow
+    # past ENAMETOOLONG (255 on most filesystems). Keep the suffix.
+    if len(safe_name) > 128:
+        safe_name = safe_name[:128]
     if not safe_name.endswith(suffix):
         safe_name += suffix
     target = _UPLOADS_DIR / f"{uuid.uuid4().hex[:12]}-{safe_name}"
