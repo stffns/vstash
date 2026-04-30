@@ -32,6 +32,7 @@ from ._store_open import open_store_for_config
 from .config import VstashConfig, load_config
 from .embed import embed_query, warmup
 from .models import DocumentInfo, IngestResult, SearchResult, StoreStats
+from .services import search_with_embedding
 from .store import VstashStore, relevance_tier
 
 logger = logging.getLogger(__name__)
@@ -542,12 +543,17 @@ def vstash_ask(
             vec_weight_coerced = _coerce_optional_float(vec_weight, "vec_weight")
             fts_weight_coerced = _coerce_optional_float(fts_weight, "fts_weight")
 
-        # Embed query and search
-        query_embedding = embed_query(query, cfg.embeddings.model)
-        chunks: list[SearchResult] = store.search(
-            query_embedding=query_embedding,
-            query_text=query,
+        # Service does embed + validate + search + expand_context in
+        # one shot. Validation errors raise LimitError (a ValueError
+        # subclass) and bubble up to the existing ValueError handler
+        # below, so a 200_001-character query or a top_k=9999 returns
+        # a structured error rather than a 500.
+        chunks: list[SearchResult] = search_with_embedding(
+            cfg=cfg,
+            store=store,
+            query=query,
             top_k=top_k,
+            expand_window=1,
             collection=collection,
             project=project,
             layer=layer,
@@ -575,9 +581,6 @@ def vstash_ask(
             relevance_tier=tier,
             result_count=len(chunks),
         )
-
-        # Expand context with adjacent chunks for richer LLM answers
-        chunks = store.expand_context(chunks, window=1)
 
         # Get LLM answer
         answer = ask(query, chunks, cfg)
@@ -694,11 +697,18 @@ def vstash_search(
             vec_weight_coerced = _coerce_optional_float(vec_weight, "vec_weight")
             fts_weight_coerced = _coerce_optional_float(fts_weight, "fts_weight")
 
-        query_embedding = embed_query(query, cfg.embeddings.model)
-        chunks: list[SearchResult] = store.search(
-            query_embedding=query_embedding,
-            query_text=query,
+        # Service does embed + validate + search + expand_context in
+        # one shot (window=1, critical for MCP/Claude Code where the
+        # LLM consumes the chunks directly -- adjacent context yields
+        # better answers). Validation errors raise LimitError (a
+        # ValueError subclass) and bubble up to the existing
+        # ValueError handler below.
+        chunks: list[SearchResult] = search_with_embedding(
+            cfg=cfg,
+            store=store,
+            query=query,
             top_k=top_k,
+            expand_window=1,
             collection=collection,
             project=project,
             layer=layer,
@@ -713,11 +723,6 @@ def vstash_search(
 
         if not chunks:
             return _ok({"chunks": [], "relevance": "none"})
-
-        # Expand context: include adjacent chunks (±1) for richer LLM context.
-        # This is critical for MCP/Claude Code where the LLM consumes these
-        # chunks directly — more context yields better answers.
-        chunks = store.expand_context(chunks, window=1)
 
         # Tiered relevance signal based on vector distance.
         best_distance = store.last_best_distance
