@@ -32,6 +32,7 @@ from .config import VstashConfig, load_config
 from .embed import embed_query
 from .ingest import ingest
 from .models import SearchResult
+from .services import search_with_embedding
 from .store import VstashStore, relevance_tier
 
 logger = logging.getLogger(__name__)
@@ -95,14 +96,14 @@ _chat_history: list[dict[str, str]] = []
 def _do_search(query: str, top_k: int, recency_boost: float) -> dict:
     cfg = _get_config()
     store = _get_store()
-    q_emb = embed_query(query, cfg.embeddings.model)
-    results = store.search(
-        query_embedding=q_emb,
-        query_text=query,
+    results = search_with_embedding(
+        cfg=cfg,
+        store=store,
+        query=query,
         top_k=top_k,
         recency_boost=recency_boost,
+        expand_window=1,
     )
-    results = store.expand_context(results, window=1)
     best_distance = store.last_best_distance
     relevance = relevance_tier(best_distance)
     return {
@@ -170,9 +171,13 @@ def _do_upload(file_bytes: bytes, suffix: str, original_name: str | None = None)
 def _do_chat_retrieve(query: str, top_k: int) -> tuple[list[SearchResult], list[dict]]:
     cfg = _get_config()
     store = _get_store()
-    q_emb = embed_query(query, cfg.embeddings.model)
-    chunks = store.search(query_embedding=q_emb, query_text=query, top_k=top_k)
-    chunks = store.expand_context(chunks, window=1)
+    chunks = search_with_embedding(
+        cfg=cfg,
+        store=store,
+        query=query,
+        top_k=top_k,
+        expand_window=1,
+    )
     sources = list({c.path: {"title": c.title, "path": c.path} for c in chunks}.values())
     return chunks, sources
 
