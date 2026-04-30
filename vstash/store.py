@@ -387,6 +387,20 @@ class VstashStore:
         The backend starts unfit; sqlite-vec remains authoritative until
         ``fit_ivfpq()`` trains on the corpus. After that, searches prefer
         the IVFPQ path and new adds append directly.
+
+        Crash recovery (issue #329): the on-disk ``.snpi`` is only flushed
+        on ``close()`` / ``_checkpoint_snapvec``. A crash between an
+        ``add_document`` (which updates the in-memory IVFPQ index)
+        and ``close()`` can leave ``.snpi`` with fewer rows than
+        ``vec_chunks``. On reopen, this method detects that staleness
+        (``len(loaded_index) < COUNT(vec_chunks)``) and downgrades the
+        backend to its unfitted state so ``VstashStore.search`` falls
+        back to sqlite-vec rather than silently missing the rows
+        ingested in the last write burst. The user is told via
+        ``logger.warning`` to rerun ``vstash snapvec fit`` when
+        convenient. We do not auto-refit because IVFPQ fitting is a
+        ~50s operation that would block every reopen after a crash;
+        sqlite-vec retrieval is correct in the interim.
         """
         if not _HAS_SNAPVEC:
             logger.warning(
@@ -423,6 +437,45 @@ class VstashStore:
                 exc_info=True,
             )
             self._snap = IVFPQBackend(**kwargs)
+            return
+
+        # Staleness check (issue #329): mirrors the FLAT precedent at
+        # _init_snapvec. ANY count mismatch is stale, in either
+        # direction:
+        #
+        # - sqlite_n > snap_n: the canonical add_document case. Crash
+        #   after writing to vec_chunks but before .snpi flush; the
+        #   index is missing the last write burst.
+        # - sqlite_n < snap_n: the delete case. Crash after
+        #   delete_document removed rows from vec_chunks but before
+        #   .snpi flush; the index still carries the deleted ids,
+        #   which then consume ANN candidate slots and reduce recall
+        #   (search returns hits for tombstoned chunk_ids that the
+        #   path map filters out, so top-K is partial).
+        #
+        # In both cases the right answer is to downgrade to unfitted
+        # and let sqlite-vec answer until the user runs `vstash
+        # snapvec fit` to rebuild. Skip when the index is unfitted
+        # (len == 0 by contract) or the file did not exist (load
+        # returns an unfitted instance in that case too).
+        if self._snap.fitted:
+            try:
+                sqlite_n = int(self._conn.execute("SELECT COUNT(*) FROM vec_chunks").fetchone()[0])
+            except sqlite3.Error:
+                sqlite_n = 0
+            snap_n = len(self._snap)
+            if sqlite_n != snap_n:
+                logger.warning(
+                    "IVFPQ index at %s is stale: %d routable vectors vs %d in "
+                    "vec_chunks (likely a crash between add_document/delete and "
+                    "close()). Downgrading to unfitted; search will fall back "
+                    "to sqlite-vec until you run 'vstash snapvec fit' to "
+                    "rebuild from current vec_chunks.",
+                    self._ivfpq_path,
+                    snap_n,
+                    sqlite_n,
+                )
+                self._snap = IVFPQBackend(**kwargs)
 
     @staticmethod
     def _nlist_for(n: int) -> int:
