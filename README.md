@@ -6,7 +6,7 @@
 [![CI](https://github.com/stffns/vstash/actions/workflows/ci.yml/badge.svg)](https://github.com/stffns/vstash/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/stffns/vstash/graph/badge.svg)](https://codecov.io/gh/stffns/vstash)
 
-**Local document memory with hybrid retrieval.** Single SQLite file. Zero cloud dependencies for search. Beats ColBERTv2 on **5/5 [BEIR](https://github.com/beir-cellar/beir) datasets** with the tuned [`bge-small-rrf-v3`](https://huggingface.co/Stffens/bge-small-rrf-v3) model. Under 60 ms p50 at 50K chunks on an Apple Silicon laptop.
+**Local document memory with hybrid retrieval.** Single SQLite file. Zero cloud dependencies for search. Beats ColBERTv2 on **5/5 [BEIR](https://github.com/beir-cellar/beir) datasets** with the tuned [`bge-small-rrf-v3`](https://huggingface.co/Stffens/bge-small-rrf-v3) model. ~50 ms p50 at 50K chunks on Apple Silicon with the optional `snapvec` backend (~73 ms on the default sqlite-vec for dense corpora).
 
 ```bash
 pip install vstash
@@ -207,7 +207,7 @@ Adaptive RRF, self-supervised embedding refinement, a negative result on post-RR
 |---|---|---|
 | [BEIR Benchmark](experiments/beir_benchmark.py) | With `bge-small-rrf-v3` (current default): 5/5 BEIR datasets beat ColBERTv2. With `-rrf-v2` (previous): 4/5 under this script's historical pipeline. See [Retrieval Quality](#retrieval-quality) for the v3 numbers. | `python -m experiments.beir_benchmark --no-chroma` |
 | [Retrain (eval-gated)](docs/retrain.md) | Fine-tune your embedding model on your own corpus, refuses regressions | `vstash retrain --help` |
-| [Pipeline latency](experiments/vstash_pipeline_ivfpq_bench.py) | Under 60 ms p50 @ 50K, 0.80x with snapvec-ivfpq @ 100K (Apple Silicon laptop) | `python -m experiments.vstash_pipeline_ivfpq_bench --n 100000` |
+| [Pipeline latency](experiments/vstash_pipeline_ivfpq_bench.py) | At N=50K real BGE corpus on M4 Pro: sqlite-vec 73 ms, snapvec 53 ms, snapvec-ivfpq 51 ms p50; identical NDCG@10 (~0.716) | `python -m experiments.vstash_pipeline_ivfpq_bench --n 50000` |
 | [Relevance Signal](experiments/relevance_signal_beir.py) | F1=0.996 cross-domain | `python -m experiments.relevance_signal_beir` |
 
 ---
