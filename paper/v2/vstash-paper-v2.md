@@ -7,11 +7,14 @@
 
 ## Abstract
 
-We present **vstash v2**, a local-first document memory system that
-combines vector and full-text keyword search via Reciprocal Rank
-Fusion (RRF) in a single SQLite file.  Building on the v1
-contribution (arXiv:2604.15484, April 2026), this paper introduces
-four contributions:
+We present **vstash v2**, a local-first document memory system
+whose central contribution is a **gated domain-adaptation loop**:
+a deployable cycle of mining, training, eval-gating, and promotion
+that converts retrieval domain adaptation from a one-shot research
+artifact into a repeatable production pattern.  The system builds
+on a hybrid retrieval substrate (RRF over vector + FTS5 in a
+single SQLite file) introduced in v1 (arXiv:2604.15484, April
+2026).  This paper introduces four contributions:
 
 **(1) Cross-domain transfer failure of BEIR-tuned weights,
 motivating per-domain models.** The v1 BEIR fine-tune loses to
@@ -28,31 +31,59 @@ prior open-source retrieval systems that combine user-supplied
 labeled retraining with an automatic refuse-to-save evaluation
 gate.
 
-**(3) `bge-small-rrf-lme-v1`, a chat-memory specialist.** Training
-on 398 labeled LongMemEval queries through the gated loop lifts
-holdout R@5 by +3.79pp (95% CI [+1.72, +6.19], paired bootstrap
-B=1000) over vanilla BGE-small; R@1 trends positive but is
-directional on the n=102 holdout.  R@10 saturates at 0.96 for
-both arms (ranking, not coverage, is the lever).  Against a
-calibrated late-interaction baseline implemented faithfully from
-the published ColBERTv2 checkpoint, vstash remains competitive
-while running approximately 3x faster at P50 and 6x faster at P99
-on CPU vs the baseline on a T4 GPU.
+**(3) `bge-small-rrf-lme-v1`, a chat-memory specialist that
+preserves general retrieval.** Training on 398 labeled LongMemEval
+queries through the gated loop lifts holdout R@5 by +3.79pp (95%
+CI [+1.72, +6.19], paired bootstrap B=1000) over vanilla
+BGE-small; R@1 trends positive but is directional on the n=102
+holdout.  R@10 saturates at 0.96 for both arms (ranking, not
+coverage, is the lever).  Crucially, the chat-tune does **not**
+regress on general BEIR retrieval: paired bootstrap on the 5-dataset
+BEIR slice gives macro delta -0.0024 with 95% CI [-0.0050,
++0.0002], statistically indistinguishable from base BGE.  The
+gated loop applied to a target domain is therefore a
+Pareto-safe specialization (no detectable out-of-domain regression),
+not a trade-off.  Against a calibrated
+late-interaction baseline implemented faithfully from the
+published ColBERTv2 checkpoint, vstash remains competitive while
+running approximately 3x faster at P50 and 6x faster at P99 on
+CPU vs the baseline on a T4 GPU.
 
-**(4) Self-supervised embedding refinement (retained from v1).**
-Vector/FTS top-10 disagreement on 753 BEIR queries provides a
-training signal without human labels; fine-tuning BGE-small with
-MNRL on 76K disagreement triples improves NDCG@10 over the vstash
-BGE-small baseline on all 5 BEIR datasets, with the largest gains
-on SciFact (+7.4%) and NFCorpus (+19.5%).
+**(4) Self-supervised embedding refinement (retained from v1, post-v0.34 reference).**
+Vector/FTS top-K disagreement provides a free training signal
+without human labels; fine-tuning BGE-small with MNRL on the v3
+H-R9 winning recipe (`bge-small-rrf-v4`, retrained on post-v0.34
+code) lifts macro NDCG@10 by **+0.0204 absolute / +4.9% relative
+over the vstash BGE-small base** on the 5-dataset BEIR slice (95%
+CI [+0.0154, +0.0256], paired bootstrap B=1000, eval-stochastic).
+Multi-seed retraining (4 seeds) shows training-stochastic std of
+0.0005 on macro NDCG@10, an order of magnitude tighter than the
+eval-stochastic CI; the v4 lift is robust to both query
+resampling and training seed.  Three of five datasets show
+statistically significant lifts: FiQA +0.0537 [+0.0383, +0.0697],
+SciFact +0.0324 [+0.0168, +0.0511], NFCorpus +0.0116 [+0.0020,
++0.0213].  The vstash hybrid pipeline with the BGE-small base
+alone already exceeds ColBERTv2 published macro (0.4214 vs 0.402,
++4.8%, Table 4); the fine-tune adds the incremental +4.9% on top.
+This decomposition is the headline of v2: the deployable
+contribution is the substrate (adaptive RRF + corrected cosine
+metric + MMR + distance signal), not the fine-tune.  The
+fine-tune is a domain-specialization tool.
 
-Both fine-tuned models (`bge-small-rrf-v2` for BEIR retrieval,
-`bge-small-rrf-lme-v1` for chat memory) are published on
-HuggingFace; all code, data, and reproducible experiment scripts
-are open-source.
+Four fine-tuned models are published on HuggingFace:
+`bge-small-rrf-v4` (post-v0.34 honest reference, recommended
+default for new vstash deployments), `bge-small-rrf-v3`
+(pre-v0.34 reference snapshot, retained for reproducibility),
+`bge-small-rrf-v2` (76K MNRL + hard-neg, NFCorpus champion), and
+`bge-small-rrf-lme-v1` (chat-memory specialist, Section 6).  All
+code, data, and reproducible experiment scripts are open-source.
 
-**Our results suggest that memory retrieval should be treated as a
-domain-adaptation problem, not a benchmark-ranking problem.**
+**Our results suggest that production memory systems benefit from
+a deployable adaptation loop rather than a single universal
+embedder: the substrate already produces benchmark-competitive
+retrieval, and per-domain fine-tunes via the gated loop add
+Pareto-safe specialization without measurable out-of-domain
+regression.**
 
 ---
 
@@ -118,11 +149,11 @@ observation in Sections 6.3 and 8.5.
 ### Contributions
 
 We organize our contributions around the v2 thesis.  The v1
-contributions (self-supervised refinement, adaptive RRF) are
-retained as the retrieval substrate on which v2 builds, but the
-central claim of this paper is that benchmark-quality retrieval
-does not transfer across domains, and that the deployable answer
-is a gated adaptation loop, not a single universal embedder.
+contributions are retained as the retrieval substrate on which v2
+builds (enumerated below), but the central claim of this paper is
+that benchmark-quality retrieval does not transfer across domains,
+and that the deployable answer is a gated adaptation loop, not a
+single universal embedder.
 
 **Primary contributions (v2):**
 
@@ -140,17 +171,11 @@ properties.
 (3) **`bge-small-rrf-lme-v1`, a chat-memory specialist** validated
 against a calibrated late-interaction baseline.
 
-**Retained contributions (v1):**
-
-(4) Self-supervised embedding refinement via vector/FTS
-disagreement, validated on 5 BEIR datasets.
-
-(5) Adaptive RRF with IDF-based per-query weight adjustment.
-
-(6) A documented negative result on post-RRF scoring (Section 7).
-
-(7) A deployable substrate with integrity checking, schema
-versioning, observability, and ranking diagnostics.
+The v1 contributions (self-supervised refinement, adaptive RRF,
+negative result on post-RRF scoring, and a deployable substrate
+with integrity checking, schema versioning, and observability)
+form the retrieval substrate; this paper develops the v2 loop on
+top of that substrate.
 
 Secondary contributions include intra-document MMR deduplication,
 context expansion, distance-based relevance signaling, hybrid
@@ -253,7 +278,9 @@ tables: *documents* (metadata, hierarchical tags, source type),
 *vec_chunks* (sqlite-vec virtual table for ANN search, 384-dim
 float vectors), *fts_chunks* (FTS5 virtual table with Porter
 stemming), and *journal_entries* (append-only cross-session memory
-for agents).
+for agents).  An auxiliary *profiles* table supports multi-DB
+profile resolution but does not participate in the retrieval flow
+(see Figure 2).
 
 ```mermaid
 flowchart TB
@@ -265,13 +292,19 @@ flowchart TB
     end
 
     subgraph STORE["SQLite (WAL mode)"]
-        direction LR
-        T1[(documents)]
-        T2[(chunks)]
-        T3[("vec_chunks<br/>ANN")]
-        T4[("fts_chunks<br/>FTS5")]
-        T5[(journal_entries)]
-        T6[("profiles<br/>multi-DB")]
+        direction TB
+        subgraph CORE["Retrieval-active tables"]
+            direction LR
+            T2[(chunks)]
+            T3[("vec_chunks<br/>ANN")]
+            T4[("fts_chunks<br/>FTS5")]
+        end
+        subgraph AUX["Auxiliary"]
+            direction LR
+            T1[(documents)]
+            T5[(journal_entries)]
+            T6[("profiles<br/>multi-DB")]
+        end
     end
 
     subgraph RETRIEVE["Retrieval"]
@@ -422,9 +455,9 @@ Fixed RRF weights (0.6 vector, 0.4 FTS) assume all queries benefit
 equally from keyword matching.  Evaluation on BEIR revealed this
 assumption fails on long, semantically-rich queries: on ArguAna
 (average 194 words), fixed weights score NDCG@10 = 0.3599 vs 0.4370
-for adaptive IDF -- a 17.6% relative shortfall (Table 3) and the
-largest gap of any of the 5 benchmarks, which is what motivates
-adaptive weighting.
+for adaptive IDF -- a +21.4% relative gain for adaptive (Table 1)
+and the largest improvement of any of the 5 benchmarks, which is
+what motivates adaptive weighting.
 
 ### 4.1  Method
 
@@ -447,7 +480,7 @@ default cutoff is too aggressive.
 
 ### 4.2  Results
 
-**Table 3: Adaptive vs fixed RRF weights on 5 BEIR datasets (NDCG@10)**
+**Table 1: Adaptive vs fixed RRF weights on 5 BEIR datasets (NDCG@10)**
 
 | Dataset  | Docs | Fixed (0.6/0.4) | Adaptive IDF | Delta |
 |----------|:----:|:---------------:|:------------:|:-----:|
@@ -516,7 +549,7 @@ BGE-small-en-v1.5 (33M params, 384d) was fine-tuned using
 MultipleNegativesRankingLoss (MNRL) for 2 epochs at lr=3e-6 with
 batch size 64.  TripletLoss was evaluated first (lr=2e-5, 3 epochs)
 but caused severe degradation (-91.5% NDCG: 0.6464 -> 0.0550,
-Table 4).  We note that the TripletLoss experiment used a higher
+Table 2).  We note that the TripletLoss experiment used a higher
 learning rate (2e-5 vs 3e-6); however, we attribute the failure
 primarily to the loss function's per-triplet gradient rather than
 the learning rate, as TripletLoss pushes individual negatives away
@@ -527,7 +560,7 @@ model's knowledge while learning from in-batch negatives.
 
 ### 5.4  Results
 
-**Table 4: Embedding fine-tune evolution**
+**Table 2: Embedding fine-tune evolution (pre-v0.34 historical snapshots)**
 
 | Approach                   | Loss    | NDCG@10 SciFact | Result            |
 |----------------------------|---------|:---------------:|-------------------|
@@ -536,7 +569,15 @@ model's knowledge while learning from in-batch negatives.
 | MNRL batch-only (v1)       | MNRL    | 0.6829          | +5.6%             |
 | **MNRL + hard neg (v2)**   | **MNRL**| **0.6945**      | **+7.4%**         |
 
-*All numbers evaluated under identical conditions: sentence-
+*Historical snapshots showing the evolutionary path from base to
+v2.  These numbers are pre-v0.34, before the cosine metric fix
+(#271/#272/#286) recalibrated `distance_cutoff` and
+`relevance_tier` thresholds.  Current-code numbers for the
+published models (`bge-small-rrf-v2`, `bge-small-rrf-v3`,
+`bge-small-rrf-v4`) are in Table 4 (Section 8.3).  The +7.4%
+SciFact lift cited in this table reflects the pre-fix pipeline;
+on post-v0.34 code the v2 lift over base is +2.6% on SciFact and
++2.8% macro (Table 4).  All numbers evaluated under identical conditions: sentence-
 transformers embedding backend, full vstash pipeline (adaptive
 RRF + FTS5 + MMR dedup), same BEIR SciFact corpus and queries.
 The progression shows that loss function choice is the critical
@@ -544,38 +585,43 @@ variable, and explicit hard negatives from signal disagreement
 compound with the right loss function.*
 
 The complete comparison across all 5 BEIR datasets with published
-baselines is presented in Table 6 (Section 8.3).
+baselines is presented in Table 4 (Section 8.3).
 
-**Where tuning does not help: FiQA and ArguAna.** The tuned pipeline
-improves NDCG@10 on all 5 BEIR datasets relative to the BGE-small
-base RRF pipeline, but the improvement collapses to +0.1% on FiQA
-and to only +1.3% on ArguAna, and both datasets remain below
-published ColBERTv2 (-7.8% and -8.4% respectively).  We attribute
-this to a distribution mismatch between the training and
-evaluation regimes rather than to a failure of the method itself.
-The disagreement triples are mined from SciFact, NFCorpus, and
-FiQA; two of those three sources (SciFact, NFCorpus) are short,
-information-dense claim- or abstract-style queries.  FiQA and
-ArguAna stress different query distributions: FiQA queries are
-user-authored, colloquial, and often multi-sentence (e.g. "I'm 25,
-starting a job, should I open a Roth IRA?"), and ArguAna queries
-are full-paragraph counter-arguments from debate, not keyword-like
-bag-of-words.  The triples generated from SciFact/NFCorpus dominate
-the training mix (SciFact + NFCorpus contribute ~98% of the 76K
-triples; FiQA contributes only ~1,653 triples despite its high
-disagreement rate because fewer gold documents survive the
-5000-doc ingest cap, see Section 5.2 Table), pulling the embedding
-space toward scientific claim-style language.  The same effect
-surfaces on SciDocs where the tuned model gives up 4.7% vs
-BGE-base untrained: SciDocs uses citation-recommendation queries
-that resemble neither the claim-style nor QA-style training
-distribution.  We read this as a scope claim, not a failure:
-disagreement-mined data generalizes within claim/QA-style
-retrieval; matching a FiQA-style or ArguAna-style benchmark would
-require adding triples from those query distributions.  In v2 the
-labeled-query retrain mode (Section 5.6) lets users supply real
-queries from any target distribution and is the deployable route
-for distribution-specific tuning.
+**Per-dataset specialization: v2 vs v3 vs v4.** On post-v0.34 code,
+the three published vstash fine-tunes have meaningfully different
+per-dataset profiles (Table 4 reports the full numbers).  v2 (76K
+disagreement triples dominated by SciFact/NFCorpus) leads on
+**NFCorpus (+13.9%, 95% CI [+0.0326, +0.0685])** -- the dataset
+closest to its training distribution -- but **statistically
+significantly regresses on FiQA (-3.8%, 95% CI [-0.0274,
+-0.0031])**, where its chunk-prefix synthetic queries do not
+resemble user-authored multi-sentence questions like "I'm 25,
+starting a job, should I open a Roth IRA?".  v3 (60K H-R9 multi-corpus, `temperature=0.5`
+sampling) trades some NFCorpus advantage for a strong **FiQA gain
+(+18.7%)** and the highest macro lift (+6.2%); v3's training mix
+includes ~65% FiQA triples vs v2's ~2%.  v4 retrains the v3 recipe
+on post-v0.34 code (the corrected cosine metric); macro lift over
+base is **+4.9%** (95% CI [+3.7%, +6.1%], paired bootstrap, see
+Section 8.3 Table 4) with the largest gains on FiQA (+13.7%) and
+SciFact (+4.5%).  Compared to v3, v4 has slightly higher point
+estimates on the held-out datasets (SciDocs +0.0017, ArguAna
++0.0068), but those held-out lifts are individually within the
+bootstrap noise band: the v4-vs-base CIs on SciDocs and ArguAna
+cross zero, so the v4-vs-v3 directional advantage on held-out
+should be read as preliminary, not a significance claim.
+
+**ArguAna remains hard.** All three fine-tunes deliver roughly
+neutral lifts on ArguAna (-1.1% to +0.8%) and stay below published
+ColBERTv2 (-5.3% to -8.4%).  ArguAna queries are full-paragraph
+counter-arguments from debate -- not keyword-like bag-of-words --
+and not represented in any vstash training distribution to date.
+We read this as a scope claim, not a failure: disagreement-mined
+data generalizes within claim/QA-style retrieval but does not
+cover argumentative-paraphrase retrieval.  Matching ArguAna would
+require adding paragraph-style triples or labeled adversarial
+pairs.  In v2 the labeled-query retrain mode (Section 5.6) lets
+users supply real queries from any target distribution and is the
+deployable route for distribution-specific tuning.
 
 ### 5.5  Key Findings
 
@@ -594,42 +640,53 @@ in-batch negatives.
 
 **The training signal transfers to near-in-domain evaluation, with
 caveats.** Triples were generated from 3 datasets (SciFact,
-NFCorpus, FiQA) and the tuned model was evaluated on two held-out
-BEIR benchmarks: SciDocs (CS-paper citation recommendation) and
-ArguAna (paragraph-length counter-arguments).  On SciDocs the
-tuned pipeline gains +5.5% vs the BGE-small base RRF pipeline
-(Table 6), and on ArguAna +1.3%.  Neither benchmark is a true
-stress test of cross-domain transfer: SciDocs is scientific papers,
-adjacent to SciFact's biomedical abstracts; ArguAna is the only
-genuinely out-of-distribution benchmark in the set, and it is also
-where the smallest gain appears.  We interpret this as evidence
-that the disagreement signal generalizes across nearby scientific
-and QA distributions, not as evidence of universal transfer.  The
-v2 LongMemEval result (Section 6) is direct evidence in the
-opposite direction: the BEIR-tuned model regresses 2.45pp NDCG@10
-on chat memory.  This motivates the labeled-retrain mode below.
+NFCorpus, FiQA) and the tuned models were evaluated on two
+held-out BEIR benchmarks: SciDocs (CS-paper citation recommendation)
+and ArguAna (paragraph-length counter-arguments).  On post-v0.34
+code, v4 (the recommended general default) gains +1.3% over
+BGE-small base on SciDocs and +0.4% on ArguAna; v3 gains +0.4%
+and -1.1% respectively (Table 4).  Neither benchmark is a true
+stress test of cross-domain transfer: SciDocs is scientific
+papers, adjacent to SciFact's biomedical abstracts; ArguAna is
+the only genuinely out-of-distribution benchmark in the set, and
+it is also where the smallest gains appear.  We interpret this as
+evidence that the disagreement signal generalizes across nearby
+scientific and QA distributions, not as evidence of universal
+transfer.  The v2-paper LongMemEval result (Section 6) is direct
+evidence in the opposite direction: the BEIR-tuned model regresses
+2.45pp NDCG@10 on chat memory.  This motivates the labeled-retrain
+mode below.
 
-**Smart training data compensates for model size on 3 of 5 BEIR
-datasets.** BGE-small tuned (33M params) surpasses untrained
-BGE-base (110M params) on SciFact (+0.7%), NFCorpus (+14.1%), and
-ArguAna (+0.5%), while running 3x faster and using 3x less memory.
-It does not do so on FiQA (-5.3%) or SciDocs (-4.7%); both belong
-to query distributions under-represented in the training triples,
-per the discussion above.  The disagreement signal is also
-model-specific: BGE-base produces only 1,371 triples (vs 76K for
-BGE-small), reflecting that the larger model already has fewer
-blind spots.  This suggests that targeted training data selection
-can outweigh raw model capacity for hybrid retrieval in the
-majority of benchmarked domains, provided the training and
-evaluation distributions are reasonably aligned.
+**Smart training data compensates for model size on most BEIR
+datasets.** BGE-small tuned (v4, 33M params) matches or surpasses
+untrained BGE-base (110M params) on SciFact (+9.8%), NFCorpus
+(+7.1%), FiQA (+28.6%), and ArguAna (+3.9%); it ties on SciDocs
+(+0.2%).  The v4 fine-tune at 3x fewer parameters and 3x lower
+memory than BGE-base wins on 5 of 5 datasets (versus v2 which won
+on 3 of 5 due to FiQA over-specialization).  The disagreement
+signal is also model-specific: BGE-base produces only 1,371
+triples (vs 76K for BGE-small in the v2 mining run), reflecting
+that the larger model already has fewer blind spots.  Targeted
+training data selection can outweigh raw model capacity for
+hybrid retrieval, provided the training and evaluation
+distributions are reasonably aligned.
 
 **The improvement is free.** No human labeling, no external LLM
 calls, no additional data.  Any vstash user can generate triples
 from their own corpus via `vstash retrain`, which automates the
 full pipeline: pseudo-query generation, disagreement detection,
-triple extraction, and MNRL fine-tuning.  The model is published
-as [`Stffens/bge-small-rrf-v2`](https://huggingface.co/Stffens/bge-small-rrf-v2)
-on HuggingFace.
+triple extraction, and MNRL fine-tuning.  Three BEIR-tuned models
+in the family are published on HuggingFace:
+[`Stffens/bge-small-rrf-v2`](https://huggingface.co/Stffens/bge-small-rrf-v2)
+(76K MNRL + hard-neg, NFCorpus champion),
+[`Stffens/bge-small-rrf-v3`](https://huggingface.co/Stffens/bge-small-rrf-v3)
+(60K H-R9 multi-corpus, pre-v0.34 reference snapshot), and
+[`Stffens/bge-small-rrf-v4`](https://huggingface.co/Stffens/bge-small-rrf-v4)
+(post-v0.34 retrain of the v3 recipe, recommended default).  A
+fourth model
+[`Stffens/bge-small-rrf-lme-v1`](https://huggingface.co/Stffens/bge-small-rrf-lme-v1),
+the chat-memory specialist trained via the labeled-retrain mode,
+is described in Section 6.
 
 ### 5.6  Labeled-Query Retrain: A Gated Domain-Adaptation Loop (NEW in v2)
 
@@ -705,8 +762,8 @@ comparable promotion guard.
 
 ```mermaid
 flowchart TB
-    TRAIN[("train.jsonl<br/>(q, gold_paths)")]
-    EVAL[("eval.jsonl<br/>(q, gold_paths)")]
+    TRAIN[("train.jsonl<br/>(q, relevant_paths)")]
+    EVAL[("eval.jsonl<br/>(q, relevant_paths)")]
     MINER["Labeled-batched miner<br/>q, gold_chunk, hard_neg<br/>from RRF disagreement"]
     MNRL["MNRL training"]
     CAND["Candidate model"]
@@ -735,10 +792,10 @@ flowchart TB
 ```
 *Figure 1: Eval-gated labeled-retrain pipeline (Section 5.6).
 The held-out eval JSONL feeds `evaluate_model` directly; the
-candidate is only promoted if its NDCG@10 delta vs the active
-model exceeds `--min-gain` (default 0.0).  Failed candidates are
-preserved at `.candidate/` for inspection but never overwrite the
-deployed model.*
+candidate is promoted only if its NDCG@10 delta vs the active
+model is at least `--min-gain` (default 0.0).  Failed candidates
+are preserved at `.candidate/` for inspection but never overwrite
+the deployed model.*
 
 <!--
 LATEX/TIKZ stub for arXiv conversion of Figure 1:
@@ -767,7 +824,7 @@ LATEX/TIKZ stub for arXiv conversion of Figure 1:
     \caption{Eval-gated labeled-retrain pipeline.  The held-out
       eval JSONL feeds \texttt{evaluate\_model} directly; the
       candidate is promoted only if its NDCG@10 delta vs the active
-      model exceeds \texttt{--min-gain}.  Failed candidates are
+      model is at least \texttt{--min-gain}.  Failed candidates are
       preserved at \texttt{.candidate/} for inspection.}
     \label{fig:gated-loop}
   \end{figure}
@@ -785,18 +842,35 @@ This labeled mode enables the case study in Section 6.
 
 Before describing the chat-memory case study, we report the result
 that motivated it.  On the 102-query LongMemEval-s stratified
-holdout (Section 6.2), the v1 fine-tune `Stffens/bge-small-rrf-v2`
-(BEIR-tuned) achieves NDCG@10 = 0.5898, **lower** than vanilla
-BGE-small at 0.6143.  The same v2 model surpasses vanilla on every
-BEIR dataset (Section 8.3) but actively *regresses* 2.8pp R@5 on
-LongMemEval temporal-reasoning specifically, the category where
-queries reference cross-session dates.
+holdout (Section 6.2), the BEIR-tuned fine-tune
+`Stffens/bge-small-rrf-v2` achieves NDCG@10 = 0.5898, **lower**
+than vanilla BGE-small at 0.6143.  The same v2 model surpasses
+vanilla on every BEIR dataset (Section 8.3) but actively
+*regresses* 2.8pp R@5 on LongMemEval temporal-reasoning
+specifically, the category where queries reference cross-session
+dates.
 
 This is direct evidence that "best on BEIR" does not transfer to
 "best on chat memory" -- at least within the cross-domain pair
 examined here -- and that a universal fine-tune is suboptimal for
 memory systems hosting heterogeneous corpora.  The remedy is
 per-domain models, fed by the labeled retrain mode.
+
+**Symmetric direction (Pareto-safe specialization).** We tested
+whether the chat-tuned `bge-small-rrf-lme-v1` catastrophically
+regresses on BEIR.  Paired bootstrap (B=1000, seed=42, paired by
+qid) of per-query NDCG@10 over the 5 BEIR datasets gives macro
+delta -0.0024 with 95% CI [-0.0050, +0.0002]; per-dataset CIs
+cross zero on all 5 datasets.  Chat-tuning produces no detectable
+regression on general BEIR retrieval at this evaluation power --
+the gated loop applied to the target domain is a **Pareto-safe
+specialization** (gain in target, no measurable cost
+out-of-domain), not a one-way trade.  The asymmetry is therefore
+in pattern as well as magnitude: BEIR-tune **hurts** chat memory
+by a measurable margin, but chat-tune does **not** measurably hurt
+general retrieval.  Decision rule and bootstrap artifacts are in
+`experiments/results/asymmetry_decision_2026_04_28.md` and
+`experiments/paired_bootstrap_beir.py`.
 
 ---
 
@@ -1054,7 +1128,7 @@ the relevance signal: F1 and Accuracy.
 
 ### 8.2  Ablation: RRF vs. Vector vs. FTS
 
-**Table 5a: Ablation -- LLM memory corpus (24 papers, 786 chunks)**
+**Table 3a: Ablation -- LLM memory corpus (24 papers, 786 chunks)**
 
 | Mode           | NDCG@5    | NDCG@10   | P@3       | Latency |
 |----------------|:---------:|:---------:|:---------:|--------:|
@@ -1062,7 +1136,7 @@ the relevance signal: F1 and Accuracy.
 | FTS keyword    | 0.631     | 0.621     | 0.767     | 0.81 ms |
 | **Hybrid RRF** | **0.814** | **0.803** | **1.000** | 1.61 ms |
 
-**Table 5b: Ablation -- Wikipedia corpus (17 articles, 2,602 chunks)**
+**Table 3b: Ablation -- Wikipedia corpus (17 articles, 2,602 chunks)**
 
 | Mode           | NDCG@5    | NDCG@10   | P@3   | Latency |
 |----------------|:---------:|:---------:|:-----:|--------:|
@@ -1085,28 +1159,76 @@ The advantage is consistent across homogeneous and diverse corpora.
 
 ### 8.3  BEIR Baseline Comparison
 
-**Table 6: vstash vs published baselines on BEIR (NDCG@10)**
+**Table 4: vstash vs published baselines on BEIR (NDCG@10, post-v0.34 code)**
 
-| System                                   | SciFact    | NFCorpus   | FiQA       | SciDocs    | ArguAna    |
-|------------------------------------------|:----------:|:----------:|:----------:|:----------:|:----------:|
-| BM25 / Elasticsearch                     | 0.665      | 0.325      | 0.236      | 0.158      | 0.315      |
-| ColBERTv2 (published)                    | 0.693      | 0.344      | 0.356      | 0.154      | 0.463      |
-| BGE-base untrained (110M, 768d)          | 0.6899     | 0.3462     | 0.3465     | 0.1968     | 0.4220     |
-| vstash hybrid RRF (BGE-small base)       | 0.6464     | 0.3304     | 0.3281     | 0.1778     | 0.4188     |
-| **vstash hybrid RRF (tuned, Section 5)** | **0.6945** | **0.3949** | **0.3283** | **0.1875** | **0.4241** |
-| vs BGE-small base RRF (tuned)            | **+7.4%**  | **+19.5%** | +0.1%      | **+5.5%**  | **+1.3%**  |
-| vs BGE-base untrained (tuned)            | **+0.7%**  | **+14.1%** | -5.3%      | -4.7%      | **+0.5%**  |
-| vs ColBERTv2 (tuned)                     | +0.2%      | **+14.8%** | -7.8%      | **+21.8%** | -8.4%      |
+| System                                   | SciFact    | NFCorpus   | FiQA       | SciDocs    | ArguAna    | Macro      |
+|------------------------------------------|:----------:|:----------:|:----------:|:----------:|:----------:|:----------:|
+| BM25 / Elasticsearch                     | 0.665      | 0.325      | 0.236      | 0.158      | 0.315      | 0.340      |
+| ColBERTv2 (published)                    | 0.693      | 0.344      | 0.356      | 0.154      | 0.463      | 0.402      |
+| BGE-base untrained (110M, 768d)          | 0.6899     | 0.3462     | 0.3465     | 0.1968     | 0.4220     | 0.4203     |
+| vstash hybrid RRF (BGE-small base)       | 0.7251     | 0.3591     | 0.3917     | 0.1945     | 0.4367     | 0.4214     |
+| vstash hybrid RRF (`bge-small-rrf-v2`)   | 0.7438     | **0.4090** | 0.3767     | 0.1969     | 0.4400     | 0.4333     |
+| vstash hybrid RRF (`bge-small-rrf-v3`)   | **0.7705** | 0.3755     | **0.4648** | 0.1954     | 0.4318     | **0.4476** |
+| **vstash hybrid RRF (`bge-small-rrf-v4`, post-v0.34 reference)** | **0.7575** | 0.3707 | 0.4455 | **0.1971** | **0.4386** | 0.4419 |
+| vs BGE-small base (v4 lift)              | +4.5%      | +3.2%      | **+13.7%** | +1.3%      | +0.4%      | **+4.9%**  |
+| vs BGE-base untrained (v4)               | **+9.8%**  | **+7.1%**  | **+28.6%** | +0.2%      | +3.9%      | **+5.1%**  |
+| vs ColBERTv2 published (v4)              | **+9.3%**  | **+7.8%**  | **+25.1%** | **+28.0%** | -5.3%      | **+9.9%**  |
 
 *Published baselines from the BEIR paper (Thakur et al., 2021).
-ColBERTv2 from Santhanam et al. (2022).  Both vstash rows use
+ColBERTv2 from Santhanam et al. (2022).  All vstash rows use
 sentence-transformers as the embedding backend with the full
 vstash pipeline (adaptive RRF + FTS5 + MMR dedup), evaluated on
-the standard BEIR queries and relevance judgments.  The "vs
-BGE-small base RRF" row isolates the training effect: same
-pipeline, same embedding backend, same evaluation; the only
-change is the fine-tuned weights.  The +19.5% on NFCorpus cited
-in the abstract originates here.*
+the standard BEIR queries and relevance judgments on vstash 0.35
+(post-v0.34 cosine fix).  Three fine-tuned variants are reported:
+`bge-small-rrf-v2` (76K MNRL + hard-neg, Section 5.4),
+`bge-small-rrf-v3` (60K H-R9 multi-corpus, pre-v0.34 trained),
+and `bge-small-rrf-v4` (same recipe as v3 but retrained on
+post-v0.34 code; see Section 5.7 and the model card on HuggingFace
+for the validation experiment).  v3 was trained against
+disagreement triples mined under pre-v0.34 cosine-metric
+assumptions (the buggy L2-as-cosine threshold); v4 retrains the
+same recipe under post-v0.34 conditions where the mining runs
+through the corrected cosine pipeline, and is the honest
+post-fix reference.  Multi-seed v4 retraining (seeds {0, 1, 42,
+100}, recipe held identical, training-stochastic std on macro
+NDCG@10 = 0.0005) shows the v3 vs v4 macro gap (-0.0057) is **11
+sigma above seed noise**, not within it; the gap is a real
+training-side effect of the cosine fix.  Per-dataset, v3 wins
+significantly on the three training-mix datasets (SciFact +9
+sigma, NFCorpus +14 sigma, FiQA +27 sigma), v4 wins significantly
+on held-out ArguAna (+13 sigma), and SciDocs is essentially tied
+(1.4 sigma).  Reading: v3 over-specialized to its training-mix
+distribution under the buggy mining pipeline; v4 generalized
+slightly better to held-out distributions but at a small macro
+cost.  Both models are published; users who want their training
+pipeline to match inference (post-v0.34) prefer v4, users who
+want peak macro on BEIR-mix datasets prefer v3.
+Per-domain specialization wins: v2 leads on NFCorpus, v3 leads on
+FiQA, v4 is the recommended general default.  Even the BGE-small
+base row already exceeds ColBERTv2 published macro (0.4214 vs
+0.402, +4.8%), confirming that the pipeline contribution dominates
+the fine-tune contribution; the fine-tunes add a modest incremental
+edge for domain-specific use cases.*
+
+**Bootstrap confidence intervals (paired by qid, B=1000, seed=42).**
+The deltas in the v4 lift rows are validated with paired bootstrap
+on per-query NDCG@10:
+
+| Dataset  | v4 vs base delta | 95% CI               | Significant? |
+|----------|-----------------:|:--------------------:|:-:|
+| SciFact  |          +0.0324 | [+0.0168, +0.0511]   | yes |
+| NFCorpus |          +0.0116 | [+0.0020, +0.0213]   | yes |
+| FiQA     |          +0.0537 | [+0.0383, +0.0697]   | yes |
+| SciDocs  |          +0.0025 | [-0.0025, +0.0075]   | no (CI crosses 0) |
+| ArguAna  |          +0.0019 | [-0.0042, +0.0087]   | no (CI crosses 0) |
+| **macro** |        **+0.0204** | **[+0.0154, +0.0256]** | **yes** |
+
+*Three of five per-dataset lifts are statistically significant at
+the 95% level; SciDocs and ArguAna are within noise.  Macro lift
+is robustly positive (CI strictly above zero) at +4.9% relative to
+base.  Bootstrap script and pre-committed decision rule are in
+`experiments/paired_bootstrap_beir.py` and
+`experiments/results/asymmetry_decision_2026_04_28.md`.*
 
 **Comparison conditions.** The ColBERTv2 NDCG@10 = 0.693 is from
 Santhanam et al. (2022) under the standard BEIR evaluation
@@ -1115,7 +1237,7 @@ judgments but differed in document preprocessing: vstash chunks
 documents using its semantic chunking pipeline (1024 tokens, 128
 overlap) and embeds with BGE-small-en-v1.5 (or the fine-tuned
 variant), while ColBERTv2 operates on full documents with its own
-tokenization and late interaction mechanism.  This Table 6
+tokenization and late interaction mechanism.  This Table 4
 comparison remains indicative of pipeline-level performance, not
 a controlled head-to-head under identical preprocessing.  Section
 8.8 / 8.10 add the controlled same-machine head-to-head we
@@ -1124,7 +1246,7 @@ calibration disclosure in Appendix D.
 
 ### 8.4  At-Scale Validation: 1,000 ArXiv Papers
 
-**Table 7: Hybrid RRF at scale -- 1,000 ML papers, 35 topic-based queries**
+**Table 5: Hybrid RRF at scale -- 1,000 ML papers, 35 topic-based queries**
 
 | Model                       | Mode       | P@5       | NDCG@5    | NDCG@10   | MRR       | Latency |
 |-----------------------------|------------|:---------:|:---------:|:---------:|:---------:|--------:|
@@ -1136,7 +1258,7 @@ calibration disclosure in Appendix D.
 
 ### 8.5  Latency at Scale
 
-**Table 8: Search latency across corpus sizes**
+**Table 6: Search latency across corpus sizes**
 
 | Corpus                       | Chunks   | Mean    | Median  | P95     | P99     |
 |------------------------------|:--------:|:-------:|:-------:|:-------:|:-------:|
@@ -1150,12 +1272,12 @@ calibration disclosure in Appendix D.
 maximum observation (an earlier draft mislabeled it as "Max").
 Rows at 5K, 10K, and 50K chunks are pulled from the same at-scale
 run committed to `experiments/results/scale_benchmark.json`, so
-Tables 8 and 9 report consistent numbers for overlapping scales.
+Tables 6 and 7 report consistent numbers for overlapping scales.
 The 786-chunk and 1,087-chunk rows come from separate
 smaller-corpus measurements and are reproduced here for qualitative
 comparison.*
 
-**Table 9: NDCG@10 stability across scale**
+**Table 7: NDCG@10 stability across scale**
 
 | Scale | Total chunks | NDCG@10 | Latency p50 | Latency p95 |
 |:-----:|:------------:|:-------:|:-----------:|:-----------:|
@@ -1169,7 +1291,7 @@ across all scales from 1K to 50K chunks.*
 
 ### 8.6  End-to-End Answer Relevance
 
-**Table 10: Answer relevance -- vstash full pipeline vs Chroma dense-only**
+**Table 8: Answer relevance -- vstash full pipeline vs Chroma dense-only**
 
 | Dataset       | vstash mean | Chroma mean | Delta | Head-to-head | vstash score=0 | Chroma score=0 |
 |---------------|:-----------:|:-----------:|:-----:|:------------:|:--------------:|:--------------:|
@@ -1180,7 +1302,7 @@ across all scales from 1K to 50K chunks.*
 dataset) is too small to draw statistical conclusions;** the
 +8.3% and +5.6% point estimates are directional only, not
 significance-tested.  We include the table for reader context
-because the retrieval-level improvements in Table 6 predict that
+because the retrieval-level improvements in Table 4 predict that
 a better retrieval pipeline should produce better end-to-end
 answers, and the directional result is consistent with that
 prediction.  The high tie rate (25/30 on SciFact, 20/30 on
@@ -1316,6 +1438,27 @@ datasets, Mac Apple Silicon for vstash and Colab T4 for ColBERTv2:
 | SciDocs    |         0.1960 |                         0.1546 |                          0.154 |
 | ArguAna    |         0.4357 |                         0.3319 |                          0.463 |
 
+*Backend and code-version note.  The vstash column uses the default
+FastEmbed (ONNX) embedding backend, the runtime used in production
+deployment.  Table 4 (Section 8.3) reports sentence-transformers
+numbers for direct comparability with the BGE-base and ColBERTv2
+references reported by their authors.  Two effects compound across
+the two tables.  **(1) v0.34 cosine metric fix.** vstash 0.34.0
+(#271 / #272 / #286) rescaled `distance_cutoff` (1.15 to 1.3225)
+and `relevance_tier` thresholds (0.95/0.98 to 0.4513/0.4802) to
+match the actual cosine distance returned by `vec_chunks`; pre-v0.34
+measurements ran the cutoff against L2-treated-as-cosine values, and
+the fix raises BGE-small NDCG@10 by roughly +0.02 to +0.08 per BEIR
+dataset retroactively on the same model weights.  Earlier vstash
+measurements (Table 4 vstash rows) reflect the pre-fix pipeline;
+Table 8 in this section reflects post-fix code (v0.35).  **(2)
+Residual ST-vs-FastEmbed numerical gap.** On post-v0.34 code the
+gap between sentence-transformers (PyTorch) and FastEmbed (ONNX) is
+~+0.003 NDCG@10 -- an order of magnitude smaller than the cosine fix
+effect.  Each table is internally controlled (single backend, single
+code version across all rows); within-table head-to-head conclusions
+are unaffected.*
+
 In same-machine same-corpus evaluation against the minimal-HF
 re-implementation, vstash hybrid (with vanilla BGE-small as the
 embedder, *not* the BEIR-tuned variant from Section 5.4 / 8.3)
@@ -1381,10 +1524,15 @@ artifact.
 ### 10.1  Contributions retained from v1
 
 **Self-supervised embedding refinement.** Hybrid retrieval
-disagreement provides a free training signal.  Mining 76K
-disagreement triples from BEIR and fine-tuning BGE-small with MNRL
-yields `Stffens/bge-small-rrf-v2`, which improves NDCG@10 on all
-5 BEIR datasets.
+disagreement provides a free training signal.  Mining disagreement
+triples from BEIR and fine-tuning BGE-small with MNRL yields the
+`bge-small-rrf-{v2, v3, v4}` family on HuggingFace, with v4 the
+recommended general default (post-v0.34 honest reference) lifting
+macro NDCG@10 by +4.9% over the BGE-small base on all 5 BEIR
+datasets.  The hybrid pipeline with the BGE-small base alone
+already exceeds ColBERTv2 published macro (0.4214 vs 0.402,
++4.8%); the fine-tune adds an incremental +4.9% on top.  The
+substrate dominates the model contribution.
 
 **Adaptive RRF.** IDF-based per-query weight adjustment improves
 NDCG@10 on all 5 BEIR datasets versus fixed weights, with the
@@ -1436,28 +1584,49 @@ opportunity for retrieval research at this size class is rank
 precision -- which is exactly where domain adaptation has the
 largest measurable impact in our experiments.
 
-**Future work.** Three concrete next steps: (a) re-evaluate
-ColBERTv2 via the official Stanford codebase to remove the
-calibration band; (b) add a cross-encoder reranker over top-10 to
-close the R@1 gap (currently 73% of the structural ceiling) and
-push R@1 into significance on the holdout; (c) extend the labeled
-retrain mode to support LoRA adapters so that domain fine-tunes
-can be composed with general-purpose encoders without
-parameter-level forking.
+**Future work.** Four concrete next steps:
+(a) re-evaluate ColBERTv2 via the official Stanford codebase to
+remove the calibration band;
+(b) add a cross-encoder reranker over top-10 to close the R@1 gap
+(currently 73% of the structural ceiling) and push R@1 into
+significance on the holdout;
+(c) extend the labeled retrain mode to support LoRA adapters so
+that domain fine-tunes can be composed with general-purpose
+encoders without parameter-level forking;
+(d) investigate the mechanism of the small but training-stochastically-
+significant macro gap between v3 (pre-v0.34 trained) and v4
+(post-v0.34 trained, multi-seed std 0.0005, see Section 5.4
+retrain validation).  The gap is 11 sigma above seed noise but
+its mechanism is conjectural -- numerical-precision differences
+in the borderline hard-negative cutoff under L2-as-cosine vs
+real-cosine ranking.  A targeted ablation comparing the actual
+mined triple sets pre- and post-fix would resolve whether the
+training data differs in composition (which negatives are
+admitted) or only in numerical labels (same triples, different
+metric values).
 
-All code, both fine-tuned models (`Stffens/bge-small-rrf-v2`,
-`Stffens/bge-small-rrf-lme-v1`), and reproducible experiment
-scripts are open-source.
+All code, the four published fine-tuned models
+(`Stffens/bge-small-rrf-v2`, `Stffens/bge-small-rrf-v3`,
+`Stffens/bge-small-rrf-v4`, `Stffens/bge-small-rrf-lme-v1`), and
+reproducible experiment scripts are open-source.
 
-More broadly, our results suggest that memory retrieval should be
-treated as a domain-adaptation problem, not a benchmark-ranking
-problem.  A single embedder optimized for general-purpose
-retrieval benchmarks is unlikely to be optimal for chat memory,
-code memory, or any specific corpus the user actually deposits in
-their store.  The deployable artifact is the gated
-domain-adaptation loop that lets users produce their own
-per-domain fine-tunes.  The primary artifact is not the model --
-it is the loop.
+More broadly, our results suggest that production memory systems
+benefit from a deployable adaptation loop rather than a single
+universal embedder.  Three findings support this framing.  First,
+the vstash hybrid substrate (adaptive RRF + corrected cosine
+metric + MMR) with a vanilla BGE-small base already exceeds
+ColBERTv2 published macro on the 5-dataset BEIR slice, so
+benchmark-competitive retrieval does not require a fine-tune.
+Second, BEIR-tuned weights regress on chat memory (-2.45pp NDCG@10
+on the LongMemEval-s holdout), so a single embedder optimized for
+general-purpose benchmarks is suboptimal for the chat-memory
+distribution.  Third, the symmetric direction is Pareto-safe:
+chat-tuning lifts target-domain R@5 by +3.79pp without measurable
+out-of-domain regression on BEIR (CI crosses zero on macro and
+all 5 datasets).  The deployable artifact is therefore the gated
+loop applied to whichever domain the user deposits in their store
+-- the substrate is the foundation, the loop is the
+specialization tool.
 
 ---
 
@@ -1747,3 +1916,22 @@ The v1 reference list is retained.  References added in v2:
     8 Examples*.  ICLR 2023.
   - Kirkpatrick et al. 2017.  *Overcoming catastrophic forgetting
     in neural networks*.  PNAS.
+
+---
+
+## Acknowledgments
+
+vstash is the author's open-source research project.  All ideas,
+system architecture, retrieval algorithms, training methodology,
+evaluation design, and conclusions in this paper are original
+contributions of the author.  Implementation work used standard
+tooling: Python, PyTorch, SQLite, and a large language model
+assistant (Anthropic Claude) for code generation and manuscript
+editing, in the same role a developer uses an IDE or compiler.
+All output was reviewed and edited by the author, who takes full
+responsibility for the content.  vstash is built on sqlite-vec
+(Alex Garcia), FastEmbed (Qdrant), sentence-transformers, BAAI
+embedding models, tree-sitter, parso, and SQLite/FTS5.  The BEIR
+evaluation suite (Thakur et al., 2021) provided the primary
+external benchmark.  All experiments are reproducible from
+scripts in the project's `experiments/` directory.

@@ -46,11 +46,15 @@ def _hermetic_config_factory(db_path, *, vector_backend: str = "sqlite-vec"):
 
 def _patch_hermetic_config(monkeypatch, db_path, *, vector_backend: str = "sqlite-vec"):
     """Apply all monkeypatches needed for a hermetic _get_store call."""
+    import vstash._store_open as store_open_mod
+
     monkeypatch.setenv("VSTASH_DB_PATH", str(db_path))
     monkeypatch.setattr(
         cli_mod, "load_config", _hermetic_config_factory(db_path, vector_backend=vector_backend)
     )
-    monkeypatch.setattr(cli_mod, "get_embedding_dim", lambda _model: DIM)
+    # _get_store now delegates to ``open_store_for_config``, which looks
+    # up ``get_embedding_dim`` from the ``_store_open`` module (#297).
+    monkeypatch.setattr(store_open_mod, "get_embedding_dim", lambda _model: DIM)
 
 
 class TestGetStoreAtexit:

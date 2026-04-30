@@ -238,8 +238,10 @@ KNOWN_DIMS: dict[str, int] = {
     # v2: MNRL + explicit hard negatives. +7.4% SciFact, +19.5% NFCorpus vs base.
     # Loaded via SentenceTransformer (v3) / custom HF ONNX backend (v1/v2).
     # Use via ``vstash reindex --model Stffens/bge-small-rrf-v3``.
+    "Stffens/bge-small-rrf-v4": 384,
     "Stffens/bge-small-rrf-v3": 384,
     "Stffens/bge-small-rrf-v2": 384,
+    "Stffens/bge-small-rrf-lme-v1": 384,
     "stffens/bge-small-rrf-v1": 384,  # legacy v1
     # Multilingual models (FastEmbed-supported)
     "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2": 384,

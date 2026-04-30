@@ -144,6 +144,34 @@ class TestMemoryAdd:
             [r2] = mem.add(doc, force=True)
             assert r2.status == "ok"
 
+    @requires_sqlite_vec
+    def test_add_collection_none_falls_back_to_default(self, tmp_path: Path) -> None:
+        """``collection=None`` on writes is mapped to the schema default ``'default'``.
+
+        ``documents.collection`` is NOT NULL with default ``'default'``; before
+        #296 the explicit ``None`` reached SQLite and raised
+        ``IntegrityError NOT NULL constraint failed: documents.collection``.
+        """
+        doc = tmp_path / "nullcoll.md"
+        doc.write_text("Body for the null-collection regression test.")
+
+        with Memory(db=tmp_path / "test.db") as mem:
+            [result] = mem.add(doc, collection=None)
+            assert result.status == "ok"
+            assert mem.list(collection="default"), "doc must land in 'default'"
+
+    @requires_sqlite_vec
+    def test_remember_collection_none_falls_back_to_default(self, tmp_path: Path) -> None:
+        """Same #296 guard applies to ``Memory.remember`` (text ingest)."""
+        with Memory(db=tmp_path / "test.db") as mem:
+            result = mem.remember(
+                "Body for the null-collection remember regression test.",
+                title="t",
+                collection=None,
+            )
+            assert result.status == "ok"
+            assert mem.list(collection="default"), "doc must land in 'default'"
+
 
 # ------------------------------------------------------------------ #
 # Memory.search                                                        #
@@ -704,13 +732,17 @@ class TestMemoryAsk:
 
     @requires_sqlite_vec
     def test_ask_calls_chat(self, tmp_path: Path) -> None:
-        """ask() retrieves chunks and passes them to chat.ask."""
+        """ask() retrieves chunks and dispatches via chat.ask_full,
+        returning .content (post-#303 thin-wrapper shape)."""
+        from vstash.models import AskResult
+
         doc = tmp_path / "askable.md"
         doc.write_text("Python is a high-level language for general purpose programming.")
 
+        fake = AskResult(content="mocked answer", backend="cerebras", model="m")
         with Memory(db=tmp_path / "test.db") as mem:
             mem.add(doc)
-            with patch("vstash.memory._chat_ask", return_value="mocked answer") as mock:
+            with patch("vstash.memory._chat_ask_full", return_value=fake) as mock:
                 answer = mem.ask("what is python?")
                 assert answer == "mocked answer"
                 mock.assert_called_once()
@@ -718,6 +750,64 @@ class TestMemoryAsk:
                 assert mock.call_args[0][0] == "what is python?"
                 # Second arg is the chunks list
                 assert isinstance(mock.call_args[0][1], list)
+
+    @requires_sqlite_vec
+    def test_ask_full_routes_through_chat_ask_full(self, tmp_path: Path) -> None:
+        """Memory.ask_full() dispatches to chat.ask_full (#303). Memory.ask
+        is now a thin wrapper around it -- both share retrieval + LLM
+        plumbing so there's no risk of drift."""
+        from vstash.models import AskResult
+
+        doc = tmp_path / "askable.md"
+        doc.write_text("Python is a high-level language for general purpose programming.")
+
+        fake = AskResult(
+            content="mocked answer",
+            reasoning="step 1: think",
+            usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            backend="cerebras",
+            model="gpt-oss-120b",
+        )
+        with Memory(db=tmp_path / "test.db") as mem:
+            mem.add(doc)
+            with patch("vstash.memory._chat_ask_full", return_value=fake) as mock_full:
+                result = mem.ask_full("what is python?")
+                mock_full.assert_called_once()
+                assert mock_full.call_args[0][0] == "what is python?"
+                assert isinstance(mock_full.call_args[0][1], list)
+            assert isinstance(result, AskResult)
+            assert result.reasoning == "step 1: think"
+            assert result.usage["total_tokens"] == 15
+
+    @requires_sqlite_vec
+    def test_ask_forwards_all_kwargs_to_ask_full(self, tmp_path: Path) -> None:
+        """Memory.ask must forward every retrieval kwarg to ask_full so
+        the thin-wrapper refactor doesn't silently drop a knob."""
+        from vstash.models import AskResult
+
+        doc = tmp_path / "askable.md"
+        doc.write_text("body content for forwarding test")
+
+        fake = AskResult(content="answer", backend="cerebras", model="m")
+        with Memory(db=tmp_path / "test.db") as mem:
+            mem.add(doc)
+            with patch.object(mem, "ask_full", return_value=fake) as spy:
+                mem.ask(
+                    "q",
+                    top_k=7,
+                    layer="L",
+                    history=[{"role": "user", "content": "prev"}],
+                    vec_weight=0.6,
+                    fts_weight=0.4,
+                    retrieval_mode="vec_only",
+                )
+            kwargs = spy.call_args.kwargs
+            assert kwargs["top_k"] == 7
+            assert kwargs["layer"] == "L"
+            assert kwargs["history"] == [{"role": "user", "content": "prev"}]
+            assert kwargs["vec_weight"] == 0.6
+            assert kwargs["fts_weight"] == 0.4
+            assert kwargs["retrieval_mode"] == "vec_only"
 
 
 # ------------------------------------------------------------------ #
@@ -732,33 +822,31 @@ class TestSdkDbResolution:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """Memory() without explicit db= delegates to resolve_db_path."""
-        from vstash.profile import resolve_db_path
-
         custom_db = tmp_path / "custom.db"
         monkeypatch.delenv("VSTASH_DB_PATH", raising=False)
         monkeypatch.delenv("VSTASH_PROFILE", raising=False)
         monkeypatch.chdir(tmp_path)
 
-        expected = str(resolve_db_path(config_db_path=str(custom_db)))
-
-        with patch("vstash.memory.VstashStore") as mock_store:
-            mock_store.return_value.close = lambda: None
+        with patch("vstash.memory.open_store_for_config") as mock_open:
+            mock_open.return_value.close = lambda: None
             cfg = VstashConfig()
             # Simulate custom storage.db_path
             storage_cfg = cfg.storage.model_copy(update={"db_path": str(custom_db)})
             custom_cfg = cfg.model_copy(update={"storage": storage_cfg})
             with patch("vstash.memory._load_config_from", return_value=custom_cfg):
                 mem = Memory()
-                assert mock_store.call_args[0][0] == expected
+                # db_path=None lets the helper run resolve_db_path against
+                # the config-provided storage.db_path.
+                assert mock_open.call_args.kwargs["db_path"] is None
                 mem.close()
 
     def test_sdk_explicit_db_overrides_all(self, tmp_path: Path) -> None:
         """Memory(db=...) always uses that path, regardless of config."""
         explicit = str(tmp_path / "explicit.db")
-        with patch("vstash.memory.VstashStore") as mock_store:
-            mock_store.return_value.close = lambda: None
+        with patch("vstash.memory.open_store_for_config") as mock_open:
+            mock_open.return_value.close = lambda: None
             mem = Memory(db=explicit)
-            assert mock_store.call_args[0][0] == explicit
+            assert mock_open.call_args.kwargs["db_path"] == explicit
             mem.close()
 
 

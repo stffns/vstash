@@ -1,0 +1,72 @@
+{
+  "macro": {
+    "base_macro_ndcg_10": 0.421431,
+    "tuned_macro_ndcg_10": 0.433274,
+    "delta_point": 0.011843,
+    "ci_2_5": 0.005144,
+    "ci_97_5": 0.018507,
+    "ci_excludes_zero": true,
+    "B": 1000,
+    "seed": 42
+  },
+  "per_dataset": {
+    "arguana": {
+      "n_queries": 1406,
+      "base_ndcg_10": 0.436702,
+      "tuned_ndcg_10": 0.440019,
+      "delta_point": 0.003317,
+      "ci_2_5": -0.002263,
+      "ci_97_5": 0.009521,
+      "ci_excludes_zero": false,
+      "direction": "tuned > base"
+    },
+    "fiqa": {
+      "n_queries": 648,
+      "base_ndcg_10": 0.391709,
+      "tuned_ndcg_10": 0.376674,
+      "delta_point": -0.015036,
+      "ci_2_5": -0.027415,
+      "ci_97_5": -0.003137,
+      "ci_excludes_zero": true,
+      "direction": "base > tuned"
+    },
+    "nfcorpus": {
+      "n_queries": 323,
+      "base_ndcg_10": 0.359059,
+      "tuned_ndcg_10": 0.409049,
+      "delta_point": 0.04999,
+      "ci_2_5": 0.032551,
+      "ci_97_5": 0.068532,
+      "ci_excludes_zero": true,
+      "direction": "tuned > base"
+    },
+    "scidocs": {
+      "n_queries": 1000,
+      "base_ndcg_10": 0.194538,
+      "tuned_ndcg_10": 0.196875,
+      "delta_point": 0.002336,
+      "ci_2_5": -0.004048,
+      "ci_97_5": 0.0086,
+      "ci_excludes_zero": false,
+      "direction": "tuned > base"
+    },
+    "scifact": {
+      "n_queries": 300,
+      "base_ndcg_10": 0.725145,
+      "tuned_ndcg_10": 0.743754,
+      "delta_point": 0.018609,
+      "ci_2_5": -0.004831,
+      "ci_97_5": 0.043805,
+      "ci_excludes_zero": false,
+      "direction": "tuned > base"
+    }
+  },
+  "decision": {
+    "label": "DIRECTIONAL",
+    "rationale": "CI lower bound > 0 but delta_macro = 0.0118 <= 0.04. Update paper but with caveat 'within the backend calibration band of +0.02 to +0.08 NDCG@10 disclosed in S8.10; leave the asymmetry magnitude as preliminary.'",
+    "threshold_delta": 0.04,
+    "rule_source": "experiments/results/asymmetry_decision_2026_04_28.md",
+    "base_input": "experiments/results/beir_perquery_BAAI_bge-small-en-v1.5.json",
+    "tuned_input": "experiments/results/beir_perquery_Stffens_bge-small-rrf-v2.json"
+  }
+}

@@ -137,6 +137,31 @@ Validation: `chunk_size` must be positive, `chunk_overlap` must be non-negative 
 
 ---
 
+## `[retrieval]`
+
+*Added in v0.33.0.* Search strategy selection. The `mode` parameter is a per-call flag, not a TOML setting -- the default is `"hybrid"` and rarely needs to be changed at config level. Documented here for reference.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `retrieval_mode` | `Literal["hybrid", "vec_only", "fts_only"]` | `"hybrid"` | Search strategy. `hybrid` = vector + FTS5 + adaptive RRF (default). `vec_only` = semantic search only, skips FTS5 (forces `vec_weight=1.0, fts_weight=0.0`). `fts_only` = keyword search only, skips vector ANN. |
+
+Per-call usage (SDK, MCP, store):
+
+```python
+from vstash import Memory
+mem = Memory(project="default")
+
+mem.search("error code E401")                       # hybrid (default)
+mem.search("conceptual paraphrase", retrieval_mode="vec_only")  # skip FTS5
+mem.search("DRG-470", retrieval_mode="fts_only")    # skip vector ANN
+```
+
+Use `vec_only` when keyword noise dominates (e.g. legal/clinical queries where literal-token matches mislead) and you want pure semantic ranking. Use `fts_only` when you have a known literal token (drug name, error code, SKU, hash) and the vector path adds nothing. Use `hybrid` (default) for everything else -- the adaptive IDF weighting dynamically adjusts the balance per query.
+
+> **Note (v0.35.0+):** the legacy `fts_only=True` boolean parameter was removed in v0.35.0 (#281). Callers must now use `retrieval_mode="fts_only"` instead. v0.33.0 -- v0.34.x emitted a `DeprecationWarning` for the bool form.
+
+---
+
 ## `[recency]`
 
 *Added in v0.19.0.* Temporal recency boost for agentic memory. See [Recency Boost & Temporal Filters](scoring.md) for details.

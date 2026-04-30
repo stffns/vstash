@@ -18,11 +18,13 @@ from pathlib import Path
 from types import TracebackType
 from typing import Literal
 
-from .chat import ask as _chat_ask
+from ._store_open import open_store_for_config
+from .chat import ask_full as _chat_ask_full
 from .config import VstashConfig, load_config
-from .embed import embed_query, get_embedding_dim
+from .embed import embed_query
 from .ingest import ingest
 from .models import (
+    AskResult,
     ChunkInfo,
     DocumentInfo,
     IngestResult,
@@ -30,7 +32,6 @@ from .models import (
     SearchResult,
     StoreStats,
 )
-from .store import VstashStore
 
 # Sentinel for distinguishing "parameter not provided" from explicit None.
 _UNSET = object()
@@ -93,21 +94,10 @@ class Memory:
         self._chunk_overlap = chunk_overlap
 
         # Resolution: explicit db param > unified resolve_db_path chain
-        if db:
-            db_path = str(db)
-        else:
-            from .profile import resolve_db_path
-
-            db_path = str(resolve_db_path(profile, config_db_path=self._cfg.storage.db_path))
-        dim = get_embedding_dim(self._cfg.embeddings.model)
-        self._store = VstashStore(
-            db_path,
-            embedding_dim=dim,
-            vector_backend=self._cfg.storage.vector_backend,
-            snapvec_bits=self._cfg.storage.snapvec_bits,
-            observability=self._cfg.observability,
-            limits=self._cfg.limits,
-            cache=self._cfg.cache,
+        self._store = open_store_for_config(
+            self._cfg,
+            db_path=str(db) if db else None,
+            profile=profile,
         )
         # Silent killer defense: warn if the DB was built with a
         # different embedding model or a fastembed version that changed
@@ -165,7 +155,9 @@ class Memory:
         Args:
             source: File path, URL, or directory to ingest.
             force: Re-ingest even if the document already exists.
-            collection: Override the default collection. Pass None for no collection.
+            collection: Override the default collection. ``documents.collection``
+                is NOT NULL with default ``"default"``; passing ``None`` falls back
+                to that schema default rather than storing NULL (#296).
             project: Override the default project tag. Pass None for no project.
             layer: Layer/category tag.
             tags: Comma-separated tags.
@@ -174,6 +166,8 @@ class Memory:
             List of IngestResult (one per file, even for single-file ingestion).
         """
         col = self._collection if collection is _UNSET else collection
+        if col is None:
+            col = "default"
         proj = self._project if project is _UNSET else project
 
         source_str = str(source)
@@ -237,7 +231,9 @@ class Memory:
             text: The content to ingest.
             title: Human-readable title for the document. When *None*,
                 a descriptive title is auto-generated from the text content.
-            collection: Override the default collection. Pass None for no collection.
+            collection: Override the default collection. ``documents.collection``
+                is NOT NULL with default ``"default"``; passing ``None`` falls back
+                to that schema default rather than storing NULL (#296).
             project: Override the default project tag. Pass None for no project.
             layer: Layer/category tag.
             tags: Comma-separated tags.
@@ -253,6 +249,8 @@ class Memory:
         from .ingest import ingest_text
 
         col = self._collection if collection is _UNSET else collection
+        if col is None:
+            col = "default"
         proj = self._project if project is _UNSET else project
 
         return ingest_text(
@@ -517,6 +515,50 @@ class Memory:
             ValueError: If no inference backend is configured.
             ConnectionError: If the inference API fails.
         """
+        return self.ask_full(
+            query,
+            top_k=top_k,
+            collection=collection,
+            project=project,
+            layer=layer,
+            history=history,
+            vec_weight=vec_weight,
+            fts_weight=fts_weight,
+            retrieval_mode=retrieval_mode,
+        ).content
+
+    def ask_full(
+        self,
+        query: str,
+        *,
+        top_k: int = 5,
+        collection: object = _UNSET,
+        project: object = _UNSET,
+        layer: str | None = None,
+        history: list[dict[str, str]] | None = None,
+        vec_weight: float | None = None,
+        fts_weight: float | None = None,
+        retrieval_mode: Literal["hybrid", "vec_only", "fts_only"] | None = None,
+    ) -> AskResult:
+        """Like :meth:`ask`, but returns content + reasoning + usage.
+
+        Same retrieval and prompt construction as :meth:`ask`; the only
+        difference is that the LLM call goes through
+        :func:`vstash.chat.ask_full` so the reasoning channel and token
+        counts are preserved (issue #303). Drives Merken Phase 2
+        distillation (``Q -> reasoning_trace -> A`` shape).
+
+        Args:
+            See :meth:`ask` -- arguments are identical.
+
+        Returns:
+            AskResult. ``reasoning`` is populated when the backend
+            surfaces it (Cerebras gpt-oss-*, Ollama qwen3 thinking).
+
+        Raises:
+            ValueError: If no inference backend is configured.
+            ConnectionError: If the inference API fails.
+        """
         chunks = self.search(
             query,
             top_k=top_k,
@@ -527,7 +569,7 @@ class Memory:
             fts_weight=fts_weight,
             retrieval_mode=retrieval_mode,
         )
-        return _chat_ask(query, chunks, self._cfg, history)
+        return _chat_ask_full(query, chunks, self._cfg, history)
 
     def remove(self, source: str | Path) -> bool:
         """Remove a document from memory.

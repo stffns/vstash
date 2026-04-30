@@ -23,8 +23,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
+from ._store_open import open_store_for_config
 from .config import VstashConfig, load_config
-from .embed import embed_query, get_embedding_dim
+from .embed import embed_query
 from .profile import PROFILES_DIR
 from .store import VstashStore
 
@@ -70,14 +71,7 @@ def _get_journal_store(cfg: VstashConfig | None = None) -> tuple[VstashConfig, V
     db_path = PROFILES_DIR / JOURNAL_PROFILE / "memory.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    dim = get_embedding_dim(cfg.embeddings.model)
-    store = VstashStore(
-        str(db_path),
-        embedding_dim=dim,
-        vector_backend=cfg.storage.vector_backend,
-        snapvec_bits=cfg.storage.snapvec_bits,
-        cache=cfg.cache,
-    )
+    store = open_store_for_config(cfg, db_path=str(db_path))
     return cfg, store
 
 

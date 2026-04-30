@@ -264,3 +264,39 @@ class MissAnalysis(BaseModel):
         default_factory=list,
         description="Actionable, rule-based suggestions to improve the query",
     )
+
+
+class AskResult(BaseModel):
+    """Normalized result from a chat backend, returned by ``chat.ask_full()``.
+
+    Surfaces the reasoning channel and token usage that ``ask()`` discards.
+    Driven by Merken Phase 2 distillation (gpt-oss-120b -> 7-8B local
+    student in ``Q -> reasoning_trace -> A`` shape) but generally useful
+    for trace-aware logging or evaluation.
+
+    Field semantics:
+      - ``content``: model response text (what ``ask()`` returns).
+      - ``reasoning``: hidden CoT when the backend exposes it (Cerebras
+        ``message.reasoning`` for gpt-oss-*; Ollama ``message.thinking``
+        for qwen3 thinking-mode). ``None`` when absent.
+      - ``usage``: ``{prompt_tokens, completion_tokens, total_tokens}``
+        when the SDK surfaces it. ``None`` otherwise.
+      - ``backend``: resolved concrete backend (``cerebras`` / ``ollama``
+        / ``openai``) post local-resolve.
+      - ``model``: resolved model name actually called.
+    """
+
+    content: str = Field(description="Model response text")
+    reasoning: str | None = Field(
+        default=None,
+        description="Hidden chain-of-thought when the backend surfaces it",
+    )
+    usage: dict[str, int] | None = Field(
+        default=None,
+        description="Token counts (prompt_tokens, completion_tokens, total_tokens)",
+    )
+    backend: str | None = Field(
+        default=None,
+        description="Resolved backend ('cerebras' | 'ollama' | 'openai')",
+    )
+    model: str | None = Field(default=None, description="Resolved model name")
