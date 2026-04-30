@@ -95,13 +95,54 @@ class TestResolverDispatch:
         hf_idx = names.index("hf_onnx")
         default_idx = names.index("default")
 
-        # Gemma is checked before hf_onnx (specific before general).
-        assert gemma_idx < default_idx
+        # Strict ordering: gemma is the most specific matcher and
+        # must run first; hf_onnx is the next most specific; default
+        # is always last. Loosening any of these ordering relations
+        # would either let a broader matcher steal a gemma name or
+        # break the catch-all guarantee.
+        assert gemma_idx < hf_idx
         assert hf_idx < default_idx
+        assert default_idx == len(names) - 1
 
-        # Sanity: matchers are pure functions of model_name.
+        # Sanity: matchers are pure functions of model_name and are
+        # mutually exclusive on the model names this project ships.
         assert _is_gemma_model("google/embeddinggemma-300m")
         assert not _is_hf_onnx_model("google/embeddinggemma-300m")
+
+    def test_first_match_wins_when_two_matchers_accept(self) -> None:
+        # Direct test of first-match-wins semantics: insert a fake
+        # broad matcher that also accepts a gemma name and verify
+        # the gemma backend still wins because of registration
+        # order. This catches regressions where a future contributor
+        # inserts a broader matcher ahead of a specific one.
+        from vstash.embed import _BUILTIN_BACKENDS as registry, _resolve_builtin_backend
+
+        spy_calls: list[str] = []
+
+        def _spy_matcher(name: str) -> bool:
+            spy_calls.append(name)
+            return True  # would steal everything if placed first
+
+        spy_entry = _BuiltinBackend(
+            name="spy_broad",
+            matches=_spy_matcher,
+            embed_batch=lambda *a, **kw: [],
+            embed_query=lambda *a, **kw: [],
+            warmup=lambda *a, **kw: None,
+        )
+
+        # Insert AFTER gemma -- gemma should still win for a gemma name.
+        registry.insert(1, spy_entry)
+        try:
+            backend = _resolve_builtin_backend("google/embeddinggemma-300m")
+            assert backend.name == "gemma", (
+                "first-match-wins is broken: spy entry stole a gemma name"
+            )
+            # The spy should never have been consulted because gemma
+            # matched first and the loop short-circuited.
+            assert spy_calls == []
+        finally:
+            registry.remove(spy_entry)
 
 
 class TestPublicDispatch:
@@ -166,6 +207,41 @@ class TestPublicDispatch:
         with patch("vstash.embed._resolve_builtin_backend", return_value=fake_backend):
             warmup("any-model", backend="onnx")
         assert warmup_calls == [("any-model", "onnx")]
+
+    def test_warmup_short_circuits_on_custom_resolver(self) -> None:
+        # warmup() must mirror embed_texts/embed_query: if a custom
+        # encoder resolver claims the model name, the built-in
+        # warmup chain must NOT run -- otherwise we warm onnx/mlx
+        # against a name they do not recognise. Regression test for
+        # a bug introduced when warmup migrated to the registry.
+        from vstash.embed import (
+            register_encoder_resolver,
+            unregister_encoder_resolver,
+            warmup,
+        )
+
+        class _FakeEncoder:
+            embedding_dim = 2
+
+            def encode(self, texts):
+                return [[0.0, 0.0] for _ in texts]
+
+        encoder = _FakeEncoder()
+
+        def resolver(name: str):
+            return encoder if name == "custom-warmup-test" else None
+
+        register_encoder_resolver(resolver)
+        try:
+            with patch(
+                "vstash.embed._resolve_builtin_backend",
+                side_effect=AssertionError("built-in warmup should not run for custom name"),
+            ):
+                # Should not raise: the custom resolver short-circuits
+                # before _resolve_builtin_backend is ever called.
+                warmup("custom-warmup-test", backend="onnx")
+        finally:
+            unregister_encoder_resolver(resolver)
 
     def test_custom_encoder_resolver_wins_over_builtins(self) -> None:
         # Ensure the registry change did not regress the public

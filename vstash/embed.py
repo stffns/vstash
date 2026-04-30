@@ -900,6 +900,13 @@ def warmup(model_name: str, backend: BackendType = "auto") -> None:
         model_name: Model identifier.
         backend: Backend to use — 'onnx', 'mlx', or 'auto'.
     """
+    # Custom resolvers win over every built-in path (mirrors the
+    # short-circuit in embed_texts / embed_query). A registered custom
+    # encoder is responsible for its own initialization on first
+    # `.encode()` call, so we simply skip built-in warmup rather than
+    # warming the wrong backend with an unrecognised model name.
+    if _resolve_custom_encoder(model_name) is not None:
+        return
     _resolve_builtin_backend(model_name).warmup(model_name, backend)
 
 
