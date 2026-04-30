@@ -178,6 +178,63 @@ class TestSearchService:
             assert kwargs["vec_weight"] is None
             assert kwargs["fts_weight"] is None
 
+    def test_distance_cutoff_pinned_forwards_to_store(
+        self, populated_store, sample_config, patched_embed_query
+    ):
+        # When the caller pins a cutoff, the service must forward
+        # the same value to store.search rather than letting the
+        # store fall back to its hardcoded default. Pin a value
+        # well inside cfg.limits.max_distance_cutoff so validation
+        # passes.
+        with patch.object(populated_store, "search", wraps=populated_store.search) as spy:
+            search_with_embedding(
+                cfg=sample_config,
+                store=populated_store,
+                query="anything",
+                top_k=2,
+                distance_cutoff=0.9,
+            )
+            kwargs = spy.call_args.kwargs
+            assert kwargs.get("distance_cutoff") == 0.9
+
+    def test_distance_cutoff_none_does_not_forward(
+        self, populated_store, sample_config, patched_embed_query
+    ):
+        # When the caller passes None (the default), the service must
+        # NOT forward distance_cutoff to store.search -- the store
+        # should apply its own default. Forwarding None would crash
+        # the store (its parameter is typed `float`, not `float | None`).
+        with patch.object(populated_store, "search", wraps=populated_store.search) as spy:
+            search_with_embedding(
+                cfg=sample_config,
+                store=populated_store,
+                query="anything",
+                top_k=2,
+            )
+            kwargs = spy.call_args.kwargs
+            assert "distance_cutoff" not in kwargs
+
+    def test_distance_cutoff_above_limit_raises(
+        self, populated_store, sample_config, patched_embed_query
+    ):
+        # Caller-pinned cutoff above cfg.limits.max_distance_cutoff
+        # is rejected at the boundary. This is the contract Gemini
+        # asked for: validate the value the caller actually passed,
+        # not the configured ceiling.
+        from vstash.validation import DistanceCutoffOutOfRangeError
+
+        with pytest.raises(DistanceCutoffOutOfRangeError):
+            search_with_embedding(
+                cfg=sample_config,
+                store=populated_store,
+                query="anything",
+                top_k=2,
+                distance_cutoff=sample_config.limits.max_distance_cutoff + 1,
+            )
+        # The validation must fire before embed_query, same as the
+        # other validation tests.
+        patched_embed_query.assert_not_called()
+
 
 class TestAskService:
     """ask_with_context delegates to search service then chat.ask_full."""

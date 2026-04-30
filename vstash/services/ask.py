@@ -34,9 +34,16 @@ def ask_with_context(
     collection: str | None = None,
     project: str | None = None,
     layer: str | None = None,
+    recency_boost: float = 0.0,
+    added_after: str | None = None,
+    added_before: str | None = None,
+    mmr_lambda: float = 0.5,
     vec_weight: float | None = None,
     fts_weight: float | None = None,
     retrieval_mode: Literal["hybrid", "vec_only", "fts_only"] | None = None,
+    distance_cutoff: float | None = None,
+    exact_match: str | None = None,
+    exact_match_case_sensitive: bool = False,
 ) -> AskResult:
     """Retrieve context for ``query`` and send it to the LLM backend.
 
@@ -47,6 +54,13 @@ def ask_with_context(
     :func:`vstash.services.search.search_with_embedding`, then runs
     :func:`vstash.chat.ask_full` against the resolved backend
     (Cerebras, Ollama, OpenAI, or auto-detected local).
+
+    Exposes the full search-side knob set (recency, date filters,
+    MMR diversity, RRF weights, distance cutoff, exact-match) so
+    callers do not have to choose between "use the service" and
+    "use the adapter". A user who wants recency-boosted retrieval
+    in their LLM answer should not have to re-implement the
+    triplet just to pass one parameter.
 
     Args:
         cfg: Active vstash config.
@@ -59,10 +73,21 @@ def ask_with_context(
         collection: Optional collection filter for retrieval.
         project: Optional project filter for retrieval.
         layer: Optional layer filter for retrieval.
+        recency_boost: Temporal decay multiplier on retrieval (0.0
+            = off).
+        added_after: ISO date filter on document add timestamp.
+        added_before: ISO date filter on document add timestamp.
+        mmr_lambda: MMR diversity coefficient applied to context
+            chunks before they reach the LLM.
         vec_weight: Pin RRF vector weight on the retrieval call.
         fts_weight: Pin RRF FTS weight on the retrieval call.
         retrieval_mode: ``"hybrid"`` (default), ``"vec_only"``, or
             ``"fts_only"``.
+        distance_cutoff: Override the store's default distance
+            cutoff for the retrieval call.
+        exact_match: Literal substring required in retrieval results.
+        exact_match_case_sensitive: Whether ``exact_match`` is
+            case-sensitive.
 
     Returns:
         ``AskResult`` carrying content + (when the backend surfaces
@@ -82,8 +107,15 @@ def ask_with_context(
         collection=collection,
         project=project,
         layer=layer,
+        recency_boost=recency_boost,
+        added_after=added_after,
+        added_before=added_before,
+        mmr_lambda=mmr_lambda,
         vec_weight=vec_weight,
         fts_weight=fts_weight,
         retrieval_mode=retrieval_mode,
+        distance_cutoff=distance_cutoff,
+        exact_match=exact_match,
+        exact_match_case_sensitive=exact_match_case_sensitive,
     )
     return _chat_ask_full(query, chunks, cfg, history)

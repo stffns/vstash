@@ -44,6 +44,7 @@ def search_with_embedding(
     vec_weight: float | None = None,
     fts_weight: float | None = None,
     retrieval_mode: Literal["hybrid", "vec_only", "fts_only"] | None = None,
+    distance_cutoff: float | None = None,
     exact_match: str | None = None,
     exact_match_case_sensitive: bool = False,
 ) -> list[SearchResult]:
@@ -77,6 +78,10 @@ def search_with_embedding(
         fts_weight: Pin RRF FTS weight; None keeps adaptive RRF.
         retrieval_mode: ``"hybrid"`` (default), ``"vec_only"``, or
             ``"fts_only"``. None resolves to ``"hybrid"``.
+        distance_cutoff: Override the store's default distance cutoff
+            for this call. ``None`` (default) lets the store apply
+            its built-in default. Validated against
+            ``cfg.limits.max_distance_cutoff`` when provided.
         exact_match: Literal substring required in the result text.
         exact_match_case_sensitive: Whether ``exact_match`` is
             case-sensitive.
@@ -87,13 +92,17 @@ def search_with_embedding(
     Raises:
         LimitError: Any input exceeded the configured limit.
     """
-    # The store defaults distance_cutoff to 1.3225 internally; we
-    # validate against the configured ceiling so callers get a clear
-    # LimitError if they ever pass a custom value via kwargs.
+    # If the caller pinned a cutoff, validate THAT value against
+    # the configured ceiling; otherwise validate the ceiling against
+    # itself (a noop) so the rest of validate_search_input can
+    # still run with a populated arg.
+    effective_cutoff = (
+        distance_cutoff if distance_cutoff is not None else cfg.limits.max_distance_cutoff
+    )
     validate_search_input(
         query_text=query,
         top_k=top_k,
-        distance_cutoff=cfg.limits.max_distance_cutoff,
+        distance_cutoff=effective_cutoff,
         recency_boost=recency_boost,
         limits=cfg.limits,
         vec_weight=vec_weight,
@@ -109,6 +118,13 @@ def search_with_embedding(
         fts_weight = None
 
     q_embedding = embed_query(query, cfg.embeddings.model)
+
+    # Only forward distance_cutoff when the caller pinned one;
+    # otherwise let store.search apply its own default. Avoids
+    # hardcoding the store's default value here (currently 1.3225).
+    extra_kwargs: dict = {}
+    if distance_cutoff is not None:
+        extra_kwargs["distance_cutoff"] = distance_cutoff
 
     results = store.search(
         query_embedding=q_embedding,
@@ -126,6 +142,7 @@ def search_with_embedding(
         mmr_lambda=mmr_lambda,
         exact_match=exact_match,
         exact_match_case_sensitive=exact_match_case_sensitive,
+        **extra_kwargs,
     )
 
     if expand_window > 0 and results:
