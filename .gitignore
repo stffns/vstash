@@ -66,3 +66,11 @@ paper/arxiv/*.blg
 
 # Claude scheduled-task lock
 .claude/scheduled_tasks.lock
+
+# macOS iCloud sync collision artefacts (e.g. "foo 2.py", "foo 2.json").
+# These are auto-generated when iCloud cannot reconcile the same file
+# across devices and never represent real work — the un-suffixed file
+# is canonical.
+* 2.*
+* 2
+* [0-9].*
