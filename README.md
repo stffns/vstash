@@ -3,8 +3,8 @@
 [![PyPI](https://img.shields.io/pypi/v/vstash)](https://pypi.org/project/vstash/)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![python](https://img.shields.io/badge/python-3.10+-blue)]()
-[![CI](https://github.com/stffns/vstash/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/stffns/vstash/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/stffns/vstash/branch/develop/graph/badge.svg)](https://codecov.io/gh/stffns/vstash)
+[![CI](https://github.com/stffns/vstash/actions/workflows/ci.yml/badge.svg)](https://github.com/stffns/vstash/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/stffns/vstash/graph/badge.svg)](https://codecov.io/gh/stffns/vstash)
 
 **Local document memory with hybrid retrieval.** Single SQLite file. Zero cloud dependencies for search. Beats ColBERTv2 on **5/5 [BEIR](https://github.com/beir-cellar/beir) datasets** with the tuned [`bge-small-rrf-v3`](https://huggingface.co/Stffens/bge-small-rrf-v3) model. Under 60 ms p50 at 50K chunks on an Apple Silicon laptop.
 
