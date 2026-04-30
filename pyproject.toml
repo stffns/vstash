@@ -123,3 +123,35 @@ filterwarnings = [
     "ignore:builtin type SwigPyObject has no __module__ attribute:DeprecationWarning",
     "ignore:builtin type swigvarlink has no __module__ attribute:DeprecationWarning",
 ]
+
+[tool.coverage.run]
+source = ["vstash"]
+branch = true
+parallel = true
+# Skip the auto-generated CLI entry shim and the optional sub-backends
+# whose code paths are exercised by integration tests gated off the
+# default CI run (snapvec backends require the `snapvec` package and
+# fitted index files; treesitter requires the language pack).
+omit = [
+    "vstash/__main__.py",
+    "vstash/_ivfpq_backend.py",
+]
+
+[tool.coverage.report]
+# 75% is the floor we land on; raise toward 85% as the test suite
+# fills in (audit highlighted thin coverage on cli.py / web.py / embed.py).
+fail_under = 75
+show_missing = true
+skip_covered = false
+precision = 1
+exclude_also = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+    "@overload",
+    "\\.\\.\\.",
+]
+
+[tool.coverage.html]
+directory = "htmlcov"
