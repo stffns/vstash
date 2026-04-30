@@ -287,13 +287,15 @@ def synthesize_queries(
             elif backend == "ollama":
                 resolved_model = resolved_cfg.ollama.model
             elif backend == "cerebras":
-                resolved_model = resolved_cfg.cerebras.model
+                # CerebrasConfig only carries api_key; model lives at
+                # cfg.inference.model (#294).
+                resolved_model = resolved_cfg.inference.model
         elif backend == "openai":
             resolved_model = cfg.openai.model
         elif backend == "ollama":
             resolved_model = cfg.ollama.model
         elif backend == "cerebras":
-            resolved_model = cfg.cerebras.model
+            resolved_model = cfg.inference.model
     if resolved_model is None:
         resolved_model = "unknown"
 

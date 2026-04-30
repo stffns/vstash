@@ -12,6 +12,7 @@ import pytest
 from vstash.config import VstashConfig
 from vstash.retrain_synth import (
     _build_prompt,
+    _llm_complete,
     _parse_queries,
     _prompt_hash,
     synthesize_queries,
@@ -98,8 +99,6 @@ class TestLlmCompleteBackendResolution:
 
     @staticmethod
     def _stub_openai_response() -> Any:
-        from vstash.retrain_synth import _llm_complete  # noqa: F401  -- import side effect
-
         resp = MagicMock()
         resp.choices = [MagicMock()]
         resp.choices[0].message.content = '["q1"]'
@@ -120,8 +119,6 @@ class TestLlmCompleteBackendResolution:
         )
         client = self._stub_openai_response()
         with patch("openai.OpenAI", return_value=client) as mk_openai:
-            from vstash.retrain_synth import _llm_complete
-
             _llm_complete(cfg, "p")
         mk_openai.assert_called_once_with(api_key="k", base_url="https://example/v1")
         assert client.chat.completions.create.call_args.kwargs["model"] == "gpt-test"
@@ -135,8 +132,6 @@ class TestLlmCompleteBackendResolution:
         )
         client = self._stub_openai_response()
         with patch("openai.OpenAI", return_value=client) as mk_openai:
-            from vstash.retrain_synth import _llm_complete
-
             _llm_complete(cfg, "p")
         mk_openai.assert_called_once_with(api_key="ollama", base_url="http://localhost:11434/v1")
         assert client.chat.completions.create.call_args.kwargs["model"] == "qwen-test"
@@ -150,8 +145,6 @@ class TestLlmCompleteBackendResolution:
         )
         client = self._stub_openai_response()
         with patch("openai.OpenAI", return_value=client) as mk_openai:
-            from vstash.retrain_synth import _llm_complete
-
             _llm_complete(cfg, "p")
         assert mk_openai.call_args.kwargs["base_url"] == "http://localhost:11434/v1"
 
@@ -164,16 +157,12 @@ class TestLlmCompleteBackendResolution:
         )
         client = self._stub_openai_response()
         with patch("openai.OpenAI", return_value=client) as mk_openai:
-            from vstash.retrain_synth import _llm_complete
-
             _llm_complete(cfg, "p")
         mk_openai.assert_called_once_with(api_key="ck", base_url="https://api.cerebras.ai/v1")
         assert client.chat.completions.create.call_args.kwargs["model"] == "llama-3.3-70b"
 
     def test_local_resolves_to_concrete_backend(self) -> None:
         """``backend='local'`` is normalised through ``_resolve_local_config``."""
-        from vstash.retrain_synth import _llm_complete
-
         cfg_local = VstashConfig.model_validate(
             {
                 "inference": {"backend": "local", "model": "ignored"},
@@ -303,3 +292,53 @@ class TestSynthesizeQueries:
                 on_progress=lambda done, total: calls.append((done, total)),
             )
         assert calls == [(1, 3), (2, 3), (3, 3)]
+
+    def test_cerebras_model_resolution_uses_inference_model(self, tmp_path: Path) -> None:
+        """Regression for #294: synthesize_queries had a second cerebras.model
+        access (separate from _llm_complete) that crashed before any LLM call.
+        """
+        cfg = VstashConfig.model_validate(
+            {
+                "inference": {"backend": "cerebras", "model": "llama-3.3-70b"},
+                "cerebras": {"api_key": "ck"},
+            }
+        )
+        chunks = [{"id": 1, "text": "passage"}]
+        cache_path = tmp_path / "synth.jsonl"
+
+        with patch("vstash.retrain_synth._llm_complete", return_value='["q1"]'):
+            out = synthesize_queries(chunks, cfg, n_per_chunk=1, cache_path=cache_path)
+
+        assert out == {1: ["q1"]}
+        # The resolved model lands in the cache record; assert it was the
+        # inference.model value, not a phantom cerebras.model.
+        record = json.loads(cache_path.read_text().strip())
+        assert record["model"] == "llama-3.3-70b"
+
+    def test_local_resolving_to_cerebras_uses_inference_model(self, tmp_path: Path) -> None:
+        """``backend='local'`` that resolves to cerebras must also pull the
+        model from inference.model (#294)."""
+        cfg_local = VstashConfig.model_validate(
+            {
+                "inference": {"backend": "local", "model": "ignored"},
+                "cerebras": {"api_key": "ck"},
+            }
+        )
+        cfg_resolved = VstashConfig.model_validate(
+            {
+                "inference": {"backend": "cerebras", "model": "llama-3.3-70b"},
+                "cerebras": {"api_key": "ck"},
+            }
+        )
+        chunks = [{"id": 1, "text": "passage"}]
+        cache_path = tmp_path / "synth.jsonl"
+
+        with (
+            patch("vstash.chat._resolve_local_config", return_value=cfg_resolved),
+            patch("vstash.retrain_synth._llm_complete", return_value='["q1"]'),
+        ):
+            out = synthesize_queries(chunks, cfg_local, n_per_chunk=1, cache_path=cache_path)
+
+        assert out == {1: ["q1"]}
+        record = json.loads(cache_path.read_text().strip())
+        assert record["model"] == "llama-3.3-70b"
