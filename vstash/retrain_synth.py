@@ -89,15 +89,20 @@ def _llm_complete(cfg: VstashConfig, prompt: str, model: str | None = None) -> s
         use_model = model or cfg.openai.model
         extra_body = cfg.openai.extra_body
     elif backend == "ollama":
-        base_url = cfg.ollama.base_url.rstrip("/")
+        # OllamaConfig exposes ``host`` (matching chat.py); ensure /v1
+        # so the OpenAI client targets Ollama's openai-compat endpoint.
+        base_url = cfg.ollama.host.rstrip("/")
         if not base_url.endswith("/v1"):
             base_url = base_url + "/v1"
         client = OpenAI(api_key="ollama", base_url=base_url)
         use_model = model or cfg.ollama.model
         extra_body = None
     elif backend == "cerebras":
-        client = OpenAI(api_key=cfg.cerebras_api_key, base_url=cfg.cerebras.base_url)
-        use_model = model or cfg.cerebras.model
+        # CerebrasConfig only carries ``api_key``; the model lives at
+        # ``cfg.inference.model`` and Cerebras exposes an OpenAI-compatible
+        # endpoint at api.cerebras.ai/v1 (#294).
+        client = OpenAI(api_key=cfg.cerebras_api_key, base_url="https://api.cerebras.ai/v1")
+        use_model = model or cfg.inference.model
         extra_body = None
     else:
         raise ValueError(
