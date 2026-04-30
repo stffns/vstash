@@ -26,6 +26,11 @@ if TYPE_CHECKING:
     from ..models import SearchResult
     from ..store import VstashStore
 
+# The literal Protocol of valid retrieval modes. Kept as a module
+# constant so the runtime check in `search_with_embedding` does not
+# have to maintain a parallel list to the Literal type alias above.
+_VALID_RETRIEVAL_MODES: frozenset[str] = frozenset({"hybrid", "vec_only", "fts_only"})
+
 
 def search_with_embedding(
     *,
@@ -92,6 +97,17 @@ def search_with_embedding(
     Raises:
         LimitError: Any input exceeded the configured limit.
     """
+    # Validate the cheap-to-check public knobs BEFORE embed_query so
+    # an invalid expand_window or retrieval_mode does not pay for a
+    # daemon round-trip just to crash inside store.search later.
+    if not isinstance(expand_window, int) or isinstance(expand_window, bool) or expand_window < 0:
+        raise ValueError(f"expand_window must be a non-negative int, got {expand_window!r}")
+    if retrieval_mode is not None and retrieval_mode not in _VALID_RETRIEVAL_MODES:
+        raise ValueError(
+            f"retrieval_mode must be one of "
+            f"{sorted(_VALID_RETRIEVAL_MODES)} or None, got {retrieval_mode!r}"
+        )
+
     # If the caller pinned a cutoff, validate THAT value against
     # the configured ceiling; otherwise validate the ceiling against
     # itself (a noop) so the rest of validate_search_input can

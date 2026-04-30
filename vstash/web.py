@@ -34,6 +34,7 @@ from .ingest import ingest
 from .models import SearchResult
 from .services import search_with_embedding
 from .store import VstashStore, relevance_tier
+from .validation import LimitError
 
 logger = logging.getLogger(__name__)
 
@@ -285,7 +286,12 @@ async def api_search(request: Request) -> JSONResponse:
     if not query.strip():
         return _json({"error": "query is required"}, 400)
 
-    data = await _run_sync(_do_search, query, top_k, recency_boost)
+    try:
+        data = await _run_sync(_do_search, query, top_k, recency_boost)
+    except LimitError as exc:
+        # Validation now lives in the services layer; surface the
+        # rejection as 400 instead of letting it bubble up as 500.
+        return _json({"error": str(exc), "kind": type(exc).__name__}, 400)
     return _json(data)
 
 
@@ -298,7 +304,10 @@ async def api_chat(request: Request) -> Any:
     if not query.strip():
         return _json({"error": "query is required"}, 400)
 
-    chunks, sources = await _run_sync(_do_chat_retrieve, query, top_k)
+    try:
+        chunks, sources = await _run_sync(_do_chat_retrieve, query, top_k)
+    except LimitError as exc:
+        return _json({"error": str(exc), "kind": type(exc).__name__}, 400)
 
     if not chunks:
 

@@ -235,6 +235,41 @@ class TestSearchService:
         # other validation tests.
         patched_embed_query.assert_not_called()
 
+    @pytest.mark.parametrize("bad_window", [-1, -100, "1", 1.5, True])
+    def test_invalid_expand_window_raises_pre_embed(
+        self, populated_store, sample_config, patched_embed_query, bad_window
+    ):
+        # `expand_window` is a cheap public knob; it should be
+        # rejected before the daemon round-trip just like top_k.
+        # bool is a tricky case because `isinstance(True, int)` is
+        # True in Python; we have to special-case it.
+        with pytest.raises(ValueError, match="expand_window"):
+            search_with_embedding(
+                cfg=sample_config,
+                store=populated_store,
+                query="anything",
+                top_k=2,
+                expand_window=bad_window,
+            )
+        patched_embed_query.assert_not_called()
+
+    @pytest.mark.parametrize("bad_mode", ["fuzzy", "VEC_ONLY", "", "hybrid_only"])
+    def test_invalid_retrieval_mode_raises_pre_embed(
+        self, populated_store, sample_config, patched_embed_query, bad_mode
+    ):
+        # retrieval_mode is the second cheap-to-validate public knob.
+        # The Literal type alias does not enforce at runtime, so the
+        # service has to.
+        with pytest.raises(ValueError, match="retrieval_mode"):
+            search_with_embedding(
+                cfg=sample_config,
+                store=populated_store,
+                query="anything",
+                top_k=2,
+                retrieval_mode=bad_mode,
+            )
+        patched_embed_query.assert_not_called()
+
 
 class TestAskService:
     """ask_with_context delegates to search service then chat.ask_full."""
