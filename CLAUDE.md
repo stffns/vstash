@@ -160,11 +160,26 @@ GitHub Actions: `lint` (ruff check + format) + `test` (pytest on Python 3.10, 3.
 
 ## Publishing
 
+PyPI publication is automated via OIDC trusted publisher in
+`.github/workflows/publish.yml`. The workflow runs on release
+publication; do not run `twine` manually. End-to-end flow:
+
 ```bash
-# 1. Bump version on develop
-# 2. Create PR: develop → main
-# 3. Merge PR, then from main:
-python -m build
-python -m twine upload dist/vstash-<version>*
-gh release create v<version> --title "v<version>" --notes "..."
+# 1. Bump __version__ on develop (chore/0.X-housekeeping PR usually
+#    bundles version bump + README highlights + CLAUDE.md updates).
+# 2. Create release PR: develop -> main, merge with --merge (not
+#    squash) so individual feature commits stay visible in main's log.
+# 3. From main, publish a GitHub release. This triggers publish.yml,
+#    which runs `python -m build` and uploads to PyPI via OIDC:
+gh release create v<version> --target main \
+    --title "v<version>" --notes "..."
+# 4. Open a sync PR `sync/main-to-develop-v<version>` to mirror main
+#    back into develop. Merge with --admin if branch protection is
+#    sticky from old commits.
 ```
+
+The `pypi` environment in `publish.yml` is wired to a PyPI trusted
+publisher; no API tokens are stored in the repo. If you ever need to
+fall back to a manual upload, install `build` + `twine` locally and
+read the password from `~/.pypirc`, but this should be a break-glass
+path.
