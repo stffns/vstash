@@ -20,8 +20,9 @@ import os
 import platform
 import threading
 import urllib.request
-from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 from collections.abc import Callable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from fastembed import TextEmbedding
@@ -753,6 +754,145 @@ def _resolve(backend: BackendType = "auto") -> Literal["onnx", "mlx"]:
     return _active_backend
 
 
+# ------------------------------------------------------------------ #
+# Built-in backend registry                                            #
+# ------------------------------------------------------------------ #
+#
+# The model-name -> embedding-impl dispatch used to live as a hardcoded
+# if/elif chain in embed_texts / embed_query / warmup. Adding a new
+# built-in family (e.g. another HF model variant) meant editing all
+# three sites in lock-step and risked drift. The audit (2026-04-30)
+# flagged this as an OCP violation.
+#
+# Now: a single ordered registry of (matcher, embed_batch, embed_query,
+# warmup) tuples. The dispatch loop iterates the registry; the first
+# matcher that returns True wins. The fallback entry has a matcher
+# that always returns True and resolves onnx vs mlx internally; it
+# must stay last in the list.
+#
+# This is internal: the public extension hook for users is still
+# `register_encoder_resolver`. The built-in registry exists so the
+# project's own backends compose by the same pattern (data, not
+# branches) rather than three sites of hand-rolled dispatch.
+
+
+def _gemma_batch(texts: list[str], model_name: str, _backend: BackendType) -> list[list[float]]:
+    return _embed_gemma(texts, model_name)
+
+
+def _gemma_query(text: str, model_name: str, _backend: BackendType) -> list[float]:
+    return _query_gemma(text, model_name)
+
+
+def _gemma_warmup(model_name: str, _backend: BackendType) -> None:
+    _warmup_gemma(model_name)
+
+
+def _hf_onnx_batch(texts: list[str], model_name: str, _backend: BackendType) -> list[list[float]]:
+    return _embed_hf_onnx(texts, model_name)
+
+
+def _hf_onnx_query(text: str, model_name: str, _backend: BackendType) -> list[float]:
+    return _query_hf_onnx(text, model_name)
+
+
+def _hf_onnx_warmup(model_name: str, _backend: BackendType) -> None:
+    _warmup_hf_onnx(model_name)
+
+
+def _default_batch(texts: list[str], model_name: str, backend: BackendType) -> list[list[float]]:
+    """Fallback batch embedder: routes through onnx or mlx based on _resolve()."""
+    resolved = _resolve(backend)
+    if resolved == "mlx":
+        return _embed_mlx(texts, model_name)
+    return _embed_onnx(texts, model_name)
+
+
+def _default_query(text: str, model_name: str, backend: BackendType) -> list[float]:
+    """Fallback single-query embedder: same dispatch as :func:`_default_batch`."""
+    resolved = _resolve(backend)
+    if resolved == "mlx":
+        return _query_mlx(text, model_name)
+    return _query_onnx(text, model_name)
+
+
+def _default_warmup(model_name: str, backend: BackendType) -> None:
+    resolved = _resolve(backend)
+    if resolved == "mlx":
+        _warmup_mlx(model_name)
+    else:
+        _warmup_onnx(model_name)
+
+
+def _matches_default(_model_name: str) -> bool:
+    """Always-true matcher for the fallback entry. Stays last in the list."""
+    return True
+
+
+@dataclass(frozen=True)
+class _BuiltinBackend:
+    """A built-in embedding backend identified by a model-name matcher.
+
+    The dispatch loop in :func:`embed_texts`, :func:`embed_query`, and
+    :func:`warmup` iterates :data:`_BUILTIN_BACKENDS` in order; the
+    first ``matches`` that returns ``True`` wins. Every entry exposes
+    the same three callables so the dispatch loop never branches on
+    which kind of backend it is calling.
+    """
+
+    name: str
+    matches: Callable[[str], bool]
+    embed_batch: Callable[[list[str], str, BackendType], list[list[float]]]
+    embed_query: Callable[[str, str, BackendType], list[float]]
+    warmup: Callable[[str, BackendType], None]
+
+
+#: Built-in backends in dispatch order. The last entry is the
+#: catch-all fallback (onnx vs mlx, resolved per-platform); it must
+#: stay last because its matcher always returns ``True``.
+_BUILTIN_BACKENDS: list[_BuiltinBackend] = [
+    _BuiltinBackend(
+        name="gemma",
+        matches=_is_gemma_model,
+        embed_batch=_gemma_batch,
+        embed_query=_gemma_query,
+        warmup=_gemma_warmup,
+    ),
+    _BuiltinBackend(
+        name="hf_onnx",
+        matches=_is_hf_onnx_model,
+        embed_batch=_hf_onnx_batch,
+        embed_query=_hf_onnx_query,
+        warmup=_hf_onnx_warmup,
+    ),
+    _BuiltinBackend(
+        name="default",
+        matches=_matches_default,
+        embed_batch=_default_batch,
+        embed_query=_default_query,
+        warmup=_default_warmup,
+    ),
+]
+
+
+def _resolve_builtin_backend(model_name: str) -> _BuiltinBackend:
+    """Return the first built-in backend whose matcher accepts ``model_name``.
+
+    The fallback entry (matcher returns ``True`` for any name) is
+    always last in the list, so this function never raises -- it
+    always returns at least the fallback. The explicit ``raise`` at
+    the bottom is a defensive guard against a future edit that
+    accidentally removes the fallback.
+    """
+    for be in _BUILTIN_BACKENDS:
+        if be.matches(model_name):
+            return be
+    raise RuntimeError(
+        f"No built-in backend matched {model_name!r}; the default "
+        "fallback entry is missing from _BUILTIN_BACKENDS."
+    )
+
+
 def warmup(model_name: str, backend: BackendType = "auto") -> None:
     """Pre-load the embedding model to eliminate cold start latency.
 
@@ -760,17 +900,7 @@ def warmup(model_name: str, backend: BackendType = "auto") -> None:
         model_name: Model identifier.
         backend: Backend to use — 'onnx', 'mlx', or 'auto'.
     """
-    if _is_gemma_model(model_name):
-        _warmup_gemma(model_name)
-        return
-    if _is_hf_onnx_model(model_name):
-        _warmup_hf_onnx(model_name)
-        return
-    resolved = _resolve(backend)
-    if resolved == "mlx":
-        _warmup_mlx(model_name)
-    else:
-        _warmup_onnx(model_name)
+    _resolve_builtin_backend(model_name).warmup(model_name, backend)
 
 
 # ------------------------------------------------------------------ #
@@ -919,14 +1049,7 @@ def embed_texts(
         if result is not None and len(result) == len(texts):
             return result
 
-    if _is_gemma_model(model_name):
-        return _embed_gemma(texts, model_name)
-    if _is_hf_onnx_model(model_name):
-        return _embed_hf_onnx(texts, model_name)
-    resolved = _resolve(backend)
-    if resolved == "mlx":
-        return _embed_mlx(texts, model_name)
-    return _embed_onnx(texts, model_name)
+    return _resolve_builtin_backend(model_name).embed_batch(texts, model_name, backend)
 
 
 def embed_query(
@@ -959,14 +1082,7 @@ def embed_query(
         if result is not None:
             return result
 
-    if _is_gemma_model(model_name):
-        return _query_gemma(text, model_name)
-    if _is_hf_onnx_model(model_name):
-        return _query_hf_onnx(text, model_name)
-    resolved = _resolve(backend)
-    if resolved == "mlx":
-        return _query_mlx(text, model_name)
-    return _query_onnx(text, model_name)
+    return _resolve_builtin_backend(model_name).embed_query(text, model_name, backend)
 
 
 def get_active_backend() -> str:
