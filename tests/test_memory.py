@@ -732,13 +732,17 @@ class TestMemoryAsk:
 
     @requires_sqlite_vec
     def test_ask_calls_chat(self, tmp_path: Path) -> None:
-        """ask() retrieves chunks and passes them to chat.ask."""
+        """ask() retrieves chunks and dispatches via chat.ask_full,
+        returning .content (post-#303 thin-wrapper shape)."""
+        from vstash.models import AskResult
+
         doc = tmp_path / "askable.md"
         doc.write_text("Python is a high-level language for general purpose programming.")
 
+        fake = AskResult(content="mocked answer", backend="cerebras", model="m")
         with Memory(db=tmp_path / "test.db") as mem:
             mem.add(doc)
-            with patch("vstash.memory._chat_ask", return_value="mocked answer") as mock:
+            with patch("vstash.memory._chat_ask_full", return_value=fake) as mock:
                 answer = mem.ask("what is python?")
                 assert answer == "mocked answer"
                 mock.assert_called_once()
@@ -749,8 +753,9 @@ class TestMemoryAsk:
 
     @requires_sqlite_vec
     def test_ask_full_routes_through_chat_ask_full(self, tmp_path: Path) -> None:
-        """Memory.ask_full() must dispatch to chat.ask_full (#303), not
-        chat.ask. Same retrieval, different LLM call."""
+        """Memory.ask_full() dispatches to chat.ask_full (#303). Memory.ask
+        is now a thin wrapper around it -- both share retrieval + LLM
+        plumbing so there's no risk of drift."""
         from vstash.models import AskResult
 
         doc = tmp_path / "askable.md"
@@ -765,19 +770,44 @@ class TestMemoryAsk:
         )
         with Memory(db=tmp_path / "test.db") as mem:
             mem.add(doc)
-            with (
-                patch("vstash.memory._chat_ask_full", return_value=fake) as mock_full,
-                patch("vstash.memory._chat_ask") as mock_plain,
-            ):
+            with patch("vstash.memory._chat_ask_full", return_value=fake) as mock_full:
                 result = mem.ask_full("what is python?")
-                # Plain ask must NOT have fired -- this is the whole point.
-                mock_plain.assert_not_called()
                 mock_full.assert_called_once()
                 assert mock_full.call_args[0][0] == "what is python?"
                 assert isinstance(mock_full.call_args[0][1], list)
             assert isinstance(result, AskResult)
             assert result.reasoning == "step 1: think"
             assert result.usage["total_tokens"] == 15
+
+    @requires_sqlite_vec
+    def test_ask_forwards_all_kwargs_to_ask_full(self, tmp_path: Path) -> None:
+        """Memory.ask must forward every retrieval kwarg to ask_full so
+        the thin-wrapper refactor doesn't silently drop a knob."""
+        from vstash.models import AskResult
+
+        doc = tmp_path / "askable.md"
+        doc.write_text("body content for forwarding test")
+
+        fake = AskResult(content="answer", backend="cerebras", model="m")
+        with Memory(db=tmp_path / "test.db") as mem:
+            mem.add(doc)
+            with patch.object(mem, "ask_full", return_value=fake) as spy:
+                mem.ask(
+                    "q",
+                    top_k=7,
+                    layer="L",
+                    history=[{"role": "user", "content": "prev"}],
+                    vec_weight=0.6,
+                    fts_weight=0.4,
+                    retrieval_mode="vec_only",
+                )
+            kwargs = spy.call_args.kwargs
+            assert kwargs["top_k"] == 7
+            assert kwargs["layer"] == "L"
+            assert kwargs["history"] == [{"role": "user", "content": "prev"}]
+            assert kwargs["vec_weight"] == 0.6
+            assert kwargs["fts_weight"] == 0.4
+            assert kwargs["retrieval_mode"] == "vec_only"
 
 
 # ------------------------------------------------------------------ #

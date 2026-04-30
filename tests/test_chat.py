@@ -7,7 +7,15 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from vstash.chat import _build_messages, _build_prompt, _is_retryable, _retry_call, ask, ask_full
+from vstash.chat import (
+    _build_messages,
+    _build_prompt,
+    _is_retryable,
+    _normalize_usage,
+    _retry_call,
+    ask,
+    ask_full,
+)
 from vstash.config import VstashConfig
 from vstash.models import AskResult, SearchResult
 
@@ -157,6 +165,36 @@ class TestRetryLogic:
 # ------------------------------------------------------------------ #
 
 
+class TestNormalizeUsage:
+    """Lock in the contract for the helper that flattens SDK ``usage``
+    objects into a plain dict."""
+
+    def test_none_in_none_out(self) -> None:
+        assert _normalize_usage(None) is None
+
+    def test_dict_passthrough(self) -> None:
+        assert _normalize_usage(
+            {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}
+        ) == {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}
+
+    def test_object_with_attributes(self) -> None:
+        obj = SimpleNamespace(prompt_tokens=4, completion_tokens=5, total_tokens=9)
+        assert _normalize_usage(obj) == {
+            "prompt_tokens": 4,
+            "completion_tokens": 5,
+            "total_tokens": 9,
+        }
+
+    def test_partial_keys_kept(self) -> None:
+        """Missing fields are simply dropped, not coerced to 0."""
+        assert _normalize_usage({"prompt_tokens": 7}) == {"prompt_tokens": 7}
+
+    def test_empty_dict_collapses_to_none(self) -> None:
+        """No recognised int fields -> None, so consumers can distinguish
+        'no telemetry' from 'all zero counts'."""
+        assert _normalize_usage({"weird_field": "abc"}) is None
+
+
 def _cerebras_response(content: str, *, reasoning: str | None = None, usage: dict | None = None):
     """Mimic the shape ``cerebras.cloud.sdk.Cerebras.chat.completions.create``
     returns: ``response.choices[0].message.{content,reasoning}`` plus
@@ -229,6 +267,21 @@ class TestAskFullCerebras:
             result = ask_full("q", chunks, cfg)
         assert result.reasoning is None
 
+    def test_usage_none_yields_none_not_empty_dict(self) -> None:
+        """Cerebras occasionally omits ``response.usage`` (5xx-then-fallback,
+        streaming retries). AskResult.usage must be None, never ``{}``,
+        so consumers can distinguish 'no telemetry' from 'all-zero counts'."""
+        cfg = _cfg_cerebras("gpt-oss-120b")
+        chunks = [_make_chunk("ctx")]
+        client = MagicMock()
+        client.chat.completions.create.return_value = _cerebras_response(
+            "answer", reasoning="trace", usage=None
+        )
+        with patch("cerebras.cloud.sdk.Cerebras", return_value=client):
+            result = ask_full("q", chunks, cfg)
+        assert result.reasoning == "trace"
+        assert result.usage is None
+
 
 class TestAskFullOpenAI:
     """OpenAI / OpenAI-compat. Reasoning channel is non-standard so the
@@ -260,6 +313,30 @@ class TestAskFullOpenAI:
         }
         assert result.backend == "openai"
         assert result.model == "gpt-4o-mini"
+
+    def test_reasoning_content_field_is_recognised(self) -> None:
+        """vLLM, DeepSeek, Together, xAI Grok and OpenAI o1/o3 Chat
+        Completions surface reasoning under ``message.reasoning_content``,
+        not ``message.reasoning``. Both must be accepted."""
+        cfg = VstashConfig.model_validate(
+            {
+                "inference": {"backend": "openai"},
+                "openai": {
+                    "api_key": "k",
+                    "base_url": "http://localhost:8000/v1",
+                    "model": "deepseek-r1",
+                },
+            }
+        )
+        chunks = [_make_chunk("ctx")]
+        client = MagicMock()
+        msg = SimpleNamespace(content="final answer", reasoning_content="step 1 ... step 2 ...")
+        choice = SimpleNamespace(message=msg)
+        client.chat.completions.create.return_value = SimpleNamespace(choices=[choice], usage=None)
+        with patch("openai.OpenAI", return_value=client):
+            result = ask_full("q", chunks, cfg)
+        assert result.content == "final answer"
+        assert result.reasoning == "step 1 ... step 2 ..."
 
 
 class TestAskFullOllama:

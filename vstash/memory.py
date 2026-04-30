@@ -19,7 +19,6 @@ from types import TracebackType
 from typing import Literal
 
 from ._store_open import open_store_for_config
-from .chat import ask as _chat_ask
 from .chat import ask_full as _chat_ask_full
 from .config import VstashConfig, load_config
 from .embed import embed_query
@@ -516,17 +515,17 @@ class Memory:
             ValueError: If no inference backend is configured.
             ConnectionError: If the inference API fails.
         """
-        chunks = self.search(
+        return self.ask_full(
             query,
             top_k=top_k,
             collection=collection,
             project=project,
             layer=layer,
+            history=history,
             vec_weight=vec_weight,
             fts_weight=fts_weight,
             retrieval_mode=retrieval_mode,
-        )
-        return _chat_ask(query, chunks, self._cfg, history)
+        ).content
 
     def ask_full(
         self,

@@ -96,6 +96,20 @@ Rules:
 - For code questions, provide working code examples from the context."""
 
 
+def _extract_reasoning(message: object) -> str | None:
+    """Pull the reasoning trace from a chat-completions ``message`` object.
+
+    Different OpenAI-compatible servers expose it under different field
+    names: Cerebras and the original anthropic-flavoured proposals use
+    ``message.reasoning``; vLLM, DeepSeek, Together, xAI Grok and OpenAI
+    o1/o3 Chat Completions all use ``message.reasoning_content``.  We
+    accept either and collapse empty strings to ``None`` so a present-
+    but-empty channel doesn't masquerade as a real trace.
+    """
+    candidate = getattr(message, "reasoning", None) or getattr(message, "reasoning_content", None)
+    return candidate or None
+
+
 def _normalize_usage(raw: object) -> dict[str, int] | None:
     """Coerce an SDK ``usage`` object into ``{prompt, completion, total}_tokens``.
 
@@ -217,11 +231,12 @@ def _ask_cerebras(
             temperature=0.2,
         )
         message = response.choices[0].message
-        # gpt-oss-* surfaces hidden CoT here; older models / SDKs omit it.
-        reasoning = getattr(message, "reasoning", None) or None
+        # gpt-oss-* surfaces hidden CoT under ``reasoning``; future
+        # Cerebras builds may follow the broader ``reasoning_content``
+        # convention -- accept either.
         return AskResult(
             content=message.content or "",
-            reasoning=reasoning,
+            reasoning=_extract_reasoning(message),
             usage=_normalize_usage(getattr(response, "usage", None)),
             backend="cerebras",
             model=model,
@@ -464,10 +479,12 @@ def _ask_openai(
             extra_body=cfg.openai.extra_body,
         )
         message = response.choices[0].message
-        reasoning = getattr(message, "reasoning", None) or None
+        # OpenAI o1/o3 Chat Completions, vLLM, DeepSeek, Together, and
+        # xAI Grok all surface reasoning under ``reasoning_content``;
+        # accept ``reasoning`` too for older / Cerebras-aligned servers.
         return AskResult(
             content=message.content or "",
-            reasoning=reasoning,
+            reasoning=_extract_reasoning(message),
             usage=_normalize_usage(getattr(response, "usage", None)),
             backend="openai",
             model=model,
