@@ -131,7 +131,7 @@ class Histogram:
         """
         cumulative = 0
         buckets: list[dict[str, Any]] = []
-        for upper, count in zip(self._buckets_upper, self._bucket_counts, strict=False):
+        for upper, count in zip(self._buckets_upper, self._bucket_counts, strict=True):
             cumulative += count
             buckets.append(
                 {

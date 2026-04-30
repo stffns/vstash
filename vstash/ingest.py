@@ -1020,7 +1020,7 @@ def ingest_batch(
             doc_ids = store.add_documents_batch(batch_docs)
         store_elapsed = round(time.time() - store_start, 2)
 
-        for doc, doc_id in zip(pending, doc_ids, strict=False):
+        for doc, doc_id in zip(pending, doc_ids, strict=True):
             results.append(
                 IngestResult(
                     status="ok",

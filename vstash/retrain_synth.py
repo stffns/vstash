@@ -19,8 +19,8 @@ import json
 import logging
 import re
 import time
+from collections.abc import Callable, Iterable
 from pathlib import Path
-from collections.abc import Iterable
 
 from .config import VstashConfig
 
@@ -244,7 +244,7 @@ def synthesize_queries(
     n_per_chunk: int = 2,
     cache_path: str | Path | None = None,
     model: str | None = None,
-    on_progress: callable | None = None,
+    on_progress: Callable | None = None,
 ) -> dict[int, list[str]]:
     """Generate short realistic queries for each chunk via local LLM.
 

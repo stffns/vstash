@@ -23,6 +23,7 @@ import random
 import shutil
 import tempfile
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -591,7 +592,7 @@ def split_corpus_for_eval(
 def qrels_to_eval_queries(
     queries: dict[str, str],
     qrels: dict[str, dict[str, int | float]],
-    path_for_doc_id: callable | None = None,
+    path_for_doc_id: Callable | None = None,
     min_relevance: float = 1.0,
 ) -> list[dict]:
     """Convert BEIR-style (queries, qrels) to the eval_queries format
@@ -931,7 +932,7 @@ def evaluate_model(
         mrrs: list[float] = []
         hits: list[float] = []
         recalls_100: list[float] = []
-        for q, q_vec in zip(normalized_queries, q_vecs, strict=False):
+        for q, q_vec in zip(normalized_queries, q_vecs, strict=True):
             results = eval_store.search(
                 query_embedding=list(map(float, q_vec)),
                 query_text=q["query"],

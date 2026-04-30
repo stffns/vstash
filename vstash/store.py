@@ -1318,9 +1318,13 @@ class VstashStore:
                     ).fetchall()
                 ]
 
-                # Vector index entries
+                # Vector index entries. rowids comes from a SELECT-by-doc_id
+                # right after the chunk inserts above, so it must align 1:1
+                # with the input embeddings/chunks; strict=True surfaces any
+                # invariant violation as a ValueError instead of silently
+                # truncating to the shorter side.
                 vec_data = [
-                    (rowid, _serialize(emb)) for rowid, emb in zip(rowids, embeddings, strict=False)
+                    (rowid, _serialize(emb)) for rowid, emb in zip(rowids, embeddings, strict=True)
                 ]
                 self._conn.executemany(
                     "INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)",
@@ -1328,7 +1332,7 @@ class VstashStore:
                 )
 
                 # FTS5 entries (rowid must match chunks.id)
-                fts_data = [(rowid, text) for rowid, text in zip(rowids, chunks, strict=False)]
+                fts_data = [(rowid, text) for rowid, text in zip(rowids, chunks, strict=True)]
                 if not self._defer_fts:
                     self._conn.executemany(
                         "INSERT INTO fts_chunks (rowid, text) VALUES (?, ?)",
@@ -1456,14 +1460,14 @@ class VstashStore:
 
                     vec_data = [
                         (rowid, _serialize(emb))
-                        for rowid, emb in zip(rowids, embeddings, strict=False)
+                        for rowid, emb in zip(rowids, embeddings, strict=True)
                     ]
                     self._conn.executemany(
                         "INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)",
                         vec_data,
                     )
 
-                    fts_data = list(zip(rowids, chunks, strict=False))
+                    fts_data = list(zip(rowids, chunks, strict=True))
                     if self._defer_fts:
                         pending_fts.extend(fts_data)
                     else:

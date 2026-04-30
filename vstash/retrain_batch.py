@@ -319,7 +319,7 @@ def generate_triples_batched(
     pairs: list[dict] = []
     disagreements = 0
     t0 = time.perf_counter()
-    for q_idx, (query_text, source) in enumerate(zip(query_texts, query_sources, strict=False)):
+    for q_idx, (query_text, source) in enumerate(zip(query_texts, query_sources, strict=True)):
         vec_top = all_vec_topk[q_idx]
         fts_top = _fts_top_k(store._conn, query_text, TOP_K)
         # A chunk id can appear in fts_top but not in corpus slice only
@@ -641,7 +641,7 @@ def evaluate_model_batched(
         # ranking to unique paths in first-occurrence order before
         # scoring. Without this, a relevant doc surfacing twice in
         # top-10 would be counted twice and push NDCG above 1.0.
-        for q, vec_top in zip(normalized_queries, all_vec_topk, strict=False):
+        for q, vec_top in zip(normalized_queries, all_vec_topk, strict=True):
             fts_top = _fts_top_k(eval_store._conn, q["query"], _EVAL_RECALL_K)
             fts_top = [cid for cid in fts_top if cid in chunk_id_to_path]
 
@@ -906,7 +906,7 @@ def generate_labeled_triples_batched(
     pairs: list[dict] = []
     total_disagreements = 0
     try:
-        for q, vec_top in zip(filtered, all_vec_topk, strict=False):
+        for q, vec_top in zip(filtered, all_vec_topk, strict=True):
             qtext = q["query"]
             gold_paths = set(q["relevant_paths"])
 
