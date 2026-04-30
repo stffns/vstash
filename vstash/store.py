@@ -33,6 +33,7 @@ import sqlite_vec
 from collections import OrderedDict
 
 from .config import CacheConfig, LimitsConfig, ObservabilityConfig
+from .errors import SchemaVersionError
 from .validation import validate_document_input, validate_search_input
 from .models import (
     ChunkInfo,
@@ -72,13 +73,9 @@ SCHEMA_VERSION = "2"
 KNOWN_SCHEMA_VERSIONS: frozenset[str] = frozenset({"1", "2"})
 
 
-class SchemaVersionError(RuntimeError):
-    """Raised when an existing DB declares a schema version this build
-    of vstash does not recognize.
-
-    The right remedy is to upgrade vstash, restore from backup, or run
-    a future ``vstash migrate`` command (not yet implemented).
-    """
+# SchemaVersionError moved to vstash.errors in v0.37 (single source of
+# truth for the VstashError hierarchy). Imported at the top of this
+# module; this comment is left as a breadcrumb for code archaeology.
 
 
 # ------------------------------------------------------------------ #

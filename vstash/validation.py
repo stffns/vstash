@@ -11,12 +11,14 @@ Validation lives at the **public API boundary** (``VstashStore`` and
 comparisons; if your inputs are reasonable, the cost is unmeasurable.
 
 All validators raise a subclass of :class:`LimitError`, which itself
-extends :class:`ValueError`.  Catching ``ValueError`` continues to work
-for callers who don't care which limit was hit.
+inherits from :class:`vstash.errors.VstashError` and
+:class:`ValueError`.  Catching either continues to work; the
+``VstashError`` ancestor (added in v0.37) is the unified handle for
+any vstash-domain error.
 
 Limits are configured via the ``[limits]`` section in ``vstash.toml``
 (see :class:`vstash.config.LimitsConfig`).  Defaults are intentionally
-generous — they catch pathological inputs without inconveniencing
+generous -- they catch pathological inputs without inconveniencing
 realistic ones.
 """
 
@@ -24,72 +26,46 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+# Re-export the validation error hierarchy from `vstash.errors` so
+# existing `from vstash.validation import LimitError, QueryTooLongError`
+# imports keep working. The single source of truth is `errors.py`.
+from .errors import (
+    ChunkTooLargeError,
+    DistanceCutoffOutOfRangeError,
+    EmbeddingMismatchError,
+    EmptyDocumentError,
+    InvalidIdentifierError,
+    LimitError,
+    PathTooLongError,
+    QueryInvalidError,
+    QueryTooLongError,
+    RecencyBoostOutOfRangeError,
+    RRFWeightOutOfRangeError,
+    TooManyChunksError,
+    TopKOutOfRangeError,
+)
+
 if TYPE_CHECKING:
     from .config import LimitsConfig
 
-
-# ------------------------------------------------------------------ #
-# Exception hierarchy                                                  #
-# ------------------------------------------------------------------ #
-
-
-class LimitError(ValueError):
-    """Base class for all vstash input validation errors.
-
-    Subclasses :class:`ValueError` so existing ``except ValueError``
-    handlers continue to work.  Catch this directly to handle any
-    vstash-imposed limit; catch a specific subclass to react to one
-    category.
-    """
-
-
-class QueryInvalidError(LimitError):
-    """Query text is missing, the wrong type, or otherwise unusable."""
-
-
-class QueryTooLongError(LimitError):
-    """Query text exceeds the configured maximum length."""
-
-
-class TopKOutOfRangeError(LimitError):
-    """``top_k`` is < 1 or above the configured maximum."""
-
-
-class DistanceCutoffOutOfRangeError(LimitError):
-    """``distance_cutoff`` is negative or above the configured maximum."""
-
-
-class RecencyBoostOutOfRangeError(LimitError):
-    """``recency_boost`` is negative or above the configured maximum."""
-
-
-class RRFWeightOutOfRangeError(LimitError):
-    """``vec_weight`` or ``fts_weight`` is outside the ``[0.0, 1.0]`` range."""
-
-
-class PathTooLongError(LimitError):
-    """Document path exceeds the configured maximum length."""
-
-
-class EmptyDocumentError(LimitError):
-    """Document has zero chunks."""
-
-
-class TooManyChunksError(LimitError):
-    """Document has more chunks than the configured maximum."""
-
-
-class ChunkTooLargeError(LimitError):
-    """A single chunk exceeds the configured character limit."""
-
-
-class EmbeddingMismatchError(LimitError):
-    """``chunks`` and ``embeddings`` lists have different lengths."""
-
-
-class InvalidIdentifierError(LimitError):
-    """``project`` / ``collection`` identifier is empty, too long, or contains
-    control characters."""
+__all__ = [
+    "ChunkTooLargeError",
+    "DistanceCutoffOutOfRangeError",
+    "EmbeddingMismatchError",
+    "EmptyDocumentError",
+    "InvalidIdentifierError",
+    "LimitError",
+    "PathTooLongError",
+    "QueryInvalidError",
+    "QueryTooLongError",
+    "RRFWeightOutOfRangeError",
+    "RecencyBoostOutOfRangeError",
+    "TooManyChunksError",
+    "TopKOutOfRangeError",
+    "validate_document_input",
+    "validate_identifier",
+    "validate_search_input",
+]
 
 
 # ------------------------------------------------------------------ #
