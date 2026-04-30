@@ -1,0 +1,72 @@
+name: Performance issue
+description: Something is slower than expected, scales worse than predicted, or jumped sharply at some N.
+labels: ["performance"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Performance issues benefit massively from a reproducible probe.
+        See `notes/` and the `perf-cliff-debug` skill -- the discipline is
+        **probe first, fix second**: a micro-benchmark sweeping the
+        suspected parameter usually tells us the bug shape before any
+        code change.
+
+  - type: textarea
+    id: shape
+    attributes:
+      label: What does the cost curve look like?
+      description: |
+        E.g. "linear up to N=50k then jumps to ~N**2 at N=100k". A small
+        table of (N, wall-time) is ideal.
+    validations:
+      required: true
+
+  - type: textarea
+    id: probe
+    attributes:
+      label: Reproduction probe
+      description: Smallest script that reproduces the regression. Paste the script and the data sizes you tested.
+      render: python
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: vstash version
+      placeholder: "0.36.0"
+    validations:
+      required: true
+
+  - type: input
+    id: hardware
+    attributes:
+      label: Hardware
+      description: CPU/GPU class, RAM, storage type. Apple Silicon vs x86 matters for embedding paths.
+      placeholder: "M2 Pro 16 GB / Linux x86 32 GB / etc."
+    validations:
+      required: true
+
+  - type: dropdown
+    id: hot_path
+    attributes:
+      label: Which hot path?
+      multiple: true
+      options:
+        - "ingest"
+        - "embed"
+        - "search"
+        - "retrain"
+        - "watch"
+        - "snapvec rebuild"
+        - "MCP server"
+        - "HTTP API (vstash serve)"
+        - "other"
+    validations:
+      required: true
+
+  - type: textarea
+    id: theory
+    attributes:
+      label: Theory (optional)
+      description: What you think is happening and why. The probe data is more useful than the theory; both is best.

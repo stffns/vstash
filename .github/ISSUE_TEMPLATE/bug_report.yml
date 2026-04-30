@@ -1,0 +1,79 @@
+name: Bug report
+description: Report something that is broken in vstash.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please run through the checks below before submitting.
+        For security issues, see [SECURITY.md](../SECURITY.md) instead -- do not file a public bug.
+
+  - type: input
+    id: version
+    attributes:
+      label: vstash version
+      description: Output of `vstash --version`.
+      placeholder: "0.36.0"
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      description: Output of `python --version`.
+      placeholder: "3.12.4"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "macOS 14.5 Apple Silicon / Ubuntu 22.04 / Windows 11"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What did you do?
+      description: Concrete steps. Commands you ran, files you ingested, queries you sent.
+      placeholder: |
+        1. `pip install vstash`
+        2. `vstash add ./docs`
+        3. `vstash search "..."`
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What actually happened?
+      description: Paste tracebacks, error output, or unexpected behaviour. Trim to the relevant lines.
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant config (optional)
+      description: Sanitized contents of `vstash.toml` if you customized it. Redact API keys.
+      render: toml
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I have searched existing issues and the bug is not already filed.
+          required: true
+        - label: I am running the latest vstash release on PyPI.
+          required: true
