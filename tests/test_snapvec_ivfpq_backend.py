@@ -257,3 +257,98 @@ class TestVstashStoreIVFPQIntegration:
         assert store2._snap.fitted
         assert len(store2._snap) == N
         store2.close()
+
+    def test_stale_ivfpq_index_downgrades_to_unfitted(self, tmp_path, caplog):
+        """Issue #329: a crash post-fit can leave .snpi behind vec_chunks.
+
+        Reopen must detect that staleness and downgrade the backend to
+        its unfitted state so search falls back to sqlite-vec instead of
+        silently missing the rows ingested in the last write burst. The
+        repro shape:
+
+        1. Open store, ingest + fit, close (so .snpi flushes).
+        2. Reopen, ingest more rows. These land in vec_chunks AND in
+           the in-memory IVFPQ index, but .snpi is NOT flushed.
+        3. Force-close the second store WITHOUT calling close() to
+           simulate a process crash. Use the underlying ``_conn.close``
+           and drop the snap reference -- this leaves .snpi at its
+           v1 size while vec_chunks has the new rows.
+        4. Reopen a third time. The init path must:
+           - log a warning about the staleness,
+           - leave ``self._snap.fitted == False``,
+           - leave ``len(self._snap) == 0`` so the search code path
+             falls back to sqlite-vec via the ``len(self._snap) > 0``
+             gate in VstashStore.search.
+        """
+        import logging
+
+        db_path = str(tmp_path / "stale.db")
+
+        # 1. Initial fit + save.
+        store1 = VstashStore(
+            db_path,
+            embedding_dim=DIM,
+            vector_backend="snapvec-ivfpq",
+            ivfpq_M=24,
+            ivfpq_K=32,
+            ivfpq_nlist=16,
+        )
+        rng = np.random.default_rng(7)
+        v1 = _unit_vectors(rng, N, DIM)
+        store1.add_document(
+            path="/t/initial.md",
+            title="initial",
+            chunks=[f"c{i}" for i in range(N)],
+            embeddings=v1.tolist(),
+            source_type="text",
+        )
+        store1.fit_ivfpq(training_sample=N)
+        store1.close()  # .snpi now has N rows.
+
+        # 2. Reopen and add more rows; do NOT close (crash sim).
+        store2 = VstashStore(
+            db_path,
+            embedding_dim=DIM,
+            vector_backend="snapvec-ivfpq",
+            ivfpq_M=24,
+            ivfpq_K=32,
+            ivfpq_nlist=16,
+        )
+        assert store2._snap.fitted
+        assert len(store2._snap) == N
+        v2 = _unit_vectors(rng, 50, DIM)
+        store2.add_document(
+            path="/t/burst.md",
+            title="burst",
+            chunks=[f"burst_c{i}" for i in range(50)],
+            embeddings=v2.tolist(),
+            source_type="text",
+        )
+        # vec_chunks now has N+50 rows; .snpi is still at N because
+        # _save_snapvec writes only on close()/checkpoint and we are
+        # simulating a crash. Drop the snap reference + close conn
+        # without calling store.close() to avoid the flush.
+        store2._snap = None
+        store2._conn.close()
+
+        # 3. Reopen. Staleness detection must fire.
+        with caplog.at_level(logging.WARNING, logger="vstash.store"):
+            store3 = VstashStore(
+                db_path,
+                embedding_dim=DIM,
+                vector_backend="snapvec-ivfpq",
+                ivfpq_M=24,
+                ivfpq_K=32,
+                ivfpq_nlist=16,
+            )
+
+        assert any("stale" in r.message.lower() for r in caplog.records), (
+            f"staleness warning not emitted; got: {[r.message for r in caplog.records]}"
+        )
+        # The downgrade contract: unfitted -> search falls back to sqlite-vec.
+        assert not store3._snap.fitted
+        assert len(store3._snap) == 0
+        # Sanity: search still works (via sqlite-vec fallback).
+        results = store3.search(v1[0].tolist(), "c0", top_k=3)
+        assert len(results) > 0
+        store3.close()
