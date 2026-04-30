@@ -1,0 +1,83 @@
+{
+  "experiment": "scale_benchmark",
+  "model": "BAAI/bge-small-en-v1.5",
+  "top_k": 10,
+  "scales": [
+    {
+      "scale": 1000,
+      "total_chunks": 5183,
+      "n_scifact_docs": 5183,
+      "n_synthetic_chunks": 0,
+      "n_queries": 300,
+      "latency_ms": {
+        "mean": 10.84,
+        "median": 10.18,
+        "p95": 18.13,
+        "p99": 22.43,
+        "min": 4.24,
+        "max": 24.85
+      },
+      "ndcg_at_10": {
+        "mean": 0.6891,
+        "std": 0.3916
+      }
+    },
+    {
+      "scale": 5000,
+      "total_chunks": 5183,
+      "n_scifact_docs": 5183,
+      "n_synthetic_chunks": 0,
+      "n_queries": 300,
+      "latency_ms": {
+        "mean": 10.57,
+        "median": 9.85,
+        "p95": 17.7,
+        "p99": 22.12,
+        "min": 3.98,
+        "max": 24.03
+      },
+      "ndcg_at_10": {
+        "mean": 0.6891,
+        "std": 0.3916
+      }
+    },
+    {
+      "scale": 10000,
+      "total_chunks": 10000,
+      "n_scifact_docs": 5183,
+      "n_synthetic_chunks": 4817,
+      "n_queries": 300,
+      "latency_ms": {
+        "mean": 12.77,
+        "median": 12.15,
+        "p95": 20.13,
+        "p99": 24.19,
+        "min": 6.16,
+        "max": 26.64
+      },
+      "ndcg_at_10": {
+        "mean": 0.6849,
+        "std": 0.3927
+      }
+    },
+    {
+      "scale": 50000,
+      "total_chunks": 50000,
+      "n_scifact_docs": 5183,
+      "n_synthetic_chunks": 44817,
+      "n_queries": 300,
+      "latency_ms": {
+        "mean": 31.34,
+        "median": 30.66,
+        "p95": 39.2,
+        "p99": 43.26,
+        "min": 24.38,
+        "max": 45.18
+      },
+      "ndcg_at_10": {
+        "mean": 0.6897,
+        "std": 0.3921
+      }
+    }
+  ]
+}
