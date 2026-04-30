@@ -144,6 +144,34 @@ class TestMemoryAdd:
             [r2] = mem.add(doc, force=True)
             assert r2.status == "ok"
 
+    @requires_sqlite_vec
+    def test_add_collection_none_falls_back_to_default(self, tmp_path: Path) -> None:
+        """``collection=None`` on writes is mapped to the schema default ``'default'``.
+
+        ``documents.collection`` is NOT NULL with default ``'default'``; before
+        #296 the explicit ``None`` reached SQLite and raised
+        ``IntegrityError NOT NULL constraint failed: documents.collection``.
+        """
+        doc = tmp_path / "nullcoll.md"
+        doc.write_text("Body for the null-collection regression test.")
+
+        with Memory(db=tmp_path / "test.db") as mem:
+            [result] = mem.add(doc, collection=None)
+            assert result.status == "ok"
+            assert mem.list(collection="default"), "doc must land in 'default'"
+
+    @requires_sqlite_vec
+    def test_remember_collection_none_falls_back_to_default(self, tmp_path: Path) -> None:
+        """Same #296 guard applies to ``Memory.remember`` (text ingest)."""
+        with Memory(db=tmp_path / "test.db") as mem:
+            result = mem.remember(
+                "Body for the null-collection remember regression test.",
+                title="t",
+                collection=None,
+            )
+            assert result.status == "ok"
+            assert mem.list(collection="default"), "doc must land in 'default'"
+
 
 # ------------------------------------------------------------------ #
 # Memory.search                                                        #

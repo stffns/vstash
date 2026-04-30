@@ -154,7 +154,9 @@ class Memory:
         Args:
             source: File path, URL, or directory to ingest.
             force: Re-ingest even if the document already exists.
-            collection: Override the default collection. Pass None for no collection.
+            collection: Override the default collection. ``documents.collection``
+                is NOT NULL with default ``"default"``; passing ``None`` falls back
+                to that schema default rather than storing NULL (#296).
             project: Override the default project tag. Pass None for no project.
             layer: Layer/category tag.
             tags: Comma-separated tags.
@@ -163,6 +165,8 @@ class Memory:
             List of IngestResult (one per file, even for single-file ingestion).
         """
         col = self._collection if collection is _UNSET else collection
+        if col is None:
+            col = "default"
         proj = self._project if project is _UNSET else project
 
         source_str = str(source)
@@ -226,7 +230,9 @@ class Memory:
             text: The content to ingest.
             title: Human-readable title for the document. When *None*,
                 a descriptive title is auto-generated from the text content.
-            collection: Override the default collection. Pass None for no collection.
+            collection: Override the default collection. ``documents.collection``
+                is NOT NULL with default ``"default"``; passing ``None`` falls back
+                to that schema default rather than storing NULL (#296).
             project: Override the default project tag. Pass None for no project.
             layer: Layer/category tag.
             tags: Comma-separated tags.
@@ -242,6 +248,8 @@ class Memory:
         from .ingest import ingest_text
 
         col = self._collection if collection is _UNSET else collection
+        if col is None:
+            col = "default"
         proj = self._project if project is _UNSET else project
 
         return ingest_text(
