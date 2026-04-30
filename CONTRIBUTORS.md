@@ -1,37 +1,40 @@
 # Contributors
 
-## Human
+## Author
 
 **Jayson Steffens** ([@stffns](https://github.com/stffns)) is the
-sole human contributor. The project lead, research direction,
-benchmark design, release gatekeeping, scientific claims, and the
-final word on every design decision belong to him. His professional
-background is in QA engineering. All commits in this repository are
-authored by him, and the legal responsibility for the code rests
-with him.
+sole author of vstash. Project lead, research direction, benchmark
+design, release gatekeeping, scientific claims, and the final word
+on every design decision belong to him. His professional background
+is in QA engineering. All commits in this repository are authored by
+him, and the legal responsibility for the code rests with him.
 
-## AI assistants used in development
+## Development tooling
 
-vstash uses AI tooling in its development workflow. This section
-documents what, how, and under what constraints, in the spirit of
-the transparency standards documented in `docs/observability.md`
-applied to the development process itself.
+vstash uses automated tooling in its development workflow. The
+entries below are listed in the same spirit one would list `pytest`,
+`ruff`, or an IDE -- they assist execution under the author's
+direction, not co-authorship. This section documents what, how, and
+under what constraints, in the spirit of the transparency standards
+documented in `docs/observability.md` applied to the development
+process itself.
 
 ### Claude (Anthropic)
 
-Used for: code generation, refactoring, test writing, documentation,
-responding to automated code review, debugging, and conversational
-design exploration. Long-form technical writing in this repository,
-including sections of `paper/vstash-paper.md`, `CHANGELOG.md`
-entries, and docs under `docs/`, was assisted by Claude.
+Used as a coding and writing assistant for: code generation,
+refactoring, test writing, documentation, responding to automated
+code review, debugging, and conversational design exploration.
+Long-form technical writing in this repository, including sections
+of the paper, `CHANGELOG.md` entries, and docs under `docs/`, was
+drafted with Claude assistance under the author's direction.
 
 Not used for: design decisions, algorithm selection, benchmark
 methodology design, or release go/no-go judgment. Those are made by
-the human contributor after reviewing proposals.
+the author after reviewing proposals.
 
 Constraint: per the project's internal no-AI-coauthor rule, Claude is
 never listed as commit co-author. The commit history accurately
-reflects the human contributor as author of record.
+reflects the author as author of record.
 
 ### Jules (Google)
 

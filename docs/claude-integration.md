@@ -157,11 +157,11 @@ Open Claude Desktop settings and edit `claude_desktop_config.json`:
 
 **3. Restart Claude Desktop**
 
-After restart, Claude will have these tools available:
+After restart, Claude will have these tools available (representative subset; full registered list is 16 tools, see `vstash-mcp --list`):
 
 | Tool | Description |
 |------|-------------|
-| `vstash_search` | Semantic search across all documents |
+| `vstash_search` | Semantic search across all documents (supports `retrieval_mode`: `hybrid` / `vec_only` / `fts_only`) |
 | `vstash_ask` | Search + LLM answer in one step |
 | `vstash_add` | Ingest files, directories, or URLs |
 | `vstash_remember` | Ingest text directly without a file |
@@ -170,6 +170,7 @@ After restart, Claude will have these tools available:
 | `vstash_list` | List all documents in memory |
 | `vstash_stats` | Memory statistics |
 | `vstash_forget` | Remove a document (supports fuzzy matching) |
+| `vstash_why` | Diagnose why a query did not surface an expected document (v0.33+) |
 | `vstash_journal_save` | Save a cross-session memory entry |
 | `vstash_journal_recall` | Search journal entries |
 

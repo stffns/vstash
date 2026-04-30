@@ -211,11 +211,21 @@ Adaptive RRF, self-supervised embedding refinement, a negative result on post-RR
 
 ---
 
-## What's New in v0.32
+## What's New in v0.36
 
-- **Persistent embedder daemon** (v0.32) — `vstash serve` pre-loads the embedding model and exposes `/api/embed` on `localhost:8585`. CLI and SDK clients auto-detect and delegate; cold start drops from ~2 s to ~5 ms.
-- **Query LRU cache** (v0.31) — opt-in repeated-query cache via `[cache] query_cache_size`. Roughly 700x on cache hits, automatically invalidated on writes.
-- **Batched directory ingest** (v0.31) — single-transaction writes with deferred FTS. 5x faster at 500 docs versus per-file ingest.
-- **`snapvec-ivfpq` vector backend** (v0.30) — IVFPQ with fp16 rerank. Pareto-dominant over sqlite-vec at N >= 50K: 0.80x mean latency at 100K, NDCG within noise.
+- **`chat.ask_full()` returning `AskResult`** (v0.36) -- new public API surfaces the reasoning trace and token usage that `ask()` previously discarded. Cerebras `gpt-oss-120b` populates `result.reasoning`; Ollama qwen3 thinking-mode uses `message.thinking`; OpenAI-compat servers (vLLM, DeepSeek, Together, xAI Grok, OpenAI o1/o3) read `reasoning_content`. `ask()` keeps its `-> str` contract via a thin wrapper -- zero call-site change for existing code. Also exposed as `Memory.ask_full()`. Drives Merken Phase 2 distillation pipeline.
+- **Centralized store construction** (v0.36) -- `open_store_for_config(cfg)` is the single entry point used by CLI, MCP, web, SDK, journal, and federated search. Previously each surface duplicated the `StorageConfig -> VstashStore` wiring and silently dropped IVFPQ tuning fields on some paths (#297).
+- **`vec_only` long-query distance cutoff fix** (v0.36) -- `retrieval_mode="vec_only"` now applies the same long-query relaxation as `hybrid`; ArguAna `vec_only` jumped from NDCG@10 = 0.0013 (1403/1406 zero) to 0.4250. Hybrid mode and all paper / model-card numbers untouched (#304).
+- **Bug fixes** (v0.36) -- `Memory.add(collection=None)` falls back to schema default instead of crashing on the NOT NULL constraint (#296); `vstash retrain --synthesize-queries` no longer crashes on Ollama / Cerebras backends (#294); web uploads now persist under `~/.vstash/uploads/<uuid>-<safe-name>` instead of pointing at deleted temp paths (#295).
+
+## What's New in v0.35
+
+- **`bge-small-rrf-lme-v1` chat-memory specialist** (v0.35) — fine-tuned on 398 labeled LongMemEval queries through the eval-gated retrain loop. +3.79pp R@5 on n=102 holdout vs vanilla BGE-small. Use when your corpus is primarily chat sessions / agent memory.
+- **Eval-gated labeled retrain** (v0.35) — `vstash retrain --training-queries train.jsonl --eval-queries eval.jsonl` accepts user-supplied `(query, relevant_paths)` JSONL and refuses to save fine-tunes that regress NDCG@10 on the holdout. See [docs/retrain.md](docs/retrain.md).
+- **`vstash why` miss analysis** (v0.33) — diagnose why an expected document did not surface for a query. Traces vector pool, distance cutoff, FTS match, RRF fusion, MMR, and context-expansion stages with parameter suggestions. Auto-logs misses on empty / low-relevance searches.
+- **`retrieval_mode` enum** (v0.33) — `Literal["hybrid", "vec_only", "fts_only"] = "hybrid"` on `Memory.search`, `Memory.ask`, `VstashStore.search`, and MCP tools. `vec_only` is the symmetric branch to `fts_only`. Default stays `hybrid`. Legacy `fts_only=True` boolean was removed in v0.35.
+- **Custom encoder resolver hook** (v0.34) — `register_encoder_resolver(fn)` lets callers plug LoRA-adapted, locally fine-tuned, or otherwise unnamable encoders into the embed pipeline. See [docs/embedding-models.md](docs/embedding-models.md).
+- **Cosine metric in `vec_chunks`** (v0.34) — sqlite-vec virtual table now uses cosine distance (was L2 before; v1 DBs migrate in place atomically on first open). Fixed a latent bug where non-unit-normalized models silently mis-ranked.
+- **Persistent embedder daemon** (v0.32) — `vstash serve --warm` pre-loads the embedding model and exposes `/api/embed` on `localhost:8585`. CLI and SDK clients auto-detect and delegate; cold start drops from ~2 s to ~5 ms.
 
 See [CHANGELOG](CHANGELOG.md) for full version history.

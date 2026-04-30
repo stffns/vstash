@@ -1,33 +1,63 @@
 # Retrain module roadmap
 
 Living design doc for extending `vstash/retrain.py`. Tiered by ROI / effort.
-Owner: Jay + Claude. Not shipped (under `experiments/`, excluded from sdist).
 
-## Current state (v0.32)
+## Current state (v0.35)
 
-- 247 LOC self-supervised fine-tuning via MNRL.
-- Signal: first 200 chars of each chunk becomes a pseudo-query, the chunk itself
-  is the positive, first vec/FTS top-5 disagreement provides 1 hard negative.
-- Validated on 5 BEIR datasets: +4.5% NDCG avg, +18.3% NFCorpus, +5% SciFact.
-  Released as `stffens/bge-small-rrf-v1` and `v2` on HuggingFace.
-- CLI: `vstash retrain` with `--quick`, `--max-queries`, `--epochs`, `--lr`,
-  `--batch-size`, `--base-model`, `--output`.
-- Tests: `tests/test_retrain.py` covers triple generation and training wrapper
-  with mocked `sentence_transformers`.
+The original limitations list below is preserved for historical context.
+Most Tier 1 items shipped through v0.33 -- v0.35; the eval-gated labeled
+retrain mode is now the deployable headline of paper v2. Items still open
+are tagged inline.
 
-## Limitations driving this roadmap
+- Self-supervised fine-tuning via MNRL (chunk-prefix pseudo-queries +
+  vector/FTS disagreement triples) -- shipped.
+- **Eval-gated labeled retrain (v0.35, NEW):** `vstash retrain
+  --training-queries train.jsonl --eval-queries eval.jsonl` accepts
+  user-supplied `(query, relevant_paths)` JSONL and refuses to save a
+  candidate that regresses NDCG@10 on the holdout. This is the gated
+  domain-adaptation loop documented in paper v2 Section 5.6. Shipped.
+- **Multi-corpus training with temperature sampling (T1.4):** shipped
+  in v0.33.
+- **GPU-batched mining + eval (T1.4b/c):** shipped.
+- **Labeled-query mining from BEIR qrels (T1.5):** shipped.
+- **Auto-promoted eval queries (H-R1):** shipped.
+- **Bulk mining on single-corpus (H-R8):** shipped.
+- **Full eval observability + seed reproducibility (H-R5/H-R7):** shipped.
+- Validated on 5 BEIR datasets: `Stffens/bge-small-rrf-v3` (general),
+  `Stffens/bge-small-rrf-v2` (legacy), `Stffens/bge-small-rrf-lme-v1`
+  (chat-memory specialist, paper v2 case study). All published on
+  HuggingFace.
+- CLI: `vstash retrain` with `--quick`, `--max-queries`, `--epochs`,
+  `--lr`, `--batch-size`, `--base-model`, `--output`,
+  `--training-queries`, `--eval-queries`, `--bulk-mine`,
+  `--bulk-mine-device`, `--min-gain`.
+- Tests: `tests/test_retrain.py` (gate + atomic promote + synth queries
+  integration), `tests/test_retrain_synth.py` (LLM query synthesis),
+  `tests/test_cli_retrain.py` (CLI loader + 16 forwarding cases).
 
-1. Queries do not look like real queries (chunk prefixes, not short human text).
-2. Only 1 triplet emitted per pseudo-query (top-5 disagreement has more signal).
-3. Positives lack diversity (always the source chunk itself).
-4. Hard negatives are not quality-filtered (first disagreement wins).
-5. Training is blind: no hold-out, no NDCG delta, no regression guard.
-6. Only MNRL loss. No `CachedMNRL`, no `GISTEmbedLoss`, no MarginMSE.
-7. No reranker training path (stack is bi-encoder only).
-8. No continual / incremental retrain on delta corpus.
-9. Lineage gap: `training_meta.json` records hyperparameters but not corpus
-   fingerprint, disagreement rate, or eval delta.
-10. No HF Hub push helper, no integration with embedder daemon hot-swap.
+## Original limitations (status)
+
+1. ~~Queries do not look like real queries (chunk prefixes).~~ -- mitigated
+   by labeled-query retrain mode (v0.35).
+2. ~~Only 1 triplet emitted per pseudo-query.~~ -- T1.4 mining produces
+   multiple negatives per query.
+3. ~~Positives lack diversity (always the source chunk itself).~~ -- still
+   the case for the chunk-prefix path; the labeled path uses
+   user-supplied gold.
+4. ~~Hard negatives are not quality-filtered.~~ -- bidirectional
+   vector-heavy / FTS-heavy disagreement mining since v0.33.
+5. ~~Training is blind: no hold-out, no NDCG delta, no regression
+   guard.~~ -- eval gate via `--eval-queries` (v0.35) closes this.
+6. **OPEN:** Only MNRL loss. No `CachedMNRL`, no `GISTEmbedLoss`, no
+   MarginMSE.
+7. **OPEN:** No reranker training path (stack is bi-encoder only). The
+   cross-encoder reranker design is in
+   `experiments/t24_reranker_design.md` and is paper v2 future work.
+8. **OPEN:** No continual / incremental retrain on delta corpus.
+9. **OPEN (partial):** `training_meta.json` records hyperparameters and
+   eval delta, but not corpus fingerprint or disagreement rate yet.
+10. **OPEN:** No HF Hub push helper, no integration with embedder
+    daemon hot-swap.
 
 ---
 
