@@ -11,9 +11,12 @@ which made adding or auditing a backend a per-call-site exercise.
 
 This package defines a single :class:`VectorBackend` Protocol that
 every backend implements: ``add_batch``, ``search``, ``delete``,
-``save``, ``load``, ``__len__``. The store calls into the protocol;
-backend-specific lifecycle (fit, training-sample sizing) lives on
-the concrete adapter and is invoked through the same handle.
+``save``, ``__len__``. The store calls into the protocol; backend-
+specific lifecycle (``fit``, ``load`` factory, training-sample
+sizing) lives on the concrete adapter rather than on the protocol
+because the call patterns differ per backend (sqlite-vec persists
+implicitly via the SQLite file, snapvec backends round-trip a
+binary blob, IVFPQ requires an explicit ``fit`` before adds).
 
 Migration is staged across multiple PRs to keep risk bounded:
 

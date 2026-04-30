@@ -29,10 +29,15 @@ Notes on shape:
 - ``__len__`` returns the count of *routable* vectors, which is 0
   before an IVFPQ index has been fit() even though the underlying
   storage may already hold all chunks.
-- ``save`` and ``load`` work with a path string. snapvec backends
-  write a single binary blob; sqlite-vec persists implicitly via
-  the SQLite database file, so its adapter (when extracted) will
-  no-op these methods.
+- ``save`` works with a path string. snapvec backends write a
+  single binary blob; sqlite-vec persists implicitly via the SQLite
+  database file, so its adapter (when extracted) will no-op
+  ``save``. ``load`` is intentionally NOT in the protocol: it is
+  a backend-specific factory (returns a new instance, takes
+  per-backend configuration kwargs) rather than an instance method,
+  so it lives on the concrete adapter class. The store's
+  registry-driven construction calls each adapter's ``load``
+  classmethod directly when reopening from disk.
 """
 
 from __future__ import annotations
