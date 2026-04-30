@@ -244,6 +244,96 @@ class TestApiUpload:
         assert resp.json()["title"] == "uploaded"
         assert resp.json()["status"] == "ok"
 
+    def test_upload_forwards_original_filename_to_do_upload(self, client: TestClient) -> None:
+        """The Starlette handler must pass ``upload.filename`` along so
+        ``_do_upload`` can preserve it in the persisted source path (#295).
+        """
+        with patch("vstash.web._do_upload") as mock_upload:
+            mock_upload.return_value = IngestResult(status="ok", source="/x", title="x", chunks=1)
+            files = {"file": ("report.md", io.BytesIO(b"body"), "text/markdown")}
+            client.post("/api/upload", files=files)
+        args, kwargs = mock_upload.call_args
+        # _do_upload(file_bytes, suffix, original_name)
+        assert args[0] == b"body"
+        assert args[1] == ".md"
+        assert args[2] == "report.md"
+
+
+class TestDoUploadPersistence:
+    """``_do_upload`` must persist the bytes and pass a real path to ingest (#295).
+
+    Before #295 the path passed to ``ingest()`` was a NamedTemporaryFile
+    that got unlinked in the ``finally`` block, leaving documents
+    pointing at deleted ``/var/folders/.../tmpXXX`` files with
+    ``tmpXXX`` as the title.
+    """
+
+    def test_persists_under_uploads_dir_with_safe_name(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        from pathlib import Path
+
+        import vstash.web as web_mod
+
+        uploads_dir = tmp_path / "uploads"
+        monkeypatch.setattr(web_mod, "_UPLOADS_DIR", uploads_dir)
+        monkeypatch.setattr(web_mod, "_get_config", lambda: MagicMock())
+        monkeypatch.setattr(web_mod, "_get_store", lambda: MagicMock())
+
+        seen: dict = {}
+
+        def _capture_ingest(path, *_args, **_kwargs):
+            p = Path(path)
+            seen["path"] = p
+            seen["exists_at_ingest"] = p.exists()
+            seen["bytes"] = p.read_bytes()
+            return IngestResult(status="ok", source=str(p), title=p.stem, chunks=1)
+
+        monkeypatch.setattr(web_mod, "ingest", _capture_ingest)
+
+        result = web_mod._do_upload(b"body", ".md", "weird name!@#.md")
+
+        assert result.status == "ok"
+        # File still exists after ingest -- not a temp that got unlinked.
+        assert seen["path"].exists()
+        # Lives under our uploads dir.
+        assert uploads_dir in seen["path"].parents
+        # Original-ish name is preserved (sanitised) in the basename.
+        assert "weird_name___.md" in seen["path"].name
+        # Suffix is honoured even when sanitisation drops it.
+        assert seen["path"].suffix == ".md"
+        # The bytes ingest sees match the upload.
+        assert seen["bytes"] == b"body"
+
+    def test_falls_back_to_default_basename_when_original_missing(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        import vstash.web as web_mod
+
+        uploads_dir = tmp_path / "uploads"
+        monkeypatch.setattr(web_mod, "_UPLOADS_DIR", uploads_dir)
+        monkeypatch.setattr(web_mod, "_get_config", lambda: MagicMock())
+        monkeypatch.setattr(web_mod, "_get_store", lambda: MagicMock())
+
+        captured: list = []
+        monkeypatch.setattr(
+            web_mod,
+            "ingest",
+            lambda path, *_a, **_kw: (
+                captured.append(path) or IngestResult(status="ok", source=path, title="t", chunks=1)
+            ),
+        )
+
+        web_mod._do_upload(b"body", ".txt", None)
+
+        from pathlib import Path
+
+        path = Path(captured[0])
+        assert path.exists()
+        assert path.suffix == ".txt"
+        # Falls back to "upload" when no filename was provided.
+        assert "upload" in path.name
+
 
 # ------------------------------------------------------------------ #
 # HTML index + observability                                           #
