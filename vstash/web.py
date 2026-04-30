@@ -14,8 +14,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import tempfile
 import threading
+import uuid
 from contextlib import asynccontextmanager
 from functools import partial
 from pathlib import Path
@@ -120,16 +120,51 @@ def _do_stats() -> Any:
     return _get_store().stats()
 
 
-def _do_upload(file_bytes: bytes, suffix: str) -> Any:
+_UPLOADS_DIR = Path("~/.vstash/uploads").expanduser()
+
+
+def _do_upload(file_bytes: bytes, suffix: str, original_name: str | None = None) -> Any:
+    """Persist an uploaded blob and ingest it.
+
+    The earlier implementation wrote to ``tempfile.NamedTemporaryFile``
+    and ``unlink``ed the path right after ``ingest()`` returned. The
+    document then pointed at a deleted ``/var/folders/.../tmpXXX``
+    path with the temp basename as title (#295). Persisting under
+    ``~/.vstash/uploads/<uuid>-<safe-name>`` gives the stored document
+    a stable source the user can later re-open or re-ingest.
+    """
     cfg = _get_config()
     store = _get_store()
-    fd = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-    try:
-        fd.write(file_bytes)
-        fd.close()
-        return ingest(fd.name, cfg, store, force=True)
-    finally:
-        Path(fd.name).unlink(missing_ok=True)
+    _UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    # Strip any path fragments a client may have included (POSIX or
+    # Windows separators) before sanitization so we never persist
+    # ``a/b/leaked.md`` as ``a_b_leaked.md``.
+    raw_name = original_name or "upload"
+    src_name = raw_name.replace("\\", "/").rsplit("/", 1)[-1] or "upload"
+    safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in src_name)
+    # Cap the FINAL basename (incl. suffix) so an adversarial filename or
+    # suffix can't blow past ENAMETOOLONG (255 on most filesystems). The
+    # uuid12 prefix + dash add 13 chars to the on-disk name; keep margin.
+    _MAX_BASENAME = 128
+    safe_suffix = "".join(c if c.isalnum() or c in "._-" else "_" for c in (suffix or ""))
+    if safe_suffix and not safe_suffix.startswith("."):
+        safe_suffix = "." + safe_suffix
+    # If the suffix alone exceeds the cap, truncate it; never let it eat
+    # the whole budget.
+    if len(safe_suffix) >= _MAX_BASENAME:
+        safe_suffix = safe_suffix[: _MAX_BASENAME - 1]
+    # Strip an existing copy of the suffix so we always re-append it
+    # exactly once at the cap boundary.
+    if safe_suffix and safe_name.endswith(safe_suffix):
+        safe_name = safe_name[: -len(safe_suffix)]
+    if safe_suffix:
+        keep = max(1, _MAX_BASENAME - len(safe_suffix))
+        safe_name = safe_name[:keep] + safe_suffix
+    elif len(safe_name) > _MAX_BASENAME:
+        safe_name = safe_name[:_MAX_BASENAME]
+    target = _UPLOADS_DIR / f"{uuid.uuid4().hex[:12]}-{safe_name}"
+    target.write_bytes(file_bytes)
+    return ingest(str(target), cfg, store, force=True)
 
 
 def _do_chat_retrieve(query: str, top_k: int) -> tuple[list[SearchResult], list[dict]]:
@@ -338,7 +373,7 @@ async def api_upload(request: Request) -> JSONResponse:
 
     suffix = Path(upload.filename).suffix if upload.filename else ".txt"
     content = await upload.read()
-    result = await _run_sync(_do_upload, content, suffix)
+    result = await _run_sync(_do_upload, content, suffix, upload.filename)
     return _json(result)
 
 
