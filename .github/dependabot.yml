@@ -22,9 +22,6 @@ updates:
       runtime-minor-patch:
         patterns:
           - "*"
-        exclude-patterns:
-          - "torch*"
-          - "sentence-transformers"
         update-types:
           - "minor"
           - "patch"
