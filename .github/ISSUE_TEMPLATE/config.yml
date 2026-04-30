@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/stffns/vstash/security/advisories/new
+    about: Report security issues privately. Do not open a public issue.
+  - name: Question or discussion
+    url: https://github.com/stffns/vstash/discussions
+    about: Ask questions, share usage tips, or propose ideas before filing a feature request.
