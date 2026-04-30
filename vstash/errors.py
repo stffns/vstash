@@ -1,8 +1,22 @@
-"""vstash.errors -- single source of truth for the exception hierarchy.
+"""vstash.errors -- single source of truth for the vstash error hierarchy.
 
-Every error vstash raises descends from :class:`VstashError`. Catching
-``VstashError`` is the right way to handle any vstash-originated
-failure without also swallowing unrelated exceptions.
+This module is the canonical home of vstash's *domain* exception
+tree: input validation (:class:`LimitError`), schema mismatch
+(:class:`SchemaVersionError`), and vector backend failure
+(:class:`BackendError`). Every error in that tree descends from
+:class:`VstashError`, so ``except VstashError`` is the catch-all
+for vstash domain failures.
+
+Scope caveat: not every exception raised from a vstash function is a
+domain error. Some public guard paths still raise plain
+:class:`ValueError` / :class:`RuntimeError` (for example
+``Memory.miss_analysis`` rejects callers that pass neither
+``expected_path`` nor ``expected_chunk_id``), and lower-level
+failures bubble up as their stdlib types (``sqlite3.OperationalError``,
+``FileNotFoundError``, ``KeyError``). Tracking the migration of
+those sites to ``VstashError`` subclasses is a follow-up; until
+that lands, ``except VstashError`` covers the *domain hierarchy*
+defined here, not literally every error vstash can ever raise.
 
 Backwards compatibility: the validation errors in this module also
 inherit from :class:`ValueError`, and :class:`SchemaVersionError`
@@ -19,11 +33,12 @@ from __future__ import annotations
 
 
 class VstashError(Exception):
-    """Base class for all vstash-raised exceptions.
+    """Base class for vstash's domain exception tree.
 
-    Catch this to handle any vstash failure mode without also catching
-    unrelated stdlib exceptions. Direct subclasses split the failure
-    space by category:
+    Catch this to handle any vstash *domain* failure (input
+    validation, schema mismatch, backend failure) without also
+    catching unrelated stdlib exceptions. Direct subclasses split
+    the failure space by category:
 
     - :class:`LimitError` -- input validation rejected at the API
       boundary (queries too long, top_k out of range, chunks too big).
@@ -31,6 +46,11 @@ class VstashError(Exception):
       version this build does not know how to read.
     - :class:`BackendError` -- a vector backend (sqlite-vec, snapvec,
       ivfpq) failed to fit, save, or query.
+
+    Some legacy guard paths still raise plain :class:`ValueError` or
+    :class:`RuntimeError`; migrating those to ``VstashError``
+    subclasses is a follow-up. ``except VstashError`` covers the
+    domain tree above, not every exception vstash can possibly raise.
     """
 
 
