@@ -105,13 +105,12 @@ def _normalize_usage(raw: object) -> dict[str, int] | None:
     """
     if raw is None:
         return None
-    if isinstance(raw, dict):
-        get = raw.get
-    else:
-        get = lambda k, default=None: getattr(raw, k, default)  # noqa: E731
     out: dict[str, int] = {}
     for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
-        value = get(key)
+        if isinstance(raw, dict):
+            value = raw.get(key)
+        else:
+            value = getattr(raw, key, None)
         if isinstance(value, int):
             out[key] = value
     return out or None
@@ -325,12 +324,25 @@ def _ask_ollama(
             messages=messages,
             options={"temperature": 0.2},
         )
-        message = response["message"]
+        # The ollama python client returns dict-shaped responses on
+        # current versions, but older / pinned releases occasionally
+        # return a Pydantic-ish object.  Stay permissive so an SDK bump
+        # doesn't crash the call site.
+        if isinstance(response, dict):
+            message = response.get("message")
+            prompt = response.get("prompt_eval_count")
+            completion = response.get("eval_count")
+        else:
+            message = getattr(response, "message", None)
+            prompt = getattr(response, "prompt_eval_count", None)
+            completion = getattr(response, "eval_count", None)
         # qwen3 thinking-enabled models surface CoT here; absent otherwise.
-        reasoning = message.get("thinking") if isinstance(message, dict) else None
-        # Ollama exposes prompt_eval_count + eval_count on the response root.
-        prompt = response.get("prompt_eval_count") if hasattr(response, "get") else None
-        completion = response.get("eval_count") if hasattr(response, "get") else None
+        if isinstance(message, dict):
+            content = message.get("content") or ""
+            reasoning = message.get("thinking") or None
+        else:
+            content = getattr(message, "content", "") or ""
+            reasoning = getattr(message, "thinking", None) or None
         usage: dict[str, int] | None = None
         if isinstance(prompt, int) or isinstance(completion, int):
             p = prompt if isinstance(prompt, int) else 0
@@ -341,8 +353,8 @@ def _ask_ollama(
                 "total_tokens": p + c,
             }
         return AskResult(
-            content=message["content"] if isinstance(message, dict) else "",
-            reasoning=reasoning or None,
+            content=content,
+            reasoning=reasoning,
             usage=usage,
             backend="ollama",
             model=model,

@@ -310,6 +310,32 @@ class TestAskFullOllama:
         assert result.reasoning is None
         assert result.content == "plain answer"
 
+    def test_object_shaped_response_does_not_crash(self) -> None:
+        """Older / pinned ollama-python versions occasionally return a
+        Pydantic-ish response object instead of a dict. Subscript access
+        used to crash with TypeError; the permissive path must accept it."""
+        cfg = VstashConfig.model_validate(
+            {
+                "inference": {"backend": "ollama"},
+                "ollama": {"host": "http://localhost:11434", "model": "qwen3:8b"},
+            }
+        )
+        chunks = [_make_chunk("ctx")]
+        client = MagicMock()
+        # Object-shaped response: message + counts as attributes, not keys.
+        msg = SimpleNamespace(content="answer", thinking="trace")
+        response_obj = SimpleNamespace(message=msg, prompt_eval_count=4, eval_count=2)
+        client.chat.return_value = response_obj
+        with patch("ollama.Client", return_value=client):
+            result = ask_full("q", chunks, cfg)
+        assert result.content == "answer"
+        assert result.reasoning == "trace"
+        assert result.usage == {
+            "prompt_tokens": 4,
+            "completion_tokens": 2,
+            "total_tokens": 6,
+        }
+
 
 class TestAskBackwardCompat:
     """``ask()`` keeps its ``-> str`` contract via ``ask_full().content``."""
