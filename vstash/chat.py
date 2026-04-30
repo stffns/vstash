@@ -594,7 +594,7 @@ def _detect_local() -> dict[str, object]:
     Returns:
         Dict with keys: backend, name, base_url, model (or None if nothing found).
     """
-    global _local_cache  # noqa: PLW0603
+    global _local_cache
     if _local_cache is not None:
         return _local_cache
 

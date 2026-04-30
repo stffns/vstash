@@ -59,7 +59,7 @@ _SEPARATOR_TOKENS = None
 
 def _get_enc():
     """Get or lazily initialize the tiktoken encoder."""
-    global _enc, _SEPARATOR_TOKENS  # noqa: PLW0603
+    global _enc, _SEPARATOR_TOKENS
     if _enc is None:
         import tiktoken
 
@@ -1020,7 +1020,7 @@ def ingest_batch(
             doc_ids = store.add_documents_batch(batch_docs)
         store_elapsed = round(time.time() - store_start, 2)
 
-        for doc, doc_id in zip(pending, doc_ids):
+        for doc, doc_id in zip(pending, doc_ids, strict=False):
             results.append(
                 IngestResult(
                     status="ok",
@@ -1063,7 +1063,7 @@ def _extract_frontmatter(text: str) -> dict[str, Any]:
         return {}
 
     try:
-        import yaml  # noqa: PLC0415 — optional dependency, lazy import
+        import yaml
 
         data = yaml.safe_load(match.group(1))
         if not isinstance(data, dict):
@@ -1083,8 +1083,8 @@ def _extract_frontmatter(text: str) -> dict[str, Any]:
             value = value.strip()
             # Handle YAML lists inline: [a, b, c]
             if value.startswith("[") and value.endswith("]"):
-                import csv  # noqa: PLC0415
-                import io  # noqa: PLC0415
+                import csv
+                import io
 
                 s = io.StringIO(value[1:-1])
                 try:

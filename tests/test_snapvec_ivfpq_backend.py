@@ -7,8 +7,8 @@ import pytest
 
 pytest.importorskip("snapvec", reason="snapvec not installed")
 
-from vstash._ivfpq_backend import IVFPQBackend  # noqa: E402
-from vstash.store import VstashStore  # noqa: E402
+from vstash._ivfpq_backend import IVFPQBackend
+from vstash.store import VstashStore
 
 DIM = 96  # multiple of ivfpq_M so no param juggling is needed
 N = 400  # big enough for the default nlist without overfitting warnings

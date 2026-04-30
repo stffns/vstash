@@ -82,7 +82,7 @@ def _evaluate_dataset(dataset: str) -> dict:
     try:
         store = VstashStore(db_path, embedding_dim=dim)
         vstash_id_map: dict[str, str] = {}
-        for doc_id, text, emb in zip(doc_ids, doc_texts, all_embeddings):
+        for doc_id, text, emb in zip(doc_ids, doc_texts, all_embeddings, strict=False):
             path = f"/beir/{doc_id}"
             store.add_document(
                 path=path,

@@ -82,7 +82,7 @@ def _get_config() -> VstashConfig:
     Returns:
         Cached VstashConfig instance.
     """
-    global _config  # noqa: PLW0603
+    global _config
     if _config is None:
         with _lock:
             if _config is None:
@@ -104,7 +104,7 @@ def _get_store() -> VstashStore:
     Raises:
         OSError: If the database directory cannot be created (e.g. PermissionError).
     """
-    global _store  # noqa: PLW0603
+    global _store
     if _store is None:
         with _lock:
             if _store is None:

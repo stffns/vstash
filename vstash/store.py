@@ -503,7 +503,7 @@ class VstashStore:
         return {
             "n_indexed": int(n_rows),
             "nlist": nlist,
-            "training_sample": int(len(sample)),
+            "training_sample": len(sample),
             "build_seconds": round(build_s, 2),
             "path": str(self._ivfpq_path),
         }
@@ -1267,7 +1267,7 @@ class VstashStore:
             limits=self._limits,
         )
 
-        doc_id = hashlib.sha256(f"{collection}:{path}".encode("utf-8")).hexdigest()[:32]
+        doc_id = hashlib.sha256(f"{collection}:{path}".encode()).hexdigest()[:32]
 
         with self._write_lock:
             # Explicit transaction ensures atomicity — a crash mid-way
@@ -1319,14 +1319,16 @@ class VstashStore:
                 ]
 
                 # Vector index entries
-                vec_data = [(rowid, _serialize(emb)) for rowid, emb in zip(rowids, embeddings)]
+                vec_data = [
+                    (rowid, _serialize(emb)) for rowid, emb in zip(rowids, embeddings, strict=False)
+                ]
                 self._conn.executemany(
                     "INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)",
                     vec_data,
                 )
 
                 # FTS5 entries (rowid must match chunks.id)
-                fts_data = [(rowid, text) for rowid, text in zip(rowids, chunks)]
+                fts_data = [(rowid, text) for rowid, text in zip(rowids, chunks, strict=False)]
                 if not self._defer_fts:
                     self._conn.executemany(
                         "INSERT INTO fts_chunks (rowid, text) VALUES (?, ?)",
@@ -1411,7 +1413,7 @@ class VstashStore:
                         limits=self._limits,
                     )
 
-                    doc_id = hashlib.sha256(f"{collection}:{path}".encode("utf-8")).hexdigest()[:32]
+                    doc_id = hashlib.sha256(f"{collection}:{path}".encode()).hexdigest()[:32]
                     doc_ids.append(doc_id)
 
                     self._delete_by_doc_id(doc_id)
@@ -1452,13 +1454,16 @@ class VstashStore:
                         ).fetchall()
                     ]
 
-                    vec_data = [(rowid, _serialize(emb)) for rowid, emb in zip(rowids, embeddings)]
+                    vec_data = [
+                        (rowid, _serialize(emb))
+                        for rowid, emb in zip(rowids, embeddings, strict=False)
+                    ]
                     self._conn.executemany(
                         "INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)",
                         vec_data,
                     )
 
-                    fts_data = list(zip(rowids, chunks))
+                    fts_data = list(zip(rowids, chunks, strict=False))
                     if self._defer_fts:
                         pending_fts.extend(fts_data)
                     else:
@@ -1561,7 +1566,7 @@ class VstashStore:
         # Use the same hash recipe as add_document so we look up the
         # *exact* row that a fresh ingest would write to.  Looking up
         # by ``WHERE path = ?`` would conflate collections.
-        doc_id = hashlib.sha256(f"{collection}:{path}".encode("utf-8")).hexdigest()[:32]
+        doc_id = hashlib.sha256(f"{collection}:{path}".encode()).hexdigest()[:32]
         row = self._conn.execute(
             "SELECT chunk_count FROM documents WHERE id = ?", [doc_id]
         ).fetchone()
@@ -4526,7 +4531,7 @@ class VstashStore:
 
         # -- Step 3: assemble expanded results, preserving explain --------
         expanded = []
-        for idx, r in enumerate(results):
+        for r in results:
             did = doc_id_map.get(r.chunk_id)
             if did is None:
                 expanded.append(r)
@@ -4650,7 +4655,7 @@ class VstashStore:
 
                     self._conn.executemany(
                         "INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)",
-                        [(cid, _serialize(emb)) for cid, emb in zip(ids, embeddings)],
+                        [(cid, _serialize(emb)) for cid, emb in zip(ids, embeddings, strict=False)],
                     )
 
                     if self._snap is not None:

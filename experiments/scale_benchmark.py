@@ -46,12 +46,12 @@ def load_scifact() -> tuple[dict[str, dict], dict[str, str], dict[str, dict[str,
 
         cache = download_beir("scifact")
         return load_beir(cache)
-    except Exception:
+    except Exception as exc:
         raise RuntimeError(
             "SciFact dataset not available. Run "
             "'python -m experiments.beir_benchmark --datasets scifact' first "
             "to download it."
-        )
+        ) from exc
 
 
 # ------------------------------------------------------------------ #

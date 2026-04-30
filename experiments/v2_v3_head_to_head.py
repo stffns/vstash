@@ -145,14 +145,14 @@ def _evaluate_one(store, model_name: str, eval_queries: list[dict]) -> dict:
 def _print_table(results: dict) -> None:
     """Results shape: results[model_alias][dataset] = metrics dict."""
     models = list(results.keys())
-    datasets = sorted({ds for m in results.values() for ds in m.keys()})
+    datasets = sorted({ds for m in results.values() for ds in m})
 
     # Per-dataset absolute NDCG@10 table with BM25 + ColBERTv2 as
     # external reference columns. Same shape as the paper's Section
     # 7.3 table so the h2h result reads 1:1 against the published
     # framing.
     print("\n### Absolute NDCG@10 (with external references)\n")
-    header_cols = ["Dataset", "BM25", "ColBERTv2"] + models
+    header_cols = ["Dataset", "BM25", "ColBERTv2", *models]
     print("| " + " | ".join(header_cols) + " |")
     print("|" + "|".join(["---"] * len(header_cols)) + "|")
     for ds in datasets:

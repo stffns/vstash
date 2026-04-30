@@ -446,10 +446,7 @@ def check_function_in_chunk(chunk: str, function_name: str) -> bool:
             return True
 
     # For Go methods like (c *LRUCache) Get
-    if f") {function_name}(" in chunk:
-        return True
-
-    return False
+    return f") {function_name}(" in chunk
 
 
 def count_boundary_violations(chunks: list[str], language: str) -> int:
@@ -469,8 +466,7 @@ def count_boundary_violations(chunks: list[str], language: str) -> int:
                     ("def ", "class ", "import ", "from ", "#", '"""', "'''", "@")
                 )
                 and first_line[0] == " "
-                or first_line.startswith("    ")
-            ):
+            ) or first_line.startswith("    "):
                 violations += 1
 
     elif language == "go":

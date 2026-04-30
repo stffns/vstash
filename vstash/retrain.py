@@ -31,7 +31,7 @@ from .embed import embed_query
 from .store import VstashStore
 
 if False:  # TYPE_CHECKING only; avoids import cycle at runtime
-    from .config import VstashConfig  # noqa: F401
+    from .config import VstashConfig
 
 logger = logging.getLogger(__name__)
 
@@ -313,12 +313,12 @@ def train_mnrl(
     try:
         from sentence_transformers import InputExample, SentenceTransformer, losses
         from torch.utils.data import DataLoader
-    except ImportError:
+    except ImportError as exc:
         raise ImportError(
             "sentence-transformers, torch, and accelerate are required for "
             "vstash retrain. Install with: "
             "pip install 'sentence-transformers>=3' torch 'accelerate>=1.1.0'"
-        )
+        ) from exc
 
     output = str(Path(output_path).expanduser())
     Path(output).mkdir(parents=True, exist_ok=True)
@@ -591,7 +591,7 @@ def split_corpus_for_eval(
 def qrels_to_eval_queries(
     queries: dict[str, str],
     qrels: dict[str, dict[str, int | float]],
-    path_for_doc_id: "callable | None" = None,
+    path_for_doc_id: callable | None = None,
     min_relevance: float = 1.0,
 ) -> list[dict]:
     """Convert BEIR-style (queries, qrels) to the eval_queries format
@@ -931,7 +931,7 @@ def evaluate_model(
         mrrs: list[float] = []
         hits: list[float] = []
         recalls_100: list[float] = []
-        for q, q_vec in zip(normalized_queries, q_vecs):
+        for q, q_vec in zip(normalized_queries, q_vecs, strict=False):
             results = eval_store.search(
                 query_embedding=list(map(float, q_vec)),
                 query_text=q["query"],
@@ -1010,7 +1010,7 @@ def retrain(
     training_pair_source: TrainingPairSource = "auto",
     bulk_mine: bool = False,
     bulk_mine_device: str | None = None,
-    cfg: "VstashConfig | None" = None,
+    cfg: VstashConfig | None = None,
 ) -> RetrainResult:
     """Full eval-gated retrain pipeline.
 
@@ -1618,7 +1618,7 @@ def retrain_multi(
     bulk_eval: bool = False,
     training_queries_by_dataset: dict[str, list[dict]] | None = None,
     training_pair_source: TrainingPairSource = "auto",
-    cfg: "VstashConfig | None" = None,
+    cfg: VstashConfig | None = None,
 ) -> MultiRetrainResult:
     """Fine-tune an embedding model over N corpora with balanced sampling.
 
@@ -1808,7 +1808,7 @@ def retrain_multi(
     # present; only ``prefix`` skips the promotion step entirely.
     auto_promote = training_pair_source in ("auto", "labeled")
     for name in stores_dict:
-        if name in explicit_training and explicit_training[name]:
+        if explicit_training.get(name):
             training_by_ds[name] = explicit_training[name]
             pair_source_by_ds[name] = "explicit"
         elif auto_promote and name in eval_training_source and eval_training_source[name]:
@@ -1849,7 +1849,7 @@ def retrain_multi(
 
         # Labeled-query path: real queries + gold positives. Matches
         # the v5 recipe that produced Stffens/bge-small-rrf-v2.
-        if name in training_by_ds and training_by_ds[name]:
+        if training_by_ds.get(name):
             from .retrain_batch import generate_labeled_triples_batched
 
             dataset_pairs = generate_labeled_triples_batched(

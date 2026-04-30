@@ -204,7 +204,7 @@ def main() -> None:
     for name in args.datasets:
         cache = download_beir(name)
         all_data[name] = load_beir(cache)
-        c, q, qr = all_data[name]
+        c, q, _qr = all_data[name]
         print(f"  {name}: {len(c)} docs, {len(q)} queries")
 
     # Generate pairs
