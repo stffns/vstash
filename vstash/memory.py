@@ -32,6 +32,7 @@ from .models import (
     SearchResult,
     StoreStats,
 )
+from .services import search_with_embedding
 
 # Sentinel for distinguishing "parameter not provided" from explicit None.
 _UNSET = object()
@@ -342,25 +343,20 @@ class Memory:
         Returns:
             Ranked list of SearchResult ordered by relevance.
         """
-        q_embedding = embed_query(query, self._cfg.embeddings.model)
+        # Resolve the retrieval mode through the store helper first --
+        # it handles legacy aliases (like ``fts_only=True`` bool that
+        # mapped to ``"fts_only"`` pre-v0.33). After that the services
+        # layer takes over: validates inputs, embeds the query, and
+        # runs store.search with the right weights for the resolved
+        # mode. expand_window=0 keeps Memory.search's existing
+        # contract of returning raw chunks (no context expansion).
         _mode = self._store._resolve_retrieval_mode(retrieval_mode)
-        # When a non-hybrid mode is active, drop any caller-supplied
-        # weight arguments before they reach the store's validator.
-        # The store will force the weights to (0.0, 1.0) or (1.0, 0.0)
-        # internally on the short-circuit branch, so forwarding caller
-        # weights would either no-op or raise
-        # ``RRFWeightOutOfRangeError`` for a nonsensical value the
-        # caller did not intend us to validate.
-        if _mode != "hybrid":
-            vec_weight = None
-            fts_weight = None
-        return self._store.search(
-            query_embedding=q_embedding,
-            query_text=query,
+        return search_with_embedding(
+            cfg=self._cfg,
+            store=self._store,
+            query=query,
             top_k=top_k,
-            vec_weight=vec_weight,
-            fts_weight=fts_weight,
-            retrieval_mode=_mode,
+            expand_window=0,
             collection=self._resolve_collection(collection),
             project=self._resolve_project(project),
             layer=layer,
@@ -368,6 +364,9 @@ class Memory:
             added_after=added_after,
             added_before=added_before,
             mmr_lambda=mmr_lambda,
+            vec_weight=vec_weight,
+            fts_weight=fts_weight,
+            retrieval_mode=_mode,
             exact_match=exact_match,
             exact_match_case_sensitive=exact_match_case_sensitive,
         )
