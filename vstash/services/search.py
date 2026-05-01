@@ -113,6 +113,18 @@ def search_with_embedding(
             f"{sorted(_VALID_RETRIEVAL_MODES)} or None, got {retrieval_mode!r}"
         )
 
+    # Resolve the mode and drop caller weights BEFORE validation when
+    # the mode is non-hybrid. The store forces (1.0, 0.0) or (0.0,
+    # 1.0) on the short-circuit branch, so any caller-supplied
+    # numeric here would either no-op or trip an unrelated validation
+    # error. Memory.search (and the matching MCP / CLI paths) have
+    # always treated `fts_only`/`vec_only` as "ignore weights" --
+    # validating them first would be a behavior change.
+    mode = retrieval_mode or "hybrid"
+    if mode != "hybrid":
+        vec_weight = None
+        fts_weight = None
+
     # If the caller pinned a cutoff, validate THAT value against
     # the configured ceiling; otherwise validate the ceiling against
     # itself (a noop) so the rest of validate_search_input can
@@ -129,14 +141,6 @@ def search_with_embedding(
         vec_weight=vec_weight,
         fts_weight=fts_weight,
     )
-
-    mode = retrieval_mode or "hybrid"
-    # In non-hybrid modes the store forces the weights internally; do
-    # not pass caller weights through, otherwise the validation above
-    # might let a 0.7/0.3 split through that the store would reject.
-    if mode != "hybrid":
-        vec_weight = None
-        fts_weight = None
 
     q_embedding = embed_query(query, cfg.embeddings.model)
 
