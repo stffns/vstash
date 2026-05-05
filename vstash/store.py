@@ -3304,6 +3304,16 @@ class VstashStore:
         # Replaces O(N * S) recomputation with O(1) lookup + O(N) update.
         max_sims = [0.0] * len(ranked)
 
+        # Pre-group indices by document key to replace an O(N) linear scan
+        # over `remaining` with an O(S) iteration over sibling chunks.
+        doc_to_indices: dict[str, list[int]] = {}
+        for idx, key in enumerate(doc_keys):
+            if chunk_embs[idx] is not None:
+                try:
+                    doc_to_indices[key].append(idx)
+                except KeyError:
+                    doc_to_indices[key] = [idx]
+
         for _ in range(min(top_k, len(ranked))):
             best_idx = -1
             best_mmr = -float("inf")
@@ -3332,16 +3342,18 @@ class VstashStore:
             new_doc_key = doc_keys[best_idx]
             new_emb = chunk_embs[best_idx]
             new_norm = chunk_norms[best_idx]
+
             if new_emb is not None:
-                for idx in remaining:
-                    if doc_keys[idx] == new_doc_key:
-                        idx_emb = chunk_embs[idx]
-                        if idx_emb is not None:
-                            sim = _cosine_sim(
-                                idx_emb, new_emb, norm_a=chunk_norms[idx], norm_b=new_norm
-                            )
-                            if sim > max_sims[idx]:
-                                max_sims[idx] = sim
+                group = doc_to_indices.get(new_doc_key)
+                if group is not None:
+                    # Remove the chosen index so it's not needlessly evaluated again
+                    group.remove(best_idx)
+                    for idx in group:
+                        sim = _cosine_sim(
+                            chunk_embs[idx], new_emb, norm_a=chunk_norms[idx], norm_b=new_norm
+                        )
+                        if sim > max_sims[idx]:
+                            max_sims[idx] = sim
 
         return selected
 
