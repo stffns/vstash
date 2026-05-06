@@ -3300,6 +3300,14 @@ class VstashStore:
         # Precompute L2 norms for cosine similarity to avoid O(K * N) recomputation.
         chunk_norms = [math.hypot(*emb) if emb is not None else 0.0 for emb in chunk_embs]
 
+        # Pre-group chunk indices by document key to avoid O(K * N) linear scans.
+        # This reduces the redundancy penalty update loop to O(N + K * S).
+        from collections import defaultdict
+
+        doc_to_indices = defaultdict(list)
+        for idx in remaining:
+            doc_to_indices[doc_keys[idx]].append(idx)
+
         # Track the maximum similarity to any selected chunk from the *same document*.
         # Replaces O(N * S) recomputation with O(1) lookup + O(N) update.
         max_sims = [0.0] * len(ranked)
@@ -3327,21 +3335,22 @@ class VstashStore:
             selected.append(chosen)
             remaining.remove(best_idx)
 
+            new_doc_key = doc_keys[best_idx]
+            doc_to_indices[new_doc_key].remove(best_idx)
+
             # Update max_sims for remaining chunks from the same document
             # by comparing against the newly selected embedding.
-            new_doc_key = doc_keys[best_idx]
             new_emb = chunk_embs[best_idx]
             new_norm = chunk_norms[best_idx]
             if new_emb is not None:
-                for idx in remaining:
-                    if doc_keys[idx] == new_doc_key:
-                        idx_emb = chunk_embs[idx]
-                        if idx_emb is not None:
-                            sim = _cosine_sim(
-                                idx_emb, new_emb, norm_a=chunk_norms[idx], norm_b=new_norm
-                            )
-                            if sim > max_sims[idx]:
-                                max_sims[idx] = sim
+                for idx in doc_to_indices[new_doc_key]:
+                    idx_emb = chunk_embs[idx]
+                    if idx_emb is not None:
+                        sim = _cosine_sim(
+                            idx_emb, new_emb, norm_a=chunk_norms[idx], norm_b=new_norm
+                        )
+                        if sim > max_sims[idx]:
+                            max_sims[idx] = sim
 
         return selected
 
