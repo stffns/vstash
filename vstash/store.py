@@ -3300,6 +3300,14 @@ class VstashStore:
         # Precompute L2 norms for cosine similarity to avoid O(K * N) recomputation.
         chunk_norms = [math.hypot(*emb) if emb is not None else 0.0 for emb in chunk_embs]
 
+        # Pre-group chunk indices by document key to avoid O(N) scans
+        # when updating max_sims for sibling chunks.
+        import collections
+
+        doc_to_indices = collections.defaultdict(list)
+        for idx, doc_key in enumerate(doc_keys):
+            doc_to_indices[doc_key].append(idx)
+
         # Track the maximum similarity to any selected chunk from the *same document*.
         # Replaces O(N * S) recomputation with O(1) lookup + O(N) update.
         max_sims = [0.0] * len(ranked)
@@ -3333,8 +3341,12 @@ class VstashStore:
             new_emb = chunk_embs[best_idx]
             new_norm = chunk_norms[best_idx]
             if new_emb is not None:
-                for idx in remaining:
-                    if doc_keys[idx] == new_doc_key:
+                for idx in doc_to_indices[new_doc_key]:
+                    # We only need to check idx that are still remaining, but iterating
+                    # over them is very fast. Checking if idx is in remaining could be O(N).
+                    # Actually we can just update max_sims[idx] even if it's already selected
+                    # (it won't affect anything because we only pick from `remaining`).
+                    if idx != best_idx:
                         idx_emb = chunk_embs[idx]
                         if idx_emb is not None:
                             sim = _cosine_sim(
