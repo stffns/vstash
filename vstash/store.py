@@ -3217,7 +3217,7 @@ class VstashStore:
 
         # Fast path: if mmr_lambda == 1.0, no diversity penalty — just dedup.
         # Also fast-path when there are no same-doc duplicates.
-        from collections import Counter
+        from collections import Counter, defaultdict
 
         doc_counts = Counter(str(r["path"]) for r in ranked)
         has_duplicates = any(c > 1 for c in doc_counts.values())
@@ -3300,9 +3300,19 @@ class VstashStore:
         # Precompute L2 norms for cosine similarity to avoid O(K * N) recomputation.
         chunk_norms = [math.hypot(*emb) if emb is not None else 0.0 for emb in chunk_embs]
 
+        # Pre-group chunk indices by document keys to avoid O(N) linear scans
+        # when updating max_sims for sibling chunks.
+        doc_to_indices: dict[str, list[int]] = defaultdict(list)
+        for i, key in enumerate(doc_keys):
+            doc_to_indices[key].append(i)
+
         # Track the maximum similarity to any selected chunk from the *same document*.
         # Replaces O(N * S) recomputation with O(1) lookup + O(N) update.
         max_sims = [0.0] * len(ranked)
+
+        # Fast O(1) removal structures to avoid O(N) list.remove() and O(N) membership checks
+        pos_in_remaining = list(range(len(ranked)))
+        in_remaining = [True] * len(ranked)
 
         for _ in range(min(top_k, len(ranked))):
             best_idx = -1
@@ -3325,7 +3335,14 @@ class VstashStore:
             if _explain:
                 chosen["_mmr_penalty"] = (1 - mmr_lambda) * max_sims[best_idx]
             selected.append(chosen)
-            remaining.remove(best_idx)
+
+            # O(1) removal using swap-with-last
+            remove_idx = pos_in_remaining[best_idx]
+            last_val = remaining[-1]
+            remaining[remove_idx] = last_val
+            pos_in_remaining[last_val] = remove_idx
+            remaining.pop()
+            in_remaining[best_idx] = False
 
             # Update max_sims for remaining chunks from the same document
             # by comparing against the newly selected embedding.
@@ -3333,8 +3350,8 @@ class VstashStore:
             new_emb = chunk_embs[best_idx]
             new_norm = chunk_norms[best_idx]
             if new_emb is not None:
-                for idx in remaining:
-                    if doc_keys[idx] == new_doc_key:
+                for idx in doc_to_indices[new_doc_key]:
+                    if in_remaining[idx]:
                         idx_emb = chunk_embs[idx]
                         if idx_emb is not None:
                             sim = _cosine_sim(
