@@ -29,7 +29,7 @@ vstash/
   cli.py             # typer CLI: add, search, ask, chat, list, stats, forget, reindex, watch, config, export, remember, profile, journal, retrain, serve, check, snapvec, why
   _store_open.py     # open_store_for_config(cfg): single VstashStore construction entry point used by every adapter (CLI/MCP/web/SDK/journal/federated)
   services/          # Adapter-agnostic service layer. All four adapters (web/MCP/CLI/SDK) route through here.
-    search.py        # embed -> validate -> search -> expand triplet shared by every search caller
+    search.py        # validate -> embed -> search -> expand triplet shared by every search caller
     ask.py           # ask/ask_full orchestration with retrieval context
   vectorbackend/     # Vector backend Protocol + concrete impls
     base.py          # VectorBackend Protocol contract (runtime_checkable)
@@ -106,7 +106,7 @@ docs/               # User-facing documentation
 - **`retrieval_mode` enum (v0.33)**: `Literal["hybrid", "vec_only", "fts_only"] = "hybrid"` on `VstashStore.search`, `Memory.search`, `Memory.ask`, MCP tools, and `VstashRetriever`. `vec_only` is the new symmetric branch to `fts_only` (skip FTS5, force `(1.0, 0.0)` weights). Default stays `hybrid` -- paper / README / v3 model numbers all measured against it. Legacy `fts_only=True` bool is deprecated in v0.33.0 with a `DeprecationWarning`.
 - **`chat.ask_full()` returning `AskResult` (v0.36)** (#303/#310): Public API that surfaces the reasoning channel and token usage that `ask()` discards. `_ask_cerebras` / `_ask_ollama` / `_ask_openai` now return `AskResult` internally; `ask()` is a thin wrapper returning `.content` so the existing `-> str` contract is preserved with zero call-site changes. Cerebras `gpt-oss-120b` populates `message.reasoning`; Ollama qwen3 thinking-mode uses `message.thinking`; OpenAI-compat servers (vLLM, DeepSeek, Together, xAI Grok, OpenAI o1/o3) read `message.reasoning_content`. Shared helpers `_extract_reasoning` (accepts both field names) and `_normalize_usage` (returns complete dict or `None`, never partial). `Memory.ask_full()` mirrors `Memory.ask()`; `Memory.ask` itself routes through `ask_full(...).content` so retrieval / LLM plumbing live in a single load-bearing path. Drives Merken Phase 2 distillation (`Q -> reasoning_trace -> A` shape).
 - **Centralized store construction (v0.36)** (#297/#306): `vstash._store_open.open_store_for_config(cfg)` is the single entry point used by CLI, MCP, web, SDK, journal, and `federated_search`. Replaces the previous per-surface `VstashStore(...)` wiring that silently dropped IVFPQ tuning fields on some paths.
-- **Services layer (post-v0.36)** (#327/#334/#335/#336): `vstash/services/{search,ask}.py` centralises the `embed -> validate -> search -> expand` triplet that the four adapters (web, MCP, CLI, SDK) all duplicated. Every adapter now routes through `services/`, so validation runs at the API boundary before the daemon round-trip and there is one load-bearing path for retrieval/LLM plumbing. When changing search behaviour, edit `services/search.py` first; `VstashStore.search` remains the underlying primitive.
+- **Services layer (post-v0.36)** (#327/#334/#335/#336): `vstash/services/{search,ask}.py` centralises the `validate -> embed -> search -> expand` triplet that the four adapters (web, MCP, CLI, SDK) all duplicated. Every adapter now routes through `services/`, so validation runs at the API boundary before the daemon round-trip and there is one load-bearing path for retrieval/LLM plumbing. When changing search behaviour, edit `services/search.py` first; `VstashStore.search` remains the underlying primitive.
 - **Domain error tree (post-v0.36)** (#326): `vstash/errors.py` defines `VstashError` as the ancestor for `LimitError` (boundary validation), `SchemaVersionError`, and friends. Each leaf multi-inherits the historical `ValueError` / `RuntimeError` it used to raise, so existing `except ValueError` callers keep working without changes.
 - **VectorBackend Protocol (post-v0.36)** (#328): `vstash/vectorbackend/base.py` defines the `VectorBackend` `Protocol` (runtime-checkable). `snapvec_ivfpq.py` is the first concrete impl extracted from legacy `_ivfpq_backend.py`; the legacy module is a deprecated re-export shim slated for removal in v0.40. Use the Protocol contract when adding a new backend.
 - **Built-in embed model registry (post-v0.36)** (#330): replaces the if/elif dispatch in `embed_texts` / `embed_query` / `warmup`. New built-in models register themselves in the registry; the custom encoder resolver hook (#278) still wins over built-ins for non-stock models.
@@ -155,7 +155,7 @@ Key sections: `[inference]`, `[cerebras]`, `[ollama]`, `[openai]`, `[embeddings]
 
 - **Add a new CLI command**: Add `@app.command()` function in `cli.py`, update docstring at top of file. (#284 will split this into `vstash/cli/<command>.py`; until merged, cli.py stays monolithic.)
 - **Add a new embedding model**: Register in the built-in registry in `embed.py` (and optionally `_MLX_MODEL_MAP` for MLX). For non-stock fine-tunes, prefer `register_encoder_resolver(fn)` over editing the registry.
-- **Change search behavior**: Edit `vstash/services/search.py` first if it is adapter-shared (validation, embedding, expand). Edit `VstashStore.search()` in `store.py` for the underlying retrieval pipeline: vector search -> FTS search -> RRF merge -> scoring -> MMR dedup -> context expansion.
+- **Change search behavior**: Edit `vstash/services/search.py` first if it is adapter-shared (validation, embedding, context expansion via `store.expand_context()`). Edit `VstashStore.search()` in `store.py` for the underlying retrieval pipeline: vector search -> FTS search -> RRF merge -> scoring -> MMR dedup.
 - **Add a new vector backend**: Implement the `VectorBackend` Protocol in `vstash/vectorbackend/base.py`. See `snapvec_ivfpq.py` as the reference impl. Add a runtime-checkable conformance test mirroring `test_vectorbackend.py`.
 - **Open a `VstashStore` from a new surface**: call `vstash._store_open.open_store_for_config(cfg)`. Never instantiate `VstashStore(...)` directly from an adapter.
 - **Add a config field**: Add to the relevant Pydantic model in `config.py`, update `docs/configuration.md`.
@@ -210,7 +210,10 @@ gh pr merge --merge --admin
 ```
 
 The `pypi` environment in `publish.yml` is wired to a PyPI trusted
-publisher; no API tokens are stored in the repo. If you ever need to
-fall back to a manual upload, install `build` + `twine` locally and
-ensure credentials are configured in `~/.pypirc`, but this should be
-a break-glass path.
+publisher; no API tokens are stored in the repo. **Do not run `twine`
+manually under normal circumstances.** The only sanctioned exception is
+a break-glass scenario where the OIDC workflow is unrecoverable (e.g.
+PyPI trusted-publisher outage); in that case, install `build` + `twine`
+locally, upload from a clean checkout of the tagged commit, and document
+the manual upload in the release notes so the next release does not
+inherit the workaround.
