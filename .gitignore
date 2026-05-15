@@ -67,6 +67,13 @@ paper/arxiv/*.blg
 # Claude scheduled-task lock
 .claude/scheduled_tasks.lock
 
+# Personal scratch + archived docs (local-only, never committed)
+notes/
+archive/
+
+# Paper v2 draft (work-in-progress; v1 vstash.tex/pdf stays tracked)
+paper/arxiv/vstash-v2.*
+
 # macOS iCloud sync collision artefacts (e.g. "foo 2.py", "foo 3.json").
 # These are auto-generated when iCloud cannot reconcile the same file
 # across devices and never represent real work; the un-suffixed file

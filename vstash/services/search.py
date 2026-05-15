@@ -1,4 +1,4 @@
-"""vstash.services.search -- the embed -> search -> expand triplet.
+"""vstash.services.search -- the validate -> embed -> search -> expand triplet.
 
 A pure function that the adapters (CLI, MCP, web, SDK) all call to
 turn a user query into a list of relevant chunks. Replaces the
