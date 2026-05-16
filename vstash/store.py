@@ -3277,6 +3277,8 @@ class VstashStore:
 
         selected: list[dict[str, str | int | float]] = []
         remaining = list(range(len(ranked)))
+        pos_in_remaining = list(range(len(ranked)))
+        in_remaining = [True] * len(ranked)
 
         # Pre-compute normalized scores once (#167).  The value of
         # ``(score - s_min) / s_range`` is invariant across the outer
@@ -3296,6 +3298,14 @@ class VstashStore:
         # Extract values into fast lists for index-based access
         doc_keys = [str(r["path"]) for r in ranked]
         chunk_embs = [embeddings.get(int(r["id"])) for r in ranked]
+
+        # Pre-group chunk indices by document key to avoid O(N) linear scans
+        # when updating max_sims for sibling chunks.
+        from collections import defaultdict
+
+        doc_to_indices: dict[str, list[int]] = defaultdict(list)
+        for idx, doc_key in enumerate(doc_keys):
+            doc_to_indices[doc_key].append(idx)
 
         # Precompute L2 norms for cosine similarity to avoid O(K * N) recomputation.
         chunk_norms = [math.hypot(*emb) if emb is not None else 0.0 for emb in chunk_embs]
@@ -3325,7 +3335,14 @@ class VstashStore:
             if _explain:
                 chosen["_mmr_penalty"] = (1 - mmr_lambda) * max_sims[best_idx]
             selected.append(chosen)
-            remaining.remove(best_idx)
+
+            # O(1) swap-with-last removal
+            idx_in_remaining = pos_in_remaining[best_idx]
+            last_idx = remaining[-1]
+            remaining[idx_in_remaining] = last_idx
+            pos_in_remaining[last_idx] = idx_in_remaining
+            remaining.pop()
+            in_remaining[best_idx] = False
 
             # Update max_sims for remaining chunks from the same document
             # by comparing against the newly selected embedding.
@@ -3333,8 +3350,8 @@ class VstashStore:
             new_emb = chunk_embs[best_idx]
             new_norm = chunk_norms[best_idx]
             if new_emb is not None:
-                for idx in remaining:
-                    if doc_keys[idx] == new_doc_key:
+                for idx in doc_to_indices[new_doc_key]:
+                    if in_remaining[idx]:
                         idx_emb = chunk_embs[idx]
                         if idx_emb is not None:
                             sim = _cosine_sim(
