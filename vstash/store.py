@@ -3304,6 +3304,17 @@ class VstashStore:
         # Replaces O(N * S) recomputation with O(1) lookup + O(N) update.
         max_sims = [0.0] * len(ranked)
 
+        # Pre-group chunk indices by document key to avoid O(N) linear scans when updating max_sims
+        from collections import defaultdict
+
+        doc_to_indices = defaultdict(list)
+        for i, dk in enumerate(doc_keys):
+            doc_to_indices[dk].append(i)
+
+        in_remaining = [True] * len(ranked)
+        # For O(1) removal, track position in the remaining list
+        pos_in_remaining = list(range(len(ranked)))
+
         for _ in range(min(top_k, len(ranked))):
             best_idx = -1
             best_mmr = -float("inf")
@@ -3325,7 +3336,14 @@ class VstashStore:
             if _explain:
                 chosen["_mmr_penalty"] = (1 - mmr_lambda) * max_sims[best_idx]
             selected.append(chosen)
-            remaining.remove(best_idx)
+
+            # O(1) swap-with-last removal
+            in_remaining[best_idx] = False
+            remove_pos = pos_in_remaining[best_idx]
+            last_idx = remaining[-1]
+            remaining[remove_pos] = last_idx
+            pos_in_remaining[last_idx] = remove_pos
+            remaining.pop()
 
             # Update max_sims for remaining chunks from the same document
             # by comparing against the newly selected embedding.
@@ -3333,8 +3351,8 @@ class VstashStore:
             new_emb = chunk_embs[best_idx]
             new_norm = chunk_norms[best_idx]
             if new_emb is not None:
-                for idx in remaining:
-                    if doc_keys[idx] == new_doc_key:
+                for idx in doc_to_indices[new_doc_key]:
+                    if in_remaining[idx]:
                         idx_emb = chunk_embs[idx]
                         if idx_emb is not None:
                             sim = _cosine_sim(
