@@ -3277,6 +3277,7 @@ class VstashStore:
 
         selected: list[dict[str, str | int | float]] = []
         remaining = list(range(len(ranked)))
+        in_remaining = [True] * len(ranked)
 
         # Pre-compute normalized scores once (#167).  The value of
         # ``(score - s_min) / s_range`` is invariant across the outer
@@ -3297,6 +3298,13 @@ class VstashStore:
         doc_keys = [str(r["path"]) for r in ranked]
         chunk_embs = [embeddings.get(int(r["id"])) for r in ranked]
 
+        # Pre-group chunk indices by doc_keys to avoid O(N) linear scans when updating max_sims
+        doc_to_indices: dict[str, list[int]] = {}
+        for i, doc_key in enumerate(doc_keys):
+            if doc_key not in doc_to_indices:
+                doc_to_indices[doc_key] = []
+            doc_to_indices[doc_key].append(i)
+
         # Precompute L2 norms for cosine similarity to avoid O(K * N) recomputation.
         chunk_norms = [math.hypot(*emb) if emb is not None else 0.0 for emb in chunk_embs]
 
@@ -3307,14 +3315,16 @@ class VstashStore:
         for _ in range(min(top_k, len(ranked))):
             best_idx = -1
             best_mmr = -float("inf")
+            best_rem_idx = -1
 
-            for idx in remaining:
+            for rem_idx, idx in enumerate(remaining):
                 max_sim = max_sims[idx]
 
                 mmr_score = relevance_terms[idx] - penalty_multiplier * max_sim
                 if mmr_score > best_mmr:
                     best_mmr = mmr_score
                     best_idx = idx
+                    best_rem_idx = rem_idx
 
             if best_idx < 0 or best_mmr < 0:
                 # Stop when the best remaining candidate has negative MMR,
@@ -3325,7 +3335,11 @@ class VstashStore:
             if _explain:
                 chosen["_mmr_penalty"] = (1 - mmr_lambda) * max_sims[best_idx]
             selected.append(chosen)
-            remaining.remove(best_idx)
+
+            # O(1) swap-with-last removal
+            remaining[best_rem_idx] = remaining[-1]
+            remaining.pop()
+            in_remaining[best_idx] = False
 
             # Update max_sims for remaining chunks from the same document
             # by comparing against the newly selected embedding.
@@ -3333,8 +3347,8 @@ class VstashStore:
             new_emb = chunk_embs[best_idx]
             new_norm = chunk_norms[best_idx]
             if new_emb is not None:
-                for idx in remaining:
-                    if doc_keys[idx] == new_doc_key:
+                for idx in doc_to_indices[new_doc_key]:
+                    if in_remaining[idx]:
                         idx_emb = chunk_embs[idx]
                         if idx_emb is not None:
                             sim = _cosine_sim(
