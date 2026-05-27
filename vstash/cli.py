@@ -566,6 +566,27 @@ def search(
     ),
     project: str | None = typer.Option(None, "--project", "-p", help="Restrict to project"),
     layer: str | None = typer.Option(None, "--layer", "-l", help="Restrict to layer"),
+    tag: list[str] | None = typer.Option(
+        None,
+        "--tag",
+        "-t",
+        help=(
+            "Restrict to documents tagged with this value. Repeat the flag "
+            "for OR semantics (``--tag alpha --tag beta``), or pass a "
+            "comma-separated string in a single flag (``--tag 'alpha,beta'``). "
+            "Comma-anchored match -- ``alpha`` does NOT false-match ``alphabet``."
+        ),
+    ),
+    added_after: str | None = typer.Option(
+        None,
+        "--after",
+        help="ISO date filter: only documents added on or after this date (e.g. 2026-01-15).",
+    ),
+    added_before: str | None = typer.Option(
+        None,
+        "--before",
+        help="ISO date filter: only documents added strictly before this date.",
+    ),
     json_output: bool = typer.Option(False, "--json", "-j", help="Output results as JSON"),
     all_profiles: bool = typer.Option(
         False, "--all-profiles", "-A", help="Search across all profiles"
@@ -711,6 +732,9 @@ def search(
                     collection=collection,
                     project=project,
                     layer=layer,
+                    tags=tag,
+                    added_after=added_after,
+                    added_before=added_before,
                     expand_window=1,
                 )
                 chunks = [r for _, r in tagged]
@@ -738,6 +762,9 @@ def search(
                     collection=collection,
                     project=project,
                     layer=layer,
+                    tags=tag,
+                    added_after=added_after,
+                    added_before=added_before,
                     explain=explain,
                     exact_match=exact_match,
                     exact_match_case_sensitive=exact_match_case_sensitive,
@@ -2778,12 +2805,39 @@ def journal_recall_cmd(
     query: str | None = typer.Argument(None, help="Search query (omit for recent entries)"),
     top_k: int = typer.Option(5, "--top-k", "-k", help="Number of entries"),
     project: str | None = typer.Option(None, "--project", "-p", help="Filter by project"),
+    tag: list[str] | None = typer.Option(
+        None,
+        "--tag",
+        "-t",
+        help=(
+            "Restrict to journal entries tagged with this value. Repeat for "
+            "OR (``--tag work --tag decisions``), or pass a comma-separated "
+            "string (``--tag 'work,decisions'``). Comma-anchored match."
+        ),
+    ),
+    added_after: str | None = typer.Option(
+        None,
+        "--after",
+        help="ISO date filter: only entries logged on or after this date.",
+    ),
+    added_before: str | None = typer.Option(
+        None,
+        "--before",
+        help="ISO date filter: only entries logged strictly before this date.",
+    ),
     raw: bool = typer.Option(False, "--raw", "-r", help="Output raw text (for hooks/pipes)"),
 ) -> None:
     """Recall relevant journal entries. Omit query for most recent."""
     from .journal import journal_recall
 
-    entries = journal_recall(query=query, top_k=top_k, project=project)
+    entries = journal_recall(
+        query=query,
+        top_k=top_k,
+        project=project,
+        tags=tag,
+        added_after=added_after,
+        added_before=added_before,
+    )
 
     if not entries:
         if not raw:

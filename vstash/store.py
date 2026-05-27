@@ -154,6 +154,43 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _normalize_tags(tags: str | list[str] | None) -> list[str]:
+    """Normalize the ``tags`` filter input to a deduped list of tag strings.
+
+    Accepts:
+      - ``None`` / empty string / empty list -> ``[]`` (filter disabled).
+      - A comma-separated string (``"alpha, beta"``) -> ``["alpha", "beta"]``.
+      - A list of strings (``["alpha", "beta"]``) -> ``["alpha", "beta"]``.
+
+    Whitespace around each tag is stripped, empty entries are dropped, and
+    insertion order is preserved (no sort) so callers can keep meaningful
+    ordering when they care. Duplicates are removed.
+    """
+    if tags is None:
+        return []
+    if isinstance(tags, str):
+        parts = tags.split(",")
+    else:
+        # Each list element may itself contain commas (Typer's
+        # ``--tag "a,b"`` pattern, or callers who mix repeated flags
+        # with comma-joined strings). Split each element so the
+        # caller surface accepts ``["alpha,beta"]`` and
+        # ``["alpha", "beta"]`` interchangeably -- otherwise the
+        # comma-anchored ``LIKE`` match would look for a literal tag
+        # ``"alpha,beta"`` which never exists in storage.
+        parts = []
+        for t in tags:
+            parts.extend(str(t).split(","))
+    seen: set[str] = set()
+    out: list[str] = []
+    for part in parts:
+        cleaned = part.strip()
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            out.append(cleaned)
+    return out
+
+
 def _serialize(vector: list[float]) -> bytes:
     """Serialize a float vector into a compact binary format for sqlite-vec."""
     return struct.pack(f"{len(vector)}f", *vector)
@@ -1317,6 +1354,17 @@ class VstashStore:
             limits=self._limits,
         )
 
+        # Normalize the on-disk tag representation to match the form
+        # the search-side comma-anchored ``LIKE`` expects. Writers
+        # routinely hand us ``"alpha, beta"`` (frontmatter style); if
+        # we stored it verbatim, a query for ``tag="beta"`` would
+        # generate ``%,beta,%`` against ``,alpha, beta,`` and miss
+        # because of the leading space. Round-tripping through
+        # ``_normalize_tags`` strips that whitespace and dedupes
+        # repeats once, at ingest time, so the storage invariant is
+        # ``"tag1,tag2,..."`` with no spaces and no duplicates.
+        stored_tags = ",".join(_normalize_tags(tags)) if tags else None
+
         doc_id = hashlib.sha256(f"{collection}:{path}".encode()).hexdigest()[:32]
 
         with self._write_lock:
@@ -1341,7 +1389,7 @@ class VstashStore:
                         collection,
                         project,
                         layer,
-                        tags,
+                        stored_tags,
                         sum(len(c) for c in chunks),
                         len(chunks),
                         datetime.now(timezone.utc).isoformat(),
@@ -1467,6 +1515,13 @@ class VstashStore:
                         limits=self._limits,
                     )
 
+                    # Normalize tags on write so the search-side
+                    # comma-anchored ``LIKE`` matches reliably. Same
+                    # invariant as ``add_document``: stored form is
+                    # ``"tag1,tag2,..."`` with no whitespace and no
+                    # duplicates.
+                    stored_tags = ",".join(_normalize_tags(tags)) if tags else None
+
                     doc_id = hashlib.sha256(f"{collection}:{path}".encode()).hexdigest()[:32]
                     doc_ids.append(doc_id)
 
@@ -1486,7 +1541,7 @@ class VstashStore:
                             collection,
                             project,
                             layer,
-                            tags,
+                            stored_tags,
                             sum(len(c) for c in chunks),
                             len(chunks),
                             now_iso,
@@ -1790,6 +1845,7 @@ class VstashStore:
         recency_boost: float,
         added_after: str | None,
         added_before: str | None,
+        tags: str | list[str] | None,
         mmr_lambda: float,
         retrieval_mode: str,
         cache_epoch: int,
@@ -1800,7 +1856,8 @@ class VstashStore:
         entry without having to scan the LRU. ``retrieval_mode`` is
         one of ``"hybrid" | "vec_only" | "fts_only"`` so queries that
         short-circuit one branch do not collide with hybrid queries of
-        the same text.
+        the same text. ``tags`` is normalized to a tuple so the same
+        filter expressed as ``"a,b"`` and ``["a", "b"]`` shares a key.
         """
         emb_bytes = np.array(query_embedding, dtype=np.float32).tobytes()
         return hash(
@@ -1818,6 +1875,11 @@ class VstashStore:
                 recency_boost,
                 added_after,
                 added_before,
+                # Sort so that ``tags=["alpha", "beta"]`` and
+                # ``tags=["beta", "alpha"]`` share the same cache entry
+                # -- the SQL ``OR`` is commutative, so semantically
+                # equivalent queries must hit the same cache slot.
+                tuple(sorted(_normalize_tags(tags))),
                 mmr_lambda,
                 retrieval_mode,
                 cache_epoch,
@@ -2084,6 +2146,7 @@ class VstashStore:
         recency_boost: float = 0.0,
         added_after: str | None = None,
         added_before: str | None = None,
+        tags: str | list[str] | None = None,
         mmr_lambda: float = 0.5,
         retrieval_mode: Literal["hybrid", "vec_only", "fts_only"] | None = None,
         exact_match: str | None = None,
@@ -2193,6 +2256,7 @@ class VstashStore:
                 recency_boost=recency_boost,
                 added_after=added_after,
                 added_before=added_before,
+                tags=tags,
                 mmr_lambda=mmr_lambda,
                 retrieval_mode=_mode,
                 cache_epoch=self._cache_epoch,
@@ -2292,6 +2356,7 @@ class VstashStore:
                 collection=collection,
                 project=project,
                 layer=layer,
+                tags=tags,
                 added_after=added_after,
                 added_before=added_before,
             )
@@ -3383,7 +3448,7 @@ class VstashStore:
         collection: str | None = None,
         project: str | None = None,
         layer: str | None = None,
-        tags: str | None = None,
+        tags: str | list[str] | None = None,
         added_after: str | None = None,
         added_before: str | None = None,
     ) -> tuple[list[str], list[str]]:
@@ -3394,7 +3459,11 @@ class VstashStore:
             collection: Filter by collection name.
             project: Filter by project tag.
             layer: Filter by layer tag.
-            tags: Filter by tag (LIKE match within comma-separated tags).
+            tags: Filter by one or more tags. Pass a comma-separated string
+                (``"alpha,beta"``) or a list (``["alpha", "beta"]``);
+                whitespace and empty entries are stripped, then matched OR
+                with comma-anchored LIKE (``",alpha,"``) so ``alpha`` does
+                not false-match ``alphabet``.
             added_after: ISO date — only documents added on or after this date.
             added_before: ISO date — only documents added before this date.
 
@@ -3413,9 +3482,18 @@ class VstashStore:
         if layer:
             conditions.append(f"{prefix}layer = ?")
             params.append(layer)
-        if tags:
-            conditions.append(f"{prefix}tags LIKE ?")
-            params.append(f"%{tags}%")
+        tag_list = _normalize_tags(tags)
+        if tag_list:
+            # Anchor the LIKE pattern with commas so a tag does not
+            # false-match a longer tag that contains it as a substring
+            # (e.g. searching ``alpha`` must NOT hit a doc tagged
+            # ``alphabet``). The stored ``tags`` column is a
+            # comma-separated string; wrapping both sides in commas
+            # turns substring containment into exact membership.
+            wrapped = f"','||{prefix}tags||','"
+            ors = [f"{wrapped} LIKE ?" for _ in tag_list]
+            conditions.append("(" + " OR ".join(ors) + ")")
+            params.extend(f"%,{t},%" for t in tag_list)
         if added_after:
             conditions.append(f"{prefix}added_at >= ?")
             params.append(added_after)

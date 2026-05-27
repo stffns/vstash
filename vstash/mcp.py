@@ -622,6 +622,7 @@ def vstash_search(
     recency_boost: float = 0.0,
     added_after: str | None = None,
     added_before: str | None = None,
+    tags: str | None = None,
     mmr_lambda: float = 0.5,
     vec_weight: float | None = None,
     fts_weight: float | None = None,
@@ -645,6 +646,10 @@ def vstash_search(
             recent chunks score higher. Use 0.5 for mild bias, 1.0 for strong.
         added_after: ISO date (e.g. '2024-01-15') — only documents added on or after.
         added_before: ISO date (e.g. '2024-06-01') — only documents added before.
+        tags: Comma-separated list of tags (``"alpha,beta"``); restrict to
+            documents tagged with any of them (OR semantics).
+            Comma-anchored match so ``alpha`` does NOT false-match
+            ``alphabet``. Tags are case-sensitive.
         mmr_lambda: Intra-document MMR diversity parameter (0.0=max diversity,
             1.0=hard dedup). Default 0.5.
         vec_weight: Pin the RRF vector weight for this query (overrides adaptive
@@ -715,6 +720,7 @@ def vstash_search(
             recency_boost=float(recency_boost),
             added_after=added_after,
             added_before=added_before,
+            tags=tags,
             mmr_lambda=float(mmr_lambda),
             vec_weight=vec_weight_coerced,
             fts_weight=fts_weight_coerced,
@@ -1081,6 +1087,9 @@ def vstash_journal_recall(
     query: str | None = None,
     top_k: int = 5,
     project: str | None = None,
+    tags: str | None = None,
+    added_after: str | None = None,
+    added_before: str | None = None,
 ) -> str:
     """Recall relevant journal entries from past sessions.
 
@@ -1094,6 +1103,13 @@ def vstash_journal_recall(
         query: Search query (omit for most recent entries).
         top_k: Number of entries to return (default: 5).
         project: Filter by project tag.
+        tags: Comma-separated list of tags (``"work,decisions"``); restrict
+            to journal entries tagged with any of them (OR semantics).
+            Comma-anchored match so ``work`` does NOT false-match
+            ``workflow``.
+        added_after: ISO date (e.g. ``"2026-01-15"``) — only entries
+            logged on or after this date.
+        added_before: ISO date — only entries logged strictly before this date.
 
     Returns:
         JSON array of journal entries with text, title, and score/date.
@@ -1101,7 +1117,14 @@ def vstash_journal_recall(
     try:
         from .journal import journal_recall
 
-        entries = journal_recall(query=query, top_k=top_k, project=project)
+        entries = journal_recall(
+            query=query,
+            top_k=top_k,
+            project=project,
+            tags=tags,
+            added_after=added_after,
+            added_before=added_before,
+        )
         return _ok(entries)
     except Exception as exc:
         logger.exception("vstash_journal_recall failed")

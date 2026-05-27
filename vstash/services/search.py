@@ -45,6 +45,7 @@ def search_with_embedding(
     recency_boost: float = 0.0,
     added_after: str | None = None,
     added_before: str | None = None,
+    tags: str | list[str] | None = None,
     mmr_lambda: float = 0.5,
     vec_weight: float | None = None,
     fts_weight: float | None = None,
@@ -78,6 +79,11 @@ def search_with_embedding(
         recency_boost: Temporal decay multiplier (0.0 = off).
         added_after: ISO date filter on document add timestamp.
         added_before: ISO date filter on document add timestamp.
+        tags: Restrict to documents tagged with one or more of these tags
+            (OR semantics). Accepts a comma-separated string
+            (``"alpha,beta"``) or a list (``["alpha", "beta"]``).
+            Comma-anchored LIKE match so ``alpha`` does not false-match
+            ``alphabet``.
         mmr_lambda: MMR diversity coefficient (0.0 to 1.0).
         vec_weight: Pin RRF vector weight; None keeps adaptive RRF.
         fts_weight: Pin RRF FTS weight; None keeps adaptive RRF.
@@ -164,6 +170,7 @@ def search_with_embedding(
         recency_boost=recency_boost,
         added_after=added_after,
         added_before=added_before,
+        tags=tags,
         mmr_lambda=mmr_lambda,
         exact_match=exact_match,
         exact_match_case_sensitive=exact_match_case_sensitive,

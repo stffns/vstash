@@ -969,7 +969,14 @@ class TestVstashJournalRecall:
         result = json.loads(vstash_journal_recall("past decisions"))
         assert len(result) == 1
         assert result[0]["title"] == "Entry 1"
-        mock_recall.assert_called_once_with(query="past decisions", top_k=5, project=None)
+        mock_recall.assert_called_once_with(
+            query="past decisions",
+            top_k=5,
+            project=None,
+            tags=None,
+            added_after=None,
+            added_before=None,
+        )
 
     @patch("vstash.journal.journal_recall")
     def test_recall_no_query_returns_recent(self, mock_recall: MagicMock) -> None:
@@ -977,7 +984,14 @@ class TestVstashJournalRecall:
 
         result = json.loads(vstash_journal_recall())
         assert result == []
-        mock_recall.assert_called_once_with(query=None, top_k=5, project=None)
+        mock_recall.assert_called_once_with(
+            query=None,
+            top_k=5,
+            project=None,
+            tags=None,
+            added_after=None,
+            added_before=None,
+        )
 
     @patch("vstash.journal.journal_recall", side_effect=Exception("search failed"))
     def test_recall_error(self, mock_recall: MagicMock) -> None:
