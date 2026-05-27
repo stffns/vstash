@@ -138,7 +138,10 @@ def _mmr_dedup_o1(
         best_rem_idx = -1
         for rem_idx, idx in enumerate(remaining):
             mmr_score = relevance_terms[idx] - penalty_multiplier * max_sims[idx]
-            if mmr_score > best_mmr:
+            # Tie-break on smaller original ``idx`` to match the naive
+            # (pre-rewrite) ordering, which always iterated a sorted
+            # ``remaining`` and let strict ``>`` keep the first-seen.
+            if mmr_score > best_mmr or (mmr_score == best_mmr and idx < best_idx):
                 best_mmr = mmr_score
                 best_idx = idx
                 best_rem_idx = rem_idx

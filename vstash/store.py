@@ -3325,7 +3325,13 @@ class VstashStore:
                 max_sim = max_sims[idx]
 
                 mmr_score = relevance_terms[idx] - penalty_multiplier * max_sim
-                if mmr_score > best_mmr:
+                # Prefer the smaller original ``idx`` on exact ties so the
+                # selected set matches the pre-rewrite ordering, where
+                # ``remaining`` was kept sorted ascending and ``>`` (strict)
+                # let the first-seen candidate win. The swap-with-last
+                # removal scrambles the order of ``remaining`` so we have
+                # to add the tie-break explicitly here.
+                if mmr_score > best_mmr or (mmr_score == best_mmr and idx < best_idx):
                     best_mmr = mmr_score
                     best_idx = idx
                     best_rem_idx = rem_idx
