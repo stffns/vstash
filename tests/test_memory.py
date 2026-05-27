@@ -556,10 +556,7 @@ class TestMemoryUpdate:
                     f"old content survived the update: {hit.text!r}"
                 )
             # New content must be findable.
-            assert any(
-                "kubernetes" in r.text.lower()
-                for r in mem.search("kubernetes container")
-            )
+            assert any("kubernetes" in r.text.lower() for r in mem.search("kubernetes container"))
 
     @requires_sqlite_vec
     def test_update_no_fields_raises(self, tmp_path: Path) -> None:
@@ -572,6 +569,66 @@ class TestMemoryUpdate:
         with Memory(db=tmp_path / "test.db") as mem:
             result = mem.update("/nonexistent/file.md", title="ignored")
             assert result["status"] == "not_found"
+
+    @requires_sqlite_vec
+    def test_update_metadata_scopes_to_instance_collection(self, tmp_path: Path) -> None:
+        """Regression guard for the bot-flagged ``"default"->None`` bug:
+        a ``Memory(collection="default")`` instance must NOT silently
+        update every collection's copy of the same path."""
+        doc = tmp_path / "shared.md"
+        doc.write_text("Body shared across two collections for the scope test.")
+
+        db = tmp_path / "test.db"
+        # Put a copy of the doc into a non-default collection.
+        with Memory(db=db, collection="research") as mem:
+            mem.add(doc, collection="research")
+        # And one into "default".
+        with Memory(db=db, collection="default") as mem:
+            mem.add(doc, collection="default")
+            mem.update(doc, title="default-only")
+            # "default" copy must have the new title.
+            default_doc = next(
+                d for d in mem.list(collection="default") if d.path == str(doc.resolve())
+            )
+            assert default_doc.title == "default-only"
+        # "research" copy must still have the original title (the
+        # update was scoped to "default" only, not silently widened
+        # to all collections).
+        with Memory(db=db) as mem:
+            research_doc = next(
+                d for d in mem.list(collection="research") if d.path == str(doc.resolve())
+            )
+            assert research_doc.title != "default-only"
+
+    @requires_sqlite_vec
+    def test_update_text_across_all_collections(self, tmp_path: Path) -> None:
+        """Regression guard for the cross-collection content-update bug:
+        when ``collection=None`` is passed, the delete-then-add must
+        re-add the new chunks into *every* collection that previously
+        held ``source``, not silently collapse the doc into one."""
+        doc = tmp_path / "shared.md"
+        doc.write_text("Initial content shared by the two collections.")
+        db = tmp_path / "test.db"
+        with Memory(db=db, collection="default") as mem:
+            mem.add(doc, collection="default")
+            mem.add(doc, collection="research")
+            # Two rows exist for the same path.
+            assert sum(1 for d in mem.list(collection=None) if d.path == str(doc.resolve())) == 2
+
+            # Content update with collection=None must touch both.
+            result = mem.update(
+                doc,
+                text="Replacement content that overwrites both collections.",
+                collection=None,
+            )
+            assert result["status"] == "updated"
+
+            # Both rows must still exist.
+            after = [d for d in mem.list(collection=None) if d.path == str(doc.resolve())]
+            assert len(after) == 2, (
+                f"cross-collection update lost a row: {[(d.collection, d.title) for d in after]}"
+            )
+            assert {d.collection for d in after} == {"default", "research"}
 
 
 # ------------------------------------------------------------------ #

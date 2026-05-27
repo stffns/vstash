@@ -1305,8 +1305,12 @@ def update(
 
     from .memory import Memory
 
+    # The CLI documents "the update applies to every collection
+    # holding `path`", so pass ``collection=None`` explicitly to
+    # override the Memory-instance default (``"default"``) and update
+    # every collection's copy of ``path``.
     with Memory(profile=_profile_from_ctx(ctx)) as mem:
-        result = mem.update(path, text=text, title=title, tags=tags)
+        result = mem.update(path, text=text, title=title, tags=tags, collection=None)
 
     status = result.get("status")
     mode = result.get("mode")

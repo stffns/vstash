@@ -677,11 +677,21 @@ class Memory:
         if text is None:
             # Metadata-only path. Use the store's atomic UPDATE
             # primitive; do not invoke the embed pipeline at all.
+            #
+            # ``col`` is the Memory-instance default OR the caller's
+            # explicit override. We pass it through *verbatim*: the
+            # ``"default"``->``None`` mapping the previous version did
+            # re-introduced the #165 read/write asymmetry (a
+            # ``Memory(collection="default")`` user who called
+            # ``mem.update`` would have their change silently applied
+            # across every collection). To update every collection
+            # holding ``source``, the caller passes ``collection=None``
+            # explicitly.
             updated = self._store.update_metadata(
                 source_str,
                 title=title,
                 tags=tags,
-                collection=col if col != "default" else None,
+                collection=col,
             )
             fields = [k for k, v in (("title", title), ("tags", tags)) if v is not None]
             return {
@@ -697,20 +707,28 @@ class Memory:
         # we preserve every metadata field the caller did NOT pass so
         # tags / project / layer / source_type / collection survive a
         # content-only refresh.
-        col_filter = col if col != "default" else None
-        existing = next(
-            (d for d in self._store.list_documents(collection=col_filter) if d.path == source_str),
-            None,
-        )
-        if existing is None:
+        #
+        # The scope is whatever the caller asked for: ``col`` is
+        # ``"default"`` / explicit string / ``None`` (=all collections).
+        # We do NOT collapse ``"default"`` to ``None`` -- doing so
+        # would silently widen the scope and re-introduce #165.
+        existing_rows = self._store._conn.execute(
+            "SELECT path, title, source_type, collection, "
+            "project, layer, tags, chunk_count, char_count, added_at "
+            "FROM documents WHERE path = ?" + (" AND collection = ?" if col is not None else ""),
+            [source_str, col] if col is not None else [source_str],
+        ).fetchall()
+        if not existing_rows:
             return {
                 "status": "not_found",
                 "mode": "content",
                 "fields": [],
                 "chunks": 0,
             }
+        existing_docs = [DocumentInfo(**dict(row)) for row in existing_rows]
 
-        # Chunk + embed the new text directly. ``chunk_text`` and
+        # Chunk + embed the new text once and reuse for every
+        # collection that holds this ``source``. ``chunk_text`` and
         # ``embed_texts`` are the same primitives ``ingest_text`` uses,
         # so chunking semantics match ``Memory.add`` exactly.
         from .embed import embed_texts
@@ -728,31 +746,32 @@ class Memory:
             }
         new_embeddings = embed_texts(new_chunks, self._cfg.embeddings.model)
 
-        # Delete-then-add. Not strictly atomic (the doc is briefly
-        # missing between the two steps), but the same window already
-        # exists in the ``force=True`` re-ingest path used by ``add()``
-        # and the watch worker, so callers already tolerate it.
-        self._store.delete_document(source_str, collection=col_filter)
-        merged_collection = (
-            existing.collection if col == "default" else (col or existing.collection)
-        )
-        self._store.add_document(
-            path=source_str,
-            title=title if title is not None else existing.title,
-            chunks=new_chunks,
-            embeddings=new_embeddings,
-            source_type=existing.source_type,
-            collection=merged_collection,
-            project=existing.project,
-            layer=existing.layer,
-            tags=tags if tags is not None else existing.tags,
-        )
+        # Delete-then-add, scoped to the same set of collections we
+        # just listed. Re-add into *each* existing collection so a
+        # multi-collection update does not silently collapse the doc
+        # into a single collection. Not strictly atomic (the doc is
+        # briefly missing between the two steps), but the same window
+        # already exists in the ``force=True`` re-ingest path used by
+        # ``add()`` and the watch worker.
+        self._store.delete_document(source_str, collection=col)
+        for existing in existing_docs:
+            self._store.add_document(
+                path=source_str,
+                title=title if title is not None else existing.title,
+                chunks=new_chunks,
+                embeddings=new_embeddings,
+                source_type=existing.source_type,
+                collection=existing.collection,
+                project=existing.project,
+                layer=existing.layer,
+                tags=tags if tags is not None else existing.tags,
+            )
         fields = [k for k, v in (("text", text), ("title", title), ("tags", tags)) if v is not None]
         return {
             "status": "updated",
             "mode": "content",
             "fields": fields,
-            "chunks": len(new_chunks),
+            "chunks": len(new_chunks) * len(existing_docs),
         }
 
     def list(
