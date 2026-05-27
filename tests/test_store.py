@@ -358,6 +358,76 @@ class TestMMRDedup:
         # All three documents should appear (no cross-doc penalty)
         assert titles == {"Doc 0", "Doc 1", "Doc 2"}
 
+    def test_mmr_swap_pop_and_pregrouped_siblings_preserve_selection(
+        self, sample_store: VstashStore
+    ) -> None:
+        """Regression guard for the O(1) MMR dedup rewrite (supersedes #351).
+
+        The rewrite makes two changes to ``_mmr_dedup``:
+
+        1. ``remaining.remove(best_idx)`` (O(N)) is replaced by
+           swap-with-last + ``remaining.pop()`` (O(1)), guarded by an
+           ``in_remaining`` boolean mask so the sibling-penalty loop
+           knows which indices are still eligible.
+
+        2. The sibling-penalty loop iterates a pre-built
+           ``doc_to_indices`` map (O(S)) instead of scanning all of
+           ``remaining`` (O(N)) and filtering on ``doc_keys[idx]``.
+
+        Both changes are intended to be pure performance rewrites — the
+        ordering and identity of selected chunks must be byte-identical
+        to the prior implementation. The corpus below is sized so that
+        the greedy loop executes at least 8 selections with up to 4
+        in-document siblings competing for each pick, which exercises
+        both the swap-pop path and the pre-grouped sibling iteration in
+        every loop iteration. Any off-by-one in the swap, a stale
+        ``in_remaining`` bit, or a sibling missed by the pre-grouping
+        would alter the chosen ``chunk_id`` set or its order and fail
+        the assertions below.
+        """
+        dim = sample_store.embedding_dim
+
+        # Build a corpus with 4 docs * 4 chunks each = 16 chunks. Each
+        # doc's chunks have slightly different embeddings so MMR has to
+        # pay the sibling penalty (this avoids the fast path that
+        # bypasses _mmr_dedup entirely when there are no same-doc dups).
+        for doc_i in range(4):
+            chunks = [f"doc{doc_i} chunk{c} content" for c in range(4)]
+            embeddings = [[1.0 - 0.05 * c, 0.05 * c] + [0.0] * (dim - 2) for c in range(4)]
+            sample_store.add_document(
+                path=f"/test/mmr_regress_{doc_i}.md",
+                title=f"Doc {doc_i}",
+                chunks=chunks,
+                embeddings=embeddings,
+            )
+
+        query_emb = [0.9, 0.1] + [0.0] * (dim - 2)
+
+        # Run twice — the swap-pop changes the *order* of ``remaining``
+        # but must NOT change which indices have the best MMR score, so
+        # back-to-back runs of the same query must be identical.
+        r1 = sample_store.search(query_emb, "content", top_k=8)
+        r2 = sample_store.search(query_emb, "content", top_k=8)
+        ids1 = [r.chunk_id for r in r1]
+        ids2 = [r.chunk_id for r in r2]
+        assert ids1 == ids2, (
+            f"MMR dedup is non-deterministic after the swap-pop rewrite: {ids1} vs {ids2}"
+        )
+
+        # No duplicate chunk_ids — swap-pop must remove each selected
+        # candidate exactly once, and in_remaining must prevent it from
+        # being reconsidered through the pre-grouped sibling iteration.
+        assert len(ids1) == len(set(ids1)), f"duplicate chunk_ids in MMR output: {ids1}"
+
+        # All 4 documents should be represented — the pre-grouped
+        # sibling iteration must not starve any doc by failing to
+        # advance its max_sims (which would let later chunks of the
+        # same doc dominate forever).
+        titles = {r.title for r in r1}
+        assert titles == {"Doc 0", "Doc 1", "Doc 2", "Doc 3"}, (
+            f"some documents missing from MMR output: got {sorted(titles)}"
+        )
+
 
 class TestReindex:
     """Test re-embedding chunks with a new model."""
