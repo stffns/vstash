@@ -636,10 +636,18 @@ class TestMemoryPruneAndCompact:
 
     @requires_sqlite_vec
     def test_prune_requires_filter(self, tmp_path: Path) -> None:
-        """An unfiltered prune raises rather than wiping the store."""
+        """An unfiltered prune (``collection=None`` clears the
+        instance default) raises rather than wiping the store.
+
+        With no explicit ``collection`` argument, ``Memory.prune``
+        scopes to the instance collection (default ``"default"``),
+        which IS a valid filter. To trigger the no-filter guard the
+        caller has to explicitly clear it with ``collection=None``,
+        ``project=None``, no ``layer``, no ``before``.
+        """
         with Memory(db=tmp_path / "test.db") as mem:
             with pytest.raises(ValueError, match="no filter"):
-                mem.prune()
+                mem.prune(collection=None)
 
     @requires_sqlite_vec
     def test_prune_by_layer(self, tmp_path: Path) -> None:

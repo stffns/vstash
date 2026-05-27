@@ -10,6 +10,8 @@ Commands:
   vstash list             → show ingested documents
   vstash stats            → memory statistics
   vstash forget <file>    → remove document
+  vstash update <file>    → mutate metadata or replace content in place
+  vstash compact          → prune old docs, VACUUM, optimize FTS5
   vstash reindex           → re-embed chunks with new model
   vstash config           → show current config
   vstash profile          → manage named profiles
@@ -1413,12 +1415,20 @@ def compact(
         # passed is silently inert. Surface this loudly so users do
         # not mistakenly believe their ``--layer scratch`` actually
         # deleted anything just because the command exited 0.
-        console.print(
-            "[yellow]Warning:[/yellow] --collection/--project/--layer are "
-            "ignored when --before is omitted -- the prune phase is "
-            "skipped entirely and this run will only VACUUM / optimize. "
-            "Pass --before to actually prune by scope."
+        # Route through stderr when ``--json`` is set so the stdout
+        # payload remains pure JSON for downstream parsers.
+        warning = (
+            "--collection/--project/--layer are ignored when --before is "
+            "omitted -- the prune phase is skipped entirely and this run "
+            "will only VACUUM / optimize. Pass --before to actually prune "
+            "by scope."
         )
+        if json_output:
+            import sys as _sys
+
+            print(f"Warning: {warning}", file=_sys.stderr)
+        else:
+            console.print(f"[yellow]Warning:[/yellow] {warning}")
 
     with Memory(profile=_profile_from_ctx(ctx)) as mem:
         report = mem.compact(

@@ -92,7 +92,7 @@ def _resolve_before(before: str) -> str:
     # see WHY their input was refused without losing the original
     # cause.
     try:
-        datetime.fromisoformat(stripped)
+        parsed = datetime.fromisoformat(stripped)
     except ValueError as exc:
         raise ValueError(
             f"`before={before!r}` is neither a recognised age "
@@ -101,7 +101,18 @@ def _resolve_before(before: str) -> str:
             f"Refusing to pass through to the store because SQLite would "
             f"compare lexically and silently delete every document."
         ) from exc
-    return stripped
+    # Canonicalise to UTC. ``added_at`` is stored as
+    # ``datetime.now(timezone.utc).isoformat()`` (always ``+00:00``),
+    # and SQLite compares the column lexically. A naive cutoff like
+    # ``2026-01-15T00:00:00-05:00`` would sort lexically AFTER
+    # ``2026-01-15T00:00:00+00:00`` even though it represents an
+    # earlier instant, so prune would mis-delete around timezone
+    # boundaries. Treat naive inputs as UTC; convert aware inputs.
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    else:
+        parsed = parsed.astimezone(timezone.utc)
+    return parsed.isoformat()
 
 
 class Memory:
@@ -688,14 +699,18 @@ class Memory:
         if before is not None:
             before_iso = _resolve_before(before)
 
-        col = self._collection if collection is _UNSET else collection
-        col_filter = None if col == "default" else col
-        proj = self._project if project is _UNSET else project
-
+        # Use the shared resolver helpers so prune obeys the same
+        # scope rules as every other read/write on this class. The
+        # previous ``col_filter = None if col == "default" else col``
+        # silently widened a ``Memory(collection="default")`` prune
+        # to *every* collection -- exactly the #165 asymmetry
+        # ``_resolve_collection`` is designed to prevent. Pass
+        # ``collection=None`` explicitly when you want "all
+        # collections", same as ``Memory.update`` and the CLI does.
         return self._store.prune_documents(
             before_iso=before_iso,
-            collection=col_filter,
-            project=proj,
+            collection=self._resolve_collection(collection),
+            project=self._resolve_project(project),
             layer=layer,
             dry_run=dry_run,
         )

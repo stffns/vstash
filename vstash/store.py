@@ -1892,16 +1892,35 @@ class VstashStore:
             conditions.append("added_at < ?")
             params.append(before_iso)
         where = "WHERE " + " AND ".join(conditions)
-        rows = self._conn.execute(f"SELECT id, path FROM documents {where}", params).fetchall()
-        if not rows:
-            return {"status": "dry_run" if dry_run else "ok", "deleted": 0, "paths": []}
-        doc_ids = [r["id"] for r in rows]
-        paths = [r["path"] for r in rows]
+        select_sql = f"SELECT id, path FROM documents {where}"
+
+        # ``dry_run`` is informational and tolerates the small race
+        # between SELECT and any concurrent writer -- it does not
+        # delete anything. The real prune below puts the SELECT INSIDE
+        # ``BEGIN IMMEDIATE`` so the rows we report deleted are exactly
+        # the rows that satisfied the filter at the instant the write
+        # lock was acquired. Otherwise a concurrent ``add_document``
+        # between the unlocked SELECT and the locked delete would let
+        # the reported ``paths`` / ``deleted`` count drift from what
+        # ``_delete_by_doc_ids`` actually removed.
         if dry_run:
-            return {"status": "dry_run", "deleted": len(paths), "paths": paths}
+            rows = self._conn.execute(select_sql, params).fetchall()
+            if not rows:
+                return {"status": "dry_run", "deleted": 0, "paths": []}
+            return {
+                "status": "dry_run",
+                "deleted": len(rows),
+                "paths": [r["path"] for r in rows],
+            }
         with self._write_lock:
             try:
                 self._conn.execute("BEGIN IMMEDIATE")
+                rows = self._conn.execute(select_sql, params).fetchall()
+                if not rows:
+                    self._conn.rollback()
+                    return {"status": "ok", "deleted": 0, "paths": []}
+                doc_ids = [r["id"] for r in rows]
+                paths = [r["path"] for r in rows]
                 self._delete_by_doc_ids(doc_ids)
                 self._conn.commit()
                 self._invalidate_idf_cache()
