@@ -85,7 +85,7 @@ def _resolve_before(before: str) -> str:
     # of leading digits is fine (``"100000h"`` is ~11 years, a
     # perfectly valid age cutoff), and the digit+suffix shape is
     # unambiguously distinct from any ISO date / timestamp.
-    if stripped[-1].lower() in "dwh" and stripped[:-1].isdigit():
+    if len(stripped) > 1 and stripped[-1].lower() in "dwh" and stripped[:-1].isdigit():
         delta = _parse_age(stripped.lower())
         return (datetime.now(timezone.utc) - delta).isoformat()
     # Not an age: must be a parseable ISO datetime. ``fromisoformat``
