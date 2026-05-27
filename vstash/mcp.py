@@ -1051,6 +1051,74 @@ def vstash_update(
 
 
 @mcp_server.tool()
+def vstash_compact(
+    before: str | None = None,
+    collection: str | None = None,
+    project: str | None = None,
+    layer: str | None = None,
+    vacuum: bool = True,
+    optimize_fts: bool = True,
+    dry_run: bool = False,
+) -> str:
+    """Housekeeping: prune old documents, VACUUM SQLite, optimize FTS5.
+
+    Three phases, each independently togglable:
+
+      * **Prune** -- if ``before`` is set, deletes every doc whose
+        ``added_at`` is strictly older. ``before`` accepts an age
+        string (``"30d"``, ``"2w"``, ``"24h"``) or an ISO date /
+        timestamp. Scope with ``collection`` / ``project`` / ``layer``.
+      * **VACUUM** -- rebuilds the SQLite file to reclaim space.
+        Can take seconds-to-minutes on large DBs; pass
+        ``vacuum=False`` to skip.
+      * **Optimize FTS5** -- merges FTS5 segments. Cheap;
+        ``optimize_fts=False`` skips it.
+
+    ``dry_run=True`` reports what the prune would delete without
+    modifying the store, and skips VACUUM and optimize.
+
+    Args:
+        before: Age string or ISO date; ``None`` skips the prune phase.
+        collection: Restrict prune to this collection.
+        project: Restrict prune to this project.
+        layer: Restrict prune to this layer.
+        vacuum: Run SQLite VACUUM after the prune.
+        optimize_fts: Run FTS5 ``'optimize'`` after the prune.
+        dry_run: Preview-only -- no writes.
+
+    Returns:
+        JSON describing each phase::
+
+            {
+              "prune":        {"status": "...", "deleted": N, "paths": [...]} | null,
+              "vacuum":       true | false,
+              "optimize_fts": true | false
+            }
+    """
+    try:
+        from .memory import Memory
+
+        with Memory(collection=collection or "default") as mem:
+            report = mem.compact(
+                before=before,
+                vacuum=vacuum,
+                optimize_fts=optimize_fts,
+                collection=collection,
+                project=project,
+                layer=layer,
+                dry_run=dry_run,
+            )
+        return _ok(report)
+    except ValueError as exc:
+        return _error(str(exc))
+    except FileNotFoundError:
+        return _error("vstash database not found.")
+    except Exception as exc:
+        logger.exception("vstash_compact failed")
+        return _error(f"Failed to compact: {exc}")
+
+
+@mcp_server.tool()
 def vstash_collections() -> str:
     """List all available collections in vstash memory.
 

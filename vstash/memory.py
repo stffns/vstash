@@ -38,6 +38,43 @@ from .services import search_with_embedding
 _UNSET = object()
 
 
+def _resolve_before(before: str) -> str:
+    """Normalize a ``before=`` filter to an ISO timestamp string.
+
+    Accepts two surface forms and resolves them to a single canonical
+    representation that ``VstashStore.prune_documents`` can compare
+    directly against the ``added_at`` column:
+
+      * **Age string** (``"30d"``, ``"2w"``, ``"24h"``): parsed the
+        same way as ``vstash journal prune`` and converted to
+        ``now(UTC) - delta``. The ``"now"`` snapshot is taken at call
+        time so back-to-back invocations of the same age cut at the
+        same instant.
+      * **ISO date / timestamp** (``"2026-01-15"`` or
+        ``"2026-01-15T00:00:00+00:00"``): returned unchanged. The
+        store comparison uses lexical ``<`` on the column, which is
+        correct under the ``YYYY-MM-DDTHH:MM:SS+00:00`` form used by
+        ingest's ``datetime.now(timezone.utc).isoformat()``.
+
+    Reusing the journal's age parser keeps the two CLIs
+    (``vstash compact`` and ``vstash journal prune``) accepting the
+    same vocabulary.
+    """
+    from datetime import datetime, timezone
+
+    from .journal import _parse_age
+
+    stripped = before.strip()
+    # Heuristic: any plain-digit-then-unit suffix (``30d``, ``2w``,
+    # ``24h``) is an age. Anything else (containing ``-`` or longer)
+    # is treated as ISO and returned verbatim so callers retain full
+    # precision and timezone control when they want it.
+    if len(stripped) <= 6 and stripped and stripped[-1] in "dwh" and stripped[:-1].isdigit():
+        delta = _parse_age(stripped)
+        return (datetime.now(timezone.utc) - delta).isoformat()
+    return stripped
+
+
 class Memory:
     """High-level Python SDK for vstash.
 
@@ -576,6 +613,121 @@ class Memory:
             retrieval_mode=retrieval_mode,
         )
         return _chat_ask_full(query, chunks, self._cfg, history)
+
+    def prune(
+        self,
+        *,
+        before: str | None = None,
+        collection: object = _UNSET,
+        project: object = _UNSET,
+        layer: str | None = None,
+        dry_run: bool = False,
+    ) -> dict:
+        """Delete documents matching a date / metadata filter.
+
+        ``before`` accepts either an age string (``"30d"``, ``"2w"``,
+        ``"24h"``) which is converted to an absolute UTC cutoff at the
+        moment of the call, OR a full ISO date / timestamp
+        (``"2026-01-15"``, ``"2026-01-15T00:00:00+00:00"``) which is
+        passed straight through. At least one filter must be provided;
+        an unfiltered prune raises ``ValueError`` rather than wiping
+        the store silently.
+
+        Args:
+            before: Age string or ISO date. Documents whose
+                ``added_at`` is strictly older are deleted.
+            collection: Restrict to a single collection. Defaults to
+                the ``Memory``-instance collection. Pass ``None`` to
+                cover every collection.
+            project: Restrict to a project. Same UNSET / None rules
+                as the constructor.
+            layer: Restrict to a layer.
+            dry_run: If ``True``, return what would be deleted without
+                touching the store.
+
+        Returns:
+            ``{"status": "ok"|"dry_run", "deleted": N, "paths": [...]}``.
+
+        Example::
+
+            mem = Memory(project="my_agent")
+            mem.prune(before="90d", dry_run=True)        # preview
+            mem.prune(before="90d")                       # apply
+            mem.prune(layer="scratch")                    # by layer
+        """
+        before_iso: str | None = None
+        if before is not None:
+            before_iso = _resolve_before(before)
+
+        col = self._collection if collection is _UNSET else collection
+        col_filter = None if col == "default" else col
+        proj = self._project if project is _UNSET else project
+
+        return self._store.prune_documents(
+            before_iso=before_iso,
+            collection=col_filter,
+            project=proj,
+            layer=layer,
+            dry_run=dry_run,
+        )
+
+    def compact(
+        self,
+        *,
+        before: str | None = None,
+        vacuum: bool = True,
+        optimize_fts: bool = True,
+        collection: object = _UNSET,
+        project: object = _UNSET,
+        layer: str | None = None,
+        dry_run: bool = False,
+    ) -> dict:
+        """Full housekeeping pass: prune (optional) + VACUUM + FTS optimize.
+
+        Composes ``prune`` with the two store-level cleanup primitives
+        in a single call. Each phase is independent; passing
+        ``before=None`` skips the prune entirely and ``compact`` reduces
+        to a pure VACUUM + optimize.
+
+        Args:
+            before: Age or ISO date for the prune phase. ``None`` skips
+                pruning. See ``Memory.prune`` for the accepted formats.
+            vacuum: Run ``VACUUM`` after pruning. Set ``False`` on very
+                large stores where you want to defer the file rebuild
+                (VACUUM can take seconds-to-minutes on multi-GB DBs).
+            optimize_fts: Run the FTS5 ``'optimize'`` directive to
+                compact the inverted index. Much cheaper than VACUUM;
+                independent of it.
+            collection / project / layer: Scope for the prune phase.
+                Defaults follow ``Memory.prune``.
+            dry_run: If ``True``, run the prune in dry-run mode and
+                skip VACUUM / optimize entirely. Lets callers preview
+                without modifying the file.
+
+        Returns:
+            ``{"prune": {...} | None, "vacuum": bool, "optimize_fts": bool}``
+            describing each phase. The ``prune`` field is the same dict
+            ``Memory.prune`` returns, or ``None`` when ``before`` was
+            not provided.
+        """
+        report: dict = {"prune": None, "vacuum": False, "optimize_fts": False}
+        if before is not None:
+            report["prune"] = self.prune(
+                before=before,
+                collection=collection,
+                project=project,
+                layer=layer,
+                dry_run=dry_run,
+            )
+        if dry_run:
+            return report
+        if vacuum:
+            self._store.vacuum()
+            report["vacuum"] = True
+        if optimize_fts:
+            self._store.optimize_fts()
+            report["optimize_fts"] = True
+        return report
 
     def remove(self, source: str | Path) -> bool:
         """Remove a document from memory.

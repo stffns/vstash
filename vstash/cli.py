@@ -1355,6 +1355,107 @@ def update(
     )
 
 
+@app.command()
+def compact(
+    ctx: typer.Context,
+    before: str | None = typer.Option(
+        None,
+        "--before",
+        help=(
+            "Prune docs older than this age (e.g. '90d', '2w', '24h') or ISO date "
+            "('2026-01-15'). Omit to skip the prune phase and just VACUUM + optimize."
+        ),
+    ),
+    collection: str | None = typer.Option(
+        None, "--collection", "-c", help="Restrict prune to this collection"
+    ),
+    project: str | None = typer.Option(
+        None, "--project", "-p", help="Restrict prune to this project"
+    ),
+    layer: str | None = typer.Option(None, "--layer", "-l", help="Restrict prune to this layer"),
+    no_vacuum: bool = typer.Option(
+        False, "--no-vacuum", help="Skip the VACUUM step (faster on large DBs)"
+    ),
+    no_optimize_fts: bool = typer.Option(
+        False, "--no-optimize-fts", help="Skip the FTS5 optimize step"
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        "-n",
+        help="Preview which docs would be pruned without modifying the store. "
+        "Also skips VACUUM and optimize.",
+    ),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output the report as JSON"),
+) -> None:
+    """Housekeeping pass: prune old docs (optional), VACUUM, optimize FTS5.
+
+    Three phases, each independently togglable:
+
+      * **Prune**: if ``--before`` is given, deletes every document
+        whose ``added_at`` is strictly older than the threshold,
+        scoped by ``--collection``/``--project``/``--layer``.
+      * **VACUUM**: rebuilds the SQLite file to reclaim space after
+        the prune. Can take seconds-to-minutes on large DBs; pass
+        ``--no-vacuum`` to defer.
+      * **Optimize FTS5**: merges FTS5 segments in place. Cheap;
+        ``--no-optimize-fts`` skips it.
+
+    With ``--dry-run``, only the prune preview runs; VACUUM and
+    optimize are skipped regardless of their flags because they would
+    modify the file.
+    """
+    from .memory import Memory
+
+    if before is None and (collection or project or layer):
+        # ``Memory.compact`` skips the prune phase entirely when
+        # ``before`` is ``None``, so any scope filter the caller
+        # passed is silently inert. Surface this loudly so users do
+        # not mistakenly believe their ``--layer scratch`` actually
+        # deleted anything just because the command exited 0.
+        console.print(
+            "[yellow]Warning:[/yellow] --collection/--project/--layer are "
+            "ignored when --before is omitted -- the prune phase is "
+            "skipped entirely and this run will only VACUUM / optimize. "
+            "Pass --before to actually prune by scope."
+        )
+
+    with Memory(profile=_profile_from_ctx(ctx)) as mem:
+        report = mem.compact(
+            before=before,
+            vacuum=not no_vacuum,
+            optimize_fts=not no_optimize_fts,
+            collection=collection,
+            project=project,
+            layer=layer,
+            dry_run=dry_run,
+        )
+
+    if json_output:
+        import json as _json
+
+        print(_json.dumps(report, indent=2))
+        return
+
+    prune_report = report.get("prune")
+    if prune_report is None:
+        console.print("[dim]No --before set; skipping prune phase.[/dim]")
+    else:
+        verb = "Would delete" if prune_report["status"] == "dry_run" else "Deleted"
+        console.print(f"[green]✓[/green] {verb} [bold]{prune_report['deleted']}[/bold] docs.")
+        if prune_report["paths"] and prune_report["deleted"] <= 20:
+            for p in prune_report["paths"]:
+                console.print(f"  [dim]- {p}[/dim]")
+        elif prune_report["paths"]:
+            console.print(f"  [dim](first 20 of {prune_report['deleted']})[/dim]")
+            for p in prune_report["paths"][:20]:
+                console.print(f"  [dim]- {p}[/dim]")
+    if report.get("vacuum"):
+        console.print("[green]✓[/green] VACUUM complete.")
+    if report.get("optimize_fts"):
+        console.print("[green]✓[/green] FTS5 optimize complete.")
+
+
 # ------------------------------------------------------------------ #
 # vstash check                                                         #
 # ------------------------------------------------------------------ #
