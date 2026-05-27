@@ -32,7 +32,9 @@ from .config import VstashConfig, load_config
 from .embed import embed_query
 from .ingest import ingest
 from .models import SearchResult
+from .services import search_with_embedding
 from .store import VstashStore, relevance_tier
+from .validation import LimitError
 
 logger = logging.getLogger(__name__)
 
@@ -45,14 +47,14 @@ _store: VstashStore | None = None
 
 
 def _get_config() -> VstashConfig:
-    global _config  # noqa: PLW0603
+    global _config
     if _config is None:
         _config = load_config()
     return _config
 
 
 def _get_store() -> VstashStore:
-    global _store  # noqa: PLW0603
+    global _store
     if _store is None:
         cfg = _get_config()
         _store = open_store_for_config(cfg)
@@ -95,14 +97,14 @@ _chat_history: list[dict[str, str]] = []
 def _do_search(query: str, top_k: int, recency_boost: float) -> dict:
     cfg = _get_config()
     store = _get_store()
-    q_emb = embed_query(query, cfg.embeddings.model)
-    results = store.search(
-        query_embedding=q_emb,
-        query_text=query,
+    results = search_with_embedding(
+        cfg=cfg,
+        store=store,
+        query=query,
         top_k=top_k,
         recency_boost=recency_boost,
+        expand_window=1,
     )
-    results = store.expand_context(results, window=1)
     best_distance = store.last_best_distance
     relevance = relevance_tier(best_distance)
     return {
@@ -170,9 +172,13 @@ def _do_upload(file_bytes: bytes, suffix: str, original_name: str | None = None)
 def _do_chat_retrieve(query: str, top_k: int) -> tuple[list[SearchResult], list[dict]]:
     cfg = _get_config()
     store = _get_store()
-    q_emb = embed_query(query, cfg.embeddings.model)
-    chunks = store.search(query_embedding=q_emb, query_text=query, top_k=top_k)
-    chunks = store.expand_context(chunks, window=1)
+    chunks = search_with_embedding(
+        cfg=cfg,
+        store=store,
+        query=query,
+        top_k=top_k,
+        expand_window=1,
+    )
     sources = list({c.path: {"title": c.title, "path": c.path} for c in chunks}.values())
     return chunks, sources
 
@@ -280,7 +286,12 @@ async def api_search(request: Request) -> JSONResponse:
     if not query.strip():
         return _json({"error": "query is required"}, 400)
 
-    data = await _run_sync(_do_search, query, top_k, recency_boost)
+    try:
+        data = await _run_sync(_do_search, query, top_k, recency_boost)
+    except LimitError as exc:
+        # Validation now lives in the services layer; surface the
+        # rejection as 400 instead of letting it bubble up as 500.
+        return _json({"error": str(exc), "kind": type(exc).__name__}, 400)
     return _json(data)
 
 
@@ -293,7 +304,10 @@ async def api_chat(request: Request) -> Any:
     if not query.strip():
         return _json({"error": "query is required"}, 400)
 
-    chunks, sources = await _run_sync(_do_chat_retrieve, query, top_k)
+    try:
+        chunks, sources = await _run_sync(_do_chat_retrieve, query, top_k)
+    except LimitError as exc:
+        return _json({"error": str(exc), "kind": type(exc).__name__}, 400)
 
     if not chunks:
 
@@ -541,7 +555,7 @@ async def api_metrics(request: Request) -> JSONResponse:
 
 
 @asynccontextmanager
-async def _lifespan(app: Starlette):  # noqa: ARG001
+async def _lifespan(app: Starlette):
     """Close the store on shutdown.
 
     Without an explicit close(), the sqlite3 connection and the
@@ -551,11 +565,11 @@ async def _lifespan(app: Starlette):  # noqa: ARG001
     alive avoids that race.
     """
     yield
-    global _store  # noqa: PLW0603
+    global _store
     if _store is not None:
         try:
             _store.close()
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.warning("store.close() failed during shutdown", exc_info=True)
         _store = None
 

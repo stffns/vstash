@@ -72,7 +72,7 @@ def _summarize(name: str, cosines: np.ndarray) -> dict:
     if len(cosines) == 0:
         return {"count": 0}
     return {
-        "count": int(len(cosines)),
+        "count": len(cosines),
         "min": round(float(cosines.min()), 4),
         "p10": round(float(np.percentile(cosines, 10)), 4),
         "p25": round(float(np.percentile(cosines, 25)), 4),
@@ -126,7 +126,7 @@ def main() -> int:
 
     ids, texts, vecs = _embed_corpus(args.dataset, args.model, args.cache_dir)
     cache = download_beir(args.dataset)
-    _, queries, qrels = load_beir(cache)
+    _, queries, _qrels = load_beir(cache)
     _embed_queries(args.dataset, args.model, queries, args.cache_dir)
 
     with tempfile.TemporaryDirectory() as td:

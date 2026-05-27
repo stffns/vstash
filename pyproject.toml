@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.18"]
 build-backend = "hatchling.build"
 
 [project]
@@ -7,13 +7,13 @@ name = "vstash"
 dynamic = ["version"]
 description = "Local document memory with instant semantic search. Drop any file. Ask anything. Get an answer in under a second."
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 keywords = ["embeddings", "semantic-search", "rag", "local", "cerebras", "sqlite-vec", "fastembed", "vector-stash"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -57,9 +57,9 @@ openai = ["openai>=1.0.0,<3"]
 mcp = ["mcp>=1.0.0,<2"]
 ingest = ["markitdown>=0.1.0"]
 serve = ["starlette>=0.37.0", "uvicorn>=0.30.0"]
-langchain = ["langchain-core>=0.2.0,<1"]
+langchain = ["langchain-core>=0.2.0,<2"]
 watch = ["watchdog>=4.0.0"]
-treesitter = ["tree-sitter-language-pack>=0.7.0"]
+treesitter = ["tree-sitter-language-pack>=0.7.0,<1.8"]
 snapvec = ["snapvec>=0.7.1"]
 all = [
     "vstash[cerebras]",
@@ -100,12 +100,67 @@ exclude = [
 line-length = 100
 target-version = "py310"
 
+[tool.ruff.lint]
+# Default (E/F/W) plus:
+#   B    flake8-bugbear     -- common Python footguns
+#   SIM  flake8-simplify    -- mechanical simplifications
+#   UP   pyupgrade          -- modern Python idioms
+#   RUF  ruff-specific      -- unused noqa, ambiguous unicode, sort dunders
+#   PERF perflint           -- avoid try-in-loop, manual comprehensions
+# `S` (bandit) is intentionally not enabled at the global level: it
+# surfaces ~250 items in research scripts that need site-by-site
+# review. Tracked as a follow-up issue.
+select = ["E", "F", "W", "B", "SIM", "UP", "RUF", "PERF"]
+ignore = [
+    # Conflicts with formatter; we let `ruff format` own line breaks.
+    "E501",
+    # try/except in a loop is the right call for retries and per-row
+    # parse fallbacks. Flag in review, do not block the lint.
+    "PERF203",
+    # Manual list/dict comprehension is sometimes clearer than a
+    # comprehension when the loop body is non-trivial. Style choice.
+    "PERF401",
+    "PERF402",
+    # `try/except/pass` is occasionally the right shape; we have
+    # `contextlib.suppress` available where we want to be explicit
+    # but do not enforce it everywhere.
+    "SIM105",
+    # `if/else` block vs ternary is a readability call, not a bug.
+    "SIM108",
+    # `×`, `σ`, etc. are intentional in math/scientific docstrings
+    # and string literals; do not flag as ambiguous unicode.
+    "RUF001",
+    "RUF002",
+    "RUF003",
+]
+
 [tool.ruff.lint.per-file-ignores]
 # Jupyter notebooks split state across cells. Module-level imports
 # often follow a `%pip install` magic or a `%cd` -- ruff's E402 rule
 # ("module level import not at top of cell") does not map onto that
-# cell-based execution model, so we silence it for notebooks only.
-"*.ipynb" = ["E402"]
+# cell-based execution model. Trailing-whitespace warnings (W291/W293)
+# are also tooling-noise: notebook editors (Colab, VS Code) frequently
+# round-trip whitespace inside cells without affecting execution.
+# B018 ("useless expression") is the standard IPython value-display
+# idiom (`df.head()` as the last line of a cell).
+"*.ipynb" = ["E402", "W291", "W293", "SIM115", "B018"]
+# Tests use `assert` as the standard idiom and reach for stdlib
+# helpers for fixture setup. RUF012 (mutable class default) is the
+# normal pattern for pytest fixtures; SIM117 (nested with) is often
+# clearer than a single combined `with` when contexts have different
+# semantic meanings.
+"tests/**" = ["B017", "B018", "B011", "RUF012", "SIM117"]
+# typer registers options/arguments via `typer.Option(...)` /
+# `typer.Argument(...)` calls in default values. That is the
+# documented pattern; B008 (function-call-in-default-argument) is a
+# false positive for this whole module.
+"vstash/cli.py" = ["B008"]
+# Research / experiment scripts are exploratory; we lint for
+# correctness (B/F/E) but skip the strict-zip nag, the closure-in-loop
+# nag (B023 -- often the right shape for ablation builders), and let
+# `open()` without context-manager pass since outputs are short-lived.
+"experiments/**" = ["B007", "B023", "B905", "SIM113", "SIM115"]
+"benchmark/**" = ["B007", "B905", "SIM115"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -123,3 +178,35 @@ filterwarnings = [
     "ignore:builtin type SwigPyObject has no __module__ attribute:DeprecationWarning",
     "ignore:builtin type swigvarlink has no __module__ attribute:DeprecationWarning",
 ]
+
+[tool.coverage.run]
+source = ["vstash"]
+branch = true
+parallel = true
+# Skip the auto-generated CLI entry shim and the optional sub-backends
+# whose code paths are exercised by integration tests gated off the
+# default CI run (snapvec backends require the `snapvec` package and
+# fitted index files; treesitter requires the language pack).
+omit = [
+    "vstash/__main__.py",
+    "vstash/_ivfpq_backend.py",
+]
+
+[tool.coverage.report]
+# 75% is the floor we land on; raise toward 85% as the test suite
+# fills in (audit highlighted thin coverage on cli.py / web.py / embed.py).
+fail_under = 75
+show_missing = true
+skip_covered = false
+precision = 1
+exclude_also = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+    "@overload",
+    "\\.\\.\\.",
+]
+
+[tool.coverage.html]
+directory = "htmlcov"

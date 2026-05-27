@@ -12,11 +12,11 @@ from tests.conftest import requires_sqlite_vec
 # Skip the entire module if langchain-core is not installed.
 pytest.importorskip("langchain_core")
 
-from langchain_core.documents import Document  # noqa: E402
+from langchain_core.documents import Document
 
-from vstash.langchain import VstashRetriever  # noqa: E402
-from vstash.memory import Memory  # noqa: E402
-from vstash.models import SearchResult  # noqa: E402
+from vstash.langchain import VstashRetriever
+from vstash.memory import Memory
+from vstash.models import SearchResult
 
 
 # ------------------------------------------------------------------ #

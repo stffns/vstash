@@ -1,0 +1,41 @@
+name: Feature request
+description: Propose a new capability or an enhancement to an existing one.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Describe the user-visible pain or limitation, not the proposed solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Sketch the API, CLI flag, config field, or behaviour you have in mind. Snippets welcome.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you tried, libraries that solve adjacent problems, why those did not fit.
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact / scope (optional)
+      description: How many users would benefit? Is this a hot-path concern (perf), a correctness concern, a usability concern?
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I have searched existing issues and the request is not already open.
+          required: true
+        - label: I have checked the [professionalization roadmap](https://github.com/stffns/vstash/blob/main/docs/professionalization-roadmap.md) and confirmed this is not already planned.
+          required: false

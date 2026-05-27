@@ -143,7 +143,7 @@ def render_lme_by_type(arms: dict[str, dict]) -> list[str]:
         # Pull n from the first arm that has the type
         nq = None
         cells = []
-        for label, summary in arms.items():
+        for summary in arms.values():
             agg = summary.get("by_question_type", {}).get(t)
             if agg is None:
                 cells.append(_fmt_num(None, width=14, prec=4))
@@ -162,7 +162,7 @@ def render_beir(beir_arms: dict[str, dict[str, dict]]) -> list[str]:
     lines.append("  " + "-" * (len(header) - 2))
     for ds in BEIR_DATASETS:
         cells = []
-        for label, by_ds in beir_arms.items():
+        for by_ds in beir_arms.values():
             row = by_ds.get(ds)
             cells.append(_fmt_num(None if row is None else row.get("ndcg_10"), width=14))
         lines.append(f"  {ds:<10} | " + " | ".join(cells))
@@ -173,7 +173,7 @@ def render_beir(beir_arms: dict[str, dict[str, dict]]) -> list[str]:
     lines.append("  " + "-" * (len(header) - 2))
     for ds in BEIR_DATASETS:
         cells = []
-        for label, by_ds in beir_arms.items():
+        for by_ds in beir_arms.values():
             row = by_ds.get(ds)
             cells.append(_fmt_num(None if row is None else row.get("recall_10"), width=14))
         lines.append(f"  {ds:<10} | " + " | ".join(cells))

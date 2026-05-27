@@ -342,7 +342,7 @@ def bench_one_scale(n: int) -> list[dict]:
     # array, so padded FIQA chunks are legitimate competitors — matches
     # what a real deployment would see at this scale.
     _ = sci_vecs, sci_int_ids
-    eval_qids = [qid for qid in qrels.keys() if qid in queries]
+    eval_qids = [qid for qid in qrels if qid in queries]
     print(f"  embedding {len(eval_qids)} queries ...")
     qvecs = np.asarray(
         [embed_query(queries[qid], MODEL) for qid in eval_qids],

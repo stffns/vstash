@@ -124,7 +124,7 @@ class MinimalColBERT:
 
     def encode_queries(self, queries: list[str], batch_size: int = 32):
         """Returns one (seq_len, 128) tensor per query."""
-        embs, masks = self._encode(queries, _QUERY_MARKER_ID, self.query_max_len, batch_size)
+        embs, _masks = self._encode(queries, _QUERY_MARKER_ID, self.query_max_len, batch_size)
         return [e[i] for e in embs for i in range(e.shape[0])]
 
     def encode_documents(self, docs: list[str], batch_size: int = 32):

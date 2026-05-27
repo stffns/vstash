@@ -116,7 +116,7 @@ def bootstrap_ci(
 
     for _ in range(n_bootstrap):
         sample = rng.choices(observations, k=n)
-        best, _ = sweep_thresholds(sample)
+        _best, _ = sweep_thresholds(sample)
         # Use the fixed threshold, not the per-bootstrap-best
         tp = fp = tn = fn = 0
         for o in sample:
@@ -251,7 +251,7 @@ def run_dataset(
         print(f"  Class separation: OVERLAP zone width {overlap_range:.4f}")
 
     # Threshold sweep
-    best, all_thresholds = sweep_thresholds(observations)
+    best, _all_thresholds = sweep_thresholds(observations)
     print(f"\n  Best threshold: {best.threshold:.2f}")
     print(f"  F1={best.f1:.3f} P={best.precision:.3f} R={best.recall:.3f} Acc={best.accuracy:.3f}")
     print(f"  TP={best.tp} FP={best.fp} TN={best.tn} FN={best.fn}")

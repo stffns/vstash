@@ -154,6 +154,20 @@ class TestApiSearch:
         assert resp.status_code == 200
         mock_search.assert_called_once_with("foo", 3, 0.0)
 
+    def test_limit_error_maps_to_400(self, client: TestClient) -> None:
+        # Validation now lives in the services layer (search_with_embedding);
+        # api_search must catch LimitError and return 400 instead of letting
+        # it bubble up as an unhandled 500.
+        from vstash.validation import QueryTooLongError
+
+        with patch("vstash.web._do_search") as mock_search:
+            mock_search.side_effect = QueryTooLongError("query too long: 200001 chars")
+            resp = client.post("/api/search", json={"query": "x", "top_k": 3})
+        assert resp.status_code == 400
+        body = resp.json()
+        assert "query too long" in body["error"]
+        assert body["kind"] == "QueryTooLongError"
+
 
 # ------------------------------------------------------------------ #
 # /api/chat and /api/chat/reset                                        #
@@ -190,6 +204,20 @@ class TestApiChat:
         assert resp.status_code == 200
         assert resp.json() == {"status": "ok"}
         assert web_mod._chat_history == []
+
+    def test_chat_limit_error_maps_to_400(self, client: TestClient) -> None:
+        # Same regression-guard as test_search_limit_error_maps_to_400:
+        # _do_chat_retrieve goes through search_with_embedding and can
+        # raise LimitError. api_chat must surface that as 400.
+        from vstash.validation import TopKOutOfRangeError
+
+        with patch("vstash.web._do_chat_retrieve") as mock_retrieve:
+            mock_retrieve.side_effect = TopKOutOfRangeError("top_k 9999 exceeds limit 100")
+            resp = client.post("/api/chat", json={"query": "what?", "top_k": 9999})
+        assert resp.status_code == 400
+        body = resp.json()
+        assert "top_k" in body["error"]
+        assert body["kind"] == "TopKOutOfRangeError"
 
 
 # ------------------------------------------------------------------ #
@@ -252,7 +280,7 @@ class TestApiUpload:
             mock_upload.return_value = IngestResult(status="ok", source="/x", title="x", chunks=1)
             files = {"file": ("report.md", io.BytesIO(b"body"), "text/markdown")}
             client.post("/api/upload", files=files)
-        args, kwargs = mock_upload.call_args
+        args, _kwargs = mock_upload.call_args
         # _do_upload(file_bytes, suffix, original_name)
         assert args[0] == b"body"
         assert args[1] == ".md"

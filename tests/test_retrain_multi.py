@@ -242,8 +242,14 @@ def test_list_input_gets_auto_aliased(
         ),
         patch(
             "vstash.retrain.evaluate_model",
-            side_effect=[baseline_metrics, baseline_metrics, baseline_metrics]
-            + [final_metrics, final_metrics, final_metrics],
+            side_effect=[
+                baseline_metrics,
+                baseline_metrics,
+                baseline_metrics,
+                final_metrics,
+                final_metrics,
+                final_metrics,
+            ],
         ),
         patch(
             "vstash.retrain.generate_triples",

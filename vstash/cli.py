@@ -10,6 +10,8 @@ Commands:
   vstash list             → show ingested documents
   vstash stats            → memory statistics
   vstash forget <file>    → remove document
+  vstash update <file>    → mutate metadata or replace content in place
+  vstash compact          → prune old docs, VACUUM, optimize FTS5
   vstash reindex           → re-embed chunks with new model
   vstash config           → show current config
   vstash profile          → manage named profiles
@@ -33,6 +35,7 @@ from ._store_open import open_store_for_config
 from .config import VstashConfig, load_config
 from .embed import embed_query, warmup
 from .ingest import ingest, ingest_directory
+from .services import search_with_embedding
 from .store import VstashStore, relevance_tier
 
 from . import __version__
@@ -433,13 +436,14 @@ def ask(
     with store:
         k = top_k or cfg.chunking.top_k
 
-        # Embed query
+        # Embed + search via the services layer for the single-store
+        # path; federated still embeds once up front because
+        # federated_search wants the embedding pre-computed.
         with console.status("[dim]Searching memory...[/dim]", spinner="dots"):
-            q_embedding = embed_query(query, cfg.embeddings.model)
-
             if all_profiles:
                 from .profile import federated_search
 
+                q_embedding = embed_query(query, cfg.embeddings.model)
                 tagged = federated_search(
                     query_embedding=q_embedding,
                     query_text=query,
@@ -452,10 +456,12 @@ def ask(
                 )
                 chunks = [r for _, r in tagged]
             else:
-                chunks = store.search(
-                    q_embedding,
-                    query,
+                chunks = search_with_embedding(
+                    cfg=cfg,
+                    store=store,
+                    query=query,
                     top_k=k,
+                    expand_window=0,
                     collection=collection,
                     project=project,
                     layer=layer,
@@ -562,6 +568,27 @@ def search(
     ),
     project: str | None = typer.Option(None, "--project", "-p", help="Restrict to project"),
     layer: str | None = typer.Option(None, "--layer", "-l", help="Restrict to layer"),
+    tag: list[str] | None = typer.Option(
+        None,
+        "--tag",
+        "-t",
+        help=(
+            "Restrict to documents tagged with this value. Repeat the flag "
+            "for OR semantics (``--tag alpha --tag beta``), or pass a "
+            "comma-separated string in a single flag (``--tag 'alpha,beta'``). "
+            "Comma-anchored match -- ``alpha`` does NOT false-match ``alphabet``."
+        ),
+    ),
+    added_after: str | None = typer.Option(
+        None,
+        "--after",
+        help="ISO date filter: only documents added on or after this date (e.g. 2026-01-15).",
+    ),
+    added_before: str | None = typer.Option(
+        None,
+        "--before",
+        help="ISO date filter: only documents added strictly before this date.",
+    ),
     json_output: bool = typer.Option(False, "--json", "-j", help="Output results as JSON"),
     all_profiles: bool = typer.Option(
         False, "--all-profiles", "-A", help="Search across all profiles"
@@ -707,6 +734,9 @@ def search(
                     collection=collection,
                     project=project,
                     layer=layer,
+                    tags=tag,
+                    added_after=added_after,
+                    added_before=added_before,
                     expand_window=1,
                 )
                 chunks = [r for _, r in tagged]
@@ -734,6 +764,9 @@ def search(
                     collection=collection,
                     project=project,
                     layer=layer,
+                    tags=tag,
+                    added_after=added_after,
+                    added_before=added_before,
                     explain=explain,
                     exact_match=exact_match,
                     exact_match_case_sensitive=exact_match_case_sensitive,
@@ -910,7 +943,7 @@ def chat(
         )
 
         history: list[dict[str, str]] = []
-        import tiktoken  # noqa: PLC0415 — lazy import, only needed for chat
+        import tiktoken
 
         _enc = tiktoken.get_encoding("cl100k_base")
         _MAX_HISTORY_TOKENS = 8192
@@ -951,15 +984,24 @@ def chat(
                     _maybe_dismiss()
                     break
 
-                # Search
-                q_embedding = embed_query(query, cfg.embeddings.model)
-                chunks = store.search(q_embedding, query, top_k=k)
+                # Search via the services layer: embed + validate +
+                # search + expand_context in one call. expand_window=1
+                # gives the LLM adjacent context, same as before.
+                chunks = search_with_embedding(
+                    cfg=cfg,
+                    store=store,
+                    query=query,
+                    top_k=k,
+                    expand_window=1,
+                )
 
                 if not chunks:
                     console.print("[yellow]No relevant context found.[/yellow]")
                     continue
 
-                # Tiered relevance signal
+                # Tiered relevance signal (post-expand, mirroring the
+                # MCP migration pattern -- semantically identical to
+                # the old pre-expand placement).
                 tier = relevance_tier(store.last_best_distance)
                 last_event_id = store.record_search_event(
                     query=query,
@@ -972,9 +1014,6 @@ def chat(
                     console.print("[dim]⚠ Low relevance — context may not match well.[/dim]")
                 elif tier == "medium":
                     console.print("[dim]? Uncertain relevance — results may be tangential.[/dim]")
-
-                # Expand context with adjacent chunks
-                chunks = store.expand_context(chunks, window=1)
 
                 source_list = list({c.title for c in chunks})
                 console.print(f"[dim]Sources: {', '.join(source_list)}[/dim]\n")
@@ -1023,7 +1062,7 @@ def list_docs(
     layer: str | None = typer.Option(None, "--layer", "-l", help="Filter by layer"),
 ) -> None:
     """List all documents in memory."""
-    cfg, store = _get_store(profile=_profile_from_ctx(ctx))
+    _cfg, store = _get_store(profile=_profile_from_ctx(ctx))
 
     with store:
         docs = store.list_documents(
@@ -1083,7 +1122,7 @@ def export(
     import csv
     import json
 
-    cfg, store = _get_store(profile=_profile_from_ctx(ctx))
+    _cfg, store = _get_store(profile=_profile_from_ctx(ctx))
 
     with store:
         chunks = store.export_chunks(
@@ -1234,7 +1273,7 @@ def forget(
     path: str = typer.Argument(..., help="File path or URL to remove from memory"),
 ) -> None:
     """Remove a document from memory."""
-    cfg, store = _get_store(profile=_profile_from_ctx(ctx))
+    _cfg, store = _get_store(profile=_profile_from_ctx(ctx))
 
     with store:
         source = str(Path(path).resolve()) if Path(path).exists() else path
@@ -1244,6 +1283,198 @@ def forget(
             console.print(f"[green]✓[/green] Removed [bold]{path}[/bold] from memory.")
         else:
             console.print(f"[yellow]Not found:[/yellow] {path}")
+
+
+@app.command()
+def update(
+    ctx: typer.Context,
+    path: str = typer.Argument(..., help="File path or URL of the document to update"),
+    text: str | None = typer.Option(
+        None,
+        "--text",
+        help=(
+            "Replace the document content with this text. Triggers re-chunking "
+            "and re-embedding. Pass '-' to read from stdin."
+        ),
+    ),
+    title: str | None = typer.Option(
+        None,
+        "--title",
+        help="New title for the document.",
+    ),
+    tags: str | None = typer.Option(
+        None,
+        "--tags",
+        "-t",
+        help="New comma-separated tag string. Pass an empty string to clear tags.",
+    ),
+) -> None:
+    """Update an existing document in place.
+
+    Three modes:
+
+      * metadata-only: --title and/or --tags without --text -- a single
+        SQL UPDATE, no embedding model invocation.
+      * content: --text (with optional --title/--tags) -- re-chunks
+        and re-embeds the document.
+      * (no field): error.
+
+    For multi-collection stores, the update applies to every collection
+    holding `path`. Wrap with `--collection` (future) for narrower
+    scopes when that lands.
+    """
+    if text is None and title is None and tags is None:
+        console.print("[red]✗[/red] Pass at least one of --text, --title, or --tags.")
+        raise typer.Exit(1)
+
+    if text == "-":
+        import sys as _sys
+
+        text = _sys.stdin.read()
+
+    from .memory import Memory
+
+    # The CLI documents "the update applies to every collection
+    # holding `path`", so pass ``collection=None`` explicitly to
+    # override the Memory-instance default (``"default"``) and update
+    # every collection's copy of ``path``.
+    with Memory(profile=_profile_from_ctx(ctx)) as mem:
+        result = mem.update(path, text=text, title=title, tags=tags, collection=None)
+
+    status = result.get("status")
+    mode = result.get("mode")
+    if status == "not_found":
+        console.print(f"[yellow]Not found:[/yellow] {path}")
+        raise typer.Exit(1)
+    if status == "noop":
+        console.print(f"[yellow]No-op:[/yellow] the supplied text produced no chunks ({path}).")
+        raise typer.Exit(1)
+    fields = ", ".join(result.get("fields") or [])
+    suffix = f" ({result['chunks']} chunks)" if mode == "content" else ""
+    console.print(
+        f"[green]✓[/green] Updated [bold]{path}[/bold] -- {mode} mode, "
+        f"fields: {fields or 'none'}{suffix}."
+    )
+
+
+@app.command()
+def compact(
+    ctx: typer.Context,
+    before: str | None = typer.Option(
+        None,
+        "--before",
+        help=(
+            "Prune docs older than this age (e.g. '90d', '2w', '24h') or ISO date "
+            "('2026-01-15'). Omit to skip the prune phase and just VACUUM + optimize."
+        ),
+    ),
+    collection: str | None = typer.Option(
+        None, "--collection", "-c", help="Restrict prune to this collection"
+    ),
+    project: str | None = typer.Option(
+        None, "--project", "-p", help="Restrict prune to this project"
+    ),
+    layer: str | None = typer.Option(None, "--layer", "-l", help="Restrict prune to this layer"),
+    tag: list[str] | None = typer.Option(
+        None,
+        "--tag",
+        "-t",
+        help=(
+            "Restrict prune to docs tagged with this value. Repeatable for OR "
+            "(``--tag archive --tag old``), or comma-joined "
+            "(``--tag 'archive,old'``). Comma-anchored match."
+        ),
+    ),
+    no_vacuum: bool = typer.Option(
+        False, "--no-vacuum", help="Skip the VACUUM step (faster on large DBs)"
+    ),
+    no_optimize_fts: bool = typer.Option(
+        False, "--no-optimize-fts", help="Skip the FTS5 optimize step"
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        "-n",
+        help="Preview which docs would be pruned without modifying the store. "
+        "Also skips VACUUM and optimize.",
+    ),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output the report as JSON"),
+) -> None:
+    """Housekeeping pass: prune old docs (optional), VACUUM, optimize FTS5.
+
+    Three phases, each independently togglable:
+
+      * **Prune**: if ``--before`` is given, deletes every document
+        whose ``added_at`` is strictly older than the threshold,
+        scoped by ``--collection``/``--project``/``--layer``.
+      * **VACUUM**: rebuilds the SQLite file to reclaim space after
+        the prune. Can take seconds-to-minutes on large DBs; pass
+        ``--no-vacuum`` to defer.
+      * **Optimize FTS5**: merges FTS5 segments in place. Cheap;
+        ``--no-optimize-fts`` skips it.
+
+    With ``--dry-run``, only the prune preview runs; VACUUM and
+    optimize are skipped regardless of their flags because they would
+    modify the file.
+    """
+    from .memory import Memory
+
+    if before is None and (collection or project or layer or tag):
+        # ``Memory.compact`` skips the prune phase entirely when
+        # ``before`` is ``None``, so any scope filter the caller
+        # passed is silently inert. Surface this loudly so users do
+        # not mistakenly believe their ``--layer scratch`` actually
+        # deleted anything just because the command exited 0.
+        # Route through stderr when ``--json`` is set so the stdout
+        # payload remains pure JSON for downstream parsers.
+        warning = (
+            "--collection/--project/--layer are ignored when --before is "
+            "omitted -- the prune phase is skipped entirely and this run "
+            "will only VACUUM / optimize. Pass --before to actually prune "
+            "by scope."
+        )
+        if json_output:
+            import sys as _sys
+
+            print(f"Warning: {warning}", file=_sys.stderr)
+        else:
+            console.print(f"[yellow]Warning:[/yellow] {warning}")
+
+    with Memory(profile=_profile_from_ctx(ctx)) as mem:
+        report = mem.compact(
+            before=before,
+            vacuum=not no_vacuum,
+            optimize_fts=not no_optimize_fts,
+            collection=collection,
+            project=project,
+            layer=layer,
+            tags=tag,
+            dry_run=dry_run,
+        )
+
+    if json_output:
+        import json as _json
+
+        print(_json.dumps(report, indent=2))
+        return
+
+    prune_report = report.get("prune")
+    if prune_report is None:
+        console.print("[dim]No --before set; skipping prune phase.[/dim]")
+    else:
+        verb = "Would delete" if prune_report["status"] == "dry_run" else "Deleted"
+        console.print(f"[green]✓[/green] {verb} [bold]{prune_report['deleted']}[/bold] docs.")
+        if prune_report["paths"] and prune_report["deleted"] <= 20:
+            for p in prune_report["paths"]:
+                console.print(f"  [dim]- {p}[/dim]")
+        elif prune_report["paths"]:
+            console.print(f"  [dim](first 20 of {prune_report['deleted']})[/dim]")
+            for p in prune_report["paths"][:20]:
+                console.print(f"  [dim]- {p}[/dim]")
+    if report.get("vacuum"):
+        console.print("[green]✓[/green] VACUUM complete.")
+    if report.get("optimize_fts"):
+        console.print("[green]✓[/green] FTS5 optimize complete.")
 
 
 # ------------------------------------------------------------------ #
@@ -1273,7 +1504,7 @@ def check(
     """
     import json as _json
 
-    cfg, store = _get_store(profile=_profile_from_ctx(ctx))
+    _cfg, store = _get_store(profile=_profile_from_ctx(ctx))
     with store:
         results = store.integrity_check()
         repairs: list = []
@@ -2768,12 +2999,39 @@ def journal_recall_cmd(
     query: str | None = typer.Argument(None, help="Search query (omit for recent entries)"),
     top_k: int = typer.Option(5, "--top-k", "-k", help="Number of entries"),
     project: str | None = typer.Option(None, "--project", "-p", help="Filter by project"),
+    tag: list[str] | None = typer.Option(
+        None,
+        "--tag",
+        "-t",
+        help=(
+            "Restrict to journal entries tagged with this value. Repeat for "
+            "OR (``--tag work --tag decisions``), or pass a comma-separated "
+            "string (``--tag 'work,decisions'``). Comma-anchored match."
+        ),
+    ),
+    added_after: str | None = typer.Option(
+        None,
+        "--after",
+        help="ISO date filter: only entries logged on or after this date.",
+    ),
+    added_before: str | None = typer.Option(
+        None,
+        "--before",
+        help="ISO date filter: only entries logged strictly before this date.",
+    ),
     raw: bool = typer.Option(False, "--raw", "-r", help="Output raw text (for hooks/pipes)"),
 ) -> None:
     """Recall relevant journal entries. Omit query for most recent."""
     from .journal import journal_recall
 
-    entries = journal_recall(query=query, top_k=top_k, project=project)
+    entries = journal_recall(
+        query=query,
+        top_k=top_k,
+        project=project,
+        tags=tag,
+        added_after=added_after,
+        added_before=added_before,
+    )
 
     if not entries:
         if not raw:

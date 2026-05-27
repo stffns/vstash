@@ -32,6 +32,7 @@ from ._store_open import open_store_for_config
 from .config import VstashConfig, load_config
 from .embed import embed_query, warmup
 from .models import DocumentInfo, IngestResult, SearchResult, StoreStats
+from .services import search_with_embedding
 from .store import VstashStore, relevance_tier
 
 logger = logging.getLogger(__name__)
@@ -82,7 +83,7 @@ def _get_config() -> VstashConfig:
     Returns:
         Cached VstashConfig instance.
     """
-    global _config  # noqa: PLW0603
+    global _config
     if _config is None:
         with _lock:
             if _config is None:
@@ -104,7 +105,7 @@ def _get_store() -> VstashStore:
     Raises:
         OSError: If the database directory cannot be created (e.g. PermissionError).
     """
-    global _store  # noqa: PLW0603
+    global _store
     if _store is None:
         with _lock:
             if _store is None:
@@ -542,12 +543,17 @@ def vstash_ask(
             vec_weight_coerced = _coerce_optional_float(vec_weight, "vec_weight")
             fts_weight_coerced = _coerce_optional_float(fts_weight, "fts_weight")
 
-        # Embed query and search
-        query_embedding = embed_query(query, cfg.embeddings.model)
-        chunks: list[SearchResult] = store.search(
-            query_embedding=query_embedding,
-            query_text=query,
+        # Service does embed + validate + search + expand_context in
+        # one shot. Validation errors raise LimitError (a ValueError
+        # subclass) and bubble up to the existing ValueError handler
+        # below, so a 200_001-character query or a top_k=9999 returns
+        # a structured error rather than a 500.
+        chunks: list[SearchResult] = search_with_embedding(
+            cfg=cfg,
+            store=store,
+            query=query,
             top_k=top_k,
+            expand_window=1,
             collection=collection,
             project=project,
             layer=layer,
@@ -575,9 +581,6 @@ def vstash_ask(
             relevance_tier=tier,
             result_count=len(chunks),
         )
-
-        # Expand context with adjacent chunks for richer LLM answers
-        chunks = store.expand_context(chunks, window=1)
 
         # Get LLM answer
         answer = ask(query, chunks, cfg)
@@ -619,6 +622,7 @@ def vstash_search(
     recency_boost: float = 0.0,
     added_after: str | None = None,
     added_before: str | None = None,
+    tags: str | None = None,
     mmr_lambda: float = 0.5,
     vec_weight: float | None = None,
     fts_weight: float | None = None,
@@ -642,6 +646,10 @@ def vstash_search(
             recent chunks score higher. Use 0.5 for mild bias, 1.0 for strong.
         added_after: ISO date (e.g. '2024-01-15') — only documents added on or after.
         added_before: ISO date (e.g. '2024-06-01') — only documents added before.
+        tags: Comma-separated list of tags (``"alpha,beta"``); restrict to
+            documents tagged with any of them (OR semantics).
+            Comma-anchored match so ``alpha`` does NOT false-match
+            ``alphabet``. Tags are case-sensitive.
         mmr_lambda: Intra-document MMR diversity parameter (0.0=max diversity,
             1.0=hard dedup). Default 0.5.
         vec_weight: Pin the RRF vector weight for this query (overrides adaptive
@@ -694,17 +702,25 @@ def vstash_search(
             vec_weight_coerced = _coerce_optional_float(vec_weight, "vec_weight")
             fts_weight_coerced = _coerce_optional_float(fts_weight, "fts_weight")
 
-        query_embedding = embed_query(query, cfg.embeddings.model)
-        chunks: list[SearchResult] = store.search(
-            query_embedding=query_embedding,
-            query_text=query,
+        # Service does embed + validate + search + expand_context in
+        # one shot (window=1, critical for MCP/Claude Code where the
+        # LLM consumes the chunks directly -- adjacent context yields
+        # better answers). Validation errors raise LimitError (a
+        # ValueError subclass) and bubble up to the existing
+        # ValueError handler below.
+        chunks: list[SearchResult] = search_with_embedding(
+            cfg=cfg,
+            store=store,
+            query=query,
             top_k=top_k,
+            expand_window=1,
             collection=collection,
             project=project,
             layer=layer,
             recency_boost=float(recency_boost),
             added_after=added_after,
             added_before=added_before,
+            tags=tags,
             mmr_lambda=float(mmr_lambda),
             vec_weight=vec_weight_coerced,
             fts_weight=fts_weight_coerced,
@@ -713,11 +729,6 @@ def vstash_search(
 
         if not chunks:
             return _ok({"chunks": [], "relevance": "none"})
-
-        # Expand context: include adjacent chunks (±1) for richer LLM context.
-        # This is critical for MCP/Claude Code where the LLM consumes these
-        # chunks directly — more context yields better answers.
-        chunks = store.expand_context(chunks, window=1)
 
         # Tiered relevance signal based on vector distance.
         best_distance = store.last_best_distance
@@ -975,6 +986,145 @@ def vstash_forget(source: str, collection: str | None = None) -> str:
 
 
 @mcp_server.tool()
+def vstash_update(
+    source: str,
+    text: str | None = None,
+    title: str | None = None,
+    tags: str | None = None,
+    collection: str | None = None,
+) -> str:
+    """Update an existing document in vstash memory.
+
+    Two modes, picked from the fields you set:
+
+      * **metadata-only** -- pass ``title`` and/or ``tags`` without
+        ``text``. A single SQL UPDATE; no re-chunking or
+        re-embedding. Use for renames and retagging.
+      * **content** -- pass ``text`` (optionally with ``title`` / ``tags``).
+        Re-chunks and re-embeds the document. Equivalent to
+        ``vstash_add(source, force=True)`` plus an atomic metadata update,
+        but does not require the caller to know the source path's
+        on-disk file.
+
+    Returns ``status="not_found"`` (no row matched ``source``) or
+    ``status="noop"`` (text mode produced no chunks) without modifying
+    the store.
+
+    Args:
+        source: File path, URL, or ``text://`` identifier of the document.
+        text: New content. Triggers re-chunk + re-embed when set.
+        title: New title (optional in both modes).
+        tags: New comma-separated tag string (optional in both modes).
+            Pass ``""`` to clear all tags.
+        collection: Restrict the update to a specific ``(collection, source)``
+            row. Default ``None`` updates every collection holding ``source``.
+
+    Returns:
+        JSON object with status, mode, fields, and chunk count.
+    """
+    if text is None and title is None and tags is None:
+        return _error("vstash_update needs at least one of `text`, `title`, or `tags`.")
+    try:
+        from .memory import Memory
+
+        # Memory.update normalises paths; pass through verbatim. The
+        # collection kwarg defaults to the Memory-instance collection
+        # (which is "default" here unless the caller overrides it via
+        # this tool), so a None collection means "every collection
+        # holding the path".
+        with Memory(collection=collection or "default") as mem:
+            result = mem.update(
+                source,
+                text=text,
+                title=title,
+                tags=tags,
+                collection=collection,
+            )
+        return _ok(result)
+    except ValueError as exc:
+        return _error(str(exc))
+    except FileNotFoundError:
+        return _error("vstash database not found.")
+    except Exception as exc:
+        logger.exception("vstash_update failed")
+        return _error(f"Failed to update document: {exc}")
+
+
+@mcp_server.tool()
+def vstash_compact(
+    before: str | None = None,
+    collection: str | None = None,
+    project: str | None = None,
+    layer: str | None = None,
+    tags: str | None = None,
+    vacuum: bool = True,
+    optimize_fts: bool = True,
+    dry_run: bool = False,
+) -> str:
+    """Housekeeping: prune old documents, VACUUM SQLite, optimize FTS5.
+
+    Three phases, each independently togglable:
+
+      * **Prune** -- if ``before`` is set, deletes every doc whose
+        ``added_at`` is strictly older. ``before`` accepts an age
+        string (``"30d"``, ``"2w"``, ``"24h"``) or an ISO date /
+        timestamp. Scope with ``collection`` / ``project`` /
+        ``layer`` / ``tags``.
+      * **VACUUM** -- rebuilds the SQLite file to reclaim space.
+        Can take seconds-to-minutes on large DBs; pass
+        ``vacuum=False`` to skip.
+      * **Optimize FTS5** -- merges FTS5 segments. Cheap;
+        ``optimize_fts=False`` skips it.
+
+    ``dry_run=True`` reports what the prune would delete without
+    modifying the store, and skips VACUUM and optimize.
+
+    Args:
+        before: Age string or ISO date; ``None`` skips the prune phase.
+        collection: Restrict prune to this collection.
+        project: Restrict prune to this project.
+        layer: Restrict prune to this layer.
+        tags: Comma-separated list of tags; restrict prune to docs
+            tagged with any of them (OR semantics). Comma-anchored
+            match so ``alpha`` does NOT false-match ``alphabet``.
+        vacuum: Run SQLite VACUUM after the prune.
+        optimize_fts: Run FTS5 ``'optimize'`` after the prune.
+        dry_run: Preview-only -- no writes.
+
+    Returns:
+        JSON describing each phase::
+
+            {
+              "prune":        {"status": "...", "deleted": N, "paths": [...]} | null,
+              "vacuum":       true | false,
+              "optimize_fts": true | false
+            }
+    """
+    try:
+        from .memory import Memory
+
+        with Memory(collection=collection or "default") as mem:
+            report = mem.compact(
+                before=before,
+                vacuum=vacuum,
+                optimize_fts=optimize_fts,
+                collection=collection,
+                project=project,
+                layer=layer,
+                tags=tags,
+                dry_run=dry_run,
+            )
+        return _ok(report)
+    except ValueError as exc:
+        return _error(str(exc))
+    except FileNotFoundError:
+        return _error("vstash database not found.")
+    except Exception as exc:
+        logger.exception("vstash_compact failed")
+        return _error(f"Failed to compact: {exc}")
+
+
+@mcp_server.tool()
 def vstash_collections() -> str:
     """List all available collections in vstash memory.
 
@@ -1076,6 +1226,9 @@ def vstash_journal_recall(
     query: str | None = None,
     top_k: int = 5,
     project: str | None = None,
+    tags: str | None = None,
+    added_after: str | None = None,
+    added_before: str | None = None,
 ) -> str:
     """Recall relevant journal entries from past sessions.
 
@@ -1089,6 +1242,13 @@ def vstash_journal_recall(
         query: Search query (omit for most recent entries).
         top_k: Number of entries to return (default: 5).
         project: Filter by project tag.
+        tags: Comma-separated list of tags (``"work,decisions"``); restrict
+            to journal entries tagged with any of them (OR semantics).
+            Comma-anchored match so ``work`` does NOT false-match
+            ``workflow``.
+        added_after: ISO date (e.g. ``"2026-01-15"``) — only entries
+            logged on or after this date.
+        added_before: ISO date — only entries logged strictly before this date.
 
     Returns:
         JSON array of journal entries with text, title, and score/date.
@@ -1096,7 +1256,14 @@ def vstash_journal_recall(
     try:
         from .journal import journal_recall
 
-        entries = journal_recall(query=query, top_k=top_k, project=project)
+        entries = journal_recall(
+            query=query,
+            top_k=top_k,
+            project=project,
+            tags=tags,
+            added_after=added_after,
+            added_before=added_before,
+        )
         return _ok(entries)
     except Exception as exc:
         logger.exception("vstash_journal_recall failed")

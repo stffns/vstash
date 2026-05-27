@@ -1,0 +1,84 @@
+{
+  "n": 10000,
+  "model": "BAAI/bge-small-en-v1.5",
+  "results": {
+    "sqlite-vec": {
+      "hybrid": {
+        "n_queries": 300,
+        "latency_p50_ms": 15.06,
+        "latency_p95_ms": 24.26,
+        "latency_mean_ms": 15.65,
+        "ndcg10_mean": 0.7234,
+        "ndcg10_zero_count": 43
+      },
+      "vec_only": {
+        "n_queries": 300,
+        "latency_p50_ms": 4.71,
+        "latency_p95_ms": 5.04,
+        "latency_mean_ms": 4.73,
+        "ndcg10_mean": 0.6913,
+        "ndcg10_zero_count": 61
+      },
+      "fts_only": {
+        "n_queries": 300,
+        "latency_p50_ms": 10.39,
+        "latency_p95_ms": 20.14,
+        "latency_mean_ms": 10.87,
+        "ndcg10_mean": 0.6836,
+        "ndcg10_zero_count": 50
+      }
+    },
+    "snapvec": {
+      "hybrid": {
+        "n_queries": 300,
+        "latency_p50_ms": 11.41,
+        "latency_p95_ms": 20.83,
+        "latency_mean_ms": 11.86,
+        "ndcg10_mean": 0.7257,
+        "ndcg10_zero_count": 45
+      },
+      "vec_only": {
+        "n_queries": 300,
+        "latency_p50_ms": 0.94,
+        "latency_p95_ms": 1.07,
+        "latency_mean_ms": 0.95,
+        "ndcg10_mean": 0.693,
+        "ndcg10_zero_count": 59
+      },
+      "fts_only": {
+        "n_queries": 300,
+        "latency_p50_ms": 10.51,
+        "latency_p95_ms": 20.37,
+        "latency_mean_ms": 11.14,
+        "ndcg10_mean": 0.6836,
+        "ndcg10_zero_count": 50
+      }
+    },
+    "snapvec-ivfpq": {
+      "hybrid": {
+        "n_queries": 300,
+        "latency_p50_ms": 11.07,
+        "latency_p95_ms": 21.14,
+        "latency_mean_ms": 11.76,
+        "ndcg10_mean": 0.7118,
+        "ndcg10_zero_count": 46
+      },
+      "vec_only": {
+        "n_queries": 300,
+        "latency_p50_ms": 0.61,
+        "latency_p95_ms": 0.74,
+        "latency_mean_ms": 0.62,
+        "ndcg10_mean": 0.6782,
+        "ndcg10_zero_count": 64
+      },
+      "fts_only": {
+        "n_queries": 300,
+        "latency_p50_ms": 10.57,
+        "latency_p95_ms": 20.26,
+        "latency_mean_ms": 11.13,
+        "ndcg10_mean": 0.6836,
+        "ndcg10_zero_count": 50
+      }
+    }
+  }
+}

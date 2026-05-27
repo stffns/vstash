@@ -32,9 +32,90 @@ from .models import (
     SearchResult,
     StoreStats,
 )
+from .services import search_with_embedding
 
 # Sentinel for distinguishing "parameter not provided" from explicit None.
 _UNSET = object()
+
+
+def _resolve_before(before: str) -> str:
+    """Normalize a ``before=`` filter to an ISO timestamp string.
+
+    Accepts two surface forms and resolves them to a single canonical
+    representation that ``VstashStore.prune_documents`` can compare
+    directly against the ``added_at`` column:
+
+      * **Age string** (``"30d"``, ``"2w"``, ``"24h"``): parsed the
+        same way as ``vstash journal prune`` and converted to
+        ``now(UTC) - delta``. The ``"now"`` snapshot is taken at call
+        time so back-to-back invocations of the same age cut at the
+        same instant.
+      * **ISO date / timestamp** (``"2026-01-15"`` or
+        ``"2026-01-15T00:00:00+00:00"``): returned unchanged after
+        being validated against ``datetime.fromisoformat`` so the
+        store comparison uses lexical ``<`` on the column, which is
+        correct under the ``YYYY-MM-DDTHH:MM:SS+00:00`` form used by
+        ingest's ``datetime.now(timezone.utc).isoformat()``.
+
+    Anything that is neither a recognised age nor a parseable ISO
+    timestamp raises ``ValueError``. This is the load-bearing safety
+    rail for ``prune_documents``: SQLite compares text columns
+    lexically, so a free-form string like ``"invalid"`` whose first
+    character ``'i'`` (ASCII 105) is greater than any plausible
+    ISO-prefix character ``'2'`` (ASCII 50) would let ``added_at <
+    'invalid'`` evaluate true for **every** row and silently wipe the
+    store. Validating upfront makes the failure mode loud and local.
+
+    Reusing the journal's age parser keeps the two CLIs
+    (``vstash compact`` and ``vstash journal prune``) accepting the
+    same vocabulary.
+    """
+    from datetime import datetime, timezone
+
+    from .journal import _parse_age
+
+    stripped = before.strip()
+    if not stripped:
+        raise ValueError("`before` must be a non-empty age or ISO date string")
+    # Heuristic: any plain-digit-then-unit suffix (``30d``, ``2w``,
+    # ``24h``) is an age. Lowercase the suffix so ``30D`` / ``2W`` /
+    # ``24H`` parse too -- ``_parse_age`` is case-sensitive on the
+    # unit, and rejecting the upper-case form here would be more
+    # surprising than just normalising it. No length cap: any number
+    # of leading digits is fine (``"100000h"`` is ~11 years, a
+    # perfectly valid age cutoff), and the digit+suffix shape is
+    # unambiguously distinct from any ISO date / timestamp.
+    if len(stripped) > 1 and stripped[-1].lower() in "dwh" and stripped[:-1].isdigit():
+        delta = _parse_age(stripped.lower())
+        return (datetime.now(timezone.utc) - delta).isoformat()
+    # Not an age: must be a parseable ISO datetime. ``fromisoformat``
+    # accepts both ``YYYY-MM-DD`` and the full ``YYYY-MM-DDTHH:MM:SS``
+    # forms, and rejects everything else with ``ValueError``. We pass
+    # the bare exception through with a friendlier message so callers
+    # see WHY their input was refused without losing the original
+    # cause.
+    try:
+        parsed = datetime.fromisoformat(stripped)
+    except ValueError as exc:
+        raise ValueError(
+            f"`before={before!r}` is neither a recognised age "
+            f"('30d' / '2w' / '24h') nor a parseable ISO date / timestamp "
+            f"('2026-01-15' / '2026-01-15T00:00:00+00:00'). "
+            f"Refusing to pass through to the store because SQLite would "
+            f"compare lexically and silently delete every document."
+        ) from exc
+    # Canonicalise to UTC. ``added_at`` is stored as
+    # ``datetime.now(timezone.utc).isoformat()`` (always ``+00:00``),
+    # and SQLite compares the column lexically. A naive cutoff like
+    # ``2026-01-15T00:00:00-05:00`` would sort lexically AFTER
+    # ``2026-01-15T00:00:00+00:00`` even though it represents an
+    # earlier instant, so prune would mis-delete around timezone
+    # boundaries. Treat naive inputs as UTC; convert aware inputs.
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    else:
+        parsed = parsed.astimezone(timezone.utc)
+    return parsed.isoformat()
 
 
 class Memory:
@@ -277,6 +358,7 @@ class Memory:
         recency_boost: float = 0.0,
         added_after: str | None = None,
         added_before: str | None = None,
+        tags: str | list[str] | None = None,
         mmr_lambda: float = 0.5,
         vec_weight: float | None = None,
         fts_weight: float | None = None,
@@ -301,6 +383,11 @@ class Memory:
                 from documents added on or after this date.
             added_before: ISO date (e.g. '2024-06-01') — only return results
                 from documents added before this date.
+            tags: Restrict to documents tagged with one or more of these
+                tags (OR semantics). Accepts a comma-separated string
+                (``"alpha,beta"``) or a list (``["alpha", "beta"]``).
+                Comma-anchored LIKE match so ``alpha`` does not
+                false-match ``alphabet``.
             vec_weight: Pin the RRF vector weight for this single call,
                 overriding adaptive RRF. Valid range ``[0.0, 1.0]``.
                 Pass ``None`` (default) to keep adaptive per-query
@@ -342,32 +429,31 @@ class Memory:
         Returns:
             Ranked list of SearchResult ordered by relevance.
         """
-        q_embedding = embed_query(query, self._cfg.embeddings.model)
+        # Resolve the retrieval mode through the store helper first --
+        # it handles legacy aliases (like ``fts_only=True`` bool that
+        # mapped to ``"fts_only"`` pre-v0.33). After that the services
+        # layer takes over: validates inputs, embeds the query, and
+        # runs store.search with the right weights for the resolved
+        # mode. expand_window=0 keeps Memory.search's existing
+        # contract of returning raw chunks (no context expansion).
         _mode = self._store._resolve_retrieval_mode(retrieval_mode)
-        # When a non-hybrid mode is active, drop any caller-supplied
-        # weight arguments before they reach the store's validator.
-        # The store will force the weights to (0.0, 1.0) or (1.0, 0.0)
-        # internally on the short-circuit branch, so forwarding caller
-        # weights would either no-op or raise
-        # ``RRFWeightOutOfRangeError`` for a nonsensical value the
-        # caller did not intend us to validate.
-        if _mode != "hybrid":
-            vec_weight = None
-            fts_weight = None
-        return self._store.search(
-            query_embedding=q_embedding,
-            query_text=query,
+        return search_with_embedding(
+            cfg=self._cfg,
+            store=self._store,
+            query=query,
             top_k=top_k,
-            vec_weight=vec_weight,
-            fts_weight=fts_weight,
-            retrieval_mode=_mode,
+            expand_window=0,
             collection=self._resolve_collection(collection),
             project=self._resolve_project(project),
             layer=layer,
             recency_boost=recency_boost,
             added_after=added_after,
             added_before=added_before,
+            tags=tags,
             mmr_lambda=mmr_lambda,
+            vec_weight=vec_weight,
+            fts_weight=fts_weight,
+            retrieval_mode=_mode,
             exact_match=exact_match,
             exact_match_case_sensitive=exact_match_case_sensitive,
         )
@@ -571,6 +657,134 @@ class Memory:
         )
         return _chat_ask_full(query, chunks, self._cfg, history)
 
+    def prune(
+        self,
+        *,
+        before: str | None = None,
+        collection: object = _UNSET,
+        project: object = _UNSET,
+        layer: str | None = None,
+        tags: str | list[str] | None = None,
+        dry_run: bool = False,
+    ) -> dict:
+        """Delete documents matching a date / metadata filter.
+
+        ``before`` accepts either an age string (``"30d"``, ``"2w"``,
+        ``"24h"``) which is converted to an absolute UTC cutoff at the
+        moment of the call, OR a full ISO date / timestamp
+        (``"2026-01-15"``, ``"2026-01-15T00:00:00+00:00"``) which is
+        passed straight through. At least one filter must be provided;
+        an unfiltered prune raises ``ValueError`` rather than wiping
+        the store silently.
+
+        Args:
+            before: Age string or ISO date. Documents whose
+                ``added_at`` is strictly older are deleted.
+            collection: Restrict to a single collection. Defaults to
+                the ``Memory``-instance collection. Pass ``None`` to
+                cover every collection.
+            project: Restrict to a project. Same UNSET / None rules
+                as the constructor.
+            layer: Restrict to a layer.
+            tags: Restrict to docs tagged with any of these tags
+                (OR semantics). Same shape as the search-side tag
+                filter -- comma-separated string or list, comma-anchored
+                match so ``alpha`` does not false-match ``alphabet``.
+            dry_run: If ``True``, return what would be deleted without
+                touching the store.
+
+        Returns:
+            ``{"status": "ok"|"dry_run", "deleted": N, "paths": [...]}``.
+
+        Example::
+
+            mem = Memory(project="my_agent")
+            mem.prune(before="90d", dry_run=True)        # preview
+            mem.prune(before="90d")                       # apply
+            mem.prune(layer="scratch")                    # by layer
+            mem.prune(tags="archive")                     # by tag
+        """
+        before_iso: str | None = None
+        if before is not None:
+            before_iso = _resolve_before(before)
+
+        # Use the shared resolver helpers so prune obeys the same
+        # scope rules as every other read/write on this class. The
+        # previous ``col_filter = None if col == "default" else col``
+        # silently widened a ``Memory(collection="default")`` prune
+        # to *every* collection -- exactly the #165 asymmetry
+        # ``_resolve_collection`` is designed to prevent. Pass
+        # ``collection=None`` explicitly when you want "all
+        # collections", same as ``Memory.update`` and the CLI does.
+        return self._store.prune_documents(
+            before_iso=before_iso,
+            collection=self._resolve_collection(collection),
+            project=self._resolve_project(project),
+            layer=layer,
+            tags=tags,
+            dry_run=dry_run,
+        )
+
+    def compact(
+        self,
+        *,
+        before: str | None = None,
+        vacuum: bool = True,
+        optimize_fts: bool = True,
+        collection: object = _UNSET,
+        project: object = _UNSET,
+        layer: str | None = None,
+        tags: str | list[str] | None = None,
+        dry_run: bool = False,
+    ) -> dict:
+        """Full housekeeping pass: prune (optional) + VACUUM + FTS optimize.
+
+        Composes ``prune`` with the two store-level cleanup primitives
+        in a single call. Each phase is independent; passing
+        ``before=None`` skips the prune entirely and ``compact`` reduces
+        to a pure VACUUM + optimize.
+
+        Args:
+            before: Age or ISO date for the prune phase. ``None`` skips
+                pruning. See ``Memory.prune`` for the accepted formats.
+            vacuum: Run ``VACUUM`` after pruning. Set ``False`` on very
+                large stores where you want to defer the file rebuild
+                (VACUUM can take seconds-to-minutes on multi-GB DBs).
+            optimize_fts: Run the FTS5 ``'optimize'`` directive to
+                compact the inverted index. Much cheaper than VACUUM;
+                independent of it.
+            collection / project / layer: Scope for the prune phase.
+                Defaults follow ``Memory.prune``.
+            dry_run: If ``True``, run the prune in dry-run mode and
+                skip VACUUM / optimize entirely. Lets callers preview
+                without modifying the file.
+
+        Returns:
+            ``{"prune": {...} | None, "vacuum": bool, "optimize_fts": bool}``
+            describing each phase. The ``prune`` field is the same dict
+            ``Memory.prune`` returns, or ``None`` when ``before`` was
+            not provided.
+        """
+        report: dict = {"prune": None, "vacuum": False, "optimize_fts": False}
+        if before is not None:
+            report["prune"] = self.prune(
+                before=before,
+                collection=collection,
+                project=project,
+                layer=layer,
+                tags=tags,
+                dry_run=dry_run,
+            )
+        if dry_run:
+            return report
+        if vacuum:
+            self._store.vacuum()
+            report["vacuum"] = True
+        if optimize_fts:
+            self._store.optimize_fts()
+            report["optimize_fts"] = True
+        return report
+
     def remove(self, source: str | Path) -> bool:
         """Remove a document from memory.
 
@@ -590,6 +804,190 @@ class Memory:
         if not source_str.startswith(("http://", "https://", "text://")):
             source_str = str(Path(source_str).resolve())
         return self._store.delete_document(source_str)
+
+    def update(
+        self,
+        source: str | Path,
+        *,
+        text: str | None = None,
+        title: str | None = None,
+        tags: str | None = None,
+        collection: object = _UNSET,
+    ) -> dict:
+        """Update an existing document in place.
+
+        Three update modes, picked from the kwargs provided:
+
+        - **metadata-only** (``title`` and/or ``tags`` set, ``text`` is
+          ``None``): runs a single SQL ``UPDATE`` against the
+          ``documents`` row. No re-chunking, no re-embedding, no
+          embedding model invocation. Tags pass through verbatim;
+          pass ``tags=""`` to clear all tags.
+        - **content** (``text`` set): re-runs the full ingest pipeline
+          for the new text -- chunk + embed + store -- replacing every
+          chunk of the matching document. ``title`` and ``tags`` may be
+          updated in the same call; they ride on the freshly-stored
+          row. The previous document row is removed first via
+          ``Memory.remove`` so the new content cannot collide with stale
+          chunk ids.
+        - **noop** (no field provided): raises ``ValueError`` -- a
+          caller that does not pass any field to update is almost
+          always a bug.
+
+        File-path normalization matches ``add()``/``remove()`` so
+        relative paths resolve consistently. URLs and ``text://``
+        synthetic paths pass through unchanged.
+
+        Args:
+            source: File path, URL, or ``text://`` identifier of the
+                document to mutate.
+            text: New content. When provided, every chunk of the doc is
+                re-embedded; ``title`` falls back to ``add``'s
+                title-extraction logic if not overridden.
+            title: New title. Optional in both modes.
+            tags: New comma-separated tag string. Optional in both modes.
+                Pass an empty string to clear tags.
+            collection: Override the default collection filter when
+                multiple ``(collection, path)`` rows could match the
+                same ``source``. Default uses the ``Memory``-instance
+                collection; pass ``None`` to update every collection's
+                copy of ``source``.
+
+        Returns:
+            Dict describing the update::
+
+                {
+                  "status": "updated" | "not_found" | "noop",
+                  "mode":   "metadata" | "content",
+                  "fields": ["title", "tags"],   # what was changed
+                  "chunks": <int>,               # for content mode
+                }
+
+            ``status="not_found"`` means no row matched ``source``; the
+            store was not modified. ``status="noop"`` means a content
+            update produced an empty result (text too short to chunk).
+
+        Raises:
+            ValueError: No field was provided to update.
+
+        Example::
+
+            mem = Memory(project="my_agent")
+            mem.update("docs/spec.md", title="Spec v2")
+            mem.update("docs/spec.md", tags="archive,spec")
+            mem.update("docs/spec.md", text=open("docs/spec.md").read())
+        """
+        if text is None and title is None and tags is None:
+            raise ValueError(
+                "Memory.update called with no field to update -- "
+                "pass at least one of `text=`, `title=`, or `tags=`."
+            )
+
+        source_str = str(source)
+        if not source_str.startswith(("http://", "https://", "text://")):
+            source_str = str(Path(source_str).resolve())
+
+        col = self._collection if collection is _UNSET else collection
+
+        if text is None:
+            # Metadata-only path. Use the store's atomic UPDATE
+            # primitive; do not invoke the embed pipeline at all.
+            #
+            # ``col`` is the Memory-instance default OR the caller's
+            # explicit override. We pass it through *verbatim*: the
+            # ``"default"``->``None`` mapping the previous version did
+            # re-introduced the #165 read/write asymmetry (a
+            # ``Memory(collection="default")`` user who called
+            # ``mem.update`` would have their change silently applied
+            # across every collection). To update every collection
+            # holding ``source``, the caller passes ``collection=None``
+            # explicitly.
+            updated = self._store.update_metadata(
+                source_str,
+                title=title,
+                tags=tags,
+                collection=col,
+            )
+            fields = [k for k, v in (("title", title), ("tags", tags)) if v is not None]
+            return {
+                "status": "updated" if updated else "not_found",
+                "mode": "metadata",
+                "fields": fields,
+                "chunks": 0,
+            }
+
+        # Content update: replace the chunks in place with the
+        # caller-supplied text. We deliberately do NOT re-read the
+        # path from disk (the caller is overriding the content), and
+        # we preserve every metadata field the caller did NOT pass so
+        # tags / project / layer / source_type / collection survive a
+        # content-only refresh.
+        #
+        # The scope is whatever the caller asked for: ``col`` is
+        # ``"default"`` / explicit string / ``None`` (=all collections).
+        # We do NOT collapse ``"default"`` to ``None`` -- doing so
+        # would silently widen the scope and re-introduce #165.
+        existing_rows = self._store._conn.execute(
+            "SELECT path, title, source_type, collection, "
+            "project, layer, tags, chunk_count, char_count, added_at "
+            "FROM documents WHERE path = ?" + (" AND collection = ?" if col is not None else ""),
+            [source_str, col] if col is not None else [source_str],
+        ).fetchall()
+        if not existing_rows:
+            return {
+                "status": "not_found",
+                "mode": "content",
+                "fields": [],
+                "chunks": 0,
+            }
+        existing_docs = [DocumentInfo(**dict(row)) for row in existing_rows]
+
+        # Chunk + embed the new text once and reuse for every
+        # collection that holds this ``source``. ``chunk_text`` and
+        # ``embed_texts`` are the same primitives ``ingest_text`` uses,
+        # so chunking semantics match ``Memory.add`` exactly.
+        from .embed import embed_texts
+        from .ingest import chunk_text
+
+        cs = self._chunk_size if self._chunk_size is not None else self._cfg.chunking.size
+        co = self._chunk_overlap if self._chunk_overlap is not None else self._cfg.chunking.overlap
+        new_chunks = chunk_text(text, cs, co)
+        if not new_chunks:
+            return {
+                "status": "noop",
+                "mode": "content",
+                "fields": [],
+                "chunks": 0,
+            }
+        new_embeddings = embed_texts(new_chunks, self._cfg.embeddings.model)
+
+        # Delete-then-add, scoped to the same set of collections we
+        # just listed. Re-add into *each* existing collection so a
+        # multi-collection update does not silently collapse the doc
+        # into a single collection. Not strictly atomic (the doc is
+        # briefly missing between the two steps), but the same window
+        # already exists in the ``force=True`` re-ingest path used by
+        # ``add()`` and the watch worker.
+        self._store.delete_document(source_str, collection=col)
+        for existing in existing_docs:
+            self._store.add_document(
+                path=source_str,
+                title=title if title is not None else existing.title,
+                chunks=new_chunks,
+                embeddings=new_embeddings,
+                source_type=existing.source_type,
+                collection=existing.collection,
+                project=existing.project,
+                layer=existing.layer,
+                tags=tags if tags is not None else existing.tags,
+            )
+        fields = [k for k, v in (("text", text), ("title", title), ("tags", tags)) if v is not None]
+        return {
+            "status": "updated",
+            "mode": "content",
+            "fields": fields,
+            "chunks": len(new_chunks) * len(existing_docs),
+        }
 
     def list(
         self,
@@ -683,6 +1081,9 @@ class Memory:
         query: str | None = None,
         *,
         top_k: int = 5,
+        tags: str | list[str] | None = None,
+        added_after: str | None = None,
+        added_before: str | None = None,
     ) -> list[dict]:
         """Recall relevant journal entries from past sessions.
 
@@ -692,6 +1093,14 @@ class Memory:
         Args:
             query: Search query, or None for recent entries.
             top_k: Number of entries to return.
+            tags: Restrict to journal entries tagged with one or more of
+                these tags (OR semantics). Accepts a comma-separated
+                string (``"work,decisions"``) or a list. Comma-anchored
+                LIKE match so ``work`` does not false-match ``workflow``.
+            added_after: ISO date (e.g. ``"2026-01-15"``) — only return
+                entries logged on or after this date.
+            added_before: ISO date — only return entries logged strictly
+                before this date.
 
         Returns:
             List of dicts with text, title, score/added_at.
@@ -700,6 +1109,7 @@ class Memory:
 
             mem = Memory(project="my_agent")
             context = mem.journal_recall("authentication decisions")
+            recent_work = mem.journal_recall(tags="work", added_after="2026-05-20")
         """
         from .journal import journal_recall
 
@@ -707,6 +1117,9 @@ class Memory:
             query=query,
             top_k=top_k,
             project=self._project,
+            tags=tags,
+            added_after=added_after,
+            added_before=added_before,
             cfg=self._cfg,
         )
 

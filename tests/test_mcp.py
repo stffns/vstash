@@ -57,6 +57,25 @@ def _clean_singletons() -> None:
     _reset_singletons()
 
 
+def _setup_mock_config(mock_config: MagicMock) -> None:
+    """Populate the realistic limit fields the new validation layer needs.
+
+    The MCP search/ask handlers route through ``vstash.services.search``
+    (since the Sprint 2 services migration), which calls
+    ``validate_search_input`` up front against ``cfg.limits``. With a
+    bare MagicMock those comparisons crash with
+    ``TypeError: '>' not supported between 'int' and 'MagicMock'``.
+    Set the same defaults VstashConfig() ships so every search/ask
+    test gets through validation cleanly.
+    """
+    cfg = mock_config.return_value
+    cfg.embeddings.model = "BAAI/bge-small-en-v1.5"
+    cfg.limits.max_query_chars = 100_000
+    cfg.limits.max_top_k = 10_000
+    cfg.limits.max_distance_cutoff = 10.0
+    cfg.limits.max_recency_boost = 10.0
+
+
 def _make_search_result(text: str = "chunk text", title: str = "Doc") -> SearchResult:
     """Helper to create a SearchResult for testing."""
     return SearchResult(chunk_id=0, text=text, title=title, path="/test/doc.md", chunk=0, score=0.5)
@@ -179,7 +198,7 @@ class TestVstashSearch:
         mock_store.return_value.expand_context.return_value = chunks
         mock_store.return_value.last_best_distance = 0.5
         mock_store.return_value.record_search_event.return_value = 1
-        mock_config.return_value.embeddings.model = "BAAI/bge-small-en-v1.5"
+        _setup_mock_config(mock_config)
 
         result = json.loads(vstash_search("test query"))
         assert "chunks" in result
@@ -195,7 +214,7 @@ class TestVstashSearch:
         self, mock_config: MagicMock, mock_store: MagicMock, mock_embed: MagicMock
     ) -> None:
         mock_store.return_value.search.return_value = []
-        mock_config.return_value.embeddings.model = "BAAI/bge-small-en-v1.5"
+        _setup_mock_config(mock_config)
 
         result = json.loads(vstash_search("nothing here"))
         assert result["chunks"] == []
@@ -229,7 +248,7 @@ class TestVstashSearch:
         mock_store.return_value.expand_context.return_value = chunks
         mock_store.return_value.last_best_distance = 0.5
         mock_store.return_value.record_search_event.return_value = 1
-        mock_config.return_value.embeddings.model = "BAAI/bge-small-en-v1.5"
+        _setup_mock_config(mock_config)
 
         vstash_search("test query", vec_weight=0.9, fts_weight=0.1)
 
@@ -257,7 +276,7 @@ class TestVstashSearch:
         mock_store.return_value.expand_context.return_value = chunks
         mock_store.return_value.last_best_distance = 0.5
         mock_store.return_value.record_search_event.return_value = 1
-        mock_config.return_value.embeddings.model = "BAAI/bge-small-en-v1.5"
+        _setup_mock_config(mock_config)
 
         vstash_search("test query")
 
@@ -290,7 +309,7 @@ class TestVstashSearch:
         mock_store.return_value.expand_context.return_value = chunks
         mock_store.return_value.last_best_distance = 0.5
         mock_store.return_value.record_search_event.return_value = 1
-        mock_config.return_value.embeddings.model = "BAAI/bge-small-en-v1.5"
+        _setup_mock_config(mock_config)
 
         # Weights as strings, fts_only omitted (default False -> hybrid).
         vstash_search(
@@ -320,7 +339,7 @@ class TestVstashSearch:
     ) -> None:
         """Unparseable strings must surface as a structured MCP error,
         not a 500 — the tool wraps the ValueError into _error()."""
-        mock_config.return_value.embeddings.model = "BAAI/bge-small-en-v1.5"
+        _setup_mock_config(mock_config)
 
         result = json.loads(
             vstash_search("test", vec_weight="not_a_number")  # type: ignore[arg-type]
@@ -350,7 +369,7 @@ class TestVstashSearch:
         the validator — a NaN weight would otherwise propagate into
         RRF scoring and produce NaN result scores.
         """
-        mock_config.return_value.embeddings.model = "BAAI/bge-small-en-v1.5"
+        _setup_mock_config(mock_config)
 
         for bad_value in ("nan", "NaN", "inf", "-inf", "Infinity"):
             result = json.loads(
@@ -386,7 +405,7 @@ class TestVstashSearch:
         mock_store.return_value.expand_context.return_value = chunks
         mock_store.return_value.last_best_distance = 0.5
         mock_store.return_value.record_search_event.return_value = 1
-        mock_config.return_value.embeddings.model = "BAAI/bge-small-en-v1.5"
+        _setup_mock_config(mock_config)
 
         # Every one of these combinations would fail coercion on its
         # own but must succeed when paired with retrieval_mode="fts_only".
@@ -464,7 +483,7 @@ class TestVstashAsk:
         store_inst.search.return_value = chunks
         store_inst.last_best_distance = 0.5
         store_inst.expand_context.return_value = chunks
-        mock_config.return_value.embeddings.model = "BAAI/bge-small-en-v1.5"
+        _setup_mock_config(mock_config)
 
         with patch("vstash.chat.ask", return_value="Python is great."):
             result = json.loads(vstash_ask("What is Python?"))
@@ -482,7 +501,7 @@ class TestVstashAsk:
         self, mock_config: MagicMock, mock_store: MagicMock, mock_embed: MagicMock
     ) -> None:
         mock_store.return_value.search.return_value = []
-        mock_config.return_value.embeddings.model = "BAAI/bge-small-en-v1.5"
+        _setup_mock_config(mock_config)
 
         result = json.loads(vstash_ask("unknown topic"))
         assert "No relevant documents" in result["answer"]
@@ -503,7 +522,7 @@ class TestVstashAsk:
         store_inst.search.return_value = chunks
         store_inst.last_best_distance = 0.5
         store_inst.expand_context.return_value = chunks
-        mock_config.return_value.embeddings.model = "BAAI/bge-small-en-v1.5"
+        _setup_mock_config(mock_config)
 
         with patch("vstash.chat.ask", return_value="Answer."):
             result = json.loads(vstash_ask("query"))
@@ -534,7 +553,7 @@ class TestVstashAsk:
         store_inst.search.return_value = chunks
         store_inst.last_best_distance = 0.5
         store_inst.expand_context.return_value = chunks
-        mock_config.return_value.embeddings.model = "BAAI/bge-small-en-v1.5"
+        _setup_mock_config(mock_config)
 
         with patch("vstash.chat.ask", return_value="answer"):
             vstash_ask(
@@ -566,7 +585,7 @@ class TestVstashAsk:
         store_inst.search.return_value = chunks
         store_inst.last_best_distance = 0.5
         store_inst.expand_context.return_value = chunks
-        mock_config.return_value.embeddings.model = "BAAI/bge-small-en-v1.5"
+        _setup_mock_config(mock_config)
 
         # Weights as strings, no mode set (default hybrid).
         with patch("vstash.chat.ask", return_value="answer"):
@@ -622,12 +641,15 @@ class TestVstashAdd:
         assert result["chunks"] == 2
 
     def test_add_nonexistent_path_returns_error(self) -> None:
-        with patch("vstash.mcp._get_config"), patch("vstash.mcp._get_store"):
-            with patch(
+        with (
+            patch("vstash.mcp._get_config"),
+            patch("vstash.mcp._get_store"),
+            patch(
                 "vstash.ingest.ingest",
                 side_effect=FileNotFoundError("not found"),
-            ):
-                result = json.loads(vstash_add("/nonexistent/file.txt"))
+            ),
+        ):
+            result = json.loads(vstash_add("/nonexistent/file.txt"))
 
         assert "error" in result
         assert "not found" in result["error"].lower()
@@ -947,7 +969,14 @@ class TestVstashJournalRecall:
         result = json.loads(vstash_journal_recall("past decisions"))
         assert len(result) == 1
         assert result[0]["title"] == "Entry 1"
-        mock_recall.assert_called_once_with(query="past decisions", top_k=5, project=None)
+        mock_recall.assert_called_once_with(
+            query="past decisions",
+            top_k=5,
+            project=None,
+            tags=None,
+            added_after=None,
+            added_before=None,
+        )
 
     @patch("vstash.journal.journal_recall")
     def test_recall_no_query_returns_recent(self, mock_recall: MagicMock) -> None:
@@ -955,7 +984,14 @@ class TestVstashJournalRecall:
 
         result = json.loads(vstash_journal_recall())
         assert result == []
-        mock_recall.assert_called_once_with(query=None, top_k=5, project=None)
+        mock_recall.assert_called_once_with(
+            query=None,
+            top_k=5,
+            project=None,
+            tags=None,
+            added_after=None,
+            added_before=None,
+        )
 
     @patch("vstash.journal.journal_recall", side_effect=Exception("search failed"))
     def test_recall_error(self, mock_recall: MagicMock) -> None:

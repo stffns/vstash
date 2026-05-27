@@ -33,6 +33,7 @@ import sqlite_vec
 from collections import OrderedDict
 
 from .config import CacheConfig, LimitsConfig, ObservabilityConfig
+from .errors import SchemaVersionError
 from .validation import validate_document_input, validate_search_input
 from .models import (
     ChunkInfo,
@@ -72,13 +73,9 @@ SCHEMA_VERSION = "2"
 KNOWN_SCHEMA_VERSIONS: frozenset[str] = frozenset({"1", "2"})
 
 
-class SchemaVersionError(RuntimeError):
-    """Raised when an existing DB declares a schema version this build
-    of vstash does not recognize.
-
-    The right remedy is to upgrade vstash, restore from backup, or run
-    a future ``vstash migrate`` command (not yet implemented).
-    """
+# SchemaVersionError moved to vstash.errors in v0.37 (single source of
+# truth for the VstashError hierarchy). Imported at the top of this
+# module; this comment is left as a breadcrumb for code archaeology.
 
 
 # ------------------------------------------------------------------ #
@@ -155,6 +152,43 @@ except ImportError:
     _HAS_SNAPVEC = False
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_tags(tags: str | list[str] | None) -> list[str]:
+    """Normalize the ``tags`` filter input to a deduped list of tag strings.
+
+    Accepts:
+      - ``None`` / empty string / empty list -> ``[]`` (filter disabled).
+      - A comma-separated string (``"alpha, beta"``) -> ``["alpha", "beta"]``.
+      - A list of strings (``["alpha", "beta"]``) -> ``["alpha", "beta"]``.
+
+    Whitespace around each tag is stripped, empty entries are dropped, and
+    insertion order is preserved (no sort) so callers can keep meaningful
+    ordering when they care. Duplicates are removed.
+    """
+    if tags is None:
+        return []
+    if isinstance(tags, str):
+        parts = tags.split(",")
+    else:
+        # Each list element may itself contain commas (Typer's
+        # ``--tag "a,b"`` pattern, or callers who mix repeated flags
+        # with comma-joined strings). Split each element so the
+        # caller surface accepts ``["alpha,beta"]`` and
+        # ``["alpha", "beta"]`` interchangeably -- otherwise the
+        # comma-anchored ``LIKE`` match would look for a literal tag
+        # ``"alpha,beta"`` which never exists in storage.
+        parts = []
+        for t in tags:
+            parts.extend(str(t).split(","))
+    seen: set[str] = set()
+    out: list[str] = []
+    for part in parts:
+        cleaned = part.strip()
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            out.append(cleaned)
+    return out
 
 
 def _serialize(vector: list[float]) -> bytes:
@@ -390,6 +424,20 @@ class VstashStore:
         The backend starts unfit; sqlite-vec remains authoritative until
         ``fit_ivfpq()`` trains on the corpus. After that, searches prefer
         the IVFPQ path and new adds append directly.
+
+        Crash recovery (issue #329): the on-disk ``.snpi`` is only flushed
+        on ``close()`` / ``_checkpoint_snapvec``. A crash between an
+        ``add_document`` (which updates the in-memory IVFPQ index)
+        and ``close()`` can leave ``.snpi`` with fewer rows than
+        ``vec_chunks``. On reopen, this method detects that staleness
+        (``len(loaded_index) < COUNT(vec_chunks)``) and downgrades the
+        backend to its unfitted state so ``VstashStore.search`` falls
+        back to sqlite-vec rather than silently missing the rows
+        ingested in the last write burst. The user is told via
+        ``logger.warning`` to rerun ``vstash snapvec fit`` when
+        convenient. We do not auto-refit because IVFPQ fitting is a
+        ~50s operation that would block every reopen after a crash;
+        sqlite-vec retrieval is correct in the interim.
         """
         if not _HAS_SNAPVEC:
             logger.warning(
@@ -399,7 +447,7 @@ class VstashStore:
             self._vector_backend = "sqlite-vec"
             return
 
-        from ._ivfpq_backend import IVFPQBackend
+        from .vectorbackend.snapvec_ivfpq import IVFPQBackend
 
         nlist = self._ivfpq_nlist or self._derive_nlist()
         kwargs = dict(
@@ -426,6 +474,45 @@ class VstashStore:
                 exc_info=True,
             )
             self._snap = IVFPQBackend(**kwargs)
+            return
+
+        # Staleness check (issue #329): mirrors the FLAT precedent at
+        # _init_snapvec. ANY count mismatch is stale, in either
+        # direction:
+        #
+        # - sqlite_n > snap_n: the canonical add_document case. Crash
+        #   after writing to vec_chunks but before .snpi flush; the
+        #   index is missing the last write burst.
+        # - sqlite_n < snap_n: the delete case. Crash after
+        #   delete_document removed rows from vec_chunks but before
+        #   .snpi flush; the index still carries the deleted ids,
+        #   which then consume ANN candidate slots and reduce recall
+        #   (search returns hits for tombstoned chunk_ids that the
+        #   path map filters out, so top-K is partial).
+        #
+        # In both cases the right answer is to downgrade to unfitted
+        # and let sqlite-vec answer until the user runs `vstash
+        # snapvec fit` to rebuild. Skip when the index is unfitted
+        # (len == 0 by contract) or the file did not exist (load
+        # returns an unfitted instance in that case too).
+        if self._snap.fitted:
+            try:
+                sqlite_n = int(self._conn.execute("SELECT COUNT(*) FROM vec_chunks").fetchone()[0])
+            except sqlite3.Error:
+                sqlite_n = 0
+            snap_n = len(self._snap)
+            if sqlite_n != snap_n:
+                logger.warning(
+                    "IVFPQ index at %s is stale: %d routable vectors vs %d in "
+                    "vec_chunks (likely a crash between add_document/delete and "
+                    "close()). Downgrading to unfitted; search will fall back "
+                    "to sqlite-vec until you run 'vstash snapvec fit' to "
+                    "rebuild from current vec_chunks.",
+                    self._ivfpq_path,
+                    snap_n,
+                    sqlite_n,
+                )
+                self._snap = IVFPQBackend(**kwargs)
 
     @staticmethod
     def _nlist_for(n: int) -> int:
@@ -459,7 +546,7 @@ class VstashStore:
 
         import numpy as np
 
-        from ._ivfpq_backend import IVFPQBackend
+        from .vectorbackend.snapvec_ivfpq import IVFPQBackend
 
         # Stream vec_chunks into a pre-allocated float32 matrix so peak
         # memory stays bounded at ~N * dim * 4 bytes (e.g. ~150 MB at
@@ -503,7 +590,7 @@ class VstashStore:
         return {
             "n_indexed": int(n_rows),
             "nlist": nlist,
-            "training_sample": int(len(sample)),
+            "training_sample": len(sample),
             "build_seconds": round(build_s, 2),
             "path": str(self._ivfpq_path),
         }
@@ -1267,7 +1354,18 @@ class VstashStore:
             limits=self._limits,
         )
 
-        doc_id = hashlib.sha256(f"{collection}:{path}".encode("utf-8")).hexdigest()[:32]
+        # Normalize the on-disk tag representation to match the form
+        # the search-side comma-anchored ``LIKE`` expects. Writers
+        # routinely hand us ``"alpha, beta"`` (frontmatter style); if
+        # we stored it verbatim, a query for ``tag="beta"`` would
+        # generate ``%,beta,%`` against ``,alpha, beta,`` and miss
+        # because of the leading space. Round-tripping through
+        # ``_normalize_tags`` strips that whitespace and dedupes
+        # repeats once, at ingest time, so the storage invariant is
+        # ``"tag1,tag2,..."`` with no spaces and no duplicates.
+        stored_tags = ",".join(_normalize_tags(tags)) if tags else None
+
+        doc_id = hashlib.sha256(f"{collection}:{path}".encode()).hexdigest()[:32]
 
         with self._write_lock:
             # Explicit transaction ensures atomicity — a crash mid-way
@@ -1291,7 +1389,7 @@ class VstashStore:
                         collection,
                         project,
                         layer,
-                        tags,
+                        stored_tags,
                         sum(len(c) for c in chunks),
                         len(chunks),
                         datetime.now(timezone.utc).isoformat(),
@@ -1318,15 +1416,21 @@ class VstashStore:
                     ).fetchall()
                 ]
 
-                # Vector index entries
-                vec_data = [(rowid, _serialize(emb)) for rowid, emb in zip(rowids, embeddings)]
+                # Vector index entries. rowids comes from a SELECT-by-doc_id
+                # right after the chunk inserts above, so it must align 1:1
+                # with the input embeddings/chunks; strict=True surfaces any
+                # invariant violation as a ValueError instead of silently
+                # truncating to the shorter side.
+                vec_data = [
+                    (rowid, _serialize(emb)) for rowid, emb in zip(rowids, embeddings, strict=True)
+                ]
                 self._conn.executemany(
                     "INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)",
                     vec_data,
                 )
 
                 # FTS5 entries (rowid must match chunks.id)
-                fts_data = [(rowid, text) for rowid, text in zip(rowids, chunks)]
+                fts_data = [(rowid, text) for rowid, text in zip(rowids, chunks, strict=True)]
                 if not self._defer_fts:
                     self._conn.executemany(
                         "INSERT INTO fts_chunks (rowid, text) VALUES (?, ?)",
@@ -1411,7 +1515,14 @@ class VstashStore:
                         limits=self._limits,
                     )
 
-                    doc_id = hashlib.sha256(f"{collection}:{path}".encode("utf-8")).hexdigest()[:32]
+                    # Normalize tags on write so the search-side
+                    # comma-anchored ``LIKE`` matches reliably. Same
+                    # invariant as ``add_document``: stored form is
+                    # ``"tag1,tag2,..."`` with no whitespace and no
+                    # duplicates.
+                    stored_tags = ",".join(_normalize_tags(tags)) if tags else None
+
+                    doc_id = hashlib.sha256(f"{collection}:{path}".encode()).hexdigest()[:32]
                     doc_ids.append(doc_id)
 
                     self._delete_by_doc_id(doc_id)
@@ -1430,7 +1541,7 @@ class VstashStore:
                             collection,
                             project,
                             layer,
-                            tags,
+                            stored_tags,
                             sum(len(c) for c in chunks),
                             len(chunks),
                             now_iso,
@@ -1452,13 +1563,16 @@ class VstashStore:
                         ).fetchall()
                     ]
 
-                    vec_data = [(rowid, _serialize(emb)) for rowid, emb in zip(rowids, embeddings)]
+                    vec_data = [
+                        (rowid, _serialize(emb))
+                        for rowid, emb in zip(rowids, embeddings, strict=True)
+                    ]
                     self._conn.executemany(
                         "INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)",
                         vec_data,
                     )
 
-                    fts_data = list(zip(rowids, chunks))
+                    fts_data = list(zip(rowids, chunks, strict=True))
                     if self._defer_fts:
                         pending_fts.extend(fts_data)
                     else:
@@ -1561,7 +1675,7 @@ class VstashStore:
         # Use the same hash recipe as add_document so we look up the
         # *exact* row that a fresh ingest would write to.  Looking up
         # by ``WHERE path = ?`` would conflate collections.
-        doc_id = hashlib.sha256(f"{collection}:{path}".encode("utf-8")).hexdigest()[:32]
+        doc_id = hashlib.sha256(f"{collection}:{path}".encode()).hexdigest()[:32]
         row = self._conn.execute(
             "SELECT chunk_count FROM documents WHERE id = ?", [doc_id]
         ).fetchone()
@@ -1645,6 +1759,207 @@ class VstashStore:
                 self._reload_snapvec()
                 raise
             return True
+
+    def update_metadata(
+        self,
+        path: str,
+        *,
+        title: str | None = None,
+        tags: str | None = None,
+        collection: str | None = None,
+    ) -> bool:
+        """Update document metadata (``title`` and/or ``tags``) in place.
+
+        This is the in-place mutator for fields that do NOT require
+        re-chunking or re-embedding. Use it for renames, retagging, or
+        any metadata-only correction. To change the chunk text itself,
+        use ``Memory.update(path, text=...)`` which re-runs the embed
+        pipeline.
+
+        Args:
+            path: Document path (or URL) identifying the row.
+            title: New title; pass ``None`` to leave unchanged.
+            tags: New comma-separated tags string; pass ``None`` to
+                leave unchanged. Pass ``""`` to clear the tag set.
+            collection: If set, restrict the update to a specific
+                ``(collection, path)`` pair. ``None`` (default) updates
+                every matching row across collections, mirroring
+                ``delete_document``'s default semantics.
+
+        Returns:
+            ``True`` if at least one row was updated.
+
+        Raises:
+            ValueError: Neither ``title`` nor ``tags`` was provided
+                (the call would be a no-op and almost always indicates
+                a caller bug).
+        """
+        if title is None and tags is None:
+            raise ValueError(
+                "update_metadata called with no field to update -- "
+                "pass at least one of `title=` or `tags=`."
+            )
+        with self._write_lock:
+            # Build the SET clause and bind params dynamically so the
+            # statement only touches the fields the caller actually
+            # provided. Mirrors the `_get_filter_conditions` style used
+            # elsewhere in this module.
+            set_parts: list[str] = []
+            set_params: list[str] = []
+            if title is not None:
+                set_parts.append("title = ?")
+                set_params.append(title)
+            if tags is not None:
+                # Normalize on write so the search-side comma-anchored
+                # LIKE matches reliably (same invariant as
+                # ``add_document`` post-#364). ``tags=""`` clears.
+                set_parts.append("tags = ?")
+                stored = ",".join(_normalize_tags(tags)) if tags else None
+                set_params.append(stored)
+            where_parts = ["path = ?"]
+            where_params: list[str] = [path]
+            if collection is not None:
+                where_parts.append("collection = ?")
+                where_params.append(collection)
+            sql = f"UPDATE documents SET {', '.join(set_parts)} WHERE {' AND '.join(where_parts)}"
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                cur = self._conn.execute(sql, [*set_params, *where_params])
+                rowcount = cur.rowcount
+                self._conn.commit()
+                if rowcount > 0:
+                    # Tag/title changes are visible to search filters
+                    # (tag-anchored LIKE in `_get_filter_conditions`) and
+                    # to result formatting, so invalidate the LRU.
+                    self._bump_cache_epoch()
+            except Exception:
+                self._conn.rollback()
+                raise
+            return rowcount > 0
+
+    def prune_documents(
+        self,
+        *,
+        before_iso: str | None = None,
+        collection: str | None = None,
+        project: str | None = None,
+        layer: str | None = None,
+        tags: str | list[str] | None = None,
+        dry_run: bool = False,
+    ) -> dict:
+        """Delete documents matching the given filters.
+
+        At least one filter (``before_iso`` or any metadata) must be
+        provided -- a fully-unfiltered prune would wipe the entire
+        store, which is almost always a caller bug and is better done
+        explicitly with ``delete_document`` in a loop.
+
+        Args:
+            before_iso: Delete documents whose ``added_at`` is strictly
+                older than this ISO timestamp (``"2026-01-15"`` or full
+                ``"2026-01-15T00:00:00+00:00"``).
+            collection: Restrict to this collection.
+            project: Restrict to this project.
+            layer: Restrict to this layer.
+            tags: Restrict to docs tagged with any of these tags (OR).
+                Accepts the same forms as the search-side tag filter:
+                comma-separated string (``"alpha,beta"``) or list.
+            dry_run: If ``True``, report what would be deleted without
+                touching the store.
+
+        Returns:
+            ``{"status": "ok"|"dry_run", "deleted": N, "paths": [...]}``.
+        """
+        if (
+            before_iso is None
+            and collection is None
+            and project is None
+            and layer is None
+            and not _normalize_tags(tags)
+        ):
+            raise ValueError(
+                "prune_documents called with no filter -- pass at least one "
+                "of `before_iso`, `collection`, `project`, `layer`, or `tags` "
+                "to scope the deletion."
+            )
+        conditions, params = self._get_filter_conditions(
+            collection=collection,
+            project=project,
+            layer=layer,
+            tags=tags,
+        )
+        if before_iso is not None:
+            conditions.append("added_at < ?")
+            params.append(before_iso)
+        where = "WHERE " + " AND ".join(conditions)
+        select_sql = f"SELECT id, path FROM documents {where}"
+
+        # ``dry_run`` is informational and tolerates the small race
+        # between SELECT and any concurrent writer -- it does not
+        # delete anything. The real prune below puts the SELECT INSIDE
+        # ``BEGIN IMMEDIATE`` so the rows we report deleted are exactly
+        # the rows that satisfied the filter at the instant the write
+        # lock was acquired. Otherwise a concurrent ``add_document``
+        # between the unlocked SELECT and the locked delete would let
+        # the reported ``paths`` / ``deleted`` count drift from what
+        # ``_delete_by_doc_ids`` actually removed.
+        if dry_run:
+            rows = self._conn.execute(select_sql, params).fetchall()
+            if not rows:
+                return {"status": "dry_run", "deleted": 0, "paths": []}
+            return {
+                "status": "dry_run",
+                "deleted": len(rows),
+                "paths": [r["path"] for r in rows],
+            }
+        with self._write_lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                rows = self._conn.execute(select_sql, params).fetchall()
+                if not rows:
+                    self._conn.rollback()
+                    return {"status": "ok", "deleted": 0, "paths": []}
+                doc_ids = [r["id"] for r in rows]
+                paths = [r["path"] for r in rows]
+                self._delete_by_doc_ids(doc_ids)
+                self._conn.commit()
+                self._invalidate_idf_cache()
+                self._bump_cache_epoch()
+                if self._snap_dirty:
+                    self._save_snapvec()
+            except Exception:
+                self._conn.rollback()
+                self._reload_snapvec()
+                raise
+        return {"status": "ok", "deleted": len(paths), "paths": paths}
+
+    def vacuum(self) -> None:
+        """Run SQLite ``VACUUM`` to reclaim space and defragment the file.
+
+        VACUUM cannot run inside a transaction. The store's normal
+        write path uses ``BEGIN IMMEDIATE`` so callers must not invoke
+        this from within another operation -- it is intended as the
+        outermost step of ``Memory.compact()`` / ``vstash compact``,
+        well after the prune phase has committed.
+
+        VACUUM rebuilds the entire database file, so on large stores
+        it can take seconds to minutes and momentarily doubles the disk
+        usage (working copy + original). Both costs are unavoidable.
+        """
+        with self._write_lock:
+            self._conn.execute("VACUUM")
+
+    def optimize_fts(self) -> None:
+        """Merge FTS5 segments in place and reclaim space.
+
+        Uses the FTS5 ``'optimize'`` directive (``INSERT INTO fts_chunks
+        (fts_chunks) VALUES ('optimize')``) which compacts the
+        inverted index without altering any tokenization or content.
+        Much cheaper than ``VACUUM`` and safe to run independently.
+        """
+        with self._write_lock:
+            self._conn.execute("INSERT INTO fts_chunks(fts_chunks) VALUES ('optimize')")
+            self._conn.commit()
 
     def _delete_by_doc_id(self, doc_id: str) -> bool:
         """Delete a document by its internal hash ID.
@@ -1731,6 +2046,7 @@ class VstashStore:
         recency_boost: float,
         added_after: str | None,
         added_before: str | None,
+        tags: str | list[str] | None,
         mmr_lambda: float,
         retrieval_mode: str,
         cache_epoch: int,
@@ -1741,7 +2057,8 @@ class VstashStore:
         entry without having to scan the LRU. ``retrieval_mode`` is
         one of ``"hybrid" | "vec_only" | "fts_only"`` so queries that
         short-circuit one branch do not collide with hybrid queries of
-        the same text.
+        the same text. ``tags`` is normalized to a tuple so the same
+        filter expressed as ``"a,b"`` and ``["a", "b"]`` shares a key.
         """
         emb_bytes = np.array(query_embedding, dtype=np.float32).tobytes()
         return hash(
@@ -1759,6 +2076,11 @@ class VstashStore:
                 recency_boost,
                 added_after,
                 added_before,
+                # Sort so that ``tags=["alpha", "beta"]`` and
+                # ``tags=["beta", "alpha"]`` share the same cache entry
+                # -- the SQL ``OR`` is commutative, so semantically
+                # equivalent queries must hit the same cache slot.
+                tuple(sorted(_normalize_tags(tags))),
                 mmr_lambda,
                 retrieval_mode,
                 cache_epoch,
@@ -2025,6 +2347,7 @@ class VstashStore:
         recency_boost: float = 0.0,
         added_after: str | None = None,
         added_before: str | None = None,
+        tags: str | list[str] | None = None,
         mmr_lambda: float = 0.5,
         retrieval_mode: Literal["hybrid", "vec_only", "fts_only"] | None = None,
         exact_match: str | None = None,
@@ -2134,6 +2457,7 @@ class VstashStore:
                 recency_boost=recency_boost,
                 added_after=added_after,
                 added_before=added_before,
+                tags=tags,
                 mmr_lambda=mmr_lambda,
                 retrieval_mode=_mode,
                 cache_epoch=self._cache_epoch,
@@ -2233,6 +2557,7 @@ class VstashStore:
                 collection=collection,
                 project=project,
                 layer=layer,
+                tags=tags,
                 added_after=added_after,
                 added_before=added_before,
             )
@@ -2276,7 +2601,7 @@ class VstashStore:
                 #   conversion here.
                 # - ``snapvec-ivfpq`` (``IVFPQBackend``) already
                 #   applies ``1 - similarity`` inside its own
-                #   ``search()`` (see ``_ivfpq_backend.py``) and
+                #   ``search()`` (see ``vectorbackend/snapvec_ivfpq.py``) and
                 #   must not be double-inverted.
                 #
                 # ``min / max`` clamps keep the invariant that
@@ -3218,6 +3543,10 @@ class VstashStore:
 
         selected: list[dict[str, str | int | float]] = []
         remaining = list(range(len(ranked)))
+        # Boolean mask mirrors ``remaining`` membership so the sibling-penalty
+        # loop can iterate a pre-grouped index list and skip candidates that
+        # have already been selected, without an O(N) scan of ``remaining``.
+        in_remaining = [True] * len(ranked)
 
         # Pre-compute normalized scores once (#167).  The value of
         # ``(score - s_min) / s_range`` is invariant across the outer
@@ -3241,6 +3570,14 @@ class VstashStore:
         # Precompute L2 norms for cosine similarity to avoid O(K * N) recomputation.
         chunk_norms = [math.hypot(*emb) if emb is not None else 0.0 for emb in chunk_embs]
 
+        # Pre-group ranked indices by document key so the sibling-penalty
+        # update walks O(S) (siblings only) instead of O(N) (all remaining).
+        # Together with the in_remaining mask this turns the dedup loop from
+        # O(K * N) into O(K * S_avg).
+        doc_to_indices: dict[str, list[int]] = {}
+        for i, doc_key in enumerate(doc_keys):
+            doc_to_indices.setdefault(doc_key, []).append(i)
+
         # Track the maximum similarity to any selected chunk from the *same document*.
         # Replaces O(N * S) recomputation with O(1) lookup + O(N) update.
         max_sims = [0.0] * len(ranked)
@@ -3248,14 +3585,22 @@ class VstashStore:
         for _ in range(min(top_k, len(ranked))):
             best_idx = -1
             best_mmr = -float("inf")
+            best_rem_idx = -1
 
-            for idx in remaining:
+            for rem_idx, idx in enumerate(remaining):
                 max_sim = max_sims[idx]
 
                 mmr_score = relevance_terms[idx] - penalty_multiplier * max_sim
-                if mmr_score > best_mmr:
+                # Prefer the smaller original ``idx`` on exact ties so the
+                # selected set matches the pre-rewrite ordering, where
+                # ``remaining`` was kept sorted ascending and ``>`` (strict)
+                # let the first-seen candidate win. The swap-with-last
+                # removal scrambles the order of ``remaining`` so we have
+                # to add the tie-break explicitly here.
+                if mmr_score > best_mmr or (mmr_score == best_mmr and idx < best_idx):
                     best_mmr = mmr_score
                     best_idx = idx
+                    best_rem_idx = rem_idx
 
             if best_idx < 0 or best_mmr < 0:
                 # Stop when the best remaining candidate has negative MMR,
@@ -3266,7 +3611,14 @@ class VstashStore:
             if _explain:
                 chosen["_mmr_penalty"] = (1 - mmr_lambda) * max_sims[best_idx]
             selected.append(chosen)
-            remaining.remove(best_idx)
+
+            # O(1) swap-with-last removal: the order of ``remaining`` is not
+            # significant — only the set of eligible candidates is — so we can
+            # overwrite the popped slot with the tail and shrink in place
+            # instead of paying O(N) for ``list.remove``.
+            remaining[best_rem_idx] = remaining[-1]
+            remaining.pop()
+            in_remaining[best_idx] = False
 
             # Update max_sims for remaining chunks from the same document
             # by comparing against the newly selected embedding.
@@ -3274,8 +3626,8 @@ class VstashStore:
             new_emb = chunk_embs[best_idx]
             new_norm = chunk_norms[best_idx]
             if new_emb is not None:
-                for idx in remaining:
-                    if doc_keys[idx] == new_doc_key:
+                for idx in doc_to_indices[new_doc_key]:
+                    if in_remaining[idx]:
                         idx_emb = chunk_embs[idx]
                         if idx_emb is not None:
                             sim = _cosine_sim(
@@ -3297,7 +3649,7 @@ class VstashStore:
         collection: str | None = None,
         project: str | None = None,
         layer: str | None = None,
-        tags: str | None = None,
+        tags: str | list[str] | None = None,
         added_after: str | None = None,
         added_before: str | None = None,
     ) -> tuple[list[str], list[str]]:
@@ -3308,7 +3660,11 @@ class VstashStore:
             collection: Filter by collection name.
             project: Filter by project tag.
             layer: Filter by layer tag.
-            tags: Filter by tag (LIKE match within comma-separated tags).
+            tags: Filter by one or more tags. Pass a comma-separated string
+                (``"alpha,beta"``) or a list (``["alpha", "beta"]``);
+                whitespace and empty entries are stripped, then matched OR
+                with comma-anchored LIKE (``",alpha,"``) so ``alpha`` does
+                not false-match ``alphabet``.
             added_after: ISO date — only documents added on or after this date.
             added_before: ISO date — only documents added before this date.
 
@@ -3327,9 +3683,18 @@ class VstashStore:
         if layer:
             conditions.append(f"{prefix}layer = ?")
             params.append(layer)
-        if tags:
-            conditions.append(f"{prefix}tags LIKE ?")
-            params.append(f"%{tags}%")
+        tag_list = _normalize_tags(tags)
+        if tag_list:
+            # Anchor the LIKE pattern with commas so a tag does not
+            # false-match a longer tag that contains it as a substring
+            # (e.g. searching ``alpha`` must NOT hit a doc tagged
+            # ``alphabet``). The stored ``tags`` column is a
+            # comma-separated string; wrapping both sides in commas
+            # turns substring containment into exact membership.
+            wrapped = f"','||{prefix}tags||','"
+            ors = [f"{wrapped} LIKE ?" for _ in tag_list]
+            conditions.append("(" + " OR ".join(ors) + ")")
+            params.extend(f"%,{t},%" for t in tag_list)
         if added_after:
             conditions.append(f"{prefix}added_at >= ?")
             params.append(added_after)
@@ -4526,7 +4891,7 @@ class VstashStore:
 
         # -- Step 3: assemble expanded results, preserving explain --------
         expanded = []
-        for idx, r in enumerate(results):
+        for r in results:
             did = doc_id_map.get(r.chunk_id)
             if did is None:
                 expanded.append(r)
@@ -4650,7 +5015,7 @@ class VstashStore:
 
                     self._conn.executemany(
                         "INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)",
-                        [(cid, _serialize(emb)) for cid, emb in zip(ids, embeddings)],
+                        [(cid, _serialize(emb)) for cid, emb in zip(ids, embeddings, strict=False)],
                     )
 
                     if self._snap is not None:

@@ -20,7 +20,9 @@ import os
 import platform
 import threading
 import urllib.request
-from typing import TYPE_CHECKING, Callable, Literal, Protocol, runtime_checkable
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from fastembed import TextEmbedding
@@ -72,11 +74,11 @@ class Encoder(Protocol):
 #: order.  Each resolver receives a ``model_name`` string and returns
 #: an :class:`Encoder` if it handles that name, otherwise ``None`` to
 #: defer to the built-in backends.  See :func:`register_encoder_resolver`.
-_encoder_resolvers: list[Callable[[str], "Encoder | None"]] = []
+_encoder_resolvers: list[Callable[[str], Encoder | None]] = []
 _encoder_resolvers_lock = threading.Lock()
 
 
-def register_encoder_resolver(resolver: Callable[[str], "Encoder | None"]) -> None:
+def register_encoder_resolver(resolver: Callable[[str], Encoder | None]) -> None:
     """Register a custom encoder resolver.
 
     Resolvers are consulted **before** every built-in embedding path
@@ -105,7 +107,7 @@ def register_encoder_resolver(resolver: Callable[[str], "Encoder | None"]) -> No
             _encoder_resolvers.append(resolver)
 
 
-def unregister_encoder_resolver(resolver: Callable[[str], "Encoder | None"]) -> None:
+def unregister_encoder_resolver(resolver: Callable[[str], Encoder | None]) -> None:
     """Remove a previously-registered resolver.
 
     Identity-based match: removes the entry ``r`` where ``r is resolver``.
@@ -119,7 +121,7 @@ def unregister_encoder_resolver(resolver: Callable[[str], "Encoder | None"]) -> 
                 return
 
 
-def _resolve_custom_encoder(model_name: str) -> "Encoder | None":
+def _resolve_custom_encoder(model_name: str) -> Encoder | None:
     """Walk the resolver list and return the first valid encoder that
     claims ``model_name``.
 
@@ -161,7 +163,7 @@ def _resolve_custom_encoder(model_name: str) -> "Encoder | None":
     return None
 
 
-def _embed_via_custom(texts: list[str], encoder: "Encoder") -> list[list[float]]:
+def _embed_via_custom(texts: list[str], encoder: Encoder) -> list[list[float]]:
     """Run a custom encoder and normalise its output to ``list[list[float]]``.
 
     Accepts numpy arrays, nested lists, or any object with ``tolist``.
@@ -394,7 +396,7 @@ def _is_gemma_model(model_name: str) -> bool:
 
 def _init_gemma() -> tuple:
     """Lazily initialize EmbeddingGemma ONNX session and tokenizer."""
-    global _gemma_session, _gemma_tokenizer  # noqa: PLW0603
+    global _gemma_session, _gemma_tokenizer
     if _gemma_session is None:
         with _gemma_lock:
             if _gemma_session is None:
@@ -746,10 +748,149 @@ _active_backend: Literal["onnx", "mlx"] | None = None
 
 def _resolve(backend: BackendType = "auto") -> Literal["onnx", "mlx"]:
     """Resolve and cache the active backend."""
-    global _active_backend  # noqa: PLW0603
+    global _active_backend
     if _active_backend is None:
         _active_backend = resolve_backend(backend)
     return _active_backend
+
+
+# ------------------------------------------------------------------ #
+# Built-in backend registry                                            #
+# ------------------------------------------------------------------ #
+#
+# The model-name -> embedding-impl dispatch used to live as a hardcoded
+# if/elif chain in embed_texts / embed_query / warmup. Adding a new
+# built-in family (e.g. another HF model variant) meant editing all
+# three sites in lock-step and risked drift. The audit (2026-04-30)
+# flagged this as an OCP violation.
+#
+# Now: a single ordered registry of (matcher, embed_batch, embed_query,
+# warmup) tuples. The dispatch loop iterates the registry; the first
+# matcher that returns True wins. The fallback entry has a matcher
+# that always returns True and resolves onnx vs mlx internally; it
+# must stay last in the list.
+#
+# This is internal: the public extension hook for users is still
+# `register_encoder_resolver`. The built-in registry exists so the
+# project's own backends compose by the same pattern (data, not
+# branches) rather than three sites of hand-rolled dispatch.
+
+
+def _gemma_batch(texts: list[str], model_name: str, _backend: BackendType) -> list[list[float]]:
+    return _embed_gemma(texts, model_name)
+
+
+def _gemma_query(text: str, model_name: str, _backend: BackendType) -> list[float]:
+    return _query_gemma(text, model_name)
+
+
+def _gemma_warmup(model_name: str, _backend: BackendType) -> None:
+    _warmup_gemma(model_name)
+
+
+def _hf_onnx_batch(texts: list[str], model_name: str, _backend: BackendType) -> list[list[float]]:
+    return _embed_hf_onnx(texts, model_name)
+
+
+def _hf_onnx_query(text: str, model_name: str, _backend: BackendType) -> list[float]:
+    return _query_hf_onnx(text, model_name)
+
+
+def _hf_onnx_warmup(model_name: str, _backend: BackendType) -> None:
+    _warmup_hf_onnx(model_name)
+
+
+def _default_batch(texts: list[str], model_name: str, backend: BackendType) -> list[list[float]]:
+    """Fallback batch embedder: routes through onnx or mlx based on _resolve()."""
+    resolved = _resolve(backend)
+    if resolved == "mlx":
+        return _embed_mlx(texts, model_name)
+    return _embed_onnx(texts, model_name)
+
+
+def _default_query(text: str, model_name: str, backend: BackendType) -> list[float]:
+    """Fallback single-query embedder: same dispatch as :func:`_default_batch`."""
+    resolved = _resolve(backend)
+    if resolved == "mlx":
+        return _query_mlx(text, model_name)
+    return _query_onnx(text, model_name)
+
+
+def _default_warmup(model_name: str, backend: BackendType) -> None:
+    resolved = _resolve(backend)
+    if resolved == "mlx":
+        _warmup_mlx(model_name)
+    else:
+        _warmup_onnx(model_name)
+
+
+def _matches_default(_model_name: str) -> bool:
+    """Always-true matcher for the fallback entry. Stays last in the list."""
+    return True
+
+
+@dataclass(frozen=True)
+class _BuiltinBackend:
+    """A built-in embedding backend identified by a model-name matcher.
+
+    The dispatch loop in :func:`embed_texts`, :func:`embed_query`, and
+    :func:`warmup` iterates :data:`_BUILTIN_BACKENDS` in order; the
+    first ``matches`` that returns ``True`` wins. Every entry exposes
+    the same three callables so the dispatch loop never branches on
+    which kind of backend it is calling.
+    """
+
+    name: str
+    matches: Callable[[str], bool]
+    embed_batch: Callable[[list[str], str, BackendType], list[list[float]]]
+    embed_query: Callable[[str, str, BackendType], list[float]]
+    warmup: Callable[[str, BackendType], None]
+
+
+#: Built-in backends in dispatch order. The last entry is the
+#: catch-all fallback (onnx vs mlx, resolved per-platform); it must
+#: stay last because its matcher always returns ``True``.
+_BUILTIN_BACKENDS: list[_BuiltinBackend] = [
+    _BuiltinBackend(
+        name="gemma",
+        matches=_is_gemma_model,
+        embed_batch=_gemma_batch,
+        embed_query=_gemma_query,
+        warmup=_gemma_warmup,
+    ),
+    _BuiltinBackend(
+        name="hf_onnx",
+        matches=_is_hf_onnx_model,
+        embed_batch=_hf_onnx_batch,
+        embed_query=_hf_onnx_query,
+        warmup=_hf_onnx_warmup,
+    ),
+    _BuiltinBackend(
+        name="default",
+        matches=_matches_default,
+        embed_batch=_default_batch,
+        embed_query=_default_query,
+        warmup=_default_warmup,
+    ),
+]
+
+
+def _resolve_builtin_backend(model_name: str) -> _BuiltinBackend:
+    """Return the first built-in backend whose matcher accepts ``model_name``.
+
+    The fallback entry (matcher returns ``True`` for any name) is
+    always last in the list, so this function never raises -- it
+    always returns at least the fallback. The explicit ``raise`` at
+    the bottom is a defensive guard against a future edit that
+    accidentally removes the fallback.
+    """
+    for be in _BUILTIN_BACKENDS:
+        if be.matches(model_name):
+            return be
+    raise RuntimeError(
+        f"No built-in backend matched {model_name!r}; the default "
+        "fallback entry is missing from _BUILTIN_BACKENDS."
+    )
 
 
 def warmup(model_name: str, backend: BackendType = "auto") -> None:
@@ -759,17 +900,14 @@ def warmup(model_name: str, backend: BackendType = "auto") -> None:
         model_name: Model identifier.
         backend: Backend to use — 'onnx', 'mlx', or 'auto'.
     """
-    if _is_gemma_model(model_name):
-        _warmup_gemma(model_name)
+    # Custom resolvers win over every built-in path (mirrors the
+    # short-circuit in embed_texts / embed_query). A registered custom
+    # encoder is responsible for its own initialization on first
+    # `.encode()` call, so we simply skip built-in warmup rather than
+    # warming the wrong backend with an unrecognised model name.
+    if _resolve_custom_encoder(model_name) is not None:
         return
-    if _is_hf_onnx_model(model_name):
-        _warmup_hf_onnx(model_name)
-        return
-    resolved = _resolve(backend)
-    if resolved == "mlx":
-        _warmup_mlx(model_name)
-    else:
-        _warmup_onnx(model_name)
+    _resolve_builtin_backend(model_name).warmup(model_name, backend)
 
 
 # ------------------------------------------------------------------ #
@@ -800,7 +938,7 @@ def _check_daemon() -> str | None:
     """
     if _is_daemon:
         return None
-    global _daemon_checked, _daemon_available, _daemon_url  # noqa: PLW0603
+    global _daemon_checked, _daemon_available, _daemon_url
     if _daemon_checked:
         return _daemon_url if _daemon_available else None
     with _daemon_lock:
@@ -826,7 +964,7 @@ def _mark_daemon_unavailable() -> None:
     daemon crashes gracefully: one failed request triggers a re-probe
     instead of paying the full HTTP timeout on every subsequent call.
     """
-    global _daemon_checked, _daemon_available  # noqa: PLW0603
+    global _daemon_checked, _daemon_available
     _daemon_available = False
     _daemon_checked = False
 
@@ -918,14 +1056,7 @@ def embed_texts(
         if result is not None and len(result) == len(texts):
             return result
 
-    if _is_gemma_model(model_name):
-        return _embed_gemma(texts, model_name)
-    if _is_hf_onnx_model(model_name):
-        return _embed_hf_onnx(texts, model_name)
-    resolved = _resolve(backend)
-    if resolved == "mlx":
-        return _embed_mlx(texts, model_name)
-    return _embed_onnx(texts, model_name)
+    return _resolve_builtin_backend(model_name).embed_batch(texts, model_name, backend)
 
 
 def embed_query(
@@ -958,14 +1089,7 @@ def embed_query(
         if result is not None:
             return result
 
-    if _is_gemma_model(model_name):
-        return _query_gemma(text, model_name)
-    if _is_hf_onnx_model(model_name):
-        return _query_hf_onnx(text, model_name)
-    resolved = _resolve(backend)
-    if resolved == "mlx":
-        return _query_mlx(text, model_name)
-    return _query_onnx(text, model_name)
+    return _resolve_builtin_backend(model_name).embed_query(text, model_name, backend)
 
 
 def get_active_backend() -> str:

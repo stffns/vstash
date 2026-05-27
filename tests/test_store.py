@@ -138,6 +138,159 @@ class TestStoreSearch:
             assert isinstance(r.chunk, int)
             assert isinstance(r.score, float)
 
+    def test_search_tag_filter_single_string(self, sample_store: VstashStore) -> None:
+        """Single-tag filter passed as a string matches only docs that
+        have exactly that tag (comma-anchored membership, not substring)."""
+        dim = sample_store.embedding_dim
+        sample_store.add_document(
+            path="/test/alpha.md",
+            title="Alpha",
+            chunks=["alpha content one"],
+            embeddings=[[0.1] * dim],
+            tags="alpha,shared",
+        )
+        sample_store.add_document(
+            path="/test/beta.md",
+            title="Beta",
+            chunks=["beta content one"],
+            embeddings=[[0.1] * dim],
+            tags="beta,shared",
+        )
+        # tag="alpha" returns only the alpha-tagged doc
+        results = sample_store.search([0.1] * dim, "content", top_k=10, tags="alpha")
+        assert {r.title for r in results} == {"Alpha"}
+        # tag="shared" returns both
+        results = sample_store.search([0.1] * dim, "content", top_k=10, tags="shared")
+        assert {r.title for r in results} == {"Alpha", "Beta"}
+
+    def test_search_tag_filter_list_is_or(self, sample_store: VstashStore) -> None:
+        """A list (or comma-separated string) of tags is OR-semantics."""
+        dim = sample_store.embedding_dim
+        for name in ("alpha", "beta", "gamma"):
+            sample_store.add_document(
+                path=f"/test/{name}.md",
+                title=name.capitalize(),
+                chunks=[f"{name} content"],
+                embeddings=[[0.1] * dim],
+                tags=name,
+            )
+        # list form
+        results = sample_store.search([0.1] * dim, "content", top_k=10, tags=["alpha", "gamma"])
+        assert {r.title for r in results} == {"Alpha", "Gamma"}
+        # comma-string form must be equivalent
+        results_str = sample_store.search([0.1] * dim, "content", top_k=10, tags="alpha, gamma")
+        assert {r.title for r in results_str} == {"Alpha", "Gamma"}
+
+    def test_search_tag_list_element_with_comma_is_split(self, sample_store: VstashStore) -> None:
+        """Regression guard for the PR #364 review finding:
+        ``tags=["alpha,beta"]`` (a single-element list whose element
+        contains a comma) must be split internally so it queries for
+        either tag, not for a literal joint tag ``"alpha,beta"`` which
+        no document ever carries."""
+        dim = sample_store.embedding_dim
+        sample_store.add_document(
+            path="/test/a.md",
+            title="Alpha",
+            chunks=["alpha content"],
+            embeddings=[[0.1] * dim],
+            tags="alpha",
+        )
+        sample_store.add_document(
+            path="/test/b.md",
+            title="Beta",
+            chunks=["beta content"],
+            embeddings=[[0.1] * dim],
+            tags="beta",
+        )
+        results = sample_store.search([0.1] * dim, "content", top_k=10, tags=["alpha,beta"])
+        assert {r.title for r in results} == {"Alpha", "Beta"}, (
+            f"list element with comma was not split: got {sorted(r.title for r in results)}"
+        )
+
+    def test_ingest_tag_whitespace_normalized(self, sample_store: VstashStore) -> None:
+        """Regression guard for the PR #364 review finding: tags saved
+        with surrounding whitespace (``"alpha, beta"``) must be
+        normalized at write time so the comma-anchored search-side
+        ``LIKE`` can match them. Without ingestion-side normalization
+        the stored ``,alpha, beta,`` never matches ``%,beta,%``."""
+        dim = sample_store.embedding_dim
+        sample_store.add_document(
+            path="/test/spaced.md",
+            title="Spaced",
+            chunks=["spaced content"],
+            embeddings=[[0.1] * dim],
+            tags="alpha, beta",  # leading space before 'beta'
+        )
+        results = sample_store.search([0.1] * dim, "content", top_k=10, tags="beta")
+        assert {r.title for r in results} == {"Spaced"}, (
+            f"frontmatter-style tags with spaces not normalized at write: "
+            f"got {sorted(r.title for r in results)}"
+        )
+
+    def test_search_tag_cache_key_is_order_independent(self, sample_store: VstashStore) -> None:
+        """Regression guard for the PR #364 review finding: SQL ``OR``
+        is commutative, so ``tags=["alpha","beta"]`` and
+        ``tags=["beta","alpha"]`` are semantically identical and must
+        hit the same cache slot."""
+        dim = sample_store.embedding_dim
+        common: dict = dict(
+            query_embedding=[0.1] * dim,
+            query_text="q",
+            top_k=5,
+            vec_weight=None,
+            fts_weight=None,
+            distance_cutoff=1.3225,
+            collection=None,
+            project=None,
+            layer=None,
+            adaptive_rrf=True,
+            recency_boost=0.0,
+            added_after=None,
+            added_before=None,
+            mmr_lambda=0.5,
+            retrieval_mode="hybrid",
+            cache_epoch=0,
+        )
+        key_ab = sample_store._compute_search_cache_key(tags=["alpha", "beta"], **common)
+        key_ba = sample_store._compute_search_cache_key(tags=["beta", "alpha"], **common)
+        assert key_ab == key_ba, "cache key must be invariant to tag input order"
+
+    def test_search_tag_filter_no_substring_false_match(self, sample_store: VstashStore) -> None:
+        """``tag='alpha'`` must NOT match a doc tagged ``alphabet``.
+
+        Regression guard for the comma-anchored LIKE pattern. A naive
+        ``tags LIKE '%alpha%'`` would false-match ``alphabet``,
+        ``alphanumeric``, ``galpha``. The anchor pattern wraps both
+        sides in commas so only exact tag membership matches.
+        """
+        dim = sample_store.embedding_dim
+        sample_store.add_document(
+            path="/test/exact.md",
+            title="Exact",
+            chunks=["exact match content"],
+            embeddings=[[0.1] * dim],
+            tags="alpha",
+        )
+        sample_store.add_document(
+            path="/test/super.md",
+            title="Super",
+            chunks=["substring noise content"],
+            embeddings=[[0.1] * dim],
+            tags="alphabet",
+        )
+        sample_store.add_document(
+            path="/test/prefix.md",
+            title="Prefix",
+            chunks=["prefix noise content"],
+            embeddings=[[0.1] * dim],
+            tags="galpha",
+        )
+        results = sample_store.search([0.1] * dim, "content", top_k=10, tags="alpha")
+        assert {r.title for r in results} == {"Exact"}, (
+            f"comma-anchored tag filter false-matched substring: "
+            f"got {sorted(r.title for r in results)}"
+        )
+
 
 class TestStoreDeduplication:
     """Test document-level deduplication in search results."""
@@ -220,7 +373,7 @@ class TestCosineSim:
         b = [random.gauss(0, 1) for _ in range(384)]
 
         # Naive reference
-        dot = sum(x * y for x, y in zip(a, b))
+        dot = sum(x * y for x, y in zip(a, b, strict=False))
         norm_a = math.sqrt(sum(x * x for x in a))
         norm_b = math.sqrt(sum(x * x for x in b))
         expected = dot / (norm_a * norm_b)
@@ -338,7 +491,7 @@ class TestMMRDedup:
         # Sanity: the single-chunk doc must still be present (it would
         # be selected under the reference implementation too because
         # its norm_score is non-zero).
-        assert any("Single" == r.title for r in r1), (
+        assert any(r.title == "Single" for r in r1), (
             f"single-chunk doc missing from results: {[r.title for r in r1]}"
         )
 
@@ -357,6 +510,84 @@ class TestMMRDedup:
         titles = {r.title for r in results}
         # All three documents should appear (no cross-doc penalty)
         assert titles == {"Doc 0", "Doc 1", "Doc 2"}
+
+    def test_mmr_swap_pop_and_pregrouped_siblings_preserve_selection(
+        self, sample_store: VstashStore
+    ) -> None:
+        """Regression guard for the O(1) MMR dedup rewrite (supersedes #351).
+
+        The rewrite makes two changes to ``_mmr_dedup``:
+
+        1. ``remaining.remove(best_idx)`` (O(N)) is replaced by
+           swap-with-last + ``remaining.pop()`` (O(1)), guarded by an
+           ``in_remaining`` boolean mask so the sibling-penalty loop
+           knows which indices are still eligible.
+
+        2. The sibling-penalty loop iterates a pre-built
+           ``doc_to_indices`` map (O(S)) instead of scanning all of
+           ``remaining`` (O(N)) and filtering on ``doc_keys[idx]``.
+
+        Both changes are intended to be pure performance rewrites — the
+        ordering and identity of selected chunks must be byte-identical
+        to the prior implementation. The corpus below is sized so that
+        the greedy loop executes at least 8 selections with up to 4
+        in-document siblings competing for each pick, which exercises
+        both the swap-pop path and the pre-grouped sibling iteration in
+        every loop iteration. Any off-by-one in the swap, a stale
+        ``in_remaining`` bit, or a sibling missed by the pre-grouping
+        would alter the chosen ``chunk_id`` set or its order and fail
+        the assertions below.
+        """
+        dim = sample_store.embedding_dim
+
+        # Build a corpus with 4 docs * 4 chunks each = 16 chunks. Each
+        # doc's chunks have slightly different embeddings so MMR has to
+        # pay the sibling penalty (this avoids the fast path that
+        # bypasses _mmr_dedup entirely when there are no same-doc dups).
+        for doc_i in range(4):
+            chunks = [f"doc{doc_i} chunk{c} content" for c in range(4)]
+            embeddings = [[1.0 - 0.05 * c, 0.05 * c] + [0.0] * (dim - 2) for c in range(4)]
+            sample_store.add_document(
+                path=f"/test/mmr_regress_{doc_i}.md",
+                title=f"Doc {doc_i}",
+                chunks=chunks,
+                embeddings=embeddings,
+            )
+
+        query_emb = [0.9, 0.1] + [0.0] * (dim - 2)
+
+        # Run twice — the swap-pop changes the *order* of ``remaining``
+        # but must NOT change which indices have the best MMR score, so
+        # back-to-back runs of the same query must be identical.
+        #
+        # Bump the cache epoch between calls so the second invocation
+        # cannot return a cached top-k tuple from the LRU configured by
+        # ``[cache] query_cache_size`` — the assertion below must
+        # actually exercise the MMR loop on both runs to catch any
+        # nondeterminism in the swap-pop ordering, not just confirm
+        # cache hits.
+        r1 = sample_store.search(query_emb, "content", top_k=8)
+        sample_store._bump_cache_epoch()
+        r2 = sample_store.search(query_emb, "content", top_k=8)
+        ids1 = [r.chunk_id for r in r1]
+        ids2 = [r.chunk_id for r in r2]
+        assert ids1 == ids2, (
+            f"MMR dedup is non-deterministic after the swap-pop rewrite: {ids1} vs {ids2}"
+        )
+
+        # No duplicate chunk_ids — swap-pop must remove each selected
+        # candidate exactly once, and in_remaining must prevent it from
+        # being reconsidered through the pre-grouped sibling iteration.
+        assert len(ids1) == len(set(ids1)), f"duplicate chunk_ids in MMR output: {ids1}"
+
+        # All 4 documents should be represented — the pre-grouped
+        # sibling iteration must not starve any doc by failing to
+        # advance its max_sims (which would let later chunks of the
+        # same doc dominate forever).
+        titles = {r.title for r in r1}
+        assert titles == {"Doc 0", "Doc 1", "Doc 2", "Doc 3"}, (
+            f"some documents missing from MMR output: got {sorted(titles)}"
+        )
 
 
 class TestReindex:
@@ -562,7 +793,7 @@ class TestExpandContext:
         # For every original hit we must see the prev and next chunk
         # text merged into expanded.text, including hits whose tuples
         # landed in the second (or later) SQL batch.
-        for original, exp in zip(results, expanded):
+        for original, exp in zip(results, expanded, strict=False):
             prev_text = texts[original.chunk - 1]
             next_text = texts[original.chunk + 1]
             assert prev_text in exp.text, (
@@ -583,7 +814,7 @@ class TestAdaptiveRelevanceThreshold:
 
     def test_fallback_with_few_samples(self, sample_store: VstashStore) -> None:
         """Should return fallback when fewer than 10 spreads."""
-        for i in range(5):
+        for _i in range(5):
             sample_store.record_spread(0.3)
         assert sample_store.adaptive_relevance_threshold(fallback=0.15) == 0.15
 
@@ -1000,10 +1231,10 @@ class TestAdaptiveRRF:
     def test_rare_terms_boost_fts(self, populated_store: VstashStore) -> None:
         """OOV / very rare terms should increase FTS weight."""
         # Use a term unlikely to be in the test corpus
-        vec_w_rare, fts_w_rare, _ = populated_store._compute_adaptive_rrf_params(
+        _vec_w_rare, fts_w_rare, _ = populated_store._compute_adaptive_rrf_params(
             "XYZZY_UNKNOWN_TERM"
         )
-        vec_w_common, fts_w_common, _ = populated_store._compute_adaptive_rrf_params("Python")
+        _vec_w_common, fts_w_common, _ = populated_store._compute_adaptive_rrf_params("Python")
         # Rare term should give higher FTS weight than common term
         assert fts_w_rare > fts_w_common
 
@@ -1468,7 +1699,7 @@ class TestAdaptiveRRF:
 class TestBatchMode:
     """Tests for ``VstashStore.batch_mode()`` context manager."""
 
-    def test_single_invalidation_during_batch(self, sample_store: "VstashStore"):
+    def test_single_invalidation_during_batch(self, sample_store: VstashStore):
         """Inside batch_mode, _invalidate_idf_cache defers the actual clear."""
         dim = sample_store.embedding_dim
 
@@ -1506,7 +1737,7 @@ class TestBatchMode:
         assert sample_store._idf_cache is None
         assert sample_store._batch_dirty is False
 
-    def test_no_invalidation_when_batch_clean(self, sample_store: "VstashStore"):
+    def test_no_invalidation_when_batch_clean(self, sample_store: VstashStore):
         """If no mutations happen inside batch_mode, cache stays intact."""
         dim = sample_store.embedding_dim
         sample_store.add_document(
@@ -1523,7 +1754,7 @@ class TestBatchMode:
 
         assert sample_store._idf_cache is not None, "Cache was invalidated despite no mutations"
 
-    def test_nested_batch_mode(self, sample_store: "VstashStore"):
+    def test_nested_batch_mode(self, sample_store: VstashStore):
         """Nested batch_mode defers invalidation until outermost exits."""
         dim = sample_store.embedding_dim
         sample_store.add_document(
@@ -1551,7 +1782,7 @@ class TestBatchMode:
         assert sample_store._idf_cache is None
         assert sample_store._batch_depth == 0
 
-    def test_batch_mode_exception_still_invalidates(self, sample_store: "VstashStore"):
+    def test_batch_mode_exception_still_invalidates(self, sample_store: VstashStore):
         """If an exception occurs inside batch_mode, cache is still invalidated."""
         dim = sample_store.embedding_dim
         sample_store.add_document(
@@ -1578,7 +1809,7 @@ class TestBatchMode:
         assert sample_store._batch_depth == 0
         assert sample_store._batch_dirty is False
 
-    def test_search_works_after_batch(self, sample_store: "VstashStore"):
+    def test_search_works_after_batch(self, sample_store: VstashStore):
         """Search returns correct results after batch_mode exits."""
         dim = sample_store.embedding_dim
 
@@ -1594,7 +1825,7 @@ class TestBatchMode:
         assert len(results) >= 1
         assert results[0].path == "/doc.md"
 
-    def test_delete_inside_batch(self, sample_store: "VstashStore"):
+    def test_delete_inside_batch(self, sample_store: VstashStore):
         """delete_document inside batch_mode defers cache invalidation."""
         dim = sample_store.embedding_dim
         sample_store.add_document(
@@ -1614,7 +1845,7 @@ class TestBatchMode:
 
         assert sample_store._idf_cache is None
 
-    def test_delete_by_prefix_inside_batch(self, sample_store: "VstashStore"):
+    def test_delete_by_prefix_inside_batch(self, sample_store: VstashStore):
         """delete_by_path_prefix inside batch_mode defers cache invalidation."""
         dim = sample_store.embedding_dim
         for i in range(3):
@@ -1634,7 +1865,7 @@ class TestBatchMode:
 
         assert sample_store._idf_cache is None
 
-    def test_nested_exception_with_recovery(self, sample_store: "VstashStore"):
+    def test_nested_exception_with_recovery(self, sample_store: VstashStore):
         """Inner batch raises, outer batch catches and continues normally."""
         dim = sample_store.embedding_dim
         sample_store.add_document(
@@ -1688,7 +1919,7 @@ class TestBatchMode:
 class TestRecencyBoost:
     """Tests for recency_boost parameter in search()."""
 
-    def test_recency_boost_zero_is_noop(self, populated_store: "VstashStore"):
+    def test_recency_boost_zero_is_noop(self, populated_store: VstashStore):
         """recency_boost=0.0 should not change result ordering."""
         dim = populated_store.embedding_dim
         q = [0.1] * dim
@@ -1696,7 +1927,7 @@ class TestRecencyBoost:
         normal = populated_store.search(q, "Python", top_k=5)
         assert [r.chunk_id for r in base] == [r.chunk_id for r in normal]
 
-    def test_recency_boost_favors_recent(self, sample_store: "VstashStore"):
+    def test_recency_boost_favors_recent(self, sample_store: VstashStore):
         """Chunks created recently should rank higher with recency_boost > 0."""
         dim = sample_store.embedding_dim
         from datetime import datetime, timedelta, timezone
@@ -1733,7 +1964,7 @@ class TestRecencyBoost:
         results_boosted = sample_store.search(q, "Python programming", top_k=5, recency_boost=2.0)
         assert results_boosted[0].path == "/new.md"
 
-    def test_recency_boost_preserves_results(self, populated_store: "VstashStore"):
+    def test_recency_boost_preserves_results(self, populated_store: VstashStore):
         """recency_boost should not add or remove results, only reorder."""
         dim = populated_store.embedding_dim
         q = [0.15] * dim
@@ -1745,7 +1976,7 @@ class TestRecencyBoost:
 class TestTemporalFilters:
     """Tests for added_after/added_before date filters."""
 
-    def test_added_after_filters_old_docs(self, sample_store: "VstashStore"):
+    def test_added_after_filters_old_docs(self, sample_store: VstashStore):
         """added_after should exclude documents added before the cutoff."""
         dim = sample_store.embedding_dim
 
@@ -1775,7 +2006,7 @@ class TestTemporalFilters:
         assert "/new.md" in paths
         assert "/old.md" not in paths
 
-    def test_added_before_filters_new_docs(self, sample_store: "VstashStore"):
+    def test_added_before_filters_new_docs(self, sample_store: VstashStore):
         """added_before should exclude documents added after the cutoff."""
         dim = sample_store.embedding_dim
 
@@ -1803,7 +2034,7 @@ class TestTemporalFilters:
         assert "/old.md" in paths
         assert "/new.md" not in paths
 
-    def test_date_range_filter(self, sample_store: "VstashStore"):
+    def test_date_range_filter(self, sample_store: VstashStore):
         """Combining added_after and added_before creates a date range."""
         dim = sample_store.embedding_dim
 
@@ -1829,7 +2060,7 @@ class TestTemporalFilters:
         assert "/jan.md" not in paths
         assert "/new.md" not in paths
 
-    def test_no_filter_returns_all(self, populated_store: "VstashStore"):
+    def test_no_filter_returns_all(self, populated_store: VstashStore):
         """Without temporal filters, all documents are returned."""
         dim = populated_store.embedding_dim
         q = [0.15] * dim

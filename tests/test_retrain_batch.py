@@ -40,17 +40,17 @@ def _install_torch_stub(encoded_by_texts: dict[str, list[list[float]]]) -> Any:
         def __init__(self, arr: np.ndarray) -> None:
             self.arr = np.asarray(arr, dtype=np.float32)
 
-        def to(self, device: str) -> "FakeTensor":
+        def to(self, device: str) -> FakeTensor:
             return self
 
         @property
-        def T(self) -> "FakeTensor":
+        def T(self) -> FakeTensor:
             return FakeTensor(self.arr.T)
 
         def size(self, dim: int) -> int:
             return int(self.arr.shape[dim])
 
-        def __matmul__(self, other: "FakeTensor") -> "FakeTensor":
+        def __matmul__(self, other: FakeTensor) -> FakeTensor:
             return FakeTensor(self.arr @ other.arr)
 
         def topk(self, k: int, dim: int = -1):
@@ -62,13 +62,13 @@ def _install_torch_stub(encoded_by_texts: dict[str, list[list[float]]]) -> Any:
                 return FakeTensor(vals), FakeTensor(idx)
             raise NotImplementedError
 
-        def cpu(self) -> "FakeTensor":
+        def cpu(self) -> FakeTensor:
             return self
 
         def tolist(self) -> list:
             return self.arr.astype(int).tolist()
 
-        def __getitem__(self, item) -> "FakeTensor":
+        def __getitem__(self, item) -> FakeTensor:
             return FakeTensor(self.arr[item])
 
     class FakeCuda:
@@ -125,7 +125,7 @@ def torch_st_stubs() -> Any:
     # test_retrain_batch._encode_map before calling generate_triples_batched.
     encode_map: dict[str, list[list[float]]] = {}
 
-    torch_mod, st_mod = _install_torch_stub(encode_map)
+    _torch_mod, _st_mod = _install_torch_stub(encode_map)
 
     class Harness:
         def set_encode(self, texts_to_vec: dict[str, list[list[float]]]) -> None:

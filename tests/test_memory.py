@@ -486,6 +486,254 @@ class TestMemoryRemove:
             assert removed is False
 
 
+class TestMemoryUpdate:
+    """Test in-place document mutation via Memory.update()."""
+
+    @requires_sqlite_vec
+    def test_update_metadata_only_does_not_re_embed(self, tmp_path: Path) -> None:
+        """Passing only ``title`` / ``tags`` runs a SQL UPDATE; the
+        embed pipeline must not be invoked because no chunk content
+        changed. We patch ``embed_query``/``embed_texts`` so any call
+        during the update would blow up the test loudly."""
+        doc = tmp_path / "spec.md"
+        doc.write_text("This is the original spec text used for embedding.")
+
+        with Memory(db=tmp_path / "test.db") as mem:
+            mem.add(doc, tags="old-tag")
+            resolved = str(doc.resolve())
+
+            # Patch the embed entry points the ingest pipeline uses;
+            # if Memory.update reaches them on a metadata-only call,
+            # the assertion fires loudly.
+            with patch("vstash.embed.embed_texts") as mock_embed:
+                result = mem.update(
+                    resolved,
+                    title="Spec v2",
+                    tags="new,spec",
+                )
+                assert mock_embed.call_count == 0, (
+                    "metadata-only update must not invoke the embed pipeline"
+                )
+
+            assert result["status"] == "updated"
+            assert result["mode"] == "metadata"
+            assert set(result["fields"]) == {"title", "tags"}
+
+            docs = mem.list()
+            target = next(d for d in docs if d.path == resolved)
+            assert target.title == "Spec v2"
+            assert target.tags == "new,spec"
+
+    @requires_sqlite_vec
+    def test_update_text_replaces_chunks(self, tmp_path: Path) -> None:
+        """Passing ``text`` re-chunks and re-embeds; the new content
+        must be searchable and the original content must NOT."""
+        doc = tmp_path / "doc.md"
+        doc.write_text(
+            "Original content about authentication and OAuth flows. "
+            "The original document discusses session tokens at length."
+        )
+
+        with Memory(db=tmp_path / "test.db") as mem:
+            mem.add(doc)
+            resolved = str(doc.resolve())
+
+            # Sanity: the original content is searchable.
+            assert any("authentication" in r.text.lower() for r in mem.search("OAuth"))
+
+            new_text = (
+                "Replacement content about kubernetes pod scheduling. "
+                "We now discuss container orchestration patterns."
+            )
+            result = mem.update(resolved, text=new_text)
+            assert result["status"] == "updated"
+            assert result["mode"] == "content"
+            assert result["chunks"] >= 1
+
+            # Old content must be gone.
+            for hit in mem.search("OAuth authentication"):
+                assert "authentication" not in hit.text.lower(), (
+                    f"old content survived the update: {hit.text!r}"
+                )
+            # New content must be findable.
+            assert any("kubernetes" in r.text.lower() for r in mem.search("kubernetes container"))
+
+    @requires_sqlite_vec
+    def test_update_no_fields_raises(self, tmp_path: Path) -> None:
+        with Memory(db=tmp_path / "test.db") as mem:
+            with pytest.raises(ValueError, match="at least one"):
+                mem.update("any/path.md")
+
+    @requires_sqlite_vec
+    def test_update_nonexistent_returns_not_found(self, tmp_path: Path) -> None:
+        with Memory(db=tmp_path / "test.db") as mem:
+            result = mem.update("/nonexistent/file.md", title="ignored")
+            assert result["status"] == "not_found"
+
+    @requires_sqlite_vec
+    def test_update_metadata_scopes_to_instance_collection(self, tmp_path: Path) -> None:
+        """Regression guard for the bot-flagged ``"default"->None`` bug:
+        a ``Memory(collection="default")`` instance must NOT silently
+        update every collection's copy of the same path."""
+        doc = tmp_path / "shared.md"
+        doc.write_text("Body shared across two collections for the scope test.")
+
+        db = tmp_path / "test.db"
+        # Put a copy of the doc into a non-default collection.
+        with Memory(db=db, collection="research") as mem:
+            mem.add(doc, collection="research")
+        # And one into "default".
+        with Memory(db=db, collection="default") as mem:
+            mem.add(doc, collection="default")
+            mem.update(doc, title="default-only")
+            # "default" copy must have the new title.
+            default_doc = next(
+                d for d in mem.list(collection="default") if d.path == str(doc.resolve())
+            )
+            assert default_doc.title == "default-only"
+        # "research" copy must still have the original title (the
+        # update was scoped to "default" only, not silently widened
+        # to all collections).
+        with Memory(db=db) as mem:
+            research_doc = next(
+                d for d in mem.list(collection="research") if d.path == str(doc.resolve())
+            )
+            assert research_doc.title != "default-only"
+
+    @requires_sqlite_vec
+    def test_update_text_across_all_collections(self, tmp_path: Path) -> None:
+        """Regression guard for the cross-collection content-update bug:
+        when ``collection=None`` is passed, the delete-then-add must
+        re-add the new chunks into *every* collection that previously
+        held ``source``, not silently collapse the doc into one."""
+        doc = tmp_path / "shared.md"
+        doc.write_text("Initial content shared by the two collections.")
+        db = tmp_path / "test.db"
+        with Memory(db=db, collection="default") as mem:
+            mem.add(doc, collection="default")
+            mem.add(doc, collection="research")
+            # Two rows exist for the same path.
+            assert sum(1 for d in mem.list(collection=None) if d.path == str(doc.resolve())) == 2
+
+            # Content update with collection=None must touch both.
+            result = mem.update(
+                doc,
+                text="Replacement content that overwrites both collections.",
+                collection=None,
+            )
+            assert result["status"] == "updated"
+
+            # Both rows must still exist.
+            after = [d for d in mem.list(collection=None) if d.path == str(doc.resolve())]
+            assert len(after) == 2, (
+                f"cross-collection update lost a row: {[(d.collection, d.title) for d in after]}"
+            )
+            assert {d.collection for d in after} == {"default", "research"}
+
+
+class TestMemoryPruneAndCompact:
+    """Test Memory.prune and Memory.compact."""
+
+    @requires_sqlite_vec
+    def test_prune_requires_filter(self, tmp_path: Path) -> None:
+        """An unfiltered prune (``collection=None`` clears the
+        instance default) raises rather than wiping the store.
+
+        With no explicit ``collection`` argument, ``Memory.prune``
+        scopes to the instance collection (default ``"default"``),
+        which IS a valid filter. To trigger the no-filter guard the
+        caller has to explicitly clear it with ``collection=None``,
+        ``project=None``, no ``layer``, no ``before``.
+        """
+        with Memory(db=tmp_path / "test.db") as mem:
+            with pytest.raises(ValueError, match="no filter"):
+                mem.prune(collection=None)
+
+    @requires_sqlite_vec
+    def test_prune_by_layer(self, tmp_path: Path) -> None:
+        """Layer scope deletes only matching docs."""
+        keep = tmp_path / "keep.md"
+        drop = tmp_path / "drop.md"
+        keep.write_text("Content that must stay in the store.")
+        drop.write_text("Content that the prune call must remove from the store.")
+        with Memory(db=tmp_path / "test.db") as mem:
+            mem.add(keep, layer="permanent")
+            mem.add(drop, layer="scratch")
+            assert len(mem.list()) == 2
+
+            report = mem.prune(layer="scratch")
+            assert report["status"] == "ok"
+            assert report["deleted"] == 1
+            remaining = {d.path for d in mem.list()}
+            assert remaining == {str(keep.resolve())}
+
+    @requires_sqlite_vec
+    def test_prune_dry_run_is_readonly(self, tmp_path: Path) -> None:
+        """Dry-run returns the would-delete set without touching the store."""
+        doc = tmp_path / "preview.md"
+        doc.write_text("Content for the dry-run preview test scenario.")
+        with Memory(db=tmp_path / "test.db") as mem:
+            mem.add(doc, layer="scratch")
+            before_count = len(mem.list())
+
+            report = mem.prune(layer="scratch", dry_run=True)
+            assert report["status"] == "dry_run"
+            assert report["deleted"] == 1
+            assert len(mem.list()) == before_count, "dry_run must not delete"
+
+    @requires_sqlite_vec
+    def test_compact_runs_vacuum_and_optimize(self, tmp_path: Path) -> None:
+        """compact() with no `before` skips prune and runs only the
+        housekeeping primitives, both of which must report success."""
+        doc = tmp_path / "doc.md"
+        doc.write_text("Content for the compact housekeeping smoke test.")
+        with Memory(db=tmp_path / "test.db") as mem:
+            mem.add(doc)
+            report = mem.compact()
+            assert report["prune"] is None
+            assert report["vacuum"] is True
+            assert report["optimize_fts"] is True
+            # Store still functional after VACUUM + optimize.
+            assert mem.search("compact")[0].text  # at least one hit, smoke
+
+    @requires_sqlite_vec
+    def test_compact_dry_run_skips_writes(self, tmp_path: Path) -> None:
+        """dry_run forwards to prune and skips VACUUM / optimize."""
+        doc = tmp_path / "doc.md"
+        doc.write_text("Content for the compact dry-run regression test.")
+        with Memory(db=tmp_path / "test.db") as mem:
+            mem.add(doc, layer="scratch")
+            report = mem.compact(before="0d", layer="scratch", dry_run=True)
+            assert report["prune"]["status"] == "dry_run"
+            assert report["vacuum"] is False
+            assert report["optimize_fts"] is False
+
+    @requires_sqlite_vec
+    def test_prune_rejects_freeform_before(self, tmp_path: Path) -> None:
+        """Regression guard for the silent-wipe bug flagged on PR #366:
+        passing a non-age, non-ISO ``before`` value would lexically sort
+        higher than every ``2026-...`` timestamp under SQLite's TEXT
+        comparison, so ``added_at < 'invalid'`` would match every row
+        and ``prune`` would silently delete the entire store.
+
+        The fix is to validate ``before`` via ``datetime.fromisoformat``
+        when it does not parse as an age. Any unparseable value must
+        raise ``ValueError`` *before* it reaches the store.
+        """
+        doc = tmp_path / "doc.md"
+        doc.write_text("Critical content that must survive a bad ``before`` argument.")
+        with Memory(db=tmp_path / "test.db") as mem:
+            mem.add(doc)
+            before_count = len(mem.list())
+            for bad in ("invalid", "tomorrow", "yesterday", "30x", ""):
+                with pytest.raises(ValueError):
+                    mem.prune(before=bad)
+            # The store must be untouched after every rejected call.
+            assert len(mem.list()) == before_count, (
+                "prune accepted an invalid ``before`` and mutated the store"
+            )
+
+
 # ------------------------------------------------------------------ #
 # Memory.list and Memory.stats                                         #
 # ------------------------------------------------------------------ #

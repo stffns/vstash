@@ -1,7 +1,13 @@
-"""vstash — local document memory with instant semantic search."""
+"""vstash -- local document memory with instant semantic search."""
 
-__version__ = "0.36.0"
+__version__ = "0.37.0"
 
+from .errors import (
+    BackendError,
+    LimitError,
+    SchemaVersionError,
+    VstashError,
+)
 from .memory import Memory
 from .models import (
     AskResult,
@@ -14,12 +20,16 @@ from .models import (
 )
 
 __all__ = [
-    "Memory",
     "AskResult",
+    "BackendError",
     "ChunkInfo",
     "DocumentInfo",
     "ExplainInfo",
     "IngestResult",
+    "LimitError",
+    "Memory",
+    "SchemaVersionError",
     "SearchResult",
     "StoreStats",
+    "VstashError",
 ]

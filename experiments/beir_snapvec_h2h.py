@@ -294,7 +294,7 @@ def _print_table(results: dict, backends: list[str], datasets: list[str]) -> Non
     """Markdown-style comparison table: NDCG@10 per (dataset, backend)
     with BM25/ColBERTv2 reference columns."""
     print("\n### Absolute NDCG@10 (real BEIR corpora, full production pipeline)\n")
-    header_cols = ["Dataset", "BM25", "ColBERTv2"] + backends
+    header_cols = ["Dataset", "BM25", "ColBERTv2", *backends]
     print("| " + " | ".join(header_cols) + " |")
     print("|" + "|".join(["---"] * len(header_cols)) + "|")
     for ds in datasets:
@@ -327,7 +327,7 @@ def _print_table(results: dict, backends: list[str], datasets: list[str]) -> Non
         print(f"| {b} | {len(won)} / {total} | {', '.join(won) or '-'} |")
 
     print("\n### Recall@100 per (backend, dataset) -- candidate-set health\n")
-    header_cols = ["Dataset"] + backends
+    header_cols = ["Dataset", *backends]
     print("| " + " | ".join(header_cols) + " |")
     print("|" + "|".join(["---"] * len(header_cols)) + "|")
     for ds in datasets:

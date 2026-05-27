@@ -46,12 +46,12 @@ def load_scifact() -> tuple[dict[str, dict], dict[str, str], dict[str, dict[str,
 
         cache = download_beir("scifact")
         return load_beir(cache)
-    except Exception:
+    except Exception as exc:
         raise RuntimeError(
             "SciFact dataset not available. Run "
             "'python -m experiments.beir_benchmark --datasets scifact' first "
             "to download it."
-        )
+        ) from exc
 
 
 # ------------------------------------------------------------------ #
@@ -192,24 +192,34 @@ def run_scale(
         )
         sci_chunks += 1
 
-    # Step 2: Pad with synthetic chunks to reach target scale
+    # Step 2: Pad with synthetic chunks to reach target scale.
+    #
+    # Each synthetic chunk becomes its own document so the corpus shape
+    # at high N matches the SciFact shape (1 doc = 1 chunk on average).
+    # An earlier version of this script collapsed each batch of 500 into
+    # a single document; vstash's intra-document MMR dedup then treated
+    # those 500 unrelated synthetic chunks as siblings, and the dedup
+    # behaviour at 1K vs 50K stopped being comparable. Use
+    # add_documents_batch for speed; keep one chunk per dict.
     n_synthetic = max(0, scale - sci_chunks)
     if n_synthetic > 0:
-        print(f"  Padding with {n_synthetic:,} synthetic chunks...")
+        print(f"  Padding with {n_synthetic:,} synthetic chunks (1 chunk per doc)...")
         synth = generate_synthetic_chunks(n_synthetic, dim)
         batch_size = 500
         for batch_start in range(0, len(synth), batch_size):
             batch = synth[batch_start : batch_start + batch_size]
-            texts = [t for t, _ in batch]
-            embs = [e for _, e in batch]
-            store.add_document(
-                path=f"/synthetic/batch_{batch_start}",
-                title=f"Synthetic batch {batch_start}",
-                chunks=texts,
-                embeddings=embs,
-                source_type="text",
-                collection="synthetic",
-            )
+            batch_docs = [
+                {
+                    "path": f"/synthetic/{batch_start + i}",
+                    "title": f"Synthetic chunk {batch_start + i}",
+                    "chunks": [text],
+                    "embeddings": [emb],
+                    "source_type": "text",
+                    "collection": "synthetic",
+                }
+                for i, (text, emb) in enumerate(batch)
+            ]
+            store.add_documents_batch(batch_docs)
 
     total_chunks = store._conn.execute("SELECT COUNT(*) as n FROM chunks").fetchone()["n"]
     print(f"  Total chunks in store: {total_chunks:,}")
@@ -246,12 +256,18 @@ def run_scale(
         ndcg = ndcg_at_k(ranked_ids, qrels[qid], k=TOP_K)
         ndcg_scores.append(ndcg)
 
-    # Compute summary stats
+    # Compute summary stats. Use the unbiased percentile-on-sorted-list
+    # formula `index = round(p * (n - 1))` rather than `int(p * n) - 1`,
+    # which biases low (e.g. at n=300 the 95th would land at index 284
+    # instead of the correct 285, and at n=100 the p99 lands at 98).
     sorted_latencies = sorted(latencies)
     n_queries = len(latencies)
-    p50_idx = int(0.50 * n_queries) - 1
-    p95_idx = int(0.95 * n_queries) - 1
-    p99_idx = int(0.99 * n_queries) - 1
+
+    def _pctile(p: float) -> float:
+        if n_queries == 0:
+            return 0.0
+        idx = max(0, min(n_queries - 1, round(p * (n_queries - 1))))
+        return sorted_latencies[idx]
 
     metrics = {
         "scale": scale,
@@ -261,9 +277,9 @@ def run_scale(
         "n_queries": n_queries,
         "latency_ms": {
             "mean": round(statistics.mean(latencies), 2),
-            "median": round(sorted_latencies[max(p50_idx, 0)], 2),
-            "p95": round(sorted_latencies[max(p95_idx, 0)], 2),
-            "p99": round(sorted_latencies[max(p99_idx, 0)], 2),
+            "median": round(_pctile(0.50), 2),
+            "p95": round(_pctile(0.95), 2),
+            "p99": round(_pctile(0.99), 2),
             "min": round(min(latencies), 2),
             "max": round(max(latencies), 2),
         },
