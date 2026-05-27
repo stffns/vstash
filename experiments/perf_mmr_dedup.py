@@ -224,7 +224,14 @@ def main() -> None:
     p.add_argument("--seed", type=int, default=42)
     args = p.parse_args()
 
-    sizes = [int(s) for s in args.n_sweep.split(",")]
+    # Fail fast on invalid CLI input so the script does not crash deep
+    # in fixture construction (``siblings_per_doc`` is the divisor for
+    # ``doc_id``; ``rounds`` is the floor for ``statistics.median``).
+    if args.siblings < 1 or args.top_k < 1 or args.rounds < 1 or args.dim < 1:
+        raise SystemExit("--siblings, --top-k, --rounds, and --dim must all be >= 1")
+    sizes = [int(s) for s in args.n_sweep.split(",") if s.strip()]
+    if not sizes or any(n < 1 for n in sizes):
+        raise SystemExit("--n-sweep must contain one or more positive integers")
 
     print(
         f"# perf_mmr_dedup -- siblings={args.siblings} top_k={args.top_k} "

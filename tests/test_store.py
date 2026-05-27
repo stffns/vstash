@@ -406,7 +406,15 @@ class TestMMRDedup:
         # Run twice — the swap-pop changes the *order* of ``remaining``
         # but must NOT change which indices have the best MMR score, so
         # back-to-back runs of the same query must be identical.
+        #
+        # Bump the cache epoch between calls so the second invocation
+        # cannot return a cached top-k tuple from the LRU configured by
+        # ``[cache] query_cache_size`` — the assertion below must
+        # actually exercise the MMR loop on both runs to catch any
+        # nondeterminism in the swap-pop ordering, not just confirm
+        # cache hits.
         r1 = sample_store.search(query_emb, "content", top_k=8)
+        sample_store._bump_cache_epoch()
         r2 = sample_store.search(query_emb, "content", top_k=8)
         ids1 = [r.chunk_id for r in r1]
         ids2 = [r.chunk_id for r in r2]
