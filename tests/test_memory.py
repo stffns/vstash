@@ -720,6 +720,7 @@ class TestMemoryPruneAndCompact:
             for bad in ("invalid", "tomorrow", "yesterday", "30x", ""):
                 with pytest.raises(ValueError):
                     mem.prune(before=bad)
+            # The store must be untouched after every rejected call.
             assert len(mem.list()) == before_count, (
                 "prune accepted an invalid ``before`` and mutated the store"
             )

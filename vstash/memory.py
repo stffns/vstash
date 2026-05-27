@@ -51,10 +51,20 @@ def _resolve_before(before: str) -> str:
         time so back-to-back invocations of the same age cut at the
         same instant.
       * **ISO date / timestamp** (``"2026-01-15"`` or
-        ``"2026-01-15T00:00:00+00:00"``): returned unchanged. The
+        ``"2026-01-15T00:00:00+00:00"``): returned unchanged after
+        being validated against ``datetime.fromisoformat`` so the
         store comparison uses lexical ``<`` on the column, which is
         correct under the ``YYYY-MM-DDTHH:MM:SS+00:00`` form used by
         ingest's ``datetime.now(timezone.utc).isoformat()``.
+
+    Anything that is neither a recognised age nor a parseable ISO
+    timestamp raises ``ValueError``. This is the load-bearing safety
+    rail for ``prune_documents``: SQLite compares text columns
+    lexically, so a free-form string like ``"invalid"`` whose first
+    character ``'i'`` (ASCII 105) is greater than any plausible
+    ISO-prefix character ``'2'`` (ASCII 50) would let ``added_at <
+    'invalid'`` evaluate true for **every** row and silently wipe the
+    store. Validating upfront makes the failure mode loud and local.
 
     Reusing the journal's age parser keeps the two CLIs
     (``vstash compact`` and ``vstash journal prune``) accepting the
@@ -65,13 +75,32 @@ def _resolve_before(before: str) -> str:
     from .journal import _parse_age
 
     stripped = before.strip()
+    if not stripped:
+        raise ValueError("`before` must be a non-empty age or ISO date string")
     # Heuristic: any plain-digit-then-unit suffix (``30d``, ``2w``,
-    # ``24h``) is an age. Anything else (containing ``-`` or longer)
-    # is treated as ISO and returned verbatim so callers retain full
-    # precision and timezone control when they want it.
-    if len(stripped) <= 6 and stripped and stripped[-1] in "dwh" and stripped[:-1].isdigit():
-        delta = _parse_age(stripped)
+    # ``24h``) is an age. Lowercase the suffix so ``30D`` / ``2W`` /
+    # ``24H`` parse too -- ``_parse_age`` is case-sensitive on the
+    # unit, and rejecting the upper-case form here would be more
+    # surprising than just normalising it.
+    if len(stripped) <= 6 and stripped[-1].lower() in "dwh" and stripped[:-1].isdigit():
+        delta = _parse_age(stripped.lower())
         return (datetime.now(timezone.utc) - delta).isoformat()
+    # Not an age: must be a parseable ISO datetime. ``fromisoformat``
+    # accepts both ``YYYY-MM-DD`` and the full ``YYYY-MM-DDTHH:MM:SS``
+    # forms, and rejects everything else with ``ValueError``. We pass
+    # the bare exception through with a friendlier message so callers
+    # see WHY their input was refused without losing the original
+    # cause.
+    try:
+        datetime.fromisoformat(stripped)
+    except ValueError as exc:
+        raise ValueError(
+            f"`before={before!r}` is neither a recognised age "
+            f"('30d' / '2w' / '24h') nor a parseable ISO date / timestamp "
+            f"('2026-01-15' / '2026-01-15T00:00:00+00:00'). "
+            f"Refusing to pass through to the store because SQLite would "
+            f"compare lexically and silently delete every document."
+        ) from exc
     return stripped
 
 
