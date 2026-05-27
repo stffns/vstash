@@ -181,6 +181,80 @@ class TestStoreSearch:
         results_str = sample_store.search([0.1] * dim, "content", top_k=10, tags="alpha, gamma")
         assert {r.title for r in results_str} == {"Alpha", "Gamma"}
 
+    def test_search_tag_list_element_with_comma_is_split(self, sample_store: VstashStore) -> None:
+        """Regression guard for the PR #364 review finding:
+        ``tags=["alpha,beta"]`` (a single-element list whose element
+        contains a comma) must be split internally so it queries for
+        either tag, not for a literal joint tag ``"alpha,beta"`` which
+        no document ever carries."""
+        dim = sample_store.embedding_dim
+        sample_store.add_document(
+            path="/test/a.md",
+            title="Alpha",
+            chunks=["alpha content"],
+            embeddings=[[0.1] * dim],
+            tags="alpha",
+        )
+        sample_store.add_document(
+            path="/test/b.md",
+            title="Beta",
+            chunks=["beta content"],
+            embeddings=[[0.1] * dim],
+            tags="beta",
+        )
+        results = sample_store.search([0.1] * dim, "content", top_k=10, tags=["alpha,beta"])
+        assert {r.title for r in results} == {"Alpha", "Beta"}, (
+            f"list element with comma was not split: got {sorted(r.title for r in results)}"
+        )
+
+    def test_ingest_tag_whitespace_normalized(self, sample_store: VstashStore) -> None:
+        """Regression guard for the PR #364 review finding: tags saved
+        with surrounding whitespace (``"alpha, beta"``) must be
+        normalized at write time so the comma-anchored search-side
+        ``LIKE`` can match them. Without ingestion-side normalization
+        the stored ``,alpha, beta,`` never matches ``%,beta,%``."""
+        dim = sample_store.embedding_dim
+        sample_store.add_document(
+            path="/test/spaced.md",
+            title="Spaced",
+            chunks=["spaced content"],
+            embeddings=[[0.1] * dim],
+            tags="alpha, beta",  # leading space before 'beta'
+        )
+        results = sample_store.search([0.1] * dim, "content", top_k=10, tags="beta")
+        assert {r.title for r in results} == {"Spaced"}, (
+            f"frontmatter-style tags with spaces not normalized at write: "
+            f"got {sorted(r.title for r in results)}"
+        )
+
+    def test_search_tag_cache_key_is_order_independent(self, sample_store: VstashStore) -> None:
+        """Regression guard for the PR #364 review finding: SQL ``OR``
+        is commutative, so ``tags=["alpha","beta"]`` and
+        ``tags=["beta","alpha"]`` are semantically identical and must
+        hit the same cache slot."""
+        dim = sample_store.embedding_dim
+        common: dict = dict(
+            query_embedding=[0.1] * dim,
+            query_text="q",
+            top_k=5,
+            vec_weight=None,
+            fts_weight=None,
+            distance_cutoff=1.3225,
+            collection=None,
+            project=None,
+            layer=None,
+            adaptive_rrf=True,
+            recency_boost=0.0,
+            added_after=None,
+            added_before=None,
+            mmr_lambda=0.5,
+            retrieval_mode="hybrid",
+            cache_epoch=0,
+        )
+        key_ab = sample_store._compute_search_cache_key(tags=["alpha", "beta"], **common)
+        key_ba = sample_store._compute_search_cache_key(tags=["beta", "alpha"], **common)
+        assert key_ab == key_ba, "cache key must be invariant to tag input order"
+
     def test_search_tag_filter_no_substring_false_match(self, sample_store: VstashStore) -> None:
         """``tag='alpha'`` must NOT match a doc tagged ``alphabet``.
 

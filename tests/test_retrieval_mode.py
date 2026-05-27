@@ -174,6 +174,7 @@ class TestCacheKeySeparation:
             recency_boost=0.0,
             added_after=None,
             added_before=None,
+            tags=None,
             mmr_lambda=0.5,
             cache_epoch=0,
         )

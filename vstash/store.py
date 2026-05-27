@@ -171,7 +171,16 @@ def _normalize_tags(tags: str | list[str] | None) -> list[str]:
     if isinstance(tags, str):
         parts = tags.split(",")
     else:
-        parts = list(tags)
+        # Each list element may itself contain commas (Typer's
+        # ``--tag "a,b"`` pattern, or callers who mix repeated flags
+        # with comma-joined strings). Split each element so the
+        # caller surface accepts ``["alpha,beta"]`` and
+        # ``["alpha", "beta"]`` interchangeably -- otherwise the
+        # comma-anchored ``LIKE`` match would look for a literal tag
+        # ``"alpha,beta"`` which never exists in storage.
+        parts = []
+        for t in tags:
+            parts.extend(str(t).split(","))
     seen: set[str] = set()
     out: list[str] = []
     for part in parts:
@@ -1345,6 +1354,17 @@ class VstashStore:
             limits=self._limits,
         )
 
+        # Normalize the on-disk tag representation to match the form
+        # the search-side comma-anchored ``LIKE`` expects. Writers
+        # routinely hand us ``"alpha, beta"`` (frontmatter style); if
+        # we stored it verbatim, a query for ``tag="beta"`` would
+        # generate ``%,beta,%`` against ``,alpha, beta,`` and miss
+        # because of the leading space. Round-tripping through
+        # ``_normalize_tags`` strips that whitespace and dedupes
+        # repeats once, at ingest time, so the storage invariant is
+        # ``"tag1,tag2,..."`` with no spaces and no duplicates.
+        stored_tags = ",".join(_normalize_tags(tags)) if tags else None
+
         doc_id = hashlib.sha256(f"{collection}:{path}".encode()).hexdigest()[:32]
 
         with self._write_lock:
@@ -1369,7 +1389,7 @@ class VstashStore:
                         collection,
                         project,
                         layer,
-                        tags,
+                        stored_tags,
                         sum(len(c) for c in chunks),
                         len(chunks),
                         datetime.now(timezone.utc).isoformat(),
@@ -1495,6 +1515,13 @@ class VstashStore:
                         limits=self._limits,
                     )
 
+                    # Normalize tags on write so the search-side
+                    # comma-anchored ``LIKE`` matches reliably. Same
+                    # invariant as ``add_document``: stored form is
+                    # ``"tag1,tag2,..."`` with no whitespace and no
+                    # duplicates.
+                    stored_tags = ",".join(_normalize_tags(tags)) if tags else None
+
                     doc_id = hashlib.sha256(f"{collection}:{path}".encode()).hexdigest()[:32]
                     doc_ids.append(doc_id)
 
@@ -1514,7 +1541,7 @@ class VstashStore:
                             collection,
                             project,
                             layer,
-                            tags,
+                            stored_tags,
                             sum(len(c) for c in chunks),
                             len(chunks),
                             now_iso,
@@ -1848,7 +1875,11 @@ class VstashStore:
                 recency_boost,
                 added_after,
                 added_before,
-                tuple(_normalize_tags(tags)),
+                # Sort so that ``tags=["alpha", "beta"]`` and
+                # ``tags=["beta", "alpha"]`` share the same cache entry
+                # -- the SQL ``OR`` is commutative, so semantically
+                # equivalent queries must hit the same cache slot.
+                tuple(sorted(_normalize_tags(tags))),
                 mmr_lambda,
                 retrieval_mode,
                 cache_epoch,
