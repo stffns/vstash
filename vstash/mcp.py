@@ -986,6 +986,71 @@ def vstash_forget(source: str, collection: str | None = None) -> str:
 
 
 @mcp_server.tool()
+def vstash_update(
+    source: str,
+    text: str | None = None,
+    title: str | None = None,
+    tags: str | None = None,
+    collection: str | None = None,
+) -> str:
+    """Update an existing document in vstash memory.
+
+    Two modes, picked from the fields you set:
+
+      * **metadata-only** -- pass ``title`` and/or ``tags`` without
+        ``text``. A single SQL UPDATE; no re-chunking or
+        re-embedding. Use for renames and retagging.
+      * **content** -- pass ``text`` (optionally with ``title`` / ``tags``).
+        Re-chunks and re-embeds the document. Equivalent to
+        ``vstash_add(source, force=True)`` plus an atomic metadata update,
+        but does not require the caller to know the source path's
+        on-disk file.
+
+    Returns ``status="not_found"`` (no row matched ``source``) or
+    ``status="noop"`` (text mode produced no chunks) without modifying
+    the store.
+
+    Args:
+        source: File path, URL, or ``text://`` identifier of the document.
+        text: New content. Triggers re-chunk + re-embed when set.
+        title: New title (optional in both modes).
+        tags: New comma-separated tag string (optional in both modes).
+            Pass ``""`` to clear all tags.
+        collection: Restrict the update to a specific ``(collection, source)``
+            row. Default ``None`` updates every collection holding ``source``.
+
+    Returns:
+        JSON object with status, mode, fields, and chunk count.
+    """
+    if text is None and title is None and tags is None:
+        return _error("vstash_update needs at least one of `text`, `title`, or `tags`.")
+    try:
+        from .memory import Memory
+
+        # Memory.update normalises paths; pass through verbatim. The
+        # collection kwarg defaults to the Memory-instance collection
+        # (which is "default" here unless the caller overrides it via
+        # this tool), so a None collection means "every collection
+        # holding the path".
+        with Memory(collection=collection or "default") as mem:
+            result = mem.update(
+                source,
+                text=text,
+                title=title,
+                tags=tags,
+                collection=collection,
+            )
+        return _ok(result)
+    except ValueError as exc:
+        return _error(str(exc))
+    except FileNotFoundError:
+        return _error("vstash database not found.")
+    except Exception as exc:
+        logger.exception("vstash_update failed")
+        return _error(f"Failed to update document: {exc}")
+
+
+@mcp_server.tool()
 def vstash_collections() -> str:
     """List all available collections in vstash memory.
 
