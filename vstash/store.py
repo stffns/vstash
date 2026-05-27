@@ -1705,6 +1705,79 @@ class VstashStore:
                 raise
             return True
 
+    def update_metadata(
+        self,
+        path: str,
+        *,
+        title: str | None = None,
+        tags: str | None = None,
+        collection: str | None = None,
+    ) -> bool:
+        """Update document metadata (``title`` and/or ``tags``) in place.
+
+        This is the in-place mutator for fields that do NOT require
+        re-chunking or re-embedding. Use it for renames, retagging, or
+        any metadata-only correction. To change the chunk text itself,
+        use ``Memory.update(path, text=...)`` which re-runs the embed
+        pipeline.
+
+        Args:
+            path: Document path (or URL) identifying the row.
+            title: New title; pass ``None`` to leave unchanged.
+            tags: New comma-separated tags string; pass ``None`` to
+                leave unchanged. Pass ``""`` to clear the tag set.
+            collection: If set, restrict the update to a specific
+                ``(collection, path)`` pair. ``None`` (default) updates
+                every matching row across collections, mirroring
+                ``delete_document``'s default semantics.
+
+        Returns:
+            ``True`` if at least one row was updated.
+
+        Raises:
+            ValueError: Neither ``title`` nor ``tags`` was provided
+                (the call would be a no-op and almost always indicates
+                a caller bug).
+        """
+        if title is None and tags is None:
+            raise ValueError(
+                "update_metadata called with no field to update -- "
+                "pass at least one of `title=` or `tags=`."
+            )
+        with self._write_lock:
+            # Build the SET clause and bind params dynamically so the
+            # statement only touches the fields the caller actually
+            # provided. Mirrors the `_get_filter_conditions` style used
+            # elsewhere in this module.
+            set_parts: list[str] = []
+            set_params: list[str] = []
+            if title is not None:
+                set_parts.append("title = ?")
+                set_params.append(title)
+            if tags is not None:
+                set_parts.append("tags = ?")
+                set_params.append(tags)
+            where_parts = ["path = ?"]
+            where_params: list[str] = [path]
+            if collection is not None:
+                where_parts.append("collection = ?")
+                where_params.append(collection)
+            sql = f"UPDATE documents SET {', '.join(set_parts)} WHERE {' AND '.join(where_parts)}"
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                cur = self._conn.execute(sql, [*set_params, *where_params])
+                rowcount = cur.rowcount
+                self._conn.commit()
+                if rowcount > 0:
+                    # Tag/title changes are visible to search filters
+                    # (tag-anchored LIKE in `_get_filter_conditions`) and
+                    # to result formatting, so invalidate the LRU.
+                    self._bump_cache_epoch()
+            except Exception:
+                self._conn.rollback()
+                raise
+            return rowcount > 0
+
     def _delete_by_doc_id(self, doc_id: str) -> bool:
         """Delete a document by its internal hash ID.
 

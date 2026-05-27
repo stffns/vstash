@@ -1256,6 +1256,74 @@ def forget(
             console.print(f"[yellow]Not found:[/yellow] {path}")
 
 
+@app.command()
+def update(
+    ctx: typer.Context,
+    path: str = typer.Argument(..., help="File path or URL of the document to update"),
+    text: str | None = typer.Option(
+        None,
+        "--text",
+        help=(
+            "Replace the document content with this text. Triggers re-chunking "
+            "and re-embedding. Pass '-' to read from stdin."
+        ),
+    ),
+    title: str | None = typer.Option(
+        None,
+        "--title",
+        help="New title for the document.",
+    ),
+    tags: str | None = typer.Option(
+        None,
+        "--tags",
+        "-t",
+        help="New comma-separated tag string. Pass an empty string to clear tags.",
+    ),
+) -> None:
+    """Update an existing document in place.
+
+    Three modes:
+
+      * metadata-only: --title and/or --tags without --text -- a single
+        SQL UPDATE, no embedding model invocation.
+      * content: --text (with optional --title/--tags) -- re-chunks
+        and re-embeds the document.
+      * (no field): error.
+
+    For multi-collection stores, the update applies to every collection
+    holding `path`. Wrap with `--collection` (future) for narrower
+    scopes when that lands.
+    """
+    if text is None and title is None and tags is None:
+        console.print("[red]✗[/red] Pass at least one of --text, --title, or --tags.")
+        raise typer.Exit(1)
+
+    if text == "-":
+        import sys as _sys
+
+        text = _sys.stdin.read()
+
+    from .memory import Memory
+
+    with Memory(profile=_profile_from_ctx(ctx)) as mem:
+        result = mem.update(path, text=text, title=title, tags=tags)
+
+    status = result.get("status")
+    mode = result.get("mode")
+    if status == "not_found":
+        console.print(f"[yellow]Not found:[/yellow] {path}")
+        raise typer.Exit(1)
+    if status == "noop":
+        console.print(f"[yellow]No-op:[/yellow] the supplied text produced no chunks ({path}).")
+        raise typer.Exit(1)
+    fields = ", ".join(result.get("fields") or [])
+    suffix = f" ({result['chunks']} chunks)" if mode == "content" else ""
+    console.print(
+        f"[green]✓[/green] Updated [bold]{path}[/bold] -- {mode} mode, "
+        f"fields: {fields or 'none'}{suffix}."
+    )
+
+
 # ------------------------------------------------------------------ #
 # vstash check                                                         #
 # ------------------------------------------------------------------ #

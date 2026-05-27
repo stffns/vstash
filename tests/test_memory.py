@@ -486,6 +486,94 @@ class TestMemoryRemove:
             assert removed is False
 
 
+class TestMemoryUpdate:
+    """Test in-place document mutation via Memory.update()."""
+
+    @requires_sqlite_vec
+    def test_update_metadata_only_does_not_re_embed(self, tmp_path: Path) -> None:
+        """Passing only ``title`` / ``tags`` runs a SQL UPDATE; the
+        embed pipeline must not be invoked because no chunk content
+        changed. We patch ``embed_query``/``embed_texts`` so any call
+        during the update would blow up the test loudly."""
+        doc = tmp_path / "spec.md"
+        doc.write_text("This is the original spec text used for embedding.")
+
+        with Memory(db=tmp_path / "test.db") as mem:
+            mem.add(doc, tags="old-tag")
+            resolved = str(doc.resolve())
+
+            # Patch the embed entry points the ingest pipeline uses;
+            # if Memory.update reaches them on a metadata-only call,
+            # the assertion fires loudly.
+            with patch("vstash.embed.embed_texts") as mock_embed:
+                result = mem.update(
+                    resolved,
+                    title="Spec v2",
+                    tags="new,spec",
+                )
+                assert mock_embed.call_count == 0, (
+                    "metadata-only update must not invoke the embed pipeline"
+                )
+
+            assert result["status"] == "updated"
+            assert result["mode"] == "metadata"
+            assert set(result["fields"]) == {"title", "tags"}
+
+            docs = mem.list()
+            target = next(d for d in docs if d.path == resolved)
+            assert target.title == "Spec v2"
+            assert target.tags == "new,spec"
+
+    @requires_sqlite_vec
+    def test_update_text_replaces_chunks(self, tmp_path: Path) -> None:
+        """Passing ``text`` re-chunks and re-embeds; the new content
+        must be searchable and the original content must NOT."""
+        doc = tmp_path / "doc.md"
+        doc.write_text(
+            "Original content about authentication and OAuth flows. "
+            "The original document discusses session tokens at length."
+        )
+
+        with Memory(db=tmp_path / "test.db") as mem:
+            mem.add(doc)
+            resolved = str(doc.resolve())
+
+            # Sanity: the original content is searchable.
+            assert any("authentication" in r.text.lower() for r in mem.search("OAuth"))
+
+            new_text = (
+                "Replacement content about kubernetes pod scheduling. "
+                "We now discuss container orchestration patterns."
+            )
+            result = mem.update(resolved, text=new_text)
+            assert result["status"] == "updated"
+            assert result["mode"] == "content"
+            assert result["chunks"] >= 1
+
+            # Old content must be gone.
+            for hit in mem.search("OAuth authentication"):
+                assert "authentication" not in hit.text.lower(), (
+                    f"old content survived the update: {hit.text!r}"
+                )
+            # New content must be findable.
+            assert any(
+                "kubernetes" in r.text.lower()
+                for r in mem.search("kubernetes container")
+            )
+
+    @requires_sqlite_vec
+    def test_update_no_fields_raises(self, tmp_path: Path) -> None:
+        with Memory(db=tmp_path / "test.db") as mem:
+            with pytest.raises(ValueError, match="at least one"):
+                mem.update("any/path.md")
+
+    @requires_sqlite_vec
+    def test_update_nonexistent_returns_not_found(self, tmp_path: Path) -> None:
+        with Memory(db=tmp_path / "test.db") as mem:
+            result = mem.update("/nonexistent/file.md", title="ignored")
+            assert result["status"] == "not_found"
+
+
 # ------------------------------------------------------------------ #
 # Memory.list and Memory.stats                                         #
 # ------------------------------------------------------------------ #

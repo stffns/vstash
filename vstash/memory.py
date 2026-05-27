@@ -590,6 +590,171 @@ class Memory:
             source_str = str(Path(source_str).resolve())
         return self._store.delete_document(source_str)
 
+    def update(
+        self,
+        source: str | Path,
+        *,
+        text: str | None = None,
+        title: str | None = None,
+        tags: str | None = None,
+        collection: object = _UNSET,
+    ) -> dict:
+        """Update an existing document in place.
+
+        Three update modes, picked from the kwargs provided:
+
+        - **metadata-only** (``title`` and/or ``tags`` set, ``text`` is
+          ``None``): runs a single SQL ``UPDATE`` against the
+          ``documents`` row. No re-chunking, no re-embedding, no
+          embedding model invocation. Tags pass through verbatim;
+          pass ``tags=""`` to clear all tags.
+        - **content** (``text`` set): re-runs the full ingest pipeline
+          for the new text -- chunk + embed + store -- replacing every
+          chunk of the matching document. ``title`` and ``tags`` may be
+          updated in the same call; they ride on the freshly-stored
+          row. The previous document row is removed first via
+          ``Memory.remove`` so the new content cannot collide with stale
+          chunk ids.
+        - **noop** (no field provided): raises ``ValueError`` -- a
+          caller that does not pass any field to update is almost
+          always a bug.
+
+        File-path normalization matches ``add()``/``remove()`` so
+        relative paths resolve consistently. URLs and ``text://``
+        synthetic paths pass through unchanged.
+
+        Args:
+            source: File path, URL, or ``text://`` identifier of the
+                document to mutate.
+            text: New content. When provided, every chunk of the doc is
+                re-embedded; ``title`` falls back to ``add``'s
+                title-extraction logic if not overridden.
+            title: New title. Optional in both modes.
+            tags: New comma-separated tag string. Optional in both modes.
+                Pass an empty string to clear tags.
+            collection: Override the default collection filter when
+                multiple ``(collection, path)`` rows could match the
+                same ``source``. Default uses the ``Memory``-instance
+                collection; pass ``None`` to update every collection's
+                copy of ``source``.
+
+        Returns:
+            Dict describing the update::
+
+                {
+                  "status": "updated" | "not_found" | "noop",
+                  "mode":   "metadata" | "content",
+                  "fields": ["title", "tags"],   # what was changed
+                  "chunks": <int>,               # for content mode
+                }
+
+            ``status="not_found"`` means no row matched ``source``; the
+            store was not modified. ``status="noop"`` means a content
+            update produced an empty result (text too short to chunk).
+
+        Raises:
+            ValueError: No field was provided to update.
+
+        Example::
+
+            mem = Memory(project="my_agent")
+            mem.update("docs/spec.md", title="Spec v2")
+            mem.update("docs/spec.md", tags="archive,spec")
+            mem.update("docs/spec.md", text=open("docs/spec.md").read())
+        """
+        if text is None and title is None and tags is None:
+            raise ValueError(
+                "Memory.update called with no field to update -- "
+                "pass at least one of `text=`, `title=`, or `tags=`."
+            )
+
+        source_str = str(source)
+        if not source_str.startswith(("http://", "https://", "text://")):
+            source_str = str(Path(source_str).resolve())
+
+        col = self._collection if collection is _UNSET else collection
+
+        if text is None:
+            # Metadata-only path. Use the store's atomic UPDATE
+            # primitive; do not invoke the embed pipeline at all.
+            updated = self._store.update_metadata(
+                source_str,
+                title=title,
+                tags=tags,
+                collection=col if col != "default" else None,
+            )
+            fields = [k for k, v in (("title", title), ("tags", tags)) if v is not None]
+            return {
+                "status": "updated" if updated else "not_found",
+                "mode": "metadata",
+                "fields": fields,
+                "chunks": 0,
+            }
+
+        # Content update: replace the chunks in place with the
+        # caller-supplied text. We deliberately do NOT re-read the
+        # path from disk (the caller is overriding the content), and
+        # we preserve every metadata field the caller did NOT pass so
+        # tags / project / layer / source_type / collection survive a
+        # content-only refresh.
+        col_filter = col if col != "default" else None
+        existing = next(
+            (d for d in self._store.list_documents(collection=col_filter) if d.path == source_str),
+            None,
+        )
+        if existing is None:
+            return {
+                "status": "not_found",
+                "mode": "content",
+                "fields": [],
+                "chunks": 0,
+            }
+
+        # Chunk + embed the new text directly. ``chunk_text`` and
+        # ``embed_texts`` are the same primitives ``ingest_text`` uses,
+        # so chunking semantics match ``Memory.add`` exactly.
+        from .embed import embed_texts
+        from .ingest import chunk_text
+
+        cs = self._chunk_size if self._chunk_size is not None else self._cfg.chunking.size
+        co = self._chunk_overlap if self._chunk_overlap is not None else self._cfg.chunking.overlap
+        new_chunks = chunk_text(text, cs, co)
+        if not new_chunks:
+            return {
+                "status": "noop",
+                "mode": "content",
+                "fields": [],
+                "chunks": 0,
+            }
+        new_embeddings = embed_texts(new_chunks, self._cfg.embeddings.model)
+
+        # Delete-then-add. Not strictly atomic (the doc is briefly
+        # missing between the two steps), but the same window already
+        # exists in the ``force=True`` re-ingest path used by ``add()``
+        # and the watch worker, so callers already tolerate it.
+        self._store.delete_document(source_str, collection=col_filter)
+        merged_collection = (
+            existing.collection if col == "default" else (col or existing.collection)
+        )
+        self._store.add_document(
+            path=source_str,
+            title=title if title is not None else existing.title,
+            chunks=new_chunks,
+            embeddings=new_embeddings,
+            source_type=existing.source_type,
+            collection=merged_collection,
+            project=existing.project,
+            layer=existing.layer,
+            tags=tags if tags is not None else existing.tags,
+        )
+        fields = [k for k, v in (("text", text), ("title", title), ("tags", tags)) if v is not None]
+        return {
+            "status": "updated",
+            "mode": "content",
+            "fields": fields,
+            "chunks": len(new_chunks),
+        }
+
     def list(
         self,
         *,
