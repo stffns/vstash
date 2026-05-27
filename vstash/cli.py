@@ -1375,6 +1375,16 @@ def compact(
         None, "--project", "-p", help="Restrict prune to this project"
     ),
     layer: str | None = typer.Option(None, "--layer", "-l", help="Restrict prune to this layer"),
+    tag: list[str] | None = typer.Option(
+        None,
+        "--tag",
+        "-t",
+        help=(
+            "Restrict prune to docs tagged with this value. Repeatable for OR "
+            "(``--tag archive --tag old``), or comma-joined "
+            "(``--tag 'archive,old'``). Comma-anchored match."
+        ),
+    ),
     no_vacuum: bool = typer.Option(
         False, "--no-vacuum", help="Skip the VACUUM step (faster on large DBs)"
     ),
@@ -1409,7 +1419,7 @@ def compact(
     """
     from .memory import Memory
 
-    if before is None and (collection or project or layer):
+    if before is None and (collection or project or layer or tag):
         # ``Memory.compact`` skips the prune phase entirely when
         # ``before`` is ``None``, so any scope filter the caller
         # passed is silently inert. Surface this loudly so users do
@@ -1438,6 +1448,7 @@ def compact(
             collection=collection,
             project=project,
             layer=layer,
+            tags=tag,
             dry_run=dry_run,
         )
 

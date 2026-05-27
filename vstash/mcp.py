@@ -1056,6 +1056,7 @@ def vstash_compact(
     collection: str | None = None,
     project: str | None = None,
     layer: str | None = None,
+    tags: str | None = None,
     vacuum: bool = True,
     optimize_fts: bool = True,
     dry_run: bool = False,
@@ -1067,7 +1068,8 @@ def vstash_compact(
       * **Prune** -- if ``before`` is set, deletes every doc whose
         ``added_at`` is strictly older. ``before`` accepts an age
         string (``"30d"``, ``"2w"``, ``"24h"``) or an ISO date /
-        timestamp. Scope with ``collection`` / ``project`` / ``layer``.
+        timestamp. Scope with ``collection`` / ``project`` /
+        ``layer`` / ``tags``.
       * **VACUUM** -- rebuilds the SQLite file to reclaim space.
         Can take seconds-to-minutes on large DBs; pass
         ``vacuum=False`` to skip.
@@ -1082,6 +1084,9 @@ def vstash_compact(
         collection: Restrict prune to this collection.
         project: Restrict prune to this project.
         layer: Restrict prune to this layer.
+        tags: Comma-separated list of tags; restrict prune to docs
+            tagged with any of them (OR semantics). Comma-anchored
+            match so ``alpha`` does NOT false-match ``alphabet``.
         vacuum: Run SQLite VACUUM after the prune.
         optimize_fts: Run FTS5 ``'optimize'`` after the prune.
         dry_run: Preview-only -- no writes.
@@ -1106,6 +1111,7 @@ def vstash_compact(
                 collection=collection,
                 project=project,
                 layer=layer,
+                tags=tags,
                 dry_run=dry_run,
             )
         return _ok(report)
