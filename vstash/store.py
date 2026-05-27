@@ -1810,8 +1810,12 @@ class VstashStore:
                 set_parts.append("title = ?")
                 set_params.append(title)
             if tags is not None:
+                # Normalize on write so the search-side comma-anchored
+                # LIKE matches reliably (same invariant as
+                # ``add_document`` post-#364). ``tags=""`` clears.
                 set_parts.append("tags = ?")
-                set_params.append(tags)
+                stored = ",".join(_normalize_tags(tags)) if tags else None
+                set_params.append(stored)
             where_parts = ["path = ?"]
             where_params: list[str] = [path]
             if collection is not None:
@@ -1832,6 +1836,130 @@ class VstashStore:
                 self._conn.rollback()
                 raise
             return rowcount > 0
+
+    def prune_documents(
+        self,
+        *,
+        before_iso: str | None = None,
+        collection: str | None = None,
+        project: str | None = None,
+        layer: str | None = None,
+        tags: str | list[str] | None = None,
+        dry_run: bool = False,
+    ) -> dict:
+        """Delete documents matching the given filters.
+
+        At least one filter (``before_iso`` or any metadata) must be
+        provided -- a fully-unfiltered prune would wipe the entire
+        store, which is almost always a caller bug and is better done
+        explicitly with ``delete_document`` in a loop.
+
+        Args:
+            before_iso: Delete documents whose ``added_at`` is strictly
+                older than this ISO timestamp (``"2026-01-15"`` or full
+                ``"2026-01-15T00:00:00+00:00"``).
+            collection: Restrict to this collection.
+            project: Restrict to this project.
+            layer: Restrict to this layer.
+            tags: Restrict to docs tagged with any of these tags (OR).
+                Accepts the same forms as the search-side tag filter:
+                comma-separated string (``"alpha,beta"``) or list.
+            dry_run: If ``True``, report what would be deleted without
+                touching the store.
+
+        Returns:
+            ``{"status": "ok"|"dry_run", "deleted": N, "paths": [...]}``.
+        """
+        if (
+            before_iso is None
+            and collection is None
+            and project is None
+            and layer is None
+            and not _normalize_tags(tags)
+        ):
+            raise ValueError(
+                "prune_documents called with no filter -- pass at least one "
+                "of `before_iso`, `collection`, `project`, `layer`, or `tags` "
+                "to scope the deletion."
+            )
+        conditions, params = self._get_filter_conditions(
+            collection=collection,
+            project=project,
+            layer=layer,
+            tags=tags,
+        )
+        if before_iso is not None:
+            conditions.append("added_at < ?")
+            params.append(before_iso)
+        where = "WHERE " + " AND ".join(conditions)
+        select_sql = f"SELECT id, path FROM documents {where}"
+
+        # ``dry_run`` is informational and tolerates the small race
+        # between SELECT and any concurrent writer -- it does not
+        # delete anything. The real prune below puts the SELECT INSIDE
+        # ``BEGIN IMMEDIATE`` so the rows we report deleted are exactly
+        # the rows that satisfied the filter at the instant the write
+        # lock was acquired. Otherwise a concurrent ``add_document``
+        # between the unlocked SELECT and the locked delete would let
+        # the reported ``paths`` / ``deleted`` count drift from what
+        # ``_delete_by_doc_ids`` actually removed.
+        if dry_run:
+            rows = self._conn.execute(select_sql, params).fetchall()
+            if not rows:
+                return {"status": "dry_run", "deleted": 0, "paths": []}
+            return {
+                "status": "dry_run",
+                "deleted": len(rows),
+                "paths": [r["path"] for r in rows],
+            }
+        with self._write_lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                rows = self._conn.execute(select_sql, params).fetchall()
+                if not rows:
+                    self._conn.rollback()
+                    return {"status": "ok", "deleted": 0, "paths": []}
+                doc_ids = [r["id"] for r in rows]
+                paths = [r["path"] for r in rows]
+                self._delete_by_doc_ids(doc_ids)
+                self._conn.commit()
+                self._invalidate_idf_cache()
+                self._bump_cache_epoch()
+                if self._snap_dirty:
+                    self._save_snapvec()
+            except Exception:
+                self._conn.rollback()
+                self._reload_snapvec()
+                raise
+        return {"status": "ok", "deleted": len(paths), "paths": paths}
+
+    def vacuum(self) -> None:
+        """Run SQLite ``VACUUM`` to reclaim space and defragment the file.
+
+        VACUUM cannot run inside a transaction. The store's normal
+        write path uses ``BEGIN IMMEDIATE`` so callers must not invoke
+        this from within another operation -- it is intended as the
+        outermost step of ``Memory.compact()`` / ``vstash compact``,
+        well after the prune phase has committed.
+
+        VACUUM rebuilds the entire database file, so on large stores
+        it can take seconds to minutes and momentarily doubles the disk
+        usage (working copy + original). Both costs are unavoidable.
+        """
+        with self._write_lock:
+            self._conn.execute("VACUUM")
+
+    def optimize_fts(self) -> None:
+        """Merge FTS5 segments in place and reclaim space.
+
+        Uses the FTS5 ``'optimize'`` directive (``INSERT INTO fts_chunks
+        (fts_chunks) VALUES ('optimize')``) which compacts the
+        inverted index without altering any tokenization or content.
+        Much cheaper than ``VACUUM`` and safe to run independently.
+        """
+        with self._write_lock:
+            self._conn.execute("INSERT INTO fts_chunks(fts_chunks) VALUES ('optimize')")
+            self._conn.commit()
 
     def _delete_by_doc_id(self, doc_id: str) -> bool:
         """Delete a document by its internal hash ID.

@@ -631,6 +631,109 @@ class TestMemoryUpdate:
             assert {d.collection for d in after} == {"default", "research"}
 
 
+class TestMemoryPruneAndCompact:
+    """Test Memory.prune and Memory.compact."""
+
+    @requires_sqlite_vec
+    def test_prune_requires_filter(self, tmp_path: Path) -> None:
+        """An unfiltered prune (``collection=None`` clears the
+        instance default) raises rather than wiping the store.
+
+        With no explicit ``collection`` argument, ``Memory.prune``
+        scopes to the instance collection (default ``"default"``),
+        which IS a valid filter. To trigger the no-filter guard the
+        caller has to explicitly clear it with ``collection=None``,
+        ``project=None``, no ``layer``, no ``before``.
+        """
+        with Memory(db=tmp_path / "test.db") as mem:
+            with pytest.raises(ValueError, match="no filter"):
+                mem.prune(collection=None)
+
+    @requires_sqlite_vec
+    def test_prune_by_layer(self, tmp_path: Path) -> None:
+        """Layer scope deletes only matching docs."""
+        keep = tmp_path / "keep.md"
+        drop = tmp_path / "drop.md"
+        keep.write_text("Content that must stay in the store.")
+        drop.write_text("Content that the prune call must remove from the store.")
+        with Memory(db=tmp_path / "test.db") as mem:
+            mem.add(keep, layer="permanent")
+            mem.add(drop, layer="scratch")
+            assert len(mem.list()) == 2
+
+            report = mem.prune(layer="scratch")
+            assert report["status"] == "ok"
+            assert report["deleted"] == 1
+            remaining = {d.path for d in mem.list()}
+            assert remaining == {str(keep.resolve())}
+
+    @requires_sqlite_vec
+    def test_prune_dry_run_is_readonly(self, tmp_path: Path) -> None:
+        """Dry-run returns the would-delete set without touching the store."""
+        doc = tmp_path / "preview.md"
+        doc.write_text("Content for the dry-run preview test scenario.")
+        with Memory(db=tmp_path / "test.db") as mem:
+            mem.add(doc, layer="scratch")
+            before_count = len(mem.list())
+
+            report = mem.prune(layer="scratch", dry_run=True)
+            assert report["status"] == "dry_run"
+            assert report["deleted"] == 1
+            assert len(mem.list()) == before_count, "dry_run must not delete"
+
+    @requires_sqlite_vec
+    def test_compact_runs_vacuum_and_optimize(self, tmp_path: Path) -> None:
+        """compact() with no `before` skips prune and runs only the
+        housekeeping primitives, both of which must report success."""
+        doc = tmp_path / "doc.md"
+        doc.write_text("Content for the compact housekeeping smoke test.")
+        with Memory(db=tmp_path / "test.db") as mem:
+            mem.add(doc)
+            report = mem.compact()
+            assert report["prune"] is None
+            assert report["vacuum"] is True
+            assert report["optimize_fts"] is True
+            # Store still functional after VACUUM + optimize.
+            assert mem.search("compact")[0].text  # at least one hit, smoke
+
+    @requires_sqlite_vec
+    def test_compact_dry_run_skips_writes(self, tmp_path: Path) -> None:
+        """dry_run forwards to prune and skips VACUUM / optimize."""
+        doc = tmp_path / "doc.md"
+        doc.write_text("Content for the compact dry-run regression test.")
+        with Memory(db=tmp_path / "test.db") as mem:
+            mem.add(doc, layer="scratch")
+            report = mem.compact(before="0d", layer="scratch", dry_run=True)
+            assert report["prune"]["status"] == "dry_run"
+            assert report["vacuum"] is False
+            assert report["optimize_fts"] is False
+
+    @requires_sqlite_vec
+    def test_prune_rejects_freeform_before(self, tmp_path: Path) -> None:
+        """Regression guard for the silent-wipe bug flagged on PR #366:
+        passing a non-age, non-ISO ``before`` value would lexically sort
+        higher than every ``2026-...`` timestamp under SQLite's TEXT
+        comparison, so ``added_at < 'invalid'`` would match every row
+        and ``prune`` would silently delete the entire store.
+
+        The fix is to validate ``before`` via ``datetime.fromisoformat``
+        when it does not parse as an age. Any unparseable value must
+        raise ``ValueError`` *before* it reaches the store.
+        """
+        doc = tmp_path / "doc.md"
+        doc.write_text("Critical content that must survive a bad ``before`` argument.")
+        with Memory(db=tmp_path / "test.db") as mem:
+            mem.add(doc)
+            before_count = len(mem.list())
+            for bad in ("invalid", "tomorrow", "yesterday", "30x", ""):
+                with pytest.raises(ValueError):
+                    mem.prune(before=bad)
+            # The store must be untouched after every rejected call.
+            assert len(mem.list()) == before_count, (
+                "prune accepted an invalid ``before`` and mutated the store"
+            )
+
+
 # ------------------------------------------------------------------ #
 # Memory.list and Memory.stats                                         #
 # ------------------------------------------------------------------ #

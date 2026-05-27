@@ -38,6 +38,83 @@ from .services import search_with_embedding
 _UNSET = object()
 
 
+def _resolve_before(before: str) -> str:
+    """Normalize a ``before=`` filter to an ISO timestamp string.
+
+    Accepts two surface forms and resolves them to a single canonical
+    representation that ``VstashStore.prune_documents`` can compare
+    directly against the ``added_at`` column:
+
+      * **Age string** (``"30d"``, ``"2w"``, ``"24h"``): parsed the
+        same way as ``vstash journal prune`` and converted to
+        ``now(UTC) - delta``. The ``"now"`` snapshot is taken at call
+        time so back-to-back invocations of the same age cut at the
+        same instant.
+      * **ISO date / timestamp** (``"2026-01-15"`` or
+        ``"2026-01-15T00:00:00+00:00"``): returned unchanged after
+        being validated against ``datetime.fromisoformat`` so the
+        store comparison uses lexical ``<`` on the column, which is
+        correct under the ``YYYY-MM-DDTHH:MM:SS+00:00`` form used by
+        ingest's ``datetime.now(timezone.utc).isoformat()``.
+
+    Anything that is neither a recognised age nor a parseable ISO
+    timestamp raises ``ValueError``. This is the load-bearing safety
+    rail for ``prune_documents``: SQLite compares text columns
+    lexically, so a free-form string like ``"invalid"`` whose first
+    character ``'i'`` (ASCII 105) is greater than any plausible
+    ISO-prefix character ``'2'`` (ASCII 50) would let ``added_at <
+    'invalid'`` evaluate true for **every** row and silently wipe the
+    store. Validating upfront makes the failure mode loud and local.
+
+    Reusing the journal's age parser keeps the two CLIs
+    (``vstash compact`` and ``vstash journal prune``) accepting the
+    same vocabulary.
+    """
+    from datetime import datetime, timezone
+
+    from .journal import _parse_age
+
+    stripped = before.strip()
+    if not stripped:
+        raise ValueError("`before` must be a non-empty age or ISO date string")
+    # Heuristic: any plain-digit-then-unit suffix (``30d``, ``2w``,
+    # ``24h``) is an age. Lowercase the suffix so ``30D`` / ``2W`` /
+    # ``24H`` parse too -- ``_parse_age`` is case-sensitive on the
+    # unit, and rejecting the upper-case form here would be more
+    # surprising than just normalising it.
+    if len(stripped) <= 6 and stripped[-1].lower() in "dwh" and stripped[:-1].isdigit():
+        delta = _parse_age(stripped.lower())
+        return (datetime.now(timezone.utc) - delta).isoformat()
+    # Not an age: must be a parseable ISO datetime. ``fromisoformat``
+    # accepts both ``YYYY-MM-DD`` and the full ``YYYY-MM-DDTHH:MM:SS``
+    # forms, and rejects everything else with ``ValueError``. We pass
+    # the bare exception through with a friendlier message so callers
+    # see WHY their input was refused without losing the original
+    # cause.
+    try:
+        parsed = datetime.fromisoformat(stripped)
+    except ValueError as exc:
+        raise ValueError(
+            f"`before={before!r}` is neither a recognised age "
+            f"('30d' / '2w' / '24h') nor a parseable ISO date / timestamp "
+            f"('2026-01-15' / '2026-01-15T00:00:00+00:00'). "
+            f"Refusing to pass through to the store because SQLite would "
+            f"compare lexically and silently delete every document."
+        ) from exc
+    # Canonicalise to UTC. ``added_at`` is stored as
+    # ``datetime.now(timezone.utc).isoformat()`` (always ``+00:00``),
+    # and SQLite compares the column lexically. A naive cutoff like
+    # ``2026-01-15T00:00:00-05:00`` would sort lexically AFTER
+    # ``2026-01-15T00:00:00+00:00`` even though it represents an
+    # earlier instant, so prune would mis-delete around timezone
+    # boundaries. Treat naive inputs as UTC; convert aware inputs.
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    else:
+        parsed = parsed.astimezone(timezone.utc)
+    return parsed.isoformat()
+
+
 class Memory:
     """High-level Python SDK for vstash.
 
@@ -576,6 +653,125 @@ class Memory:
             retrieval_mode=retrieval_mode,
         )
         return _chat_ask_full(query, chunks, self._cfg, history)
+
+    def prune(
+        self,
+        *,
+        before: str | None = None,
+        collection: object = _UNSET,
+        project: object = _UNSET,
+        layer: str | None = None,
+        dry_run: bool = False,
+    ) -> dict:
+        """Delete documents matching a date / metadata filter.
+
+        ``before`` accepts either an age string (``"30d"``, ``"2w"``,
+        ``"24h"``) which is converted to an absolute UTC cutoff at the
+        moment of the call, OR a full ISO date / timestamp
+        (``"2026-01-15"``, ``"2026-01-15T00:00:00+00:00"``) which is
+        passed straight through. At least one filter must be provided;
+        an unfiltered prune raises ``ValueError`` rather than wiping
+        the store silently.
+
+        Args:
+            before: Age string or ISO date. Documents whose
+                ``added_at`` is strictly older are deleted.
+            collection: Restrict to a single collection. Defaults to
+                the ``Memory``-instance collection. Pass ``None`` to
+                cover every collection.
+            project: Restrict to a project. Same UNSET / None rules
+                as the constructor.
+            layer: Restrict to a layer.
+            dry_run: If ``True``, return what would be deleted without
+                touching the store.
+
+        Returns:
+            ``{"status": "ok"|"dry_run", "deleted": N, "paths": [...]}``.
+
+        Example::
+
+            mem = Memory(project="my_agent")
+            mem.prune(before="90d", dry_run=True)        # preview
+            mem.prune(before="90d")                       # apply
+            mem.prune(layer="scratch")                    # by layer
+        """
+        before_iso: str | None = None
+        if before is not None:
+            before_iso = _resolve_before(before)
+
+        # Use the shared resolver helpers so prune obeys the same
+        # scope rules as every other read/write on this class. The
+        # previous ``col_filter = None if col == "default" else col``
+        # silently widened a ``Memory(collection="default")`` prune
+        # to *every* collection -- exactly the #165 asymmetry
+        # ``_resolve_collection`` is designed to prevent. Pass
+        # ``collection=None`` explicitly when you want "all
+        # collections", same as ``Memory.update`` and the CLI does.
+        return self._store.prune_documents(
+            before_iso=before_iso,
+            collection=self._resolve_collection(collection),
+            project=self._resolve_project(project),
+            layer=layer,
+            dry_run=dry_run,
+        )
+
+    def compact(
+        self,
+        *,
+        before: str | None = None,
+        vacuum: bool = True,
+        optimize_fts: bool = True,
+        collection: object = _UNSET,
+        project: object = _UNSET,
+        layer: str | None = None,
+        dry_run: bool = False,
+    ) -> dict:
+        """Full housekeeping pass: prune (optional) + VACUUM + FTS optimize.
+
+        Composes ``prune`` with the two store-level cleanup primitives
+        in a single call. Each phase is independent; passing
+        ``before=None`` skips the prune entirely and ``compact`` reduces
+        to a pure VACUUM + optimize.
+
+        Args:
+            before: Age or ISO date for the prune phase. ``None`` skips
+                pruning. See ``Memory.prune`` for the accepted formats.
+            vacuum: Run ``VACUUM`` after pruning. Set ``False`` on very
+                large stores where you want to defer the file rebuild
+                (VACUUM can take seconds-to-minutes on multi-GB DBs).
+            optimize_fts: Run the FTS5 ``'optimize'`` directive to
+                compact the inverted index. Much cheaper than VACUUM;
+                independent of it.
+            collection / project / layer: Scope for the prune phase.
+                Defaults follow ``Memory.prune``.
+            dry_run: If ``True``, run the prune in dry-run mode and
+                skip VACUUM / optimize entirely. Lets callers preview
+                without modifying the file.
+
+        Returns:
+            ``{"prune": {...} | None, "vacuum": bool, "optimize_fts": bool}``
+            describing each phase. The ``prune`` field is the same dict
+            ``Memory.prune`` returns, or ``None`` when ``before`` was
+            not provided.
+        """
+        report: dict = {"prune": None, "vacuum": False, "optimize_fts": False}
+        if before is not None:
+            report["prune"] = self.prune(
+                before=before,
+                collection=collection,
+                project=project,
+                layer=layer,
+                dry_run=dry_run,
+            )
+        if dry_run:
+            return report
+        if vacuum:
+            self._store.vacuum()
+            report["vacuum"] = True
+        if optimize_fts:
+            self._store.optimize_fts()
+            report["optimize_fts"] = True
+        return report
 
     def remove(self, source: str | Path) -> bool:
         """Remove a document from memory.
