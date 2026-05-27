@@ -138,6 +138,85 @@ class TestStoreSearch:
             assert isinstance(r.chunk, int)
             assert isinstance(r.score, float)
 
+    def test_search_tag_filter_single_string(self, sample_store: VstashStore) -> None:
+        """Single-tag filter passed as a string matches only docs that
+        have exactly that tag (comma-anchored membership, not substring)."""
+        dim = sample_store.embedding_dim
+        sample_store.add_document(
+            path="/test/alpha.md",
+            title="Alpha",
+            chunks=["alpha content one"],
+            embeddings=[[0.1] * dim],
+            tags="alpha,shared",
+        )
+        sample_store.add_document(
+            path="/test/beta.md",
+            title="Beta",
+            chunks=["beta content one"],
+            embeddings=[[0.1] * dim],
+            tags="beta,shared",
+        )
+        # tag="alpha" returns only the alpha-tagged doc
+        results = sample_store.search([0.1] * dim, "content", top_k=10, tags="alpha")
+        assert {r.title for r in results} == {"Alpha"}
+        # tag="shared" returns both
+        results = sample_store.search([0.1] * dim, "content", top_k=10, tags="shared")
+        assert {r.title for r in results} == {"Alpha", "Beta"}
+
+    def test_search_tag_filter_list_is_or(self, sample_store: VstashStore) -> None:
+        """A list (or comma-separated string) of tags is OR-semantics."""
+        dim = sample_store.embedding_dim
+        for name in ("alpha", "beta", "gamma"):
+            sample_store.add_document(
+                path=f"/test/{name}.md",
+                title=name.capitalize(),
+                chunks=[f"{name} content"],
+                embeddings=[[0.1] * dim],
+                tags=name,
+            )
+        # list form
+        results = sample_store.search([0.1] * dim, "content", top_k=10, tags=["alpha", "gamma"])
+        assert {r.title for r in results} == {"Alpha", "Gamma"}
+        # comma-string form must be equivalent
+        results_str = sample_store.search([0.1] * dim, "content", top_k=10, tags="alpha, gamma")
+        assert {r.title for r in results_str} == {"Alpha", "Gamma"}
+
+    def test_search_tag_filter_no_substring_false_match(self, sample_store: VstashStore) -> None:
+        """``tag='alpha'`` must NOT match a doc tagged ``alphabet``.
+
+        Regression guard for the comma-anchored LIKE pattern. A naive
+        ``tags LIKE '%alpha%'`` would false-match ``alphabet``,
+        ``alphanumeric``, ``galpha``. The anchor pattern wraps both
+        sides in commas so only exact tag membership matches.
+        """
+        dim = sample_store.embedding_dim
+        sample_store.add_document(
+            path="/test/exact.md",
+            title="Exact",
+            chunks=["exact match content"],
+            embeddings=[[0.1] * dim],
+            tags="alpha",
+        )
+        sample_store.add_document(
+            path="/test/super.md",
+            title="Super",
+            chunks=["substring noise content"],
+            embeddings=[[0.1] * dim],
+            tags="alphabet",
+        )
+        sample_store.add_document(
+            path="/test/prefix.md",
+            title="Prefix",
+            chunks=["prefix noise content"],
+            embeddings=[[0.1] * dim],
+            tags="galpha",
+        )
+        results = sample_store.search([0.1] * dim, "content", top_k=10, tags="alpha")
+        assert {r.title for r in results} == {"Exact"}, (
+            f"comma-anchored tag filter false-matched substring: "
+            f"got {sorted(r.title for r in results)}"
+        )
+
 
 class TestStoreDeduplication:
     """Test document-level deduplication in search results."""

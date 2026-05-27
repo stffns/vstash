@@ -124,6 +124,45 @@ class TestJournalRecall:
         for e in entries:
             assert "Project B" not in e.get("text", "")
 
+    def test_recall_recent_with_tag_filter(self) -> None:
+        """``tags=`` on the recent-entries branch restricts by exact
+        tag membership (not substring)."""
+        from vstash.journal import journal_recall, journal_save
+
+        journal_save("Auth note about OAuth", tags="auth", source="test")
+        journal_save("Auth-note longer", tags="authentication", source="test")
+        journal_save("Deploy notes", tags="deploy", source="test")
+
+        entries = journal_recall(tags="auth")
+        titles = " | ".join(e.get("title", "") for e in entries)
+        # The "auth" entry must appear; "authentication" must NOT
+        # (comma-anchored membership, not substring).
+        for e in entries:
+            assert "authentication" not in (e.get("tags") or ""), (
+                f"tag=auth false-matched 'authentication' entry: {e.get('tags')}"
+            )
+        assert any("auth" in (e.get("tags") or "").split(",") for e in entries), (
+            f"expected the auth-tagged entry in results, got titles: {titles}"
+        )
+
+    def test_recall_query_with_tag_filter(self) -> None:
+        """``tags=`` on the semantic-search branch flows through to
+        ``store.search`` and constrains the candidate pool."""
+        from vstash.journal import journal_recall, journal_save
+
+        journal_save("Decision: switch from JWT to opaque tokens", tags="decision", source="test")
+        journal_save("Note: explored JWT alternatives", tags="note", source="test")
+
+        entries = journal_recall(query="tokens JWT", tags="decision")
+        # The semantic-search branch returns ``text/title/score/added_at``
+        # (no ``tags`` field surfaced), so we cannot assert per-entry tag
+        # values. The functional guarantee is that the ``note``-tagged
+        # entry must NOT appear in results -- its content alone would
+        # otherwise win on relevance.
+        assert all("alternatives" not in e.get("text", "") for e in entries), (
+            f"tag=decision filter leaked the note-tagged entry: {[e.get('text') for e in entries]}"
+        )
+
 
 # ------------------------------------------------------------------ #
 # journal_log                                                          #

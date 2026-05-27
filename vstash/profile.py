@@ -239,6 +239,9 @@ def federated_search(
     collection: str | None = None,
     project: str | None = None,
     layer: str | None = None,
+    tags: str | list[str] | None = None,
+    added_after: str | None = None,
+    added_before: str | None = None,
     expand_window: int = 0,
 ) -> list[tuple[str, SearchResult]]:
     """Search across all profiles and merge results with RRF.
@@ -306,6 +309,9 @@ def federated_search(
                     collection=collection,
                     project=project,
                     layer=layer,
+                    tags=tags,
+                    added_after=added_after,
+                    added_before=added_before,
                 )
                 # Expand context per-store before closing (the only
                 # opportunity — stores are closed after this).  Note: this

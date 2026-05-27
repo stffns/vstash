@@ -278,6 +278,7 @@ class Memory:
         recency_boost: float = 0.0,
         added_after: str | None = None,
         added_before: str | None = None,
+        tags: str | list[str] | None = None,
         mmr_lambda: float = 0.5,
         vec_weight: float | None = None,
         fts_weight: float | None = None,
@@ -302,6 +303,11 @@ class Memory:
                 from documents added on or after this date.
             added_before: ISO date (e.g. '2024-06-01') — only return results
                 from documents added before this date.
+            tags: Restrict to documents tagged with one or more of these
+                tags (OR semantics). Accepts a comma-separated string
+                (``"alpha,beta"``) or a list (``["alpha", "beta"]``).
+                Comma-anchored LIKE match so ``alpha`` does not
+                false-match ``alphabet``.
             vec_weight: Pin the RRF vector weight for this single call,
                 overriding adaptive RRF. Valid range ``[0.0, 1.0]``.
                 Pass ``None`` (default) to keep adaptive per-query
@@ -363,6 +369,7 @@ class Memory:
             recency_boost=recency_boost,
             added_after=added_after,
             added_before=added_before,
+            tags=tags,
             mmr_lambda=mmr_lambda,
             vec_weight=vec_weight,
             fts_weight=fts_weight,
@@ -682,6 +689,9 @@ class Memory:
         query: str | None = None,
         *,
         top_k: int = 5,
+        tags: str | list[str] | None = None,
+        added_after: str | None = None,
+        added_before: str | None = None,
     ) -> list[dict]:
         """Recall relevant journal entries from past sessions.
 
@@ -691,6 +701,14 @@ class Memory:
         Args:
             query: Search query, or None for recent entries.
             top_k: Number of entries to return.
+            tags: Restrict to journal entries tagged with one or more of
+                these tags (OR semantics). Accepts a comma-separated
+                string (``"work,decisions"``) or a list. Comma-anchored
+                LIKE match so ``work`` does not false-match ``workflow``.
+            added_after: ISO date (e.g. ``"2026-01-15"``) — only return
+                entries logged on or after this date.
+            added_before: ISO date — only return entries logged strictly
+                before this date.
 
         Returns:
             List of dicts with text, title, score/added_at.
@@ -699,6 +717,7 @@ class Memory:
 
             mem = Memory(project="my_agent")
             context = mem.journal_recall("authentication decisions")
+            recent_work = mem.journal_recall(tags="work", added_after="2026-05-20")
         """
         from .journal import journal_recall
 
@@ -706,6 +725,9 @@ class Memory:
             query=query,
             top_k=top_k,
             project=self._project,
+            tags=tags,
+            added_after=added_after,
+            added_before=added_before,
             cfg=self._cfg,
         )
 

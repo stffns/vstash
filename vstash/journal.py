@@ -26,6 +26,7 @@ from uuid import uuid4
 from ._store_open import open_store_for_config
 from .config import VstashConfig, load_config
 from .embed import embed_query
+from .store import _normalize_tags
 from .profile import PROFILES_DIR
 from .store import VstashStore
 
@@ -214,27 +215,41 @@ def journal_recall(
     *,
     top_k: int = 5,
     project: str | None = None,
+    tags: str | list[str] | None = None,
+    added_after: str | None = None,
+    added_before: str | None = None,
     cfg: VstashConfig | None = None,
 ) -> list[dict]:
     """Recall relevant journal entries.
 
     When query is None, returns the most recent entries.
-    When query is provided, performs semantic search.
+    When query is provided, performs semantic search. Both branches
+    honour ``tags``, ``added_after`` and ``added_before`` -- they are
+    applied as document-level metadata filters before the candidate
+    pool is scored.
 
     Args:
         query: Optional search query. None = recent entries.
         top_k: Number of entries to return.
         project: Filter by project. None = all projects.
+        tags: Restrict to journal entries tagged with one or more of
+            these tags (OR semantics). Accepts a comma-separated string
+            (``"work,decisions"``) or a list. Comma-anchored LIKE match
+            so ``work`` does not false-match ``workflow``.
+        added_after: ISO date — only entries logged on or after this date.
+        added_before: ISO date — only entries logged strictly before this date.
         cfg: Optional pre-loaded config.
 
     Returns:
-        List of dicts with text, title, score, added_at.
+        List of dicts with text, title, score/added_at, tags.
     """
     top_k = max(1, top_k)
     cfg, store = _get_journal_store(cfg)
     try:
         if query:
-            # Semantic search
+            # Semantic search -- thread the new filters through the
+            # store.search call so tag/date constraints are applied
+            # BEFORE RRF / MMR see the candidate pool.
             q_embedding = embed_query(query, cfg.embeddings.model)
             results = store.search(
                 query_embedding=q_embedding,
@@ -243,6 +258,9 @@ def journal_recall(
                 collection=JOURNAL_COLLECTION,
                 project=project,
                 layer=JOURNAL_LAYER,
+                tags=tags,
+                added_after=added_after,
+                added_before=added_before,
             )
             # Look up added_at for each result's source document
             unique_paths = list({r.path for r in results})
@@ -257,17 +275,37 @@ def journal_recall(
                 for r in results
             ]
         else:
-            # Recent entries — list documents sorted by newest first
+            # Recent entries -- list documents sorted by newest first.
+            # ``list_documents`` already accepts collection/project/layer;
+            # tag and date filters are layered on top in Python because
+            # ``list_documents`` does not expose them as kwargs (its
+            # query is shared with the more permissive non-journal
+            # surfaces and we keep this filter local to recall).
             docs = store.list_documents(
                 collection=JOURNAL_COLLECTION,
                 project=project,
                 layer=JOURNAL_LAYER,
             )
+            tag_filter = _normalize_tags(tags)
+            filtered = []
+            for doc in docs:
+                doc_added = getattr(doc, "added_at", None)
+                if added_after and doc_added and doc_added < added_after:
+                    continue
+                if added_before and doc_added and doc_added >= added_before:
+                    continue
+                if tag_filter:
+                    doc_tags = [t.strip() for t in (doc.tags or "").split(",") if t.strip()]
+                    if not any(t in doc_tags for t in tag_filter):
+                        continue
+                filtered.append(doc)
+                if len(filtered) >= top_k:
+                    break
             entries = []
             # Batch-fetch chunks for all docs in one query (avoid N+1)
-            doc_paths = [doc.path for doc in docs[:top_k]]
+            doc_paths = [doc.path for doc in filtered]
             chunks_by_path = store.get_chunks_for_documents(doc_paths)
-            for doc in docs[:top_k]:
+            for doc in filtered:
                 chunks = chunks_by_path.get(doc.path, [])
                 # Use first chunk only for single-chunk entries (most journal);
                 # for multi-chunk, join with blank line to reduce overlap noise.
