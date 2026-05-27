@@ -81,8 +81,11 @@ def _resolve_before(before: str) -> str:
     # ``24h``) is an age. Lowercase the suffix so ``30D`` / ``2W`` /
     # ``24H`` parse too -- ``_parse_age`` is case-sensitive on the
     # unit, and rejecting the upper-case form here would be more
-    # surprising than just normalising it.
-    if len(stripped) <= 6 and stripped[-1].lower() in "dwh" and stripped[:-1].isdigit():
+    # surprising than just normalising it. No length cap: any number
+    # of leading digits is fine (``"100000h"`` is ~11 years, a
+    # perfectly valid age cutoff), and the digit+suffix shape is
+    # unambiguously distinct from any ISO date / timestamp.
+    if stripped[-1].lower() in "dwh" and stripped[:-1].isdigit():
         delta = _parse_age(stripped.lower())
         return (datetime.now(timezone.utc) - delta).isoformat()
     # Not an age: must be a parseable ISO datetime. ``fromisoformat``
@@ -661,6 +664,7 @@ class Memory:
         collection: object = _UNSET,
         project: object = _UNSET,
         layer: str | None = None,
+        tags: str | list[str] | None = None,
         dry_run: bool = False,
     ) -> dict:
         """Delete documents matching a date / metadata filter.
@@ -682,6 +686,10 @@ class Memory:
             project: Restrict to a project. Same UNSET / None rules
                 as the constructor.
             layer: Restrict to a layer.
+            tags: Restrict to docs tagged with any of these tags
+                (OR semantics). Same shape as the search-side tag
+                filter -- comma-separated string or list, comma-anchored
+                match so ``alpha`` does not false-match ``alphabet``.
             dry_run: If ``True``, return what would be deleted without
                 touching the store.
 
@@ -694,6 +702,7 @@ class Memory:
             mem.prune(before="90d", dry_run=True)        # preview
             mem.prune(before="90d")                       # apply
             mem.prune(layer="scratch")                    # by layer
+            mem.prune(tags="archive")                     # by tag
         """
         before_iso: str | None = None
         if before is not None:
@@ -712,6 +721,7 @@ class Memory:
             collection=self._resolve_collection(collection),
             project=self._resolve_project(project),
             layer=layer,
+            tags=tags,
             dry_run=dry_run,
         )
 
@@ -724,6 +734,7 @@ class Memory:
         collection: object = _UNSET,
         project: object = _UNSET,
         layer: str | None = None,
+        tags: str | list[str] | None = None,
         dry_run: bool = False,
     ) -> dict:
         """Full housekeeping pass: prune (optional) + VACUUM + FTS optimize.
@@ -761,6 +772,7 @@ class Memory:
                 collection=collection,
                 project=project,
                 layer=layer,
+                tags=tags,
                 dry_run=dry_run,
             )
         if dry_run:
