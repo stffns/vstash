@@ -3567,9 +3567,6 @@ class VstashStore:
         doc_keys = [str(r["path"]) for r in ranked]
         chunk_embs = [embeddings.get(int(r["id"])) for r in ranked]
 
-        # Precompute L2 norms for cosine similarity to avoid O(K * N) recomputation.
-        chunk_norms = [math.hypot(*emb) if emb is not None else 0.0 for emb in chunk_embs]
-
         # Pre-group ranked indices by document key so the sibling-penalty
         # update walks O(S) (siblings only) instead of O(N) (all remaining).
         # Together with the in_remaining mask this turns the dedup loop from
@@ -3577,6 +3574,10 @@ class VstashStore:
         doc_to_indices: dict[str, list[int]] = {}
         for i, doc_key in enumerate(doc_keys):
             doc_to_indices.setdefault(doc_key, []).append(i)
+
+        # Lazily compute L2 norms for cosine similarity to avoid O(N) recomputation
+        # for chunks that are never evaluated against siblings.
+        chunk_norms = [0.0] * len(ranked)
 
         # Track the maximum similarity to any selected chunk from the *same document*.
         # Replaces O(N * S) recomputation with O(1) lookup + O(N) update.
@@ -3623,18 +3624,27 @@ class VstashStore:
             # Update max_sims for remaining chunks from the same document
             # by comparing against the newly selected embedding.
             new_doc_key = doc_keys[best_idx]
-            new_emb = chunk_embs[best_idx]
-            new_norm = chunk_norms[best_idx]
-            if new_emb is not None:
-                for idx in doc_to_indices[new_doc_key]:
-                    if in_remaining[idx]:
-                        idx_emb = chunk_embs[idx]
-                        if idx_emb is not None:
-                            sim = _cosine_sim(
-                                idx_emb, new_emb, norm_a=chunk_norms[idx], norm_b=new_norm
-                            )
-                            if sim > max_sims[idx]:
-                                max_sims[idx] = sim
+            doc_indices = doc_to_indices[new_doc_key]
+
+            # Optimization: skip computing max_sims for documents with only one chunk in ranked list.
+            if len(doc_indices) > 1:
+                new_emb = chunk_embs[best_idx]
+                if new_emb is not None:
+                    if chunk_norms[best_idx] == 0.0:
+                        chunk_norms[best_idx] = math.hypot(*new_emb)
+                    new_norm = chunk_norms[best_idx]
+
+                    for idx in doc_indices:
+                        if in_remaining[idx]:
+                            idx_emb = chunk_embs[idx]
+                            if idx_emb is not None:
+                                if chunk_norms[idx] == 0.0:
+                                    chunk_norms[idx] = math.hypot(*idx_emb)
+                                sim = _cosine_sim(
+                                    idx_emb, new_emb, norm_a=chunk_norms[idx], norm_b=new_norm
+                                )
+                                if sim > max_sims[idx]:
+                                    max_sims[idx] = sim
 
         return selected
 
