@@ -3567,8 +3567,9 @@ class VstashStore:
         doc_keys = [str(r["path"]) for r in ranked]
         chunk_embs = [embeddings.get(int(r["id"])) for r in ranked]
 
-        # Precompute L2 norms for cosine similarity to avoid O(K * N) recomputation.
-        chunk_norms = [math.hypot(*emb) if emb is not None else 0.0 for emb in chunk_embs]
+        # Lazily compute L2 norms for cosine similarity to avoid O(N) recomputation
+        # for chunks that are never compared (no siblings or never selected).
+        chunk_norms: list[float | None] = [None] * len(ranked)
 
         # Pre-group ranked indices by document key so the sibling-penalty
         # update walks O(S) (siblings only) instead of O(N) (all remaining).
@@ -3623,13 +3624,25 @@ class VstashStore:
             # Update max_sims for remaining chunks from the same document
             # by comparing against the newly selected embedding.
             new_doc_key = doc_keys[best_idx]
+
+            # Fast-path: Skip update if there are no other siblings from the same document
+            if len(doc_to_indices[new_doc_key]) <= 1:
+                continue
+
             new_emb = chunk_embs[best_idx]
+
+            if chunk_norms[best_idx] is None and new_emb is not None:
+                chunk_norms[best_idx] = math.hypot(*new_emb)
             new_norm = chunk_norms[best_idx]
+
             if new_emb is not None:
                 for idx in doc_to_indices[new_doc_key]:
                     if in_remaining[idx]:
                         idx_emb = chunk_embs[idx]
                         if idx_emb is not None:
+                            if chunk_norms[idx] is None:
+                                chunk_norms[idx] = math.hypot(*idx_emb)
+
                             sim = _cosine_sim(
                                 idx_emb, new_emb, norm_a=chunk_norms[idx], norm_b=new_norm
                             )
