@@ -14,9 +14,7 @@ import hashlib
 import json
 import logging
 import math
-import operator
 import sqlite3
-import struct
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,10 +30,10 @@ import sqlite_vec
 
 from collections import OrderedDict
 
-from .config import CacheConfig, LimitsConfig, ObservabilityConfig
-from .errors import SchemaVersionError
-from .validation import validate_document_input, validate_search_input
-from .models import (
+from ..config import CacheConfig, LimitsConfig, ObservabilityConfig
+from ..errors import SchemaVersionError
+from ..validation import validate_document_input, validate_search_input
+from ..models import (
     ChunkInfo,
     DocumentInfo,
     ExplainInfo,
@@ -48,82 +46,47 @@ from .models import (
     StoreStats,
 )
 
-# SQLite's SQLITE_LIMIT_VARIABLE_NUMBER default is 999; batch IN clauses below this.
-_SQLITE_PARAM_BATCH = 900
+from ._common import (
+    _ADAPTIVE_RRF_LONG_QUERY,
+    _LONG_QUERY_DISTANCE_CUTOFF,
+    _PipelineTracer,
+    _SQLITE_PARAM_BATCH,
+    _cosine_sim,
+    _deserialize,
+    _normalize_tags,
+    _serialize,
+    KNOWN_SCHEMA_VERSIONS,
+    RELEVANCE_TIER_HIGH_MAX,
+    RELEVANCE_TIER_MEDIUM_MAX,
+    RRF_K,
+    SCHEMA_VERSION,
+    relevance_tier,
+)
 
-# ------------------------------------------------------------------ #
-# Schema versioning (#135)                                             #
-# ------------------------------------------------------------------ #
-
-#: Current schema version.  Bumped only when a change requires a
-#: migration the runtime cannot perform automatically (column drop,
-#: type change, semantics change).  Pure additive ALTER TABLE migrations
-#: stay within the same version because they're handled in
-#: ``_migrate_schema``.
-#:
-#: v2 (#272): ``vec_chunks`` uses ``distance_metric=cosine``.  Prior v1
-#: DBs stored identical float bytes under sqlite-vec's default L2
-#: metric; on-open migration rebuilds the virtual table (no
-#: re-embedding).
-SCHEMA_VERSION = "2"
-
-#: Schema versions this build of vstash knows how to read.  Anything
-#: not in this set raises :class:`SchemaVersionError` on open.  v1 is
-#: accepted because on-open migration promotes it to v2 in-place.
-KNOWN_SCHEMA_VERSIONS: frozenset[str] = frozenset({"1", "2"})
-
-
-# SchemaVersionError moved to vstash.errors in v0.37 (single source of
-# truth for the VstashError hierarchy). Imported at the top of this
-# module; this comment is left as a breadcrumb for code archaeology.
-
-
-# ------------------------------------------------------------------ #
-# Miss-analysis tracing (#108)                                         #
-# ------------------------------------------------------------------ #
-
-
-class _PipelineTracer:
-    """Caller-owned collector for per-stage verdicts during search().
-
-    Used by miss_analysis() to record how a specific chunk fared at
-    each stage of the search pipeline.  The tracer is created by the
-    caller, passed into search(), and read back afterwards.  Because
-    ownership is local to the caller, concurrent miss_analysis() calls
-    on a shared VstashStore cannot stomp on each other.
-
-    When tracking is not needed, search() receives ``None`` instead of
-    a tracer instance — every method on the real tracer is short-
-    circuited by an early ``if self.target is None: return`` check in
-    the caller code, so there is zero hot-path cost.
-    """
-
-    __slots__ = ("target", "verdicts")
-
-    def __init__(self, target_chunk_id: int) -> None:
-        self.target: int = int(target_chunk_id)
-        self.verdicts: list[dict[str, object]] = []
-
-    def record(
-        self,
-        stage: str,
-        passed: bool,
-        rank: int | None = None,
-        score: float | None = None,
-        detail: str = "",
-        counterfactual: str | None = None,
-    ) -> None:
-        """Append a StageVerdict-shaped dict to the caller's buffer."""
-        self.verdicts.append(
-            {
-                "stage": stage,
-                "passed": passed,
-                "rank": rank,
-                "score": score,
-                "detail": detail,
-                "counterfactual": counterfactual,
-            }
-        )
+# Public + re-export surface of ``vstash.store``. Several modules and tests
+# import these names directly from ``vstash.store``; the package __init__ is
+# the single re-export hub (#280), so they are listed here explicitly. The
+# underscore-prefixed entries are intentionally part of the stable internal
+# surface (used by tests / sibling modules), not private to this module.
+__all__ = [
+    "KNOWN_SCHEMA_VERSIONS",
+    "RELEVANCE_TIER_HIGH_MAX",
+    "RELEVANCE_TIER_MEDIUM_MAX",
+    "RRF_K",
+    "SCHEMA_VERSION",
+    "_ADAPTIVE_RRF_LONG_QUERY",
+    "_HAS_SNAPVEC",
+    "_LONG_QUERY_DISTANCE_CUTOFF",
+    "_SQLITE_PARAM_BATCH",
+    "SchemaVersionError",
+    "VstashStore",
+    "_PipelineTracer",
+    "_cosine_sim",
+    "_deserialize",
+    "_normalize_tags",
+    "_serialize",
+    "relevance_tier",
+]
 
 
 # vstash uses one in-memory FTS5 connection per thread for stemming
@@ -152,165 +115,6 @@ except ImportError:
     _HAS_SNAPVEC = False
 
 logger = logging.getLogger(__name__)
-
-
-def _normalize_tags(tags: str | list[str] | None) -> list[str]:
-    """Normalize the ``tags`` filter input to a deduped list of tag strings.
-
-    Accepts:
-      - ``None`` / empty string / empty list -> ``[]`` (filter disabled).
-      - A comma-separated string (``"alpha, beta"``) -> ``["alpha", "beta"]``.
-      - A list of strings (``["alpha", "beta"]``) -> ``["alpha", "beta"]``.
-
-    Whitespace around each tag is stripped, empty entries are dropped, and
-    insertion order is preserved (no sort) so callers can keep meaningful
-    ordering when they care. Duplicates are removed.
-    """
-    if tags is None:
-        return []
-    if isinstance(tags, str):
-        parts = tags.split(",")
-    else:
-        # Each list element may itself contain commas (Typer's
-        # ``--tag "a,b"`` pattern, or callers who mix repeated flags
-        # with comma-joined strings). Split each element so the
-        # caller surface accepts ``["alpha,beta"]`` and
-        # ``["alpha", "beta"]`` interchangeably -- otherwise the
-        # comma-anchored ``LIKE`` match would look for a literal tag
-        # ``"alpha,beta"`` which never exists in storage.
-        parts = []
-        for t in tags:
-            parts.extend(str(t).split(","))
-    seen: set[str] = set()
-    out: list[str] = []
-    for part in parts:
-        cleaned = part.strip()
-        if cleaned and cleaned not in seen:
-            seen.add(cleaned)
-            out.append(cleaned)
-    return out
-
-
-def _serialize(vector: list[float]) -> bytes:
-    """Serialize a float vector into a compact binary format for sqlite-vec."""
-    return struct.pack(f"{len(vector)}f", *vector)
-
-
-def _deserialize(data: bytes) -> list[float]:
-    """Deserialize a sqlite-vec binary blob back to a float list.
-
-    Raises:
-        ValueError: If the blob length is not a multiple of float size.
-    """
-    item_size = struct.calcsize("f")
-    if len(data) % item_size != 0:
-        msg = f"Embedding blob length {len(data)} is not a multiple of {item_size}"
-        raise ValueError(msg)
-    count = len(data) // item_size
-    return list(struct.unpack(f"{count}f", data))
-
-
-# Pick the fastest pure-Python dot product available on this
-# interpreter.  `math.sumprod` (Python 3.12+) is a single C-level loop
-# tuned for dot products and is ~3x faster than `sum(map(operator.mul,
-# a, b))` on 384-dim vectors.  For Python 3.10/3.11 (which we still
-# support, per pyproject.toml requires-python = ">=3.10"), fall back to
-# the map+operator path — still ~3x faster than the original generator
-# expression.  The selection happens once at module load; the hot path
-# pays zero overhead for the check.
-try:
-    _dot_product = math.sumprod  # Python 3.12+
-except AttributeError:
-
-    def _dot_product(a: list[float], b: list[float]) -> float:
-        return sum(map(operator.mul, a, b))
-
-
-def _cosine_sim(
-    a: list[float],
-    b: list[float],
-    norm_a: float | None = None,
-    norm_b: float | None = None,
-) -> float:
-    """Cosine similarity between two vectors. Returns value in [-1, 1].
-
-    Args:
-        a: First vector.
-        b: Second vector.
-        norm_a: Precomputed L2 norm of *a* (``math.hypot(*a)``). If None,
-            computed on the fly.
-        norm_b: Precomputed L2 norm of *b* (``math.hypot(*b)``). If None,
-            computed on the fly.
-
-    Uses ``math.sumprod`` on Python 3.12+ and ``sum(map(operator.mul,
-    ...))`` as a fallback, combined with ``math.hypot(*vec)`` for the
-    L2 norm.  Both branches route through C-level stdlib loops and
-    avoid the Python-bytecode overhead of generator expressions.
-
-    Returns 0.0 when either input is an empty vector or a zero
-    vector (the existing guard catches these via the ``norm < 1e-9``
-    check).
-    """
-    dot = _dot_product(a, b)
-    if norm_a is None:
-        norm_a = math.hypot(*a)
-    if norm_b is None:
-        norm_b = math.hypot(*b)
-    if norm_a < 1e-9 or norm_b < 1e-9:
-        return 0.0
-    return dot / (norm_a * norm_b)
-
-
-#: High-confidence cosine distance cutoff for ``relevance_tier``.  Value
-#: is the cosine equivalent of the legacy L2-on-unit-vec threshold 0.95
-#: (``cos_dist = L2^2 / 2 = 0.4513``), so BGE-small unit-normalized
-#: embeddings keep identical tier assignments across the v1 -> v2
-#: metric change (#272).
-RELEVANCE_TIER_HIGH_MAX = 0.4513
-
-#: Medium-confidence cosine distance cutoff for ``relevance_tier``.
-#: Cosine equivalent of the legacy L2 threshold 0.98
-#: (``0.98^2 / 2 = 0.4802``).  Anything above is classified "low".
-RELEVANCE_TIER_MEDIUM_MAX = 0.4802
-
-
-def relevance_tier(distance: float) -> str:
-    """Classify cosine distance into a relevance tier.
-
-    Thresholds were recalibrated for cosine metric in schema v2 (#272).
-    The old labels claimed "cosine distance" while sqlite-vec was
-    actually returning L2 distance, which only worked by accident on
-    unit-normalized BGE.  See the ``RELEVANCE_TIER_*`` constants above
-    for how the new cutoffs were derived.
-
-    Tiers:
-        "high"   -- distance <= ``RELEVANCE_TIER_HIGH_MAX`` (0.4513):
-            confident match.
-        "medium" -- ``RELEVANCE_TIER_HIGH_MAX`` < distance <=
-            ``RELEVANCE_TIER_MEDIUM_MAX`` (0.4802): uncertain.
-        "low"    -- distance > ``RELEVANCE_TIER_MEDIUM_MAX``: likely
-            off-topic.
-    """
-    if distance <= RELEVANCE_TIER_HIGH_MAX:
-        return "high"
-    if distance <= RELEVANCE_TIER_MEDIUM_MAX:
-        return "medium"
-    return "low"
-
-
-# Standard RRF constant — balances precision vs recall
-RRF_K = 60
-
-# Adaptive RRF: query length threshold above which FTS weight is reduced.
-# ArguAna (194 avg words) showed -38.4% vs dense; queries >50 words are
-# typically semantic paraphrases where keywords add noise.
-_ADAPTIVE_RRF_LONG_QUERY = 50
-
-# Long-query distance_cutoff. 25.0 = 5.0^2: the squared cosine equivalent
-# of the legacy v1 L2 5.0x cutoff (#272). Diffuse long-query embeddings
-# compress distances; without this relaxation the default 1.3225 cutoff
-# rejects nearly every candidate past rank 0.
-_LONG_QUERY_DISTANCE_CUTOFF = 25.0
 
 
 class VstashStore:
@@ -447,7 +251,7 @@ class VstashStore:
             self._vector_backend = "sqlite-vec"
             return
 
-        from .vectorbackend.snapvec_ivfpq import IVFPQBackend
+        from ..vectorbackend.snapvec_ivfpq import IVFPQBackend
 
         nlist = self._ivfpq_nlist or self._derive_nlist()
         kwargs = dict(
@@ -546,7 +350,7 @@ class VstashStore:
 
         import numpy as np
 
-        from .vectorbackend.snapvec_ivfpq import IVFPQBackend
+        from ..vectorbackend.snapvec_ivfpq import IVFPQBackend
 
         # Stream vec_chunks into a pre-allocated float32 matrix so peak
         # memory stays bounded at ~N * dim * 4 bytes (e.g. ~150 MB at
@@ -1000,7 +804,7 @@ class VstashStore:
         4. Reject any stamped version we do not recognize with
            :class:`SchemaVersionError`.
         """
-        from . import __version__ as _vstash_version
+        from .. import __version__ as _vstash_version
 
         migrated = self._migrate_v1_to_v2(conn)
 
@@ -1478,7 +1282,7 @@ class VstashStore:
         if not documents:
             return []
 
-        from .validation import validate_document_input
+        from ..validation import validate_document_input
 
         doc_ids: list[str] = []
 
@@ -2479,7 +2283,7 @@ class VstashStore:
         # causing searches_total to drift ahead of the histogram count
         # (exactly the metrics skew you do NOT want when debugging a
         # production incident).
-        from .metrics import registry
+        from ..metrics import registry
 
         _search_start = time.perf_counter()
         _result_count = 0
@@ -4027,7 +3831,7 @@ class VstashStore:
         ``vstash stats --detailed`` or ``GET /metrics`` reflect the
         current state without having to touch the registry manually.
         """
-        from .metrics import registry
+        from ..metrics import registry
 
         doc_count: int = self._conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
         chunk_count: int = self._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
@@ -4468,7 +4272,7 @@ class VstashStore:
         Returns:
             Tuple of (term_idf_dict, total_chunk_count).
         """
-        from .metrics import registry
+        from ..metrics import registry
 
         if self._idf_cache is not None:
             registry.counter_inc("idf_cache_hits")
