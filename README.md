@@ -212,6 +212,14 @@ Adaptive RRF, self-supervised embedding refinement, a negative result on post-RR
 
 ---
 
+## What's New in v0.37
+
+- **`Memory.update()` — in-place document mutation** (v0.37) -- update a stored doc without re-adding it. `Memory.update(path, title=..., tags=...)` runs a single atomic metadata `UPDATE` (no re-chunking, no embedding); `Memory.update(path, text=...)` re-chunks + re-embeds and replaces every chunk while preserving all other metadata. CLI `vstash update <path> [--text|--title|--tags]` (`--text -` for stdin); MCP `vstash_update` (#365).
+- **`Memory.prune()` + `Memory.compact()`** (v0.37) -- housekeeping. `Memory.prune(before="30d", collection=..., tags=...)` deletes filter-scoped documents (an unfiltered call raises rather than wiping everything); `Memory.compact(before=...)` runs prune + VACUUM + FTS optimize in one pass. `before` accepts `"30d"` / `"2w"` / `"24h"` or an ISO date. CLI `vstash compact`; MCP `vstash_compact` (#366).
+- **Tag filters in search** (v0.37) -- pass `tags="alpha"` or `tags=["alpha", "beta"]` (OR semantics, comma-anchored so `alpha` never matches `alphabet`) to `Memory.search`, `VstashStore.search`, MCP `vstash_search`, and `VstashRetriever`. `Memory.journal_recall` also gains `--after` / `--before` date filters. CLI `vstash search --tag alpha --tag beta` (#106, #364).
+- **MMR dedup speedup** (v0.37) -- the dedup hot path now uses swap-pop removal + pre-grouped same-doc siblings, a measured 1.15x–1.19x end-to-end on `store.search()` with real BGE-small embeddings. Ranking output is unchanged (#363).
+- **Services-layer architecture** (v0.37) -- web / MCP / CLI / SDK now route search and ask through one shared `validate -> embed -> search -> expand` path (`vstash/services/`), backed by a `VstashError` domain error tree, a `VectorBackend` Protocol, and a built-in embed-model registry (#326, #327, #328, #330, #334–#336).
+
 ## What's New in v0.36
 
 - **`chat.ask_full()` returning `AskResult`** (v0.36) -- new public API surfaces the reasoning trace and token usage that `ask()` previously discarded. Cerebras `gpt-oss-120b` populates `result.reasoning`; Ollama qwen3 thinking-mode uses `message.thinking`; OpenAI-compat servers (vLLM, DeepSeek, Together, xAI Grok, OpenAI o1/o3) read `reasoning_content`. `ask()` keeps its `-> str` contract via a thin wrapper -- zero call-site change for existing code. Also exposed as `Memory.ask_full()`. Drives Merken Phase 2 distillation pipeline.

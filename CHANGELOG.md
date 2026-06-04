@@ -4,6 +4,48 @@ All notable changes to vstash are documented here.
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-05-27
+
+### Added
+
+- **`Memory.update()` — in-place document mutation** (#365).  Explicit update API across SDK / CLI / MCP.  Metadata-only (`title` / `tags`) runs a single atomic SQL `UPDATE` via the new `VstashStore.update_metadata(path, *, title=, tags=, collection=)` primitive — no re-chunking, no embed pipeline.  Content (`text`) re-chunks + re-embeds and replaces every chunk while preserving `source_type` / `collection` / `project` / `layer` / non-overridden metadata; a `collection=None` content refresh re-adds into *every* matching collection so a multi-collection doc is not silently collapsed.  Empty call raises `ValueError`; not-found / noop return structured dicts.  CLI `vstash update <path> [--text|--title|--tags]` (`--text -` reads stdin); MCP `vstash_update`.
+- **`Memory.prune()` + `Memory.compact()` + `vstash compact` CLI** (#366, #369).  Three housekeeping primitives in `VstashStore`: `prune_documents(*, before_iso=, collection=, project=, layer=, tags=, dry_run=)` (requires at least one filter — an unfiltered call raises `ValueError`, so the "wipe everything" foot-gun is opt-in; the SELECT runs inside `BEGIN IMMEDIATE` so the reported `paths` / `deleted` count is atomic with the delete), `vacuum()` (VACUUM outside any transaction), and `optimize_fts()` (FTS5 `'optimize'`).  The SDK exposes `Memory.prune(*, before=, tags=, ...)` and `Memory.compact(*, before=None, vacuum=True, optimize_fts=True, dry_run=False)`; `before` accepts an age string (`"30d"` / `"2w"` / `"24h"`, shared parser with `vstash journal prune`) or an ISO date / timestamp, canonicalised to UTC before reaching SQLite so lexical `added_at < ?` agrees with chronological order.  `Memory.compact(before=None)` skips the prune phase and runs only the VACUUM + FTS-optimize legs.  CLI `vstash compact [--before AGE_OR_ISO] [--collection ...] [--project ...] [--layer ...] [--no-vacuum] [--no-optimize-fts] [--dry-run] [--json]`; MCP `vstash_compact`.
+- **Tag filters in search + date / tag filters in `journal_recall`** (#106 partial, #364).  `tags: str | list[str] | None` exposed across `VstashStore.search`, `services/search.search_with_embedding`, `Memory.search`, `Memory.journal_recall`, `journal.journal_recall`, `federated_search`, MCP `vstash_search` / `vstash_journal_recall`, and CLI `vstash search` / `vstash journal recall` (repeatable `--tag`, plus `--after` / `--before` on the journal side).  Multiple tags use OR semantics.  Matching is comma-anchored (`',' || tags || ',' LIKE '%,foo,%'`) so `tag='alpha'` does not false-match `alphabet`.  The new `vstash.store._normalize_tags` helper (accepts a comma-separated string or a list, dedupes preserving order) is reused on the write path (`add_document`, `add_documents_batch`, `update_metadata`) so stored tags are always canonical `"a,b,c"`.
+
+### Changed
+
+- **Services layer + Sprint 2 architecture pass** (#326, #327, #328, #330, #334, #335, #336).  `vstash/services/{search,ask}.py` centralises the `validate -> embed -> search -> expand` triplet that the web / MCP / CLI / SDK adapters each duplicated; every adapter now routes through `services/`, so validation runs at the API boundary and there is one load-bearing retrieval path.  Supporting refactors landed the same cycle: a `VstashError` domain error tree (#326) whose leaves multi-inherit the historical `ValueError` / `RuntimeError` (existing `except` callers unaffected); a runtime-checkable `VectorBackend` Protocol with IVFPQ extracted to `vstash/vectorbackend/snapvec_ivfpq.py` (#328, legacy `_ivfpq_backend.py` is now a deprecation shim slated for removal in v0.40); and a built-in embed-model registry replacing the if/elif dispatch in `embed_texts` / `embed_query` / `warmup` (#330).
+
+### Performance
+
+- **MMR dedup swap-pop + pre-grouped siblings** (#363, supersedes #351).  `_mmr_dedup`'s greedy loop removes selected candidates via swap-with-last + an `in_remaining` mask (O(1) per pick) and walks the new selection's same-doc siblings via a pre-built `doc_to_indices` map (O(S_avg) per pick) instead of scanning all `remaining` (O(N)).  Honest end-to-end speedup on `store.search()` with real BGE-small embeddings is 1.15x–1.19x across docs=200..1000, top_k=10..100.  Tie-break on smaller original `idx` preserves pre-rewrite selection ordering.  Both probes (`experiments/perf_mmr_dedup.py`, `perf_mmr_dedup_real.py`) are kept so future perf claims for this hot path must defend against both.
+
+### Fixed
+
+- **IVFPQ stale-index detection** (#329, #332).  On load the IVFPQ backend compares the `.snpi` sidecar against `vec_chunks` and downgrades to unfitted when they diverge, instead of serving a stale index.
+
+### Infrastructure
+
+- LICENSE file + SPDX expression (PEP 639) (#314); SECURITY policy, code of conduct, and issue / PR templates (#316); Dependabot + CodeQL security workflows (#319); coverage gate + Codecov upload + badge (#318); expanded ruff lint rule set with safe autofixes (#320); `tree-sitter-language-pack` pinned `<1.8` (#344, #345); `langchain-core` requirement update (#325); CI action bumps (#321–#324); README 50K latency claim refined to measured numbers (#333).
+
+## [0.36.0] - 2026-04-30
+
+### Added
+
+- **`chat.ask_full()` returning `AskResult`** (#303, #310).  Public API that surfaces the reasoning channel and token usage `ask()` discards.  `_ask_cerebras` / `_ask_ollama` / `_ask_openai` now return `AskResult` internally; `ask()` is a thin wrapper returning `.content`, so the existing `-> str` contract is preserved with zero call-site changes.  Cerebras `gpt-oss-120b` populates `message.reasoning`; Ollama qwen3 thinking-mode uses `message.thinking`; OpenAI-compat servers (vLLM, DeepSeek, Together, xAI Grok, OpenAI o1/o3) read `message.reasoning_content`.  Shared helpers `_extract_reasoning` (accepts both field names) and `_normalize_usage` (returns a complete dict or `None`, never partial).  `Memory.ask_full()` mirrors `Memory.ask()`; `Memory.ask` itself routes through `ask_full(...).content` so retrieval / LLM plumbing live in a single path.  Drives Merken Phase 2 distillation.
+- **Centralized store construction** (#297, #306).  `vstash._store_open.open_store_for_config(cfg)` is the single entry point used by CLI, MCP, web, SDK, journal, and `federated_search`, replacing the per-surface `VstashStore(...)` wiring that silently dropped IVFPQ tuning fields on some paths.
+
+### Fixed
+
+- **`vec_only` long-query distance cutoff** (#304).  `retrieval_mode="vec_only"` now applies the same long-query distance-cutoff relaxation as `hybrid`.  Previously it forced `adaptive_rrf=False` and skipped the relaxation; ArguAna `vec_only` had collapsed to NDCG@10 = 0.0013 (1403/1406 zero) and is now 0.4250.  Hybrid mode and all paper / model-card numbers untouched.
+- **`Memory.add(collection=None)`** (#296) falls back to the schema default instead of crashing on the `NOT NULL` constraint.
+- **`vstash retrain --synthesize-queries`** (#294) no longer crashes on Ollama / Cerebras backends; `retrain_synth` backend config realigned with the current schema.
+- **Web uploads** (#295) now persist under `~/.vstash/uploads/<uuid>-<safe-name>` instead of pointing at deleted temp paths.
+
+### Research artifacts (this release)
+
+- **v4 retrain validation** (#305) — post-v0.34 cosine-fix evidence plus a multi-seed reproducibility toolkit.
+
 ## [0.35.0] - 2026-04-27
 
 ### Removed (breaking)
@@ -94,8 +136,6 @@ All notable changes to vstash are documented here.
 - CI now runs on PRs targeting `develop`, not only `main` (#270). Release PRs to `main` had been silently merging red since v0.30.0 because feature PRs never hit the lint + test matrix.
 - `ruff format .` pass across the repo; `E402` silenced for `.ipynb` (#270).
 - Added `docs/professionalization-roadmap.md` with a prioritized P0-P3 plan for the next hygiene upgrades (#273).
-
-## [0.32.0] - 2026-04-16
 
 ## [0.32.0] - 2026-04-16
 

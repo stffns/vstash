@@ -26,7 +26,7 @@ vstash stats
 ```
 vstash/
   __init__.py        # version (__version__ = "0.37.0")
-  cli.py             # typer CLI: add, search, ask, chat, list, stats, forget, reindex, watch, config, export, remember, profile, journal, retrain, serve, check, snapvec, why
+  cli.py             # typer CLI: add, search, ask, chat, list, stats, forget, reindex, watch, config, export, remember, update, compact, profile, journal, retrain, serve, check, snapvec, why
   _store_open.py     # open_store_for_config(cfg): single VstashStore construction entry point used by every adapter (CLI/MCP/web/SDK/journal/federated)
   services/          # Adapter-agnostic service layer. All four adapters (web/MCP/CLI/SDK) route through here.
     search.py        # validate -> embed -> search -> expand triplet shared by every search caller
@@ -38,7 +38,7 @@ vstash/
   errors.py          # VstashError ancestor + LimitError / SchemaVersionError. Multi-inherits ValueError/RuntimeError so legacy except callers keep working.
   validation.py      # API-boundary input validation, [limits] section knobs, LimitError hierarchy
   metrics.py         # In-process metrics registry, slow query log
-  store.py           # VstashStore: SQLite + sqlite-vec + FTS5, RRF, scoring, MMR dedup, reindex, integrity (4700+ LOC, scheduled split via #280)
+  store.py           # VstashStore: SQLite + sqlite-vec + FTS5, RRF, scoring, MMR dedup, reindex, integrity (5100+ LOC, scheduled split via #280)
   ingest.py          # parse -> chunk -> embed pipeline
   code_split.py      # hybrid code splitting: tree-sitter -> parso -> regex (25+ languages)
   embed.py           # FastEmbed ONNX + MLX backends + built-in model registry (English + multilingual) + custom encoder resolver hook
