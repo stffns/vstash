@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import threading
 from datetime import datetime, timezone
+from pathlib import Path
 
 from ..errors import SchemaVersionError
 from ._common import KNOWN_SCHEMA_VERSIONS, SCHEMA_VERSION
@@ -21,6 +23,14 @@ logger = logging.getLogger(__name__)
 
 class _SchemaManagerMixin:
     """DDL creation, schema-version migration, and ``store_meta`` key/value access."""
+
+    # Attributes supplied by the host class (``VstashStore.__init__``); declared
+    # here so the mixin's required interface is explicit. The mixin is never
+    # instantiated on its own, so these are only ever bound on the concrete store.
+    _conn: sqlite3.Connection
+    db_path: Path
+    embedding_dim: int
+    _write_lock: threading.Lock
 
     def _create_tables(self, conn: sqlite3.Connection) -> None:
         """Initialize database schema if not present."""

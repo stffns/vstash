@@ -37,9 +37,9 @@ def test_check_embedding_drift_claims_then_detects(sample_store: VstashStore) ->
 
 
 def test_check_embedding_drift_first_open_is_silent(sample_store: VstashStore) -> None:
-    # Wipe any model meta so this exercises the first-open claim path.
-    sample_store.set_meta("embedding_model", "")
+    # Clear any model meta so this exercises the first-open claim path.
     sample_store._conn.execute("DELETE FROM store_meta WHERE key = 'embedding_model'")
+    sample_store._conn.commit()
     assert sample_store.check_embedding_drift("fresh-model") is None
     # The claim was persisted, so a re-check with the same model stays silent.
     assert sample_store.check_embedding_drift("fresh-model") is None
