@@ -15,6 +15,20 @@ import math
 import operator
 import struct
 
+# Probe for snapvec availability (optional dependency).
+# snapvec >= 0.6.0 ships delete O(1) via swap-with-last upstream — no
+# monkey-patch needed. The pin in pyproject.toml enforces the floor.
+# Kept here (the package leaf) so both the facade and _index can import
+# SnapIndex / _HAS_SNAPVEC without an import cycle. SnapIndex is bound to
+# None when snapvec is absent; every use site is guarded by _HAS_SNAPVEC.
+try:
+    from snapvec import SnapIndex
+
+    _HAS_SNAPVEC = True
+except ImportError:  # pragma: no cover - exercised only when snapvec is absent
+    SnapIndex = None  # type: ignore[assignment, misc]
+    _HAS_SNAPVEC = False
+
 # SQLite's SQLITE_LIMIT_VARIABLE_NUMBER default is 999; batch IN clauses below this.
 _SQLITE_PARAM_BATCH = 900
 
