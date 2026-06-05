@@ -125,11 +125,13 @@ class TestSurfacesRouteThroughHelper:
         import vstash.cli as cli_mod
 
         cfg = _ivfpq_config(str(tmp_path / "cli.db"))
-        monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
+        # _get_store / load_config / atexit / open_store_for_config live in the
+        # cli._app module since the #284 split; patch the bindings there.
+        monkeypatch.setattr(cli_mod._app, "load_config", lambda: cfg)
         monkeypatch.setenv("VSTASH_DB_PATH", str(tmp_path / "cli.db"))
-        monkeypatch.setattr(cli_mod.atexit, "register", lambda _cb: None)
+        monkeypatch.setattr(cli_mod._app.atexit, "register", lambda _cb: None)
 
-        with patch("vstash.cli.open_store_for_config", wraps=open_store_for_config) as spy:
+        with patch("vstash.cli._app.open_store_for_config", wraps=open_store_for_config) as spy:
             _cfg, store = cli_mod._get_store()
             try:
                 assert spy.call_count == 1

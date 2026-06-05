@@ -49,8 +49,12 @@ def _patch_hermetic_config(monkeypatch, db_path, *, vector_backend: str = "sqlit
     import vstash._store_open as store_open_mod
 
     monkeypatch.setenv("VSTASH_DB_PATH", str(db_path))
+    # _get_store (and load_config / atexit) live in the cli._app module since the
+    # #284 split, so patch the bindings there — that's what _get_store reads.
     monkeypatch.setattr(
-        cli_mod, "load_config", _hermetic_config_factory(db_path, vector_backend=vector_backend)
+        cli_mod._app,
+        "load_config",
+        _hermetic_config_factory(db_path, vector_backend=vector_backend),
     )
     # _get_store now delegates to ``open_store_for_config``, which looks
     # up ``get_embedding_dim`` from the ``_store_open`` module (#297).
@@ -63,7 +67,7 @@ class TestGetStoreAtexit:
     def test_registers_close_via_atexit(self, tmp_path, monkeypatch):
         """The atexit callback is ``store.close`` (bound method)."""
         registered: list = []
-        monkeypatch.setattr(cli_mod.atexit, "register", registered.append)
+        monkeypatch.setattr(cli_mod._app.atexit, "register", registered.append)
 
         db = tmp_path / "lifecycle.db"
         _patch_hermetic_config(monkeypatch, db)
@@ -90,7 +94,7 @@ class TestGetStoreFlushesSnapvec:
         # don't actually register (we fire it manually below to simulate
         # process exit without relying on interpreter shutdown).
         registered: list = []
-        monkeypatch.setattr(cli_mod.atexit, "register", registered.append)
+        monkeypatch.setattr(cli_mod._app.atexit, "register", registered.append)
         _patch_hermetic_config(monkeypatch, db, vector_backend="snapvec")
 
         _cfg, store = cli_mod._get_store()
