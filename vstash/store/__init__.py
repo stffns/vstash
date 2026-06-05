@@ -45,6 +45,7 @@ from ._common import (
     _LONG_QUERY_DISTANCE_CUTOFF,
     _PipelineTracer,
     _SQLITE_PARAM_BATCH,
+    _canonicalize_added_filter,
     _cosine_sim,
     _deserialize,
     _normalize_tags,
@@ -1219,7 +1220,7 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         )
         if added_after:
             conditions.append("added_at >= ?")
-            filter_params.append(added_after)
+            filter_params.append(_canonicalize_added_filter(added_after, label="added_after"))
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
         rows = self._conn.execute(
             f"""SELECT path, title, source_type, collection,

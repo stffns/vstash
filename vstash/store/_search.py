@@ -32,6 +32,7 @@ from ._common import (
     _LONG_QUERY_DISTANCE_CUTOFF,
     _PipelineTracer,
     _SQLITE_PARAM_BATCH,
+    _canonicalize_added_filter,
     _cosine_sim,
     _deserialize,
     _normalize_tags,
@@ -1715,10 +1716,10 @@ class _SearchEngineMixin:
             params.extend(f"%,{t},%" for t in tag_list)
         if added_after:
             conditions.append(f"{prefix}added_at >= ?")
-            params.append(added_after)
+            params.append(_canonicalize_added_filter(added_after, label="added_after"))
         if added_before:
             conditions.append(f"{prefix}added_at < ?")
-            params.append(added_before)
+            params.append(_canonicalize_added_filter(added_before, label="added_before"))
         return conditions, params
 
     @staticmethod
