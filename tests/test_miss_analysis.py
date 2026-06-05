@@ -338,3 +338,38 @@ class TestNearMiss:
         if analysis.final_rank is not None and analysis.final_rank >= 3:
             joined = " ".join(analysis.suggestions).lower()
             assert "near-miss" in joined or "competitive" in joined
+
+
+# ------------------------------------------------------------------ #
+# Regression: adaptive_fallback trace stage (#383)                      #
+# ------------------------------------------------------------------ #
+
+
+class TestAdaptiveFallbackStage:
+    def test_stage_verdict_accepts_adaptive_fallback(self):
+        """#383: the search pipeline records an ``adaptive_fallback`` stage when
+        the vector pool is empty after the distance cutoff but FTS still hits.
+        ``miss_analysis()`` builds a ``StageVerdict`` for every recorded stage, so
+        ``StageVerdict.stage`` must accept ``adaptive_fallback`` — it was missing
+        from the Literal, making ``miss_analysis()`` raise a ``ValidationError`` on
+        any fallback query."""
+        from vstash.models import StageVerdict
+
+        verdict = StageVerdict(
+            stage="adaptive_fallback",
+            passed=True,
+            detail="vector pool empty after distance cutoff: collapsed to FTS-only",
+        )
+        assert verdict.stage == "adaptive_fallback"
+
+    def test_adaptive_fallback_in_allowed_stages(self):
+        """``adaptive_fallback`` must be a member of the ``StageVerdict.stage``
+        Literal, alongside the other real pipeline stages."""
+        import typing
+
+        from vstash.models import StageVerdict
+
+        allowed = set(typing.get_args(StageVerdict.model_fields["stage"].annotation))
+        assert "adaptive_fallback" in allowed
+        # Sanity: it sits among the other genuine pipeline stages.
+        assert {"vector_search", "rrf_fusion", "mmr_dedup"} <= allowed
