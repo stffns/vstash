@@ -24,6 +24,7 @@ class _IntegrityMixin:
     # Attributes supplied by the host class (``VstashStore.__init__``).
     _conn: sqlite3.Connection
     _snap: Any
+    _snap_dirty: bool
 
     def integrity_check(self) -> list[IntegrityCheck]:
         """Run a battery of database integrity checks.
@@ -271,6 +272,14 @@ class _IntegrityMixin:
                                 f"DELETE FROM chunks WHERE id IN ({placeholders})",
                                 batch,
                             )
+                        # Keep the in-memory snapvec index in sync with the
+                        # SQLite delete so the next snapvec_parity check passes
+                        # (#381). Mirrors delete_document's snap handling; the
+                        # flush is deferred to close() / _checkpoint_snapvec().
+                        if self._snap is not None:
+                            for cid in orphan_ids:
+                                self._snap.delete(cid)
+                            self._snap_dirty = True
                     repairs.append(
                         IntegrityRepair(
                             name="no_orphan_chunks",
@@ -299,6 +308,12 @@ class _IntegrityMixin:
                 self._bump_cache_epoch()
             except Exception as exc:
                 self._conn.rollback()
+                # The orphan cleanup above may have mutated the in-memory snap
+                # index before the failing statement. The SQLite rollback restored
+                # those chunks, so reload the snap from disk to match — otherwise
+                # the in-memory index would be missing chunks SQLite still has
+                # (#381 review). No-op when self._snap is None / unmutated.
+                self._reload_snapvec()
                 repairs.append(
                     IntegrityRepair(
                         name="repair_transaction",
