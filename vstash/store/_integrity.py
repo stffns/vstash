@@ -308,6 +308,12 @@ class _IntegrityMixin:
                 self._bump_cache_epoch()
             except Exception as exc:
                 self._conn.rollback()
+                # The orphan cleanup above may have mutated the in-memory snap
+                # index before the failing statement. The SQLite rollback restored
+                # those chunks, so reload the snap from disk to match — otherwise
+                # the in-memory index would be missing chunks SQLite still has
+                # (#381 review). No-op when self._snap is None / unmutated.
+                self._reload_snapvec()
                 repairs.append(
                     IntegrityRepair(
                         name="repair_transaction",
