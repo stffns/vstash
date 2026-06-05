@@ -33,6 +33,7 @@ from ._common import (
     _PipelineTracer,
     _SQLITE_PARAM_BATCH,
     _canonicalize_added_filter,
+    _compile_filter_tree,
     _cosine_sim,
     _deserialize,
     _normalize_tags,
@@ -367,6 +368,7 @@ class _SearchEngineMixin:
         added_after: str | None = None,
         added_before: str | None = None,
         tags: str | list[str] | None = None,
+        filters: dict | None = None,
         mmr_lambda: float = 0.5,
         retrieval_mode: Literal["hybrid", "vec_only", "fts_only"] | None = None,
         exact_match: str | None = None,
@@ -579,6 +581,7 @@ class _SearchEngineMixin:
                 tags=tags,
                 added_after=added_after,
                 added_before=added_before,
+                filters=filters,
             )
 
             # --- Vector search ---
@@ -1671,6 +1674,7 @@ class _SearchEngineMixin:
         tags: str | list[str] | None = None,
         added_after: str | None = None,
         added_before: str | None = None,
+        filters: dict | None = None,
     ) -> tuple[list[str], list[str]]:
         """Build filter conditions for document metadata.
 
@@ -1720,6 +1724,13 @@ class _SearchEngineMixin:
         if added_before:
             conditions.append(f"{prefix}added_at < ?")
             params.append(_canonicalize_added_filter(added_before, label="added_before"))
+        if filters is not None:
+            # Boolean cross-field filter tree (#106), AND-combined with the flat
+            # filters above. Field names are validated; values are bound as params.
+            tree_sql, tree_params = _compile_filter_tree(filters, prefix)
+            if tree_sql is not None:
+                conditions.append(tree_sql)
+                params.extend(tree_params)
         return conditions, params
 
     @staticmethod
@@ -1731,6 +1742,7 @@ class _SearchEngineMixin:
         tags: str | None = None,
         added_after: str | None = None,
         added_before: str | None = None,
+        filters: dict | None = None,
     ) -> tuple[str, str, list[str]]:
         """Build SQL filter clauses for document metadata.
 
@@ -1755,6 +1767,7 @@ class _SearchEngineMixin:
             tags=tags,
             added_after=added_after,
             added_before=added_before,
+            filters=filters,
         )
 
         if not conditions_d2:
@@ -1778,6 +1791,7 @@ class _SearchEngineMixin:
             tags=tags,
             added_after=added_after,
             added_before=added_before,
+            filters=filters,
         )
         col_clause = "AND " + " AND ".join(conditions_d)
         return vec_clause, col_clause, params
