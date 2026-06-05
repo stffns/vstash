@@ -37,9 +37,10 @@ def patched_cli(populated_store: VstashStore, monkeypatch) -> dict[str, Any]:
     import vstash.cli as cli_mod
     from vstash.config import load_config
 
-    # Wire the test store into the CLI.
+    # Wire the test store into the CLI. The retrain commands live in the
+    # cli._retrain module since the #284 split and read _get_store from there.
     monkeypatch.setattr(
-        cli_mod,
+        cli_mod._retrain,
         "_get_store",
         lambda cfg=None, warm=False, profile=None: (load_config(), populated_store),
     )
