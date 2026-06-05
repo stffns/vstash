@@ -35,6 +35,14 @@ class TestCanonicalizeAddedFilter:
         value = "2026-01-15T05:00:00+00:00"
         assert _canonicalize_added_filter(value, label="x") == value
 
+    def test_z_suffix_supported_on_python_310(self) -> None:
+        # Python 3.10's fromisoformat rejects the 'Z' suffix; the helper
+        # normalises it so the common ...Z form parses on all supported versions.
+        assert (
+            _canonicalize_added_filter("2026-01-15T05:00:00Z", label="x")
+            == "2026-01-15T05:00:00+00:00"
+        )
+
     @pytest.mark.parametrize("bad", ["not-a-date", "", "2026-13-99", "30d"])
     def test_invalid_raises_with_label(self, bad: str) -> None:
         with pytest.raises(ValueError, match="added_after"):

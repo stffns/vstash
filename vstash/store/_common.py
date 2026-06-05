@@ -277,7 +277,13 @@ def _canonicalize_added_filter(value: str, *, label: str) -> str:
     from datetime import datetime, timezone
 
     try:
-        parsed = datetime.fromisoformat(value.strip())
+        stripped = value.strip()
+        # Python 3.10's datetime.fromisoformat rejects the ``Z`` / ``z`` UTC
+        # suffix (only 3.11+ accepts it); normalise it so the project's 3.10
+        # floor parses the common ``...Z`` form. Mirrors journal.py's handling.
+        if stripped.endswith(("Z", "z")):
+            stripped = stripped[:-1] + "+00:00"
+        parsed = datetime.fromisoformat(stripped)
     except (ValueError, AttributeError) as exc:
         raise ValueError(
             f"{label}={value!r} is not a parseable ISO date / timestamp "
