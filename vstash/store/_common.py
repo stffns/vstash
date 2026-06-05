@@ -294,3 +294,95 @@ def _canonicalize_added_filter(value: str, *, label: str) -> str:
     else:
         parsed = parsed.astimezone(timezone.utc)
     return parsed.isoformat()
+
+
+#: Document-metadata fields a filter leaf may constrain. Kept in one place so
+#: the flat-kwarg path and the boolean ``filters`` tree accept the same set.
+_FILTER_FIELDS = frozenset(
+    {"collection", "project", "layer", "tags", "added_after", "added_before"}
+)
+
+
+def _field_condition(field: str, value: object, prefix: str) -> tuple[str | None, list[str]]:
+    """Build the SQL condition + bind params for a single ``field == value`` leaf.
+
+    Shared by the flat-kwarg filters and the boolean ``filters`` tree so tag
+    anchoring and date canonicalisation behave identically on both paths.
+    Returns ``(None, [])`` for an empty/no-op leaf (e.g. ``tags`` that normalises
+    to nothing). Raises ``ValueError`` on an unknown field.
+    """
+    if field not in _FILTER_FIELDS:
+        raise ValueError(
+            f"unknown filter field {field!r}; expected one of {sorted(_FILTER_FIELDS)}"
+        )
+    if field in ("collection", "project", "layer"):
+        return f"{prefix}{field} = ?", [str(value)]
+    if field == "tags":
+        tag_list = _normalize_tags(value if isinstance(value, (str, list)) else str(value))
+        if not tag_list:
+            return None, []
+        wrapped = f"','||{prefix}tags||','"
+        ors = " OR ".join(f"{wrapped} LIKE ?" for _ in tag_list)
+        return f"({ors})", [f"%,{t},%" for t in tag_list]
+    if field == "added_after":
+        return f"{prefix}added_at >= ?", [
+            _canonicalize_added_filter(str(value), label="added_after")
+        ]
+    # added_before
+    return f"{prefix}added_at < ?", [_canonicalize_added_filter(str(value), label="added_before")]
+
+
+def _compile_filter_tree(node: object, prefix: str) -> tuple[str | None, list[str]]:
+    """Compile a boolean filter expression into parameterised SQL (#106).
+
+    The expression is a nested ``dict``:
+
+      * **Operator node** — exactly one of ``{"and": [...]}``, ``{"or": [...]}``
+        (non-empty list of child nodes), or ``{"not": <node>}``.
+      * **Leaf node** — a ``{field: value}`` dict over the metadata fields in
+        :data:`_FILTER_FIELDS`; multiple fields in one leaf are AND-ed.
+
+    Values are always bound as SQL parameters (never interpolated), so the field
+    name — validated against :data:`_FILTER_FIELDS` — is the only thing that ever
+    reaches the query text. Returns ``(None, [])`` for a node that contributes no
+    constraint. Raises ``ValueError`` on a malformed tree.
+    """
+    if not isinstance(node, dict):
+        raise ValueError(f"filter node must be a dict, got {type(node).__name__}")
+    operators = {"and", "or", "not"} & node.keys()
+    if operators:
+        if len(node) != 1:
+            raise ValueError("a filter operator node must hold exactly one of 'and' / 'or' / 'not'")
+        op = next(iter(operators))
+        if op == "not":
+            sub_sql, sub_params = _compile_filter_tree(node["not"], prefix)
+            if sub_sql is None:
+                return None, []
+            return f"(NOT {sub_sql})", sub_params
+        children = node[op]
+        if not isinstance(children, list) or not children:
+            raise ValueError(f"'{op}' must be a non-empty list of filter nodes")
+        parts: list[str] = []
+        params: list[str] = []
+        for child in children:
+            sql, child_params = _compile_filter_tree(child, prefix)
+            if sql is not None:
+                parts.append(sql)
+                params.extend(child_params)
+        if not parts:
+            return None, []
+        joiner = " AND " if op == "and" else " OR "
+        return "(" + joiner.join(parts) + ")", params
+    # Leaf: one or more field conditions, AND-ed together.
+    leaf_parts: list[str] = []
+    leaf_params: list[str] = []
+    for field, value in node.items():
+        sql, field_params = _field_condition(field, value, prefix)
+        if sql is not None:
+            leaf_parts.append(sql)
+            leaf_params.extend(field_params)
+    if not leaf_parts:
+        return None, []
+    if len(leaf_parts) == 1:
+        return leaf_parts[0], leaf_params
+    return "(" + " AND ".join(leaf_parts) + ")", leaf_params
