@@ -259,3 +259,32 @@ _ADAPTIVE_RRF_LONG_QUERY = 50
 # compress distances; without this relaxation the default 1.3225 cutoff
 # rejects nearly every candidate past rank 0.
 _LONG_QUERY_DISTANCE_CUTOFF = 25.0
+
+
+def _canonicalize_added_filter(value: str, *, label: str) -> str:
+    """Validate + UTC-canonicalise an ISO date/timestamp ``added_at`` filter.
+
+    ``added_at`` is stored as a UTC ISO string (``...+00:00``, from
+    ``datetime.now(timezone.utc).isoformat()``) and SQLite compares the column
+    **lexically**. A non-UTC offset (e.g. ``2026-01-15T00:00:00-05:00``) sorts
+    lexically out of chronological order versus the stored ``+00:00`` form, so a
+    raw `added_after` / `added_before` would return the wrong rows around
+    timezone boundaries (#384). Naive inputs are treated as UTC; aware inputs are
+    converted with ``astimezone``. Non-ISO input is rejected with a clear
+    ``ValueError`` rather than passed through to a lexical comparison that would
+    silently match the wrong rows. Mirrors the prune/compact ``before=`` handling.
+    """
+    from datetime import datetime, timezone
+
+    try:
+        parsed = datetime.fromisoformat(value.strip())
+    except (ValueError, AttributeError) as exc:
+        raise ValueError(
+            f"{label}={value!r} is not a parseable ISO date / timestamp "
+            f"('2026-01-15' or '2026-01-15T00:00:00+00:00')."
+        ) from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    else:
+        parsed = parsed.astimezone(timezone.utc)
+    return parsed.isoformat()
