@@ -308,22 +308,34 @@ def _field_condition(field: str, value: object, prefix: str) -> tuple[str | None
 
     Shared by the flat-kwarg filters and the boolean ``filters`` tree so tag
     anchoring and date canonicalisation behave identically on both paths.
-    Returns ``(None, [])`` for an empty/no-op leaf (e.g. ``tags`` that normalises
-    to nothing). Raises ``ValueError`` on an unknown field.
+    A ``None`` value compiles to an ``IS NULL`` / "unset" match (so a tree can
+    ask for documents with no project / layer / tags); ``None`` is rejected for
+    the date fields, which need a value. Returns ``(None, [])`` for an empty
+    /no-op leaf (e.g. ``tags`` that normalises to nothing). Raises ``ValueError``
+    on an unknown field.
     """
     if field not in _FILTER_FIELDS:
         raise ValueError(
             f"unknown filter field {field!r}; expected one of {sorted(_FILTER_FIELDS)}"
         )
     if field in ("collection", "project", "layer"):
+        if value is None:
+            return f"{prefix}{field} IS NULL", []
         return f"{prefix}{field} = ?", [str(value)]
     if field == "tags":
+        if value is None:
+            # "untagged": the column is either NULL or the empty string.
+            return f"({prefix}tags IS NULL OR {prefix}tags = '')", []
         tag_list = _normalize_tags(value if isinstance(value, (str, list)) else str(value))
         if not tag_list:
             return None, []
         wrapped = f"','||{prefix}tags||','"
         ors = " OR ".join(f"{wrapped} LIKE ?" for _ in tag_list)
         return f"({ors})", [f"%,{t},%" for t in tag_list]
+    # Date fields: a None bound is meaningless (use the absence of the key to
+    # mean "no bound"); reject it loudly rather than comparing against 'None'.
+    if value is None:
+        raise ValueError(f"{field} filter requires a date value, not None")
     if field == "added_after":
         return f"{prefix}added_at >= ?", [
             _canonicalize_added_filter(str(value), label="added_after")

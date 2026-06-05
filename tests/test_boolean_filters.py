@@ -49,6 +49,19 @@ class TestCompiler:
         assert sql == "(collection = ? AND layer = ?)"
         assert params == ["a", "b"]
 
+    def test_none_value_compiles_to_is_null(self) -> None:
+        sql, params = _compile_filter_tree({"project": None}, "d.")
+        assert sql == "d.project IS NULL"
+        assert params == []
+        # tags None -> "untagged" (NULL or empty string), no bind params.
+        sql, params = _compile_filter_tree({"tags": None}, "")
+        assert sql == "(tags IS NULL OR tags = '')"
+        assert params == []
+
+    def test_none_date_value_raises(self) -> None:
+        with pytest.raises(ValueError, match="requires a date value"):
+            _compile_filter_tree({"added_after": None}, "")
+
     def test_unknown_field_raises(self) -> None:
         with pytest.raises(ValueError, match="unknown filter field"):
             _compile_filter_tree({"bogus": "x"}, "")
