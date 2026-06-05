@@ -41,15 +41,18 @@ jobs:
           key: embed-model-${{ runner.os }}-bge-small-en-v1.5
       # Pre-download the model in an isolated, retrying step so a transient HF
       # hub failure retries here (and fails fast with a clear error) instead of
-      # cascading into ~60 minutes of test timeouts (#376).
+      # cascading into ~60 minutes of test timeouts (#376). On a cache hit this
+      # is instant; on a cache miss the retries absorb transient CDN blips.
       - name: Warm up embedding model (retry transient HF hub failures)
+        env:
+          HF_HUB_DOWNLOAD_TIMEOUT: "60"
         run: |
-          for attempt in 1 2 3; do
+          for attempt in 1 2 3 4 5; do
             python -c "from vstash.embed import warmup; warmup('BAAI/bge-small-en-v1.5')" && exit 0
-            echo "::warning::embedding model warm-up attempt $attempt failed; retrying in 15s"
-            sleep 15
+            echo "::warning::embedding model warm-up attempt $attempt failed; retrying in $((attempt * 15))s"
+            sleep $((attempt * 15))
           done
-          echo "::error::embedding model download failed after 3 attempts (HF hub flake)"
+          echo "::error::embedding model download failed after 5 attempts (HF hub flake)"
           exit 1
       - name: Run tests with coverage
         run: pytest --tb=short -q --cov=vstash --cov-report=xml --cov-report=term
