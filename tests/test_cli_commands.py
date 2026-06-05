@@ -175,7 +175,7 @@ class TestAutoMissHintHook:
         """``_build_miss_hint`` returns None when auto_hint is off OR
         when tier is high with results; returns a structured dict for
         empty / all-low cases."""
-        from vstash.cli import _build_miss_hint
+        from vstash.cli._app import _build_miss_hint
 
         # Disabled -> None
         assert (
