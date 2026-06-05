@@ -30,15 +30,15 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 
-from . import chat as chat_module
-from ._store_open import open_store_for_config
-from .config import VstashConfig, load_config
-from .embed import embed_query, warmup
-from .ingest import ingest, ingest_directory
-from .services import search_with_embedding
-from .store import VstashStore, relevance_tier
+from .. import chat as chat_module
+from .._store_open import open_store_for_config
+from ..config import VstashConfig, load_config
+from ..embed import embed_query, warmup
+from ..ingest import ingest, ingest_directory
+from ..services import search_with_embedding
+from ..store import VstashStore, relevance_tier
 
-from . import __version__
+from .. import __version__
 
 
 def _inference_hint(exc: ConnectionError, cfg: VstashConfig) -> str:
@@ -265,7 +265,7 @@ def _app_callback(
     """Local document memory with instant semantic search."""
     ctx.ensure_object(dict)
     if profile is not None:
-        from .profile import validate_name
+        from ..profile import validate_name
 
         try:
             validate_name(profile)
@@ -441,7 +441,7 @@ def ask(
         # federated_search wants the embedding pre-computed.
         with console.status("[dim]Searching memory...[/dim]", spinner="dots"):
             if all_profiles:
-                from .profile import federated_search
+                from ..profile import federated_search
 
                 q_embedding = embed_query(query, cfg.embeddings.model)
                 tagged = federated_search(
@@ -724,7 +724,7 @@ def search(
             q_embedding = embed_query(query, cfg.embeddings.model)
 
             if all_profiles:
-                from .profile import federated_search
+                from ..profile import federated_search
 
                 tagged = federated_search(
                     query_embedding=q_embedding,
@@ -1193,7 +1193,7 @@ def stats(
     """Show memory statistics."""
     import json as _json
 
-    from .metrics import registry
+    from ..metrics import registry
 
     cfg, store = _get_store(profile=_profile_from_ctx(ctx))
 
@@ -1332,7 +1332,7 @@ def update(
 
         text = _sys.stdin.read()
 
-    from .memory import Memory
+    from ..memory import Memory
 
     # The CLI documents "the update applies to every collection
     # holding `path`", so pass ``collection=None`` explicitly to
@@ -1417,7 +1417,7 @@ def compact(
     optimize are skipped regardless of their flags because they would
     modify the file.
     """
-    from .memory import Memory
+    from ..memory import Memory
 
     if before is None and (collection or project or layer or tag):
         # ``Memory.compact`` skips the prune phase entirely when
@@ -1574,7 +1574,7 @@ def check(
 def show_config(ctx: typer.Context) -> None:
     """Show current configuration."""
     cfg = load_config()
-    from .embed import resolve_backend
+    from ..embed import resolve_backend
 
     resolved = resolve_backend(cfg.embeddings.backend)
     console.print(
@@ -1619,7 +1619,7 @@ def reindex(
     (e.g., switching to a multilingual model). All existing vector
     embeddings are recomputed — text, FTS, and metadata are preserved.
     """
-    from .embed import embed_texts, get_embedding_dim
+    from ..embed import embed_texts, get_embedding_dim
 
     cfg = load_config()
     target_model = model or cfg.embeddings.model
@@ -1695,7 +1695,7 @@ def watch(
     debounce: float = typer.Option(2.0, "--debounce", help="Seconds to wait before re-ingesting"),
 ) -> None:
     """Watch directories for changes and auto-ingest files."""
-    from .watch import start_watch
+    from ..watch import start_watch
 
     cfg, store = _get_store(profile=_profile_from_ctx(ctx))
 
@@ -1756,7 +1756,7 @@ def serve(
     try:
         import uvicorn
 
-        from .web import create_app
+        from ..web import create_app
     except ImportError as exc:
         missing = getattr(exc, "name", None) or "starlette/uvicorn"
         console.print(
@@ -1778,8 +1778,8 @@ def serve(
     if warm:
         import threading
 
-        from .config import load_config
-        from .embed import warmup
+        from ..config import load_config
+        from ..embed import warmup
 
         cfg = load_config()
         console.print("[dim]Warming up embedding model...[/dim]")
@@ -2104,7 +2104,7 @@ def remember(
         console.print("[yellow]⚠ Empty text, nothing to ingest.[/yellow]")
         raise typer.Exit(1)
 
-    from .ingest import ingest_text
+    from ..ingest import ingest_text
 
     cfg, store = _get_store(profile=_profile_from_ctx(ctx))
     meta = {"project": project, "layer": layer, "tags": tags}
@@ -2149,7 +2149,7 @@ app.add_typer(profile_app, name="profile")
 @profile_app.command(name="list")
 def profile_list() -> None:
     """List all named profiles."""
-    from .profile import list_profiles as _list_profiles
+    from ..profile import list_profiles as _list_profiles
 
     profiles = _list_profiles()
     if not profiles:
@@ -2161,7 +2161,7 @@ def profile_list() -> None:
     table.add_column("Size", justify="right")
     table.add_column("Path", style="dim")
 
-    from .profile import PROFILES_DIR
+    from ..profile import PROFILES_DIR
 
     for name in profiles:
         db_path = PROFILES_DIR / name / "memory.db"
@@ -2302,7 +2302,7 @@ def retrain(
         vstash reindex --model <output-path>
     """
     try:
-        from .retrain import retrain as run_retrain
+        from ..retrain import retrain as run_retrain
     except ImportError as exc:
         console.print(
             "[red]x[/red] vstash retrain requires sentence-transformers, torch, "
@@ -2633,7 +2633,7 @@ def retrain_multi_cmd(
     Requires: pip install sentence-transformers torch
     """
     try:
-        from .retrain import retrain_multi as run_retrain_multi
+        from ..retrain import retrain_multi as run_retrain_multi
     except ImportError as exc:
         console.print(
             "[red]x[/red] vstash retrain-multi requires sentence-transformers, torch, "
@@ -2642,7 +2642,7 @@ def retrain_multi_cmd(
         )
         raise typer.Exit(code=1) from exc
 
-    from .embed import get_embedding_dim as _get_dim
+    from ..embed import get_embedding_dim as _get_dim
 
     cfg, primary_store = _get_store(profile=_profile_from_ctx(ctx))
     model_name = base_model or cfg.embeddings.model
@@ -2845,7 +2845,7 @@ def profile_create(
     name: str = typer.Argument(..., help="Profile name"),
 ) -> None:
     """Create a new named profile."""
-    from .profile import create_profile as _create
+    from ..profile import create_profile as _create
 
     try:
         db_path = _create(name)
@@ -2865,7 +2865,7 @@ def profile_delete(
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
 ) -> None:
     """Delete a named profile and all its data."""
-    from .profile import delete_profile as _delete
+    from ..profile import delete_profile as _delete
 
     if not yes:
         typer.confirm(
@@ -2884,7 +2884,7 @@ def profile_delete(
 @profile_app.command(name="active")
 def profile_active(ctx: typer.Context) -> None:
     """Show which profile is currently active."""
-    from .profile import active_profile_info
+    from ..profile import active_profile_info
 
     explicit = _profile_from_ctx(ctx)
     name, reason = active_profile_info(explicit)
@@ -2967,7 +2967,7 @@ def journal_save_cmd(
     """Save a journal entry. Accepts text as argument, stdin, or --from-transcript."""
     import sys
 
-    from .journal import journal_save, parse_transcript
+    from ..journal import journal_save, parse_transcript
 
     # Resolve text from transcript, argument, or stdin
     if from_transcript:
@@ -3022,7 +3022,7 @@ def journal_recall_cmd(
     raw: bool = typer.Option(False, "--raw", "-r", help="Output raw text (for hooks/pipes)"),
 ) -> None:
     """Recall relevant journal entries. Omit query for most recent."""
-    from .journal import journal_recall
+    from ..journal import journal_recall
 
     entries = journal_recall(
         query=query,
@@ -3070,7 +3070,7 @@ def journal_log_cmd(
     project: str | None = typer.Option(None, "--project", "-p", help="Filter by project"),
 ) -> None:
     """Chronological view of journal entries (newest first)."""
-    from .journal import journal_log
+    from ..journal import journal_log
 
     entries = journal_log(limit=limit, recent=recent, project=project)
 
@@ -3108,7 +3108,7 @@ def journal_prune_cmd(
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
 ) -> None:
     """Remove journal entries older than the specified age."""
-    from .journal import journal_prune
+    from ..journal import journal_prune
 
     if dry_run:
         result = journal_prune(age, project=project, dry_run=True)
