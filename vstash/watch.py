@@ -83,6 +83,20 @@ class _DebounceTimer:
         if timer is not None:
             timer.cancel()
 
+    def cancel_prefix(self, prefix: str) -> None:
+        """Cancel all pending timers for paths under directory ``prefix``.
+
+        Used when a directory is deleted: any pending create/modify debounces
+        for files inside it would otherwise fire and try to re-enqueue files
+        that were just removed with the directory.
+        """
+        prefix_path = Path(prefix)
+        with self._lock:
+            matched = [p for p in self._timers if Path(p).is_relative_to(prefix_path)]
+            timers = [self._timers.pop(p) for p in matched]
+        for timer in timers:
+            timer.cancel()
+
     def cancel_all(self) -> None:
         """Cancel all pending timers."""
         with self._lock:
@@ -299,6 +313,9 @@ def start_watch(
         def on_deleted(self, event: FileSystemEvent) -> None:
             """Handle file or directory deletion — remove from store."""
             if event.is_directory:
+                # Cancel pending debounces for files inside the deleted dir so
+                # they cannot fire and re-enqueue files removed with it.
+                debounce.cancel_prefix(event.src_path)
                 _handle_dir_delete(event.src_path)
             elif _should_process(event.src_path, exts):
                 # Cancel any pending create/modify debounce for this path first,

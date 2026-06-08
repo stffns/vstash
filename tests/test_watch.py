@@ -35,16 +35,29 @@ class TestDebounceTimer:
         after it was removed from the store.
         """
         fired: list[str] = []
-        timer = _DebounceTimer(delay=0.2)
+        timer = _DebounceTimer(delay=0.05)
         timer.trigger("/tmp/a.md", fired.append)
         timer.cancel("/tmp/a.md")
-        time.sleep(0.35)  # well past the delay
+        time.sleep(0.12)  # well past the delay
         assert fired == []
         assert "/tmp/a.md" not in timer._timers
 
     def test_cancel_unknown_path_is_noop(self) -> None:
         timer = _DebounceTimer(delay=0.1)
         timer.cancel("/tmp/nonexistent.md")  # must not raise
+
+    def test_cancel_prefix_cancels_files_under_dir(self) -> None:
+        """A directory delete cancels pending debounces for files inside it,
+        but leaves a sibling whose path merely shares the prefix string."""
+        fired: list[str] = []
+        timer = _DebounceTimer(delay=0.05)
+        timer.trigger("/tmp/proj/a.md", fired.append)
+        timer.trigger("/tmp/proj/sub/b.md", fired.append)
+        timer.trigger("/tmp/project/c.md", fired.append)  # sibling, NOT under /tmp/proj
+        timer.cancel_prefix("/tmp/proj")
+        time.sleep(0.12)
+        assert fired == ["/tmp/project/c.md"]
+        assert "/tmp/project/c.md" not in timer._timers  # fired + cleaned up
 
     def test_re_trigger_resets_timer(self) -> None:
         """A second trigger for the same path resets the delay; callback fires once."""
