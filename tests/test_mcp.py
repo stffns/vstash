@@ -8,7 +8,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from vstash.models import ChunkInfo, DocumentInfo, IngestResult, SearchResult, StoreStats
+from vstash.models import (
+    AskResult,
+    ChunkInfo,
+    DocumentInfo,
+    IngestResult,
+    SearchResult,
+    StoreStats,
+)
 from vstash.mcp import (
     _error,
     _ok,
@@ -485,7 +492,7 @@ class TestVstashAsk:
         store_inst.expand_context.return_value = chunks
         _setup_mock_config(mock_config)
 
-        with patch("vstash.chat.ask", return_value="Python is great."):
+        with patch("vstash.chat.ask_full", return_value=AskResult(content="Python is great.")):
             result = json.loads(vstash_ask("What is Python?"))
 
         assert result["answer"] == "Python is great."
@@ -493,6 +500,51 @@ class TestVstashAsk:
         assert result["sources"][0]["title"] == "PythonGuide"
         store_inst.record_search_event.assert_called_once()
         store_inst.expand_context.assert_called_once()
+
+    @patch("vstash.mcp.embed_query", return_value=[0.1] * 384)
+    @patch("vstash.mcp._get_store")
+    @patch("vstash.mcp._get_config")
+    def test_ask_surfaces_reasoning_and_usage(
+        self, mock_config: MagicMock, mock_store: MagicMock, mock_embed: MagicMock
+    ) -> None:
+        """vstash_ask goes through ask_full, so a backend's reasoning channel +
+        token usage reach the client (instead of being discarded by ask())."""
+        chunks = [_make_search_result("context", "Doc")]
+        store_inst = mock_store.return_value
+        store_inst.search.return_value = chunks
+        store_inst.last_best_distance = 0.5
+        store_inst.expand_context.return_value = chunks
+        _setup_mock_config(mock_config)
+
+        full = AskResult(content="42", reasoning="chain of thought", usage={"total_tokens": 10})
+        with patch("vstash.chat.ask_full", return_value=full):
+            result = json.loads(vstash_ask("meaning of life?"))
+
+        assert result["answer"] == "42"
+        assert result["reasoning"] == "chain of thought"
+        assert result["usage"] == {"total_tokens": 10}
+
+    @patch("vstash.mcp.embed_query", return_value=[0.1] * 384)
+    @patch("vstash.mcp._get_store")
+    @patch("vstash.mcp._get_config")
+    def test_ask_omits_reasoning_and_usage_when_absent(
+        self, mock_config: MagicMock, mock_store: MagicMock, mock_embed: MagicMock
+    ) -> None:
+        """When the backend surfaces no reasoning/usage, the keys are absent so
+        the payload stays minimal."""
+        chunks = [_make_search_result("context", "Doc")]
+        store_inst = mock_store.return_value
+        store_inst.search.return_value = chunks
+        store_inst.last_best_distance = 0.5
+        store_inst.expand_context.return_value = chunks
+        _setup_mock_config(mock_config)
+
+        with patch("vstash.chat.ask_full", return_value=AskResult(content="plain")):
+            result = json.loads(vstash_ask("q"))
+
+        assert result["answer"] == "plain"
+        assert "reasoning" not in result
+        assert "usage" not in result
 
     @patch("vstash.mcp.embed_query", return_value=[0.1] * 384)
     @patch("vstash.mcp._get_store")
@@ -524,7 +576,7 @@ class TestVstashAsk:
         store_inst.expand_context.return_value = chunks
         _setup_mock_config(mock_config)
 
-        with patch("vstash.chat.ask", return_value="Answer."):
+        with patch("vstash.chat.ask_full", return_value=AskResult(content="Answer.")):
             result = json.loads(vstash_ask("query"))
 
         assert len(result["sources"]) == 1  # deduplicated
@@ -555,7 +607,7 @@ class TestVstashAsk:
         store_inst.expand_context.return_value = chunks
         _setup_mock_config(mock_config)
 
-        with patch("vstash.chat.ask", return_value="answer"):
+        with patch("vstash.chat.ask_full", return_value=AskResult(content="answer")):
             vstash_ask(
                 "query",
                 vec_weight=0.3,
@@ -588,7 +640,7 @@ class TestVstashAsk:
         _setup_mock_config(mock_config)
 
         # Weights as strings, no mode set (default hybrid).
-        with patch("vstash.chat.ask", return_value="answer"):
+        with patch("vstash.chat.ask_full", return_value=AskResult(content="answer")):
             vstash_ask(
                 "query",
                 vec_weight="0.1",  # type: ignore[arg-type]
@@ -601,7 +653,7 @@ class TestVstashAsk:
 
         # retrieval_mode as a string coerces via _coerce_retrieval_mode.
         store_inst.search.reset_mock()
-        with patch("vstash.chat.ask", return_value="answer"):
+        with patch("vstash.chat.ask_full", return_value=AskResult(content="answer")):
             vstash_ask("query", retrieval_mode="fts_only")
         _, kwargs = store_inst.search.call_args
         assert kwargs["retrieval_mode"] == "fts_only"
