@@ -37,6 +37,16 @@ class TestSearchValidation:
         assert result.exit_code == 2
         assert "top_k" in result.output and "limit" in result.output.lower()
 
+    def test_search_rejects_pathological_top_k_json(self) -> None:
+        result = runner.invoke(app, ["search", "python", "--top-k", "999999", "--json"])
+        assert result.exit_code == 2
+        # Under --json the error must be valid JSON (no Rich markup) so piped
+        # consumers like jq don't choke.
+        import json
+
+        payload = json.loads(result.output.strip())
+        assert "error" in payload and "top_k" in payload["error"]
+
     def test_search_accepts_valid_top_k(self) -> None:
         result = runner.invoke(app, ["search", "python", "--top-k", "3"])
         assert result.exit_code == 0

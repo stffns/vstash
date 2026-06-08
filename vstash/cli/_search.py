@@ -349,7 +349,14 @@ def search(
                 limits=cfg.limits,
             )
         except LimitError as exc:
-            console.print(f"[red]✗[/red] {_safe_exc(exc)}")
+            # Honor --json: emit a JSON error object (not Rich markup) so piped
+            # consumers get valid JSON, matching the rest of this command.
+            if json_output:
+                import json as _json
+
+                print(_json.dumps({"error": str(exc)}))
+            else:
+                console.print(f"[red]✗[/red] {_safe_exc(exc)}")
             raise typer.Exit(code=2) from exc
 
         with console.status("[dim]Searching memory...[/dim]", spinner="dots"):
