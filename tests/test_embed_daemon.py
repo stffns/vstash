@@ -81,13 +81,17 @@ def _reset_daemon_state():
         embed_mod._is_daemon,
         embed_mod._DAEMON_DEFAULT_URL,
     )
+    _saved_mismatch = set(embed_mod._daemon_model_mismatch)
     embed_mod._daemon_checked = False
     embed_mod._daemon_available = False
     embed_mod._daemon_url = None
     embed_mod._is_daemon = False
     embed_mod._daemon_model_mismatch.clear()
     yield
+    # Restore the original cache contents (preserving object identity) so this
+    # fixture is symmetric with the other globals it save/restores.
     embed_mod._daemon_model_mismatch.clear()
+    embed_mod._daemon_model_mismatch.update(_saved_mismatch)
     (
         embed_mod._daemon_checked,
         embed_mod._daemon_available,
