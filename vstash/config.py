@@ -208,50 +208,6 @@ class StorageConfig(BaseModel):
         return value
 
 
-class ScoringConfig(BaseModel):
-    """Frequency + decay memory scoring configuration.
-
-    When enabled, search results are re-ranked post-RRF using a formula
-    that combines semantic relevance with access frequency and temporal decay:
-
-        final_score = alpha * normalized_rrf + beta * log(1 + access_count * e^(-lambda * days_ago))
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    enabled: bool = Field(default=True, description="Enable frequency+decay re-ranking")
-    alpha: float = Field(
-        default=0.8, ge=0, le=1, description="Weight for semantic similarity (RRF)"
-    )
-    beta: float = Field(default=0.2, ge=0, le=1, description="Weight for access history")
-    decay_lambda: float = Field(default=0.05, gt=0, description="Decay rate (0.05=weeks, 0.1=days)")
-    over_fetch: int = Field(
-        default=50, gt=0, description="Candidates to retrieve before re-ranking"
-    )
-    track_access: bool = Field(
-        default=True,
-        description="Record access counts on search (enabled by default when scoring is on)",
-    )
-    mmr_lambda: float = Field(
-        default=0.5,
-        ge=0,
-        le=1,
-        description=(
-            "MMR diversity parameter for intra-document dedup. "
-            "1.0 = hard dedup (at most one chunk per document), "
-            "0.0 = maximum diversity (no relevance weight). "
-            "Default 0.5 balances relevance and diversity."
-        ),
-    )
-
-    @model_validator(mode="after")
-    def _validate_weights(self) -> ScoringConfig:
-        if self.alpha + self.beta > 1.0:
-            msg = f"alpha ({self.alpha}) + beta ({self.beta}) must be <= 1.0"
-            raise ValueError(msg)
-        return self
-
-
 class RecencyConfig(BaseModel):
     """Temporal recency boost for agentic memory.
 
@@ -263,6 +219,11 @@ class RecencyConfig(BaseModel):
     Designed for agentic memory where recent context matters more than
     old context.  Off by default for pure retrieval; the SDK's
     ``Memory.search()`` can enable it per call.
+
+    NOTE: ``boost`` is documented as the default for ``recency_boost`` but is
+    not yet wired into the search path — only the per-call ``recency_boost``
+    argument is honored today. Wiring the config default end-to-end across the
+    adapters (a public-default change) is tracked separately.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -447,7 +408,6 @@ class VstashConfig(BaseModel):
     embeddings: EmbeddingsConfig = Field(default_factory=EmbeddingsConfig)
     chunking: ChunkingConfig = Field(default_factory=ChunkingConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
-    scoring: ScoringConfig = Field(default_factory=ScoringConfig)
     recency: RecencyConfig = Field(default_factory=RecencyConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     limits: LimitsConfig = Field(default_factory=LimitsConfig)

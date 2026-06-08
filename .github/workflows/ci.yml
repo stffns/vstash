@@ -29,8 +29,50 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[all,dev]"
+      # Cache the embedding model so most runs skip the HuggingFace download
+      # entirely. The default BGE-small model lands in the HF hub cache (and
+      # fastembed's own cache, depending on version); cache both.
+      - name: Cache embedding model
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/huggingface
+            ~/.cache/fastembed
+          key: embed-model-${{ runner.os }}-bge-small-en-v1.5
+      # Pre-download the model in an isolated, retrying step so a transient HF
+      # hub failure retries here (and fails fast with a clear error) instead of
+      # cascading into ~60 minutes of test timeouts (#376). On a cache hit this
+      # is instant; on a cache miss the retries absorb transient CDN blips.
+      - name: Warm up embedding model (retry transient HF hub failures)
+        env:
+          HF_HUB_DOWNLOAD_TIMEOUT: "60"
+        run: |
+          for attempt in 1 2 3 4 5; do
+            python -c "from vstash.embed import warmup; warmup('BAAI/bge-small-en-v1.5')" && exit 0
+            echo "::warning::embedding model warm-up attempt $attempt failed; retrying in $((attempt * 15))s"
+            sleep $((attempt * 15))
+          done
+          echo "::error::embedding model download failed after 5 attempts (HF hub flake)"
+          exit 1
       - name: Run tests with coverage
-        run: pytest --tb=short -q --cov=vstash --cov-report=xml --cov-report=term
+        # tree-sitter-language-pack bundles every grammar in a single native lib
+        # (_native.abi3.so). On the 3.10/3.11 runners that lib intermittently
+        # fails to load under the full-suite memory pressure, flipping
+        # _HAS_TREE_SITTER off for the whole process; code-split then falls back
+        # to regex and TestExtendedLanguages (C/C++/Ruby/PHP) sees 1 block
+        # instead of >=2. The fault is per-process and load-dependent, so a fresh
+        # pytest process re-running just the handful of failed tests (a tiny
+        # memory footprint) loads the lib cleanly and passes. Retry the
+        # last-failed set in fresh processes; pass --no-cov on retries so the
+        # first run's coverage.xml is preserved for the 3.12 Codecov upload. A
+        # genuine failure fails every retry. See memory: ci-treesitter-grammar-flake.
+        run: |
+          pytest --tb=short -q --cov=vstash --cov-report=xml --cov-report=term && exit 0
+          for attempt in 1 2 3; do
+            echo "::warning::pytest failed; retry ${attempt} re-running last-failed tests in a fresh process (per-process tree-sitter native-lib load flake on 3.10/3.11)."
+            pytest --tb=short -q --lf --no-cov && exit 0
+          done
+          exit 1
       - name: Upload coverage to Codecov
         if: matrix.python-version == '3.12'
         uses: codecov/codecov-action@v6

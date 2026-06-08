@@ -177,6 +177,7 @@ class StageVerdict(BaseModel):
         "vector_search",
         "distance_cutoff",
         "fts_search",
+        "adaptive_fallback",
         "rrf_fusion",
         "recency_boost",
         "mmr_dedup",

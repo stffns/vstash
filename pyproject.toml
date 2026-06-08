@@ -153,8 +153,9 @@ ignore = [
 # typer registers options/arguments via `typer.Option(...)` /
 # `typer.Argument(...)` calls in default values. That is the
 # documented pattern; B008 (function-call-in-default-argument) is a
-# false positive for this whole module.
-"vstash/cli.py" = ["B008"]
+# false positive for the whole CLI package (#284 split it into
+# vstash/cli/, so the glob covers every command module).
+"vstash/cli/**" = ["B008"]
 # Research / experiment scripts are exploratory; we lint for
 # correctness (B/F/E) but skip the strict-zip nag, the closure-in-loop
 # nag (B023 -- often the right shape for ablation builders), and let

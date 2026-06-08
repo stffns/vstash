@@ -359,6 +359,7 @@ class Memory:
         added_after: str | None = None,
         added_before: str | None = None,
         tags: str | list[str] | None = None,
+        filters: dict | None = None,
         mmr_lambda: float = 0.5,
         vec_weight: float | None = None,
         fts_weight: float | None = None,
@@ -388,6 +389,14 @@ class Memory:
                 (``"alpha,beta"``) or a list (``["alpha", "beta"]``).
                 Comma-anchored LIKE match so ``alpha`` does not
                 false-match ``alphabet``.
+            filters: Boolean cross-field filter expression (AND/OR/NOT) over
+                the metadata fields ``collection`` / ``project`` / ``layer`` /
+                ``tags`` / ``added_after`` / ``added_before``. A nested dict:
+                operator nodes are ``{"and": [...]}`` / ``{"or": [...]}`` /
+                ``{"not": <node>}``; leaf nodes are ``{field: value}``. E.g.
+                ``{"or": [{"collection": "docs"}, {"tags": "urgent"}]}``.
+                AND-combined with the flat filters above. Values are always
+                bound as SQL parameters.
             vec_weight: Pin the RRF vector weight for this single call,
                 overriding adaptive RRF. Valid range ``[0.0, 1.0]``.
                 Pass ``None`` (default) to keep adaptive per-query
@@ -450,6 +459,7 @@ class Memory:
             added_after=added_after,
             added_before=added_before,
             tags=tags,
+            filters=filters,
             mmr_lambda=mmr_lambda,
             vec_weight=vec_weight,
             fts_weight=fts_weight,
