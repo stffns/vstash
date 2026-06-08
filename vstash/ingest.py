@@ -83,6 +83,7 @@ def _sep_tokens() -> int:
     forces the encoder to load first.
     """
     _get_enc()
+    assert _SEPARATOR_TOKENS is not None  # populated by _get_enc on first load
     return _SEPARATOR_TOKENS
 
 
@@ -231,6 +232,7 @@ def _split_by_paragraphs(
     result: list[str] = []
     current: list[str] = []
     current_tokens = 0
+    sep_tokens = _sep_tokens()
 
     for para in paragraphs:
         para = para.strip()
@@ -249,7 +251,7 @@ def _split_by_paragraphs(
             continue
 
         # Account for "\n\n" separator tokens when joining paragraphs
-        separator_cost = _sep_tokens() if current else 0
+        separator_cost = sep_tokens if current else 0
 
         # Would adding this paragraph overflow?
         if current_tokens + separator_cost + para_tokens > chunk_size and current:
@@ -318,16 +320,17 @@ def _merge_small_chunks(chunks: list[str], chunk_size: int) -> list[str]:
     merged: list[str] = []
     current = chunks[0]
     current_tokens = _token_count(current)
+    sep_tokens = _sep_tokens()
 
     for chunk in chunks[1:]:
         chunk_tokens = _token_count(chunk)
 
-        can_merge = current_tokens + _sep_tokens() + chunk_tokens <= chunk_size
+        can_merge = current_tokens + sep_tokens + chunk_tokens <= chunk_size
 
         # Merge if EITHER side is small (bidirectional merging)
         if can_merge and (current_tokens < _MIN_CHUNK_TOKENS or chunk_tokens < _MIN_CHUNK_TOKENS):
             current = current + "\n\n" + chunk
-            current_tokens += _sep_tokens() + chunk_tokens
+            current_tokens += sep_tokens + chunk_tokens
         else:
             merged.append(current)
             current = chunk
