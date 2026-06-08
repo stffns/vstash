@@ -455,13 +455,30 @@ def _promote_candidate(candidate_path: Path, final_path: Path) -> None:
     final_path.parent.mkdir(parents=True, exist_ok=True)
     if backup_path.exists():
         shutil.rmtree(backup_path)
+    final_existed = final_path.exists()
+    backed_up = False
     try:
-        if final_path.exists():
+        if final_existed:
             final_path.rename(backup_path)
+            backed_up = True
         shutil.move(str(candidate_path), str(final_path))
     except Exception:
-        if backup_path.exists() and not final_path.exists():
+        # shutil.move across filesystems is copy-then-delete, so a mid-copy
+        # failure can leave final_path as a *partial* directory. The old guard
+        # ``not final_path.exists()`` then skipped the rollback, stranding the
+        # user's previous model in .old behind a corrupt final.
+        if backed_up:
+            # Prior model is safe in backup; whatever sits at final_path now is
+            # the failed move -- remove it, then restore the previous model.
+            if final_path.exists():
+                shutil.rmtree(final_path)
             backup_path.rename(final_path)
+        elif not final_existed and final_path.exists():
+            # First-time train (no prior model) and the move left a partial dir
+            # -- remove the garbage so it is not mistaken for a real model.
+            shutil.rmtree(final_path)
+        # else: the backup rename itself failed, so final_path is still the
+        # untouched original model -- leave it.
         raise
     else:
         if backup_path.exists():
