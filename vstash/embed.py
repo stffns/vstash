@@ -928,6 +928,13 @@ _is_daemon: bool = os.getenv("_VSTASH_IS_DAEMON") == "1"
 _DAEMON_DEFAULT_URL = "http://127.0.0.1:8585"
 _DAEMON_TIMEOUT = 0.3  # seconds -- fast fail for localhost
 
+# (url, model) pairs the running daemon cannot serve -- it only has its own warm
+# model loaded. Cached on the first mismatch so a non-default model does not pay
+# a full-batch HTTP round-trip on *every* embed call just to discard the result
+# and re-embed locally. Cleared by _mark_daemon_unavailable (a daemon restart
+# may load a different model).
+_daemon_model_mismatch: set[tuple[str, str]] = set()
+
 
 def _check_daemon() -> str | None:
     """Probe the daemon URL once. Returns URL if reachable, else None.
@@ -967,6 +974,8 @@ def _mark_daemon_unavailable() -> None:
     global _daemon_checked, _daemon_available
     _daemon_available = False
     _daemon_checked = False
+    # A restarted daemon may serve a different model, so re-evaluate mismatches.
+    _daemon_model_mismatch.clear()
 
 
 def _daemon_embed_query(text: str, url: str, model_name: str) -> list[float] | None:
@@ -983,10 +992,12 @@ def _daemon_embed_query(text: str, url: str, model_name: str) -> list[float] | N
             result = json.loads(resp.read())
             if result.get("model") != model_name:
                 _logger.warning(
-                    "Daemon model mismatch: requested %s, got %s. Falling back to local.",
+                    "Daemon model mismatch: requested %s, got %s. Falling back to "
+                    "local and caching the mismatch so this model skips the daemon.",
                     model_name,
                     result.get("model"),
                 )
+                _daemon_model_mismatch.add((url, model_name))
                 return None
             return result.get("embedding")
     except Exception:
@@ -1008,10 +1019,12 @@ def _daemon_embed_texts(texts: list[str], url: str, model_name: str) -> list[lis
             result = json.loads(resp.read())
             if result.get("model") != model_name:
                 _logger.warning(
-                    "Daemon model mismatch: requested %s, got %s. Falling back to local.",
+                    "Daemon model mismatch: requested %s, got %s. Falling back to "
+                    "local and caching the mismatch so this model skips the daemon.",
                     model_name,
                     result.get("model"),
                 )
+                _daemon_model_mismatch.add((url, model_name))
                 return None
             return result.get("embeddings")
     except Exception:
@@ -1051,7 +1064,7 @@ def embed_texts(
         return _embed_via_custom(texts, custom)
 
     url = _check_daemon()
-    if url is not None:
+    if url is not None and (url, model_name) not in _daemon_model_mismatch:
         result = _daemon_embed_texts(texts, url, model_name)
         if result is not None and len(result) == len(texts):
             return result
@@ -1084,7 +1097,7 @@ def embed_query(
         return vecs[0]
 
     url = _check_daemon()
-    if url is not None:
+    if url is not None and (url, model_name) not in _daemon_model_mismatch:
         result = _daemon_embed_query(text, url, model_name)
         if result is not None:
             return result
