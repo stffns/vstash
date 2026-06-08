@@ -370,36 +370,6 @@ class _IndexBackendMixin:
         logger.info("Rebuilt flat snapvec index with %d vectors", total)
         return total
 
-    def _save_snapvec(self) -> None:
-        """Mark the in-memory snapvec index dirty; flush deferred to
-        ``close()`` / ``_checkpoint_snapvec()``.
-
-        Historically the flat backend wrote ``.snpv`` on every call
-        (typically one per ``add_document``). That is a full-file
-        rewrite and costs ~1.25 ms/MB on Apple Silicon (memory
-        bandwidth). In tight per-doc ingest loops the OS page cache
-        hides the cost at small N, but once the file grows past the
-        kernel's dirty-page absorption budget (roughly a few tens of
-        MB in practice), every save starts paying real disk I/O and
-        the sum becomes quadratic. Observed on 2026-04-19: a 100k
-        per-doc ingest on flat snapvec took 40+ minutes of pure
-        ``.snpv`` rewrites.
-
-        Fix: mirror the ivfpq pattern and defer the flush for both
-        backends. ``vec_chunks`` is the SQLite source of truth, so a
-        process crash before the deferred flush runs is recoverable
-        via ``_rebuild_snapvec_from_vec_chunks`` (``_init_snapvec``
-        detects the staleness on next open and rebuilds
-        automatically).
-
-        Callers that want a synchronous flush can invoke
-        ``_checkpoint_snapvec()`` directly (``close()`` does this on
-        teardown).
-        """
-        if self._snap is None:
-            return
-        self._snap_dirty = True
-
     def _checkpoint_snapvec(self) -> None:
         """Flush the in-memory snapvec index to disk if dirty."""
         if self._snap is None or not self._snap_dirty:

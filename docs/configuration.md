@@ -217,9 +217,9 @@ Use this when FTS5 stemming / lowercasing would eat a term you care about (code 
 
 ---
 
-## `[scoring]` (deprecated)
+## `[scoring]` (removed)
 
-The `[scoring]` section from v0.5–v0.17 is still parsed for backward compatibility — existing `vstash.toml` files won't error. However, all scoring parameters are ignored. The frequency+decay scoring pipeline was removed in v0.18.0 and replaced by the simpler `[recency]` boost in v0.19.0.
+The frequency+decay scoring pipeline was removed in v0.18.0 (replaced by the simpler `[recency]` boost in v0.19.0), and its config model was dropped entirely afterwards — all `[scoring]` parameters had been silently ignored since v0.18.0. A `[scoring]` section in an existing `vstash.toml` is now reported as an unknown section (warn-on-unknown), not an error, so old files still load. Use `mmr_lambda` per-call on `search()` for intra-document dedup tuning.
 
 ---
 

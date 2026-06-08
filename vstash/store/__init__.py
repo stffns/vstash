@@ -412,9 +412,6 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                     self._deferred_fts_rows.extend(fts_data)
                 self._invalidate_idf_cache()
                 self._bump_cache_epoch()
-                # Persist snapvec AFTER successful SQLite commit
-                if self._snap_dirty:
-                    self._save_snapvec()
             except Exception:
                 self._conn.rollback()
                 self._reload_snapvec()
@@ -566,8 +563,6 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                     self._deferred_fts_rows.extend(pending_fts)
                 self._invalidate_idf_cache()
                 self._bump_cache_epoch()
-                if self._snap_dirty:
-                    self._save_snapvec()
             except Exception:
                 self._conn.rollback()
                 self._reload_snapvec()
@@ -605,8 +600,6 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                 self._conn.commit()
                 self._invalidate_idf_cache()
                 self._bump_cache_epoch()
-                if self._snap_dirty:
-                    self._save_snapvec()
             except Exception:
                 self._conn.rollback()
                 self._reload_snapvec()
@@ -715,9 +708,6 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                 self._conn.commit()
                 self._invalidate_idf_cache()
                 self._bump_cache_epoch()
-                # Persist snapvec AFTER successful SQLite commit
-                if self._snap_dirty:
-                    self._save_snapvec()
             except Exception:
                 self._conn.rollback()
                 self._reload_snapvec()
@@ -896,8 +886,6 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                 self._conn.commit()
                 self._invalidate_idf_cache()
                 self._bump_cache_epoch()
-                if self._snap_dirty:
-                    self._save_snapvec()
             except Exception:
                 self._conn.rollback()
                 self._reload_snapvec()
@@ -2014,17 +2002,12 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
 
             # Update stored dimension only after successful commit
             self.embedding_dim = new_dim
-            # Persist snapvec AFTER successful SQLite commit; failures here
-            # cannot be rolled back via SQLite, so we log them.
+            # Mark snapvec dirty so the deferred flush in close() /
+            # _checkpoint_snapvec() picks up the rebuilt index. vec_chunks is
+            # the source of truth, so a crash before the flush is recovered by
+            # _rebuild_snapvec_from_vec_chunks on next open.
             if self._snap is not None:
                 self._snap_dirty = True
-                try:
-                    self._save_snapvec()
-                except Exception:
-                    logger.exception(
-                        "Failed to persist snapvec after successful reindex; "
-                        "run 'vstash reindex' again to rebuild."
-                    )
 
             return processed
 
