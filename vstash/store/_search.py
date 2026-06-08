@@ -80,10 +80,13 @@ class _SearchEngineMixin:
         the same text. ``tags`` is normalized to a tuple so the same
         filter expressed as ``"a,b"`` and ``["a", "b"]`` shares a key.
         """
-        emb_bytes = np.array(query_embedding, dtype=np.float32).tobytes()
+        # Hash the embedding as a float tuple rather than allocating a numpy
+        # array + bytes blob on every search. embed_query is deterministic, so
+        # the same query yields the same list and thus the same key; query_text
+        # is also in the key, so distinct queries never collide.
         return hash(
             (
-                emb_bytes,
+                tuple(query_embedding),
                 query_text,
                 top_k,
                 vec_weight,
