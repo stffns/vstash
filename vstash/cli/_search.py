@@ -17,6 +17,7 @@ from .. import chat as chat_module
 from ..embed import embed_query
 from ..services import search_with_embedding
 from ..store import relevance_tier
+from ..validation import LimitError, validate_search_input
 from ._app import (
     _get_store,
     _inference_hint,
@@ -335,6 +336,28 @@ def search(
 
     with store:
         k = top_k or cfg.chunking.top_k
+
+        # Validate at the CLI boundary (parity with the SDK/MCP/web adapters,
+        # which validate via services) so a pathological top_k or oversized query
+        # raises a clean LimitError here instead of crashing deep inside SQLite.
+        try:
+            validate_search_input(
+                query_text=query,
+                top_k=k,
+                distance_cutoff=cfg.limits.max_distance_cutoff,
+                recency_boost=0.0,
+                limits=cfg.limits,
+            )
+        except LimitError as exc:
+            # Honor --json: emit a JSON error object (not Rich markup) so piped
+            # consumers get valid JSON, matching the rest of this command.
+            if json_output:
+                import json as _json
+
+                print(_json.dumps({"error": str(exc)}))
+            else:
+                console.print(f"[red]✗[/red] {_safe_exc(exc)}")
+            raise typer.Exit(code=2) from exc
 
         with console.status("[dim]Searching memory...[/dim]", spinner="dots"):
             q_embedding = embed_query(query, cfg.embeddings.model)

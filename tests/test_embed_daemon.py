@@ -81,11 +81,17 @@ def _reset_daemon_state():
         embed_mod._is_daemon,
         embed_mod._DAEMON_DEFAULT_URL,
     )
+    _saved_mismatch = set(embed_mod._daemon_model_mismatch)
     embed_mod._daemon_checked = False
     embed_mod._daemon_available = False
     embed_mod._daemon_url = None
     embed_mod._is_daemon = False
+    embed_mod._daemon_model_mismatch.clear()
     yield
+    # Restore the original cache contents (preserving object identity) so this
+    # fixture is symmetric with the other globals it save/restores.
+    embed_mod._daemon_model_mismatch.clear()
+    embed_mod._daemon_model_mismatch.update(_saved_mismatch)
     (
         embed_mod._daemon_checked,
         embed_mod._daemon_available,
@@ -128,6 +134,38 @@ class TestDaemonClient:
     def test_model_mismatch_batch_returns_none(self, fake_daemon: str):
         result = embed_mod._daemon_embed_texts(["hello"], fake_daemon, "wrong-model")
         assert result is None
+
+    def test_model_mismatch_is_cached(self, fake_daemon: str):
+        """A mismatch records the (url, model) pair so future calls can skip the
+        daemon instead of re-paying the round-trip."""
+        embed_mod._daemon_embed_texts(["hello"], fake_daemon, "wrong-model")
+        assert (fake_daemon, "wrong-model") in embed_mod._daemon_model_mismatch
+
+    def test_embed_texts_skips_daemon_for_cached_mismatch(self, fake_daemon: str, monkeypatch):
+        """Once a model is known to mismatch, embed_texts must go straight to the
+        local backend without calling the daemon again."""
+        embed_mod._daemon_url = fake_daemon
+        embed_mod._daemon_available = True
+        embed_mod._daemon_checked = True
+        embed_mod._daemon_model_mismatch.add((fake_daemon, "cached-mismatch-model"))
+
+        called = {"daemon": 0}
+
+        def _should_not_run(*_a, **_k):
+            called["daemon"] += 1
+            return None
+
+        monkeypatch.setattr(embed_mod, "_daemon_embed_texts", _should_not_run)
+
+        class _FakeBackend:
+            def embed_batch(self, texts, model_name, backend):
+                return [[0.0, 0.0, 0.0, 0.0] for _ in texts]
+
+        monkeypatch.setattr(embed_mod, "_resolve_builtin_backend", lambda _m: _FakeBackend())
+
+        result = embed_mod.embed_texts(["x", "y"], "cached-mismatch-model")
+        assert called["daemon"] == 0  # daemon skipped via the mismatch cache
+        assert len(result) == 2
 
     def test_check_daemon_finds_server(self, fake_daemon: str):
         embed_mod._DAEMON_DEFAULT_URL = fake_daemon

@@ -69,6 +69,34 @@ class _DebounceTimer:
             self._timers[path] = timer
             timer.start()
 
+    def cancel(self, path: str) -> None:
+        """Cancel a pending timer for a single path, if any.
+
+        Called when a delete event arrives for a path that has a pending
+        create/modify debounce: without this, that timer would fire *after* the
+        delete and re-enqueue a path that was just removed from the store,
+        reordering the delete behind a stale ingest (e.g. an editor's
+        delete-then-recreate atomic save).
+        """
+        with self._lock:
+            timer = self._timers.pop(path, None)
+        if timer is not None:
+            timer.cancel()
+
+    def cancel_prefix(self, prefix: str) -> None:
+        """Cancel all pending timers for paths under directory ``prefix``.
+
+        Used when a directory is deleted: any pending create/modify debounces
+        for files inside it would otherwise fire and try to re-enqueue files
+        that were just removed with the directory.
+        """
+        prefix_path = Path(prefix)
+        with self._lock:
+            matched = [p for p in self._timers if Path(p).is_relative_to(prefix_path)]
+            timers = [self._timers.pop(p) for p in matched]
+        for timer in timers:
+            timer.cancel()
+
     def cancel_all(self) -> None:
         """Cancel all pending timers."""
         with self._lock:
@@ -285,8 +313,15 @@ def start_watch(
         def on_deleted(self, event: FileSystemEvent) -> None:
             """Handle file or directory deletion — remove from store."""
             if event.is_directory:
+                # Cancel pending debounces for files inside the deleted dir so
+                # they cannot fire and re-enqueue files removed with it.
+                debounce.cancel_prefix(event.src_path)
                 _handle_dir_delete(event.src_path)
             elif _should_process(event.src_path, exts):
+                # Cancel any pending create/modify debounce for this path first,
+                # so the delete is the last word and a stale timer can't
+                # re-enqueue the just-removed file after it fires.
+                debounce.cancel(event.src_path)
                 _handle_delete(event.src_path)
 
     observer = Observer()
