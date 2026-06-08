@@ -1215,7 +1215,10 @@ def vstash_journal_save(
     Args:
         text: Content to save in the journal.
         title: Optional title (auto-generated with timestamp if omitted).
-        project: Project tag (auto-detected from cwd if omitted).
+        project: Project tag for the entry. Defaults to none (journal-wide) --
+            MCP tools are stateless and run in the server's process, so there is
+            no cwd auto-detection; pass it explicitly to scope. (The SDK's
+            Memory.journal_save scopes to the Memory's project instead.)
         tags: Comma-separated tags (journal tag added automatically).
         source: Source identifier (e.g. 'agent', 'session', 'mcp').
 
