@@ -21,7 +21,9 @@ def _patch_store(populated_store: VstashStore, monkeypatch) -> None:
     """Monkeypatch _get_store so CLI uses the test store."""
     from vstash.config import load_config
 
-    patch_cli_attr(monkeypatch, "_get_store",
+    patch_cli_attr(
+        monkeypatch,
+        "_get_store",
         lambda cfg=None, warm=False, profile=None: (load_config(), populated_store),
     )
 
@@ -106,7 +108,9 @@ class TestAskErrorPaths:
         dim = get_embedding_dim(cfg.embeddings.model)
         empty_store = VstashStore(tmp_db_path + "_empty", embedding_dim=dim)
 
-        patch_cli_attr(monkeypatch, "_get_store",
+        patch_cli_attr(
+            monkeypatch,
+            "_get_store",
             lambda cfg=None, warm=False, profile=None: (load_config(), empty_store),
         )
 
@@ -397,7 +401,9 @@ class TestWhyCommand:
         dim = _gdim(sample_config.embeddings.model)
         fresh = VstashStore(str(tmp_path / "fresh.db"), embedding_dim=dim)
         try:
-            patch_cli_attr(monkeypatch, "_get_store",
+            patch_cli_attr(
+                monkeypatch,
+                "_get_store",
                 lambda cfg=None, warm=False, profile=None: (_lc(), fresh),
             )
             result = runner.invoke(app, ["why", "--recent", "5"])

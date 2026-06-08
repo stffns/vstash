@@ -15,9 +15,7 @@ def patch_cli_attr(monkeypatch, name: str, value) -> None:
     """Patch ``name`` on every ``vstash.cli`` module (package + submodules) that binds it."""
     import vstash.cli as cli_mod
 
-    targets = [cli_mod] + [
-        getattr(cli_mod, m) for m in _CLI_SUBMODULES if hasattr(cli_mod, m)
-    ]
+    targets = [cli_mod] + [getattr(cli_mod, m) for m in _CLI_SUBMODULES if hasattr(cli_mod, m)]
     hit = False
     for mod in targets:
         if hasattr(mod, name):

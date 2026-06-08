@@ -134,7 +134,9 @@ class TestExportCLI:
         """Monkeypatch _get_store so CLI uses the test store."""
         from vstash.config import load_config
 
-        patch_cli_attr(monkeypatch, "_get_store",
+        patch_cli_attr(
+            monkeypatch,
+            "_get_store",
             lambda cfg=None, warm=False, profile=None: (cfg or load_config(), export_store),
         )
 
