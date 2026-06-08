@@ -70,3 +70,23 @@ def test_reindex_checkpoints_snapvec_immediately(tmp_db_path: str) -> None:
         assert store._snap_dirty is False, "reindex should checkpoint snapvec immediately"
     finally:
         store.close()
+
+
+def test_reindex_survives_snapvec_flush_failure(tmp_db_path: str, monkeypatch) -> None:
+    """A snapvec flush failure after reindex (disk-full) must not fail the
+    already-committed re-embed — it is logged and self-heals on next open."""
+    pytest.importorskip("snapvec")
+    store = VstashStore(tmp_db_path, embedding_dim=DIM, vector_backend="snapvec", snapvec_bits=4)
+    try:
+        for i in range(3):
+            _add(store, i)
+
+        def boom() -> None:
+            raise OSError("disk full")
+
+        monkeypatch.setattr(store, "_checkpoint_snapvec", boom)
+        n = store.reindex(lambda texts: [[0.5] * DIM for _ in texts], new_dim=DIM)
+        assert n == 3  # the re-embed succeeded despite the flush failure
+    finally:
+        monkeypatch.undo()
+        store.close()

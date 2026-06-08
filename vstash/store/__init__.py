@@ -2011,7 +2011,19 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
             # remains the source of truth if the flush itself fails.
             if self._snap is not None:
                 self._snap_dirty = True
-                self._checkpoint_snapvec()
+                # Best-effort: the re-embed is already committed and the dim
+                # updated, so a flush failure (disk-full, permissions) must not
+                # fail reindex and tempt the caller into re-running the whole
+                # expensive re-embed. The index stays dirty and self-heals via
+                # _rebuild_snapvec_from_vec_chunks on the next open.
+                try:
+                    self._checkpoint_snapvec()
+                except Exception:
+                    logger.warning(
+                        "reindex committed but flushing snapvec to disk failed; "
+                        "the index will be rebuilt from vec_chunks on next open.",
+                        exc_info=True,
+                    )
 
             return processed
 
