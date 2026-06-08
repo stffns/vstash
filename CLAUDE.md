@@ -153,7 +153,7 @@ search_events (id, query, best_distance, relevance_tier, result_count, dismissed
 
 `vstash.toml` resolution order: `$VSTASH_CONFIG` -> `./vstash.toml` -> `~/.vstash/vstash.toml` -> defaults.
 
-Key sections: `[inference]`, `[cerebras]`, `[ollama]`, `[openai]`, `[embeddings]`, `[chunking]`, `[scoring]`, `[storage]`.
+Key sections: `[inference]`, `[cerebras]`, `[ollama]`, `[openai]`, `[embeddings]`, `[chunking]`, `[recency]`, `[storage]`.
 
 ## Common tasks
 
