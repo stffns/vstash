@@ -524,7 +524,7 @@ def vstash_ask(
         JSON string with answer text and source documents.
     """
     try:
-        from .chat import ask
+        from .chat import ask_full
 
         top_k = int(top_k)
         cfg = _get_config()
@@ -582,8 +582,11 @@ def vstash_ask(
             result_count=len(chunks),
         )
 
-        # Get LLM answer
-        answer = ask(query, chunks, cfg)
+        # Get LLM answer via ask_full so the reasoning channel + token usage
+        # the backend produces (Cerebras gpt-oss message.reasoning, Ollama
+        # qwen3 message.thinking) reach the MCP client instead of being
+        # discarded by the plain ask() -> str wrapper (#303).
+        result = ask_full(query, chunks, cfg)
 
         # Build source list
         sources = [{"title": c.title, "path": c.path, "score": c.score} for c in chunks]
@@ -595,7 +598,15 @@ def vstash_ask(
                 seen.add(src["path"])
                 unique_sources.append(src)
 
-        return _ok({"answer": answer, "sources": unique_sources})
+        payload: dict[str, Any] = {"answer": result.content, "sources": unique_sources}
+        # Surface reasoning / usage only when the backend provided them, so the
+        # payload stays minimal for backends that don't (OpenAI-compat without a
+        # reasoning channel).
+        if result.reasoning:
+            payload["reasoning"] = result.reasoning
+        if result.usage:
+            payload["usage"] = result.usage
+        return _ok(payload)
 
     except FileNotFoundError:
         return _error("vstash database not found. Ingest documents first with vstash_add.")
