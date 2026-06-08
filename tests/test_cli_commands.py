@@ -28,6 +28,20 @@ def _patch_store(populated_store: VstashStore, monkeypatch) -> None:
     )
 
 
+class TestSearchValidation:
+    """`vstash search` validates at the boundary (parity with SDK/MCP/web)."""
+
+    def test_search_rejects_pathological_top_k(self) -> None:
+        result = runner.invoke(app, ["search", "python", "--top-k", "999999"])
+        # Clean LimitError (exit 2 + a readable message), not a deep SQLite crash.
+        assert result.exit_code == 2
+        assert "top_k" in result.output and "limit" in result.output.lower()
+
+    def test_search_accepts_valid_top_k(self) -> None:
+        result = runner.invoke(app, ["search", "python", "--top-k", "3"])
+        assert result.exit_code == 0
+
+
 class TestListCommand:
     """Test 'vstash list' command."""
 
