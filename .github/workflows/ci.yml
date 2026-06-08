@@ -33,7 +33,7 @@ jobs:
       # entirely. The default BGE-small model lands in the HF hub cache (and
       # fastembed's own cache, depending on version); cache both.
       - name: Cache embedding model
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cache/huggingface
