@@ -853,8 +853,15 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
             tags=tags,
         )
         if before_iso is not None:
+            # Canonicalise to the UTC ``+00:00`` form ``added_at`` is stored in
+            # so the lexical ``added_at < ?`` comparison agrees with chronological
+            # order. This makes the store primitive self-protecting: the SDK
+            # (Memory.prune/compact) already canonicalises, and the helper is
+            # idempotent on an already-UTC value, so applying it here also guards
+            # direct ``store.prune_documents`` callers from deleting the wrong
+            # rows around timezone boundaries (#384), and validates the input.
             conditions.append("added_at < ?")
-            params.append(before_iso)
+            params.append(_canonicalize_added_filter(before_iso, label="before_iso"))
         where = "WHERE " + " AND ".join(conditions)
         select_sql = f"SELECT id, path FROM documents {where}"
 
@@ -1427,8 +1434,12 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                 row["term"]: math.log(total_chunks / (row["doc"] + 1))
                 for row in self._conn.execute("SELECT term, doc FROM fts_chunks_vocab")
             }
-        except Exception:
-            # fts5vocab table may not exist — disable adaptive IDF
+        except sqlite3.OperationalError:
+            # The fts5vocab table genuinely may not exist (e.g. a store opened
+            # before it was added) -- that is an OperationalError ("no such
+            # table") and adaptive IDF degrades gracefully. Narrowed from a bare
+            # ``except Exception`` so a real DatabaseError (corruption / malformed
+            # image) propagates instead of silently disabling adaptive ranking.
             logger.debug("fts_chunks_vocab unavailable; adaptive IDF disabled", exc_info=True)
             self._idf_cache = ({}, 0)
             return self._idf_cache
@@ -1903,6 +1914,15 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                 return 0
 
             try:
+                # Wrap the DROP/CREATE/INSERT in one explicit transaction so a
+                # failure mid-reindex rolls back to the original vec_chunks
+                # instead of an empty one. The connection runs in autocommit
+                # (isolation_level=None), so without this BEGIN the DROP TABLE
+                # would commit on its own and rollback() below could not undo
+                # it -- silently wiping the entire vector index. Mirrors every
+                # other write path in this module.
+                self._conn.execute("BEGIN IMMEDIATE")
+
                 # Drop and recreate vec_chunks with new dimensions
                 self._conn.execute("DROP TABLE IF EXISTS vec_chunks")
                 self._conn.execute(
