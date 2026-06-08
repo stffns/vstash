@@ -391,16 +391,26 @@ class _IndexBackendMixin:
             self._init_ivfpq()
             self._snap_dirty = False
             return
-        path = self._snapvec_path
-        if path.exists():
-            try:
-                self._snap = SnapIndex.load(str(path))
-            except Exception:
-                logger.warning(
-                    "Failed to reload SnapIndex after rollback — creating empty index. "
-                    "Run 'vstash reindex' to rebuild vector search."
-                )
-                self._snap = SnapIndex(dim=self.embedding_dim, bits=self._snapvec_bits, seed=0)
-        else:
+        # Re-run the flat construction load path, which loads the .snpv AND does
+        # the staleness check (vec_chunks count > snap count -> rebuild from
+        # SQLite). A bare SnapIndex.load would restore a .snpv that is missing
+        # the session's committed-but-unflushed adds (flat snapvec defers its
+        # save to close()/checkpoint), leaving the in-memory index behind
+        # vec_chunks until the next open. Mirrors the ivfpq branch above, which
+        # already re-runs _init_ivfpq() for the same reason.
+        #
+        # Guard it: this runs in the rollback recovery path, so an exception
+        # here (e.g. disk-full while _rebuild_snapvec_from_vec_chunks saves)
+        # must NOT propagate and mask the original transaction error the caller
+        # is about to re-raise. Fall back to an empty index (rebuilt on next
+        # open) and log, matching the pre-rewrite behaviour.
+        try:
+            self._init_snapvec()
+        except Exception:
+            logger.warning(
+                "Failed to reload/rebuild SnapIndex after rollback — creating empty index. "
+                "Run 'vstash reindex' to rebuild vector search.",
+                exc_info=True,
+            )
             self._snap = SnapIndex(dim=self.embedding_dim, bits=self._snapvec_bits, seed=0)
         self._snap_dirty = False

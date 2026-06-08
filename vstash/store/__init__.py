@@ -2002,12 +2002,28 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
 
             # Update stored dimension only after successful commit
             self.embedding_dim = new_dim
-            # Mark snapvec dirty so the deferred flush in close() /
-            # _checkpoint_snapvec() picks up the rebuilt index. vec_chunks is
-            # the source of truth, so a crash before the flush is recovered by
-            # _rebuild_snapvec_from_vec_chunks on next open.
+            # reindex is rare + expensive (it just re-embedded the whole corpus),
+            # so persist the rebuilt snapvec index to disk immediately rather than
+            # deferring to close(). This minimises the window where a crash before
+            # close() would force a full _rebuild_snapvec_from_vec_chunks on the
+            # next open. _checkpoint_snapvec is a no-op when not dirty / no snap,
+            # and acquires no lock (safe inside the reindex _write_lock). vec_chunks
+            # remains the source of truth if the flush itself fails.
             if self._snap is not None:
                 self._snap_dirty = True
+                # Best-effort: the re-embed is already committed and the dim
+                # updated, so a flush failure (disk-full, permissions) must not
+                # fail reindex and tempt the caller into re-running the whole
+                # expensive re-embed. The index stays dirty and self-heals via
+                # _rebuild_snapvec_from_vec_chunks on the next open.
+                try:
+                    self._checkpoint_snapvec()
+                except Exception:
+                    logger.warning(
+                        "reindex committed but flushing snapvec to disk failed; "
+                        "the index will be rebuilt from vec_chunks on next open.",
+                        exc_info=True,
+                    )
 
             return processed
 
