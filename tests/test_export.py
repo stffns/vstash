@@ -7,6 +7,8 @@ import json
 
 import pytest
 
+from tests._cli_helpers import patch_cli_attr
+
 from tests.conftest import requires_sqlite_vec
 from vstash.store import VstashStore
 
@@ -130,11 +132,10 @@ class TestExportCLI:
     @pytest.fixture(autouse=True)
     def _patch_store(self, export_store: VstashStore, monkeypatch) -> None:
         """Monkeypatch _get_store so CLI uses the test store."""
-        import vstash.cli as cli_mod
         from vstash.config import load_config
 
-        monkeypatch.setattr(
-            cli_mod,
+        patch_cli_attr(
+            monkeypatch,
             "_get_store",
             lambda cfg=None, warm=False, profile=None: (cfg or load_config(), export_store),
         )
