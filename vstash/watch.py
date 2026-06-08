@@ -69,6 +69,20 @@ class _DebounceTimer:
             self._timers[path] = timer
             timer.start()
 
+    def cancel(self, path: str) -> None:
+        """Cancel a pending timer for a single path, if any.
+
+        Called when a delete event arrives for a path that has a pending
+        create/modify debounce: without this, that timer would fire *after* the
+        delete and re-enqueue a path that was just removed from the store,
+        reordering the delete behind a stale ingest (e.g. an editor's
+        delete-then-recreate atomic save).
+        """
+        with self._lock:
+            timer = self._timers.pop(path, None)
+        if timer is not None:
+            timer.cancel()
+
     def cancel_all(self) -> None:
         """Cancel all pending timers."""
         with self._lock:
@@ -287,6 +301,10 @@ def start_watch(
             if event.is_directory:
                 _handle_dir_delete(event.src_path)
             elif _should_process(event.src_path, exts):
+                # Cancel any pending create/modify debounce for this path first,
+                # so the delete is the last word and a stale timer can't
+                # re-enqueue the just-removed file after it fires.
+                debounce.cancel(event.src_path)
                 _handle_delete(event.src_path)
 
     observer = Observer()

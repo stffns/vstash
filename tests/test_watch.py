@@ -27,6 +27,25 @@ class TestDebounceTimer:
         event.wait(timeout=2.0)
         assert result == ["/tmp/test.md"]
 
+    def test_cancel_prevents_pending_fire(self) -> None:
+        """cancel() stops a pending timer so its callback never fires.
+
+        This is the watch delete-race fix: a delete cancels a pending
+        create/modify debounce so the stale timer cannot re-enqueue the file
+        after it was removed from the store.
+        """
+        fired: list[str] = []
+        timer = _DebounceTimer(delay=0.2)
+        timer.trigger("/tmp/a.md", fired.append)
+        timer.cancel("/tmp/a.md")
+        time.sleep(0.35)  # well past the delay
+        assert fired == []
+        assert "/tmp/a.md" not in timer._timers
+
+    def test_cancel_unknown_path_is_noop(self) -> None:
+        timer = _DebounceTimer(delay=0.1)
+        timer.cancel("/tmp/nonexistent.md")  # must not raise
+
     def test_re_trigger_resets_timer(self) -> None:
         """A second trigger for the same path resets the delay; callback fires once."""
         result: list[str] = []
