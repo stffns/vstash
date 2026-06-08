@@ -73,6 +73,19 @@ def _token_count(text: str) -> int:
     return len(_get_enc().encode(text, disallowed_special=()))
 
 
+def _sep_tokens() -> int:
+    """Token count of the paragraph separator (``\\n\\n``).
+
+    ``_SEPARATOR_TOKENS`` is populated as a side effect of ``_get_enc()``, so
+    reading the global directly would be ``None`` if a chunking helper
+    (``_split_by_paragraphs`` / ``_merge_small_chunks``) runs before any
+    tokenization in the process -- a ``None + int`` TypeError. This accessor
+    forces the encoder to load first.
+    """
+    _get_enc()
+    return _SEPARATOR_TOKENS
+
+
 # ------------------------------------------------------------------ #
 # Chunking                                                            #
 # ------------------------------------------------------------------ #
@@ -236,7 +249,7 @@ def _split_by_paragraphs(
             continue
 
         # Account for "\n\n" separator tokens when joining paragraphs
-        separator_cost = _SEPARATOR_TOKENS if current else 0
+        separator_cost = _sep_tokens() if current else 0
 
         # Would adding this paragraph overflow?
         if current_tokens + separator_cost + para_tokens > chunk_size and current:
@@ -309,12 +322,12 @@ def _merge_small_chunks(chunks: list[str], chunk_size: int) -> list[str]:
     for chunk in chunks[1:]:
         chunk_tokens = _token_count(chunk)
 
-        can_merge = current_tokens + _SEPARATOR_TOKENS + chunk_tokens <= chunk_size
+        can_merge = current_tokens + _sep_tokens() + chunk_tokens <= chunk_size
 
         # Merge if EITHER side is small (bidirectional merging)
         if can_merge and (current_tokens < _MIN_CHUNK_TOKENS or chunk_tokens < _MIN_CHUNK_TOKENS):
             current = current + "\n\n" + chunk
-            current_tokens += _SEPARATOR_TOKENS + chunk_tokens
+            current_tokens += _sep_tokens() + chunk_tokens
         else:
             merged.append(current)
             current = chunk
