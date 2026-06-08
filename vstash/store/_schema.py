@@ -78,6 +78,12 @@ class _SchemaManagerMixin:
 
             CREATE INDEX IF NOT EXISTS idx_chunks_doc ON chunks(doc_id);
             CREATE INDEX IF NOT EXISTS idx_documents_path ON documents(path);
+            -- added_at is the dominant ORDER BY / range-filter column
+            -- (list_documents, find_document, export_chunks, prune_documents,
+            -- get_*_added_at). Without this index every such query does a
+            -- filesort. Created here (idempotent) so existing DBs pick it up on
+            -- next open.
+            CREATE INDEX IF NOT EXISTS idx_documents_added_at ON documents(added_at);
 
             -- Search statistics for adaptive relevance threshold
             CREATE TABLE IF NOT EXISTS search_stats (
