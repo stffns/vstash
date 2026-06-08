@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import pytest
+
+from tests._cli_helpers import patch_cli_attr
 from typer.testing import CliRunner
 
 from tests.conftest import requires_sqlite_vec
@@ -17,12 +19,9 @@ runner = CliRunner()
 @pytest.fixture(autouse=True)
 def _patch_store(populated_store: VstashStore, monkeypatch) -> None:
     """Monkeypatch _get_store so CLI uses the test store."""
-    import vstash.cli as cli_mod
     from vstash.config import load_config
 
-    monkeypatch.setattr(
-        cli_mod,
-        "_get_store",
+    patch_cli_attr(monkeypatch, "_get_store",
         lambda cfg=None, warm=False, profile=None: (load_config(), populated_store),
     )
 
@@ -99,7 +98,6 @@ class TestAskErrorPaths:
 
     def test_ask_empty_store(self, tmp_db_path: str, monkeypatch) -> None:
         """ask with no documents in store shows a helpful message."""
-        import vstash.cli as cli_mod
         from vstash.config import load_config
 
         cfg = load_config()
@@ -108,9 +106,7 @@ class TestAskErrorPaths:
         dim = get_embedding_dim(cfg.embeddings.model)
         empty_store = VstashStore(tmp_db_path + "_empty", embedding_dim=dim)
 
-        monkeypatch.setattr(
-            cli_mod,
-            "_get_store",
+        patch_cli_attr(monkeypatch, "_get_store",
             lambda cfg=None, warm=False, profile=None: (load_config(), empty_store),
         )
 
@@ -125,14 +121,13 @@ class TestAutoMissHintHook:
     and ``[observability] auto_miss_hint`` is enabled (default)."""
 
     def _patch_embed(self, monkeypatch, dim: int) -> None:
-        import vstash.cli as cli_mod
 
         def _fake(query: str, model: str) -> list[float]:
             # A vector that does NOT match any populated_store chunk so
             # the search returns empty / low-tier.
             return [0.99] * dim
 
-        monkeypatch.setattr(cli_mod, "embed_query", _fake)
+        patch_cli_attr(monkeypatch, "embed_query", _fake)
 
     def test_record_search_event_persists_hint(self, populated_store: VstashStore) -> None:
         """Unit-level check: record_search_event + recent_miss_hints
@@ -230,14 +225,13 @@ class TestWhyCommand:
         Dim is derived from the populated_store fixture instead of
         hardcoded, so the test remains stable if the default embedding
         model changes dim."""
-        import vstash.cli as cli_mod
 
         dim = populated_store.embedding_dim
 
         def _fake(query: str, model: str) -> list[float]:
             return [0.3] * dim
 
-        monkeypatch.setattr(cli_mod, "embed_query", _fake)
+        patch_cli_attr(monkeypatch, "embed_query", _fake)
 
     def test_why_requires_expect_or_expect_chunk_id(
         self, monkeypatch, populated_store: VstashStore
@@ -399,14 +393,11 @@ class TestWhyCommand:
         so the teardown runs automatically."""
         from vstash.config import load_config as _lc
         from vstash.embed import get_embedding_dim as _gdim
-        import vstash.cli as cli_mod
 
         dim = _gdim(sample_config.embeddings.model)
         fresh = VstashStore(str(tmp_path / "fresh.db"), embedding_dim=dim)
         try:
-            monkeypatch.setattr(
-                cli_mod,
-                "_get_store",
+            patch_cli_attr(monkeypatch, "_get_store",
                 lambda cfg=None, warm=False, profile=None: (_lc(), fresh),
             )
             result = runner.invoke(app, ["why", "--recent", "5"])
