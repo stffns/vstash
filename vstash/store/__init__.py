@@ -439,8 +439,6 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         if not documents:
             return []
 
-        from ..validation import validate_document_input
-
         doc_ids: list[str] = []
 
         with self._write_lock:
@@ -1909,11 +1907,14 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
             try:
                 # Wrap the DROP/CREATE/INSERT in one explicit transaction so a
                 # failure mid-reindex rolls back to the original vec_chunks
-                # instead of an empty one. The connection runs in autocommit
-                # (isolation_level=None), so without this BEGIN the DROP TABLE
-                # would commit on its own and rollback() below could not undo
-                # it -- silently wiping the entire vector index. Mirrors every
-                # other write path in this module.
+                # instead of an empty one. The connection uses the stdlib default
+                # (deferred) isolation -- NOT autocommit -- where on Python
+                # 3.10/3.11 a bare DROP TABLE commits any open transaction first
+                # (legacy DDL-implicit-commit), so the rollback() below could not
+                # undo it and the vector index would be silently wiped. The
+                # explicit BEGIN IMMEDIATE makes the whole reindex atomic; it is
+                # safe because every write path commits before the next BEGIN, so
+                # in_transaction is False here. Mirrors every other write path.
                 self._conn.execute("BEGIN IMMEDIATE")
 
                 # Drop and recreate vec_chunks with new dimensions
