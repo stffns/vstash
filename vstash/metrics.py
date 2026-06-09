@@ -19,6 +19,7 @@ Design:
 
 from __future__ import annotations
 
+import bisect
 import threading
 import time
 from collections import defaultdict
@@ -108,10 +109,12 @@ class Histogram:
         """
         self._sum += value_ms
         self._count += 1
-        for i, upper in enumerate(self._buckets_upper):
-            if value_ms <= upper:
-                self._bucket_counts[i] += 1
-                return
+        # Buckets are sorted ascending with a final +Inf, so the index of the
+        # first upper bound >= value_ms (i.e. value_ms <= upper) is bisect_left.
+        # The +Inf sentinel guarantees the index is always in range. O(log b),
+        # in C, vs the previous O(b) Python scan -- this runs under the registry
+        # lock on every store.search().
+        self._bucket_counts[bisect.bisect_left(self._buckets_upper, value_ms)] += 1
 
     def count(self) -> int:
         return self._count
