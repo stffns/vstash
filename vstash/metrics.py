@@ -109,12 +109,16 @@ class Histogram:
         """
         self._sum += value_ms
         self._count += 1
-        # Buckets are sorted ascending with a final +Inf, so the index of the
-        # first upper bound >= value_ms (i.e. value_ms <= upper) is bisect_left.
-        # The +Inf sentinel guarantees the index is always in range. O(log b),
-        # in C, vs the previous O(b) Python scan -- this runs under the registry
-        # lock on every store.search().
-        self._bucket_counts[bisect.bisect_left(self._buckets_upper, value_ms)] += 1
+        # Buckets are sorted ascending, so the first upper bound >= value_ms
+        # (i.e. value_ms <= upper) is bisect_left -- O(log b) in C vs the previous
+        # O(b) Python scan, which runs under the registry lock on every
+        # store.search(). The default buckets end with +Inf so the index is
+        # always in range; the guard preserves the old loop's fall-through for a
+        # custom buckets_ms without an +Inf sentinel (value above all bounds is
+        # counted in sum/count but increments no bucket).
+        idx = bisect.bisect_left(self._buckets_upper, value_ms)
+        if idx < len(self._bucket_counts):
+            self._bucket_counts[idx] += 1
 
     def count(self) -> int:
         return self._count

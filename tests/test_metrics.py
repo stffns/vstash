@@ -101,6 +101,17 @@ class TestHistogram:
         assert buckets[5000.0] == 4
         assert buckets["+Inf"] == 5
 
+    def test_observe_custom_buckets_without_inf_does_not_crash(self):
+        """A value above all bounds in a custom (no +Inf) bucket set is counted
+        in sum/count but increments no bucket -- preserving the old loop's
+        fall-through (the bisect index would otherwise be out of range)."""
+        h = Histogram(buckets_ms=(1.0, 5.0))  # deliberately no +Inf sentinel
+        h.observe(100.0)  # above every bound
+        assert h.count() == 1
+        assert h.sum_ms() == 100.0
+        buckets = {b["le"]: b["count"] for b in h.snapshot()["buckets_ms"]}
+        assert buckets[5.0] == 0  # no bucket incremented, no IndexError
+
 
 # ------------------------------------------------------------------ #
 # MetricsRegistry                                                        #
