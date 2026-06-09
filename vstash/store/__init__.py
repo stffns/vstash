@@ -1600,10 +1600,13 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                 "INSERT INTO search_stats (spread, created_at) VALUES (?, ?)",
                 [spread, now_iso],
             )
-            # Prune to keep only the last 50 entries
+            # Prune to keep only the last 50 entries. A range delete below the
+            # 50th-newest id (an index scan + MIN) is far cheaper than
+            # `NOT IN (subquery)`, which materialises the keep-set and tests
+            # every row -- this runs on every search.
             self._conn.execute(
-                "DELETE FROM search_stats WHERE id NOT IN "
-                "(SELECT id FROM search_stats ORDER BY id DESC LIMIT 50)"
+                "DELETE FROM search_stats WHERE id < "
+                "(SELECT MIN(id) FROM (SELECT id FROM search_stats ORDER BY id DESC LIMIT 50))"
             )
             self._conn.commit()
 
@@ -1669,10 +1672,12 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                 "VALUES (?, ?, ?, ?, 0, ?, ?)",
                 [query, best_distance, relevance_tier, result_count, now_iso, hint_json],
             )
-            # Prune to keep only the last 1000 entries
+            # Prune to keep only the last 1000 entries (cheap range delete; see
+            # record_spread). `NOT IN (subquery)` re-tested every row on every
+            # search.
             self._conn.execute(
-                "DELETE FROM search_events WHERE id NOT IN "
-                "(SELECT id FROM search_events ORDER BY id DESC LIMIT 1000)"
+                "DELETE FROM search_events WHERE id < "
+                "(SELECT MIN(id) FROM (SELECT id FROM search_events ORDER BY id DESC LIMIT 1000))"
             )
             self._conn.commit()
             return cursor.lastrowid  # type: ignore[return-value]
