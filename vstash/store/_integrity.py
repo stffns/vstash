@@ -210,11 +210,11 @@ class _IntegrityMixin:
         check_by_name = {c.name: c for c in checks}
 
         with self._write_lock:
-            # The fts_index_parity probe inside integrity_check() is a
-            # DML statement (``INSERT INTO fts(fts) VALUES(...)``), so
-            # the stdlib sqlite3 driver opens an implicit transaction
-            # for it.  Commit any pending state before BEGIN IMMEDIATE
-            # so the explicit transaction below isn't preempted.
+            # Under autocommit (isolation_level=None) the fts_index_parity
+            # probe inside integrity_check() autocommits on the spot, so no
+            # transaction should be open here. The guard stays defensive: if
+            # any caller left one open, commit it before BEGIN IMMEDIATE so
+            # the explicit transaction below isn't preempted.
             if self._conn.in_transaction:
                 self._conn.commit()
             try:
