@@ -929,28 +929,34 @@ class Memory:
         # Content update: replace the chunks in place with the
         # caller-supplied text. We deliberately do NOT re-read the
         # path from disk (the caller is overriding the content), and
-        # we preserve every metadata field the caller did NOT pass so
-        # tags / project / layer / source_type / collection survive a
-        # content-only refresh.
+        # the store preserves every metadata field the caller did NOT
+        # pass so tags / project / layer / source_type / collection
+        # survive a content-only refresh.
         #
         # The scope is whatever the caller asked for: ``col`` is
         # ``"default"`` / explicit string / ``None`` (=all collections).
         # We do NOT collapse ``"default"`` to ``None`` -- doing so
         # would silently widen the scope and re-introduce #165.
-        existing_rows = self._store._conn.execute(
-            "SELECT path, title, source_type, collection, "
-            "project, layer, tags, chunk_count, char_count, added_at "
-            "FROM documents WHERE path = ?" + (" AND collection = ?" if col is not None else ""),
+        #
+        # Advisory existence probe so a not-found update returns before
+        # paying the chunk+embed pipeline. The AUTHORITATIVE matched set
+        # is discovered inside ``replace_document_content``'s own
+        # transaction, so a concurrent writer in the embed window below
+        # cannot make us replay a stale snapshot (resurrect a deleted
+        # copy / miss a new one).
+        probe = self._store._conn.execute(
+            "SELECT 1 FROM documents WHERE path = ?"
+            + (" AND collection = ?" if col is not None else "")
+            + " LIMIT 1",
             [source_str, col] if col is not None else [source_str],
-        ).fetchall()
-        if not existing_rows:
+        ).fetchone()
+        if probe is None:
             return {
                 "status": "not_found",
                 "mode": "content",
                 "fields": [],
                 "chunks": 0,
             }
-        existing_docs = [DocumentInfo(**dict(row)) for row in existing_rows]
 
         # Chunk + embed the new text once and reuse for every
         # collection that holds this ``source``. ``chunk_text`` and
@@ -971,37 +977,33 @@ class Memory:
             }
         new_embeddings = embed_texts(new_chunks, self._cfg.embeddings.model)
 
-        # Replace-in-place, scoped to the same set of collections we
-        # just listed. Re-add into *each* existing collection so a
-        # multi-collection update does not silently collapse the doc
-        # into a single collection. ``add_documents_batch`` replaces
-        # each (collection, path) copy inside ONE transaction (its
-        # per-doc ``_delete_by_doc_id`` covers exactly the rows the
-        # listing above matched), so a failure on any collection rolls
-        # the whole update back -- no window where the document is
-        # missing or replaced in one collection but not another.
-        self._store.add_documents_batch(
-            [
-                {
-                    "path": source_str,
-                    "title": title if title is not None else existing.title,
-                    "chunks": new_chunks,
-                    "embeddings": new_embeddings,
-                    "source_type": existing.source_type,
-                    "collection": existing.collection,
-                    "project": existing.project,
-                    "layer": existing.layer,
-                    "tags": tags if tags is not None else existing.tags,
-                }
-                for existing in existing_docs
-            ]
+        # One store call: discovery + per-collection replace run inside
+        # a single write lock + BEGIN IMMEDIATE, so a failure on any
+        # collection rolls the whole update back and a concurrent
+        # delete/add cannot slip between listing and replacing.
+        replaced = self._store.replace_document_content(
+            source_str,
+            chunks=new_chunks,
+            embeddings=new_embeddings,
+            title=title,
+            tags=tags,
+            collection=col,
         )
+        if replaced == 0:
+            # The doc disappeared between the advisory probe and the
+            # replace (e.g. a concurrent remove). Nothing was written.
+            return {
+                "status": "not_found",
+                "mode": "content",
+                "fields": [],
+                "chunks": 0,
+            }
         fields = [k for k, v in (("text", text), ("title", title), ("tags", tags)) if v is not None]
         return {
             "status": "updated",
             "mode": "content",
             "fields": fields,
-            "chunks": len(new_chunks) * len(existing_docs),
+            "chunks": len(new_chunks) * replaced,
         }
 
     def list(
