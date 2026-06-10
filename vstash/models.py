@@ -4,17 +4,26 @@ models.py — Typed result models for vstash operations.
 All structured data flowing between modules uses Pydantic BaseModel
 instead of raw dicts. This ensures validation, type safety, and
 clear contracts between layers.
+
+All models are frozen (immutable). This is load-bearing for the v0.31
+query LRU cache, which returns the SAME SearchResult instances on a
+cache hit: a caller mutating ``r.score`` would otherwise silently
+poison every later hit for that query. Use
+``result.model_copy(update={...})`` to derive a modified instance
+(see ``profile.federated_search`` for the canonical example).
 """
 
 from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class IngestResult(BaseModel):
     """Result of ingesting a single document."""
+
+    model_config = ConfigDict(frozen=True)
 
     status: Literal["ok", "empty", "skipped", "error"] = Field(description="Ingestion outcome")
     source: str = Field(description="Original file path or URL")
@@ -28,6 +37,8 @@ class IngestResult(BaseModel):
 
 class ExplainInfo(BaseModel):
     """Diagnostic breakdown of why a chunk ranked where it did."""
+
+    model_config = ConfigDict(frozen=True)
 
     vec_rank: int | None = Field(default=None, description="Rank in vector search (0-based)")
     vec_distance: float | None = Field(default=None, description="Cosine distance from query")
@@ -71,6 +82,8 @@ class SearchResult(BaseModel):
     for the current index state — it may change on re-ingest.
     """
 
+    model_config = ConfigDict(frozen=True)
+
     chunk_id: int = Field(
         description="Database row ID of the chunk (valid for current index state; may change on re-ingest)"
     )
@@ -96,6 +109,8 @@ class SearchResult(BaseModel):
 class DocumentInfo(BaseModel):
     """Metadata about an ingested document."""
 
+    model_config = ConfigDict(frozen=True)
+
     path: str = Field(description="Absolute file path or URL")
     title: str = Field(description="Document title")
     source_type: str = Field(description="Type: pdf, docx, code, url, etc.")
@@ -110,6 +125,8 @@ class DocumentInfo(BaseModel):
 
 class ChunkInfo(BaseModel):
     """A single chunk retrieved by ID."""
+
+    model_config = ConfigDict(frozen=True)
 
     chunk_id: int = Field(description="Database row ID of the chunk")
     doc_id: str = Field(description="Parent document hash ID")
@@ -129,6 +146,8 @@ class IntegrityCheck(BaseModel):
     crash or suspected corruption.
     """
 
+    model_config = ConfigDict(frozen=True)
+
     name: str = Field(description="Short identifier for the check")
     description: str = Field(description="Human-readable explanation of what the check verifies")
     passed: bool = Field(description="True if the invariant holds")
@@ -145,6 +164,8 @@ class IntegrityCheck(BaseModel):
 class IntegrityRepair(BaseModel):
     """Result of one repair action attempted by ``VstashStore.integrity_repair()``."""
 
+    model_config = ConfigDict(frozen=True)
+
     name: str = Field(description="Short identifier of the check that was repaired")
     success: bool = Field(description="True if the repair completed without error")
     affected_count: int = Field(default=0, description="Rows / documents touched by the repair")
@@ -153,6 +174,8 @@ class IntegrityRepair(BaseModel):
 
 class StoreStats(BaseModel):
     """Aggregate statistics about the vstash memory store."""
+
+    model_config = ConfigDict(frozen=True)
 
     documents: int = Field(description="Total document count")
     chunks: int = Field(description="Total chunk count")
@@ -172,6 +195,8 @@ class StageVerdict(BaseModel):
     Used by miss analysis to explain *why* an expected document did
     not appear in the top-k of a query.
     """
+
+    model_config = ConfigDict(frozen=True)
 
     stage: Literal[
         "vector_search",
@@ -200,6 +225,8 @@ class StageVerdict(BaseModel):
 class MissAnalysisActualResult(BaseModel):
     """A chunk that DID appear in the top-k, included for context."""
 
+    model_config = ConfigDict(frozen=True)
+
     rank: int
     chunk_id: int
     path: str
@@ -213,6 +240,8 @@ class MissAnalysis(BaseModel):
     See ``VstashStore.miss_analysis()`` for the full pipeline trace.
     Returned by ``Memory.miss_analysis()`` and the CLI ``--miss`` flag.
     """
+
+    model_config = ConfigDict(frozen=True)
 
     query: str = Field(description="The search query that was run")
     expected_path: str | None = Field(
@@ -286,6 +315,8 @@ class AskResult(BaseModel):
         / ``openai``) post local-resolve.
       - ``model``: resolved model name actually called.
     """
+
+    model_config = ConfigDict(frozen=True)
 
     content: str = Field(description="Model response text")
     reasoning: str | None = Field(
