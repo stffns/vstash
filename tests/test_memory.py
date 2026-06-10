@@ -636,7 +636,8 @@ class TestMemoryUpdate:
         WHOLE content update back. The old delete-then-add-loop left a
         torn state here: the doc was already deleted (and possibly
         re-added into collection 1) when collection 2's add failed.
-        Now the replace runs in one ``add_documents_batch`` transaction."""
+        Now the replace runs in one ``replace_document_content``
+        transaction."""
         doc = tmp_path / "shared.md"
         doc.write_text("Original aardvark content shared by the two collections.")
         db = tmp_path / "test.db"
@@ -645,17 +646,21 @@ class TestMemoryUpdate:
             mem.add(doc, collection="research")
             resolved = str(doc.resolve())
 
-            from vstash.validation import validate_document_input as real_validate
+            # The replacement text fits one chunk, so ``_serialize``
+            # runs exactly once per collection inside the replace
+            # transaction -- failing the 2nd call simulates a crash
+            # while re-adding the 2nd collection's copy.
+            from vstash.store import _serialize as real_serialize
 
             calls = {"n": 0}
 
-            def fail_on_second(*args: object, **kwargs: object) -> None:
+            def fail_on_second(emb):
                 calls["n"] += 1
                 if calls["n"] >= 2:
                     raise RuntimeError("boom: simulated failure on the 2nd collection")
-                real_validate(*args, **kwargs)
+                return real_serialize(emb)
 
-            with patch("vstash.store.validate_document_input", side_effect=fail_on_second):
+            with patch("vstash.store._serialize", side_effect=fail_on_second):
                 with pytest.raises(RuntimeError, match="boom"):
                     mem.update(
                         doc,
@@ -688,6 +693,34 @@ class TestMemoryUpdate:
                 assert all("zebra" not in t.lower() for t in texts), (
                     f"half-committed update leaked new content into {coll!r}: {texts!r}"
                 )
+
+    @requires_sqlite_vec
+    def test_update_does_not_resurrect_concurrently_deleted_doc(self, tmp_path: Path) -> None:
+        """The matched set is discovered INSIDE the store's replace
+        transaction. If the doc is deleted in the embed window (after
+        the advisory probe), the update must report not_found and write
+        NOTHING -- the previous SDK-level snapshot (SELECT before the
+        batch) replayed stale rows and resurrected the deleted doc."""
+        doc = tmp_path / "racy.md"
+        doc.write_text("Original content for the resurrection race test.")
+        db = tmp_path / "test.db"
+        with Memory(db=db) as mem:
+            mem.add(doc)
+            resolved = str(doc.resolve())
+
+            def embed_and_delete(texts, model):
+                # Simulate a concurrent writer deleting the doc in the
+                # window between the probe and the store call.
+                mem._store.delete_document(resolved)
+                return [[0.1] * 384 for _ in texts]
+
+            with patch("vstash.embed.embed_texts", side_effect=embed_and_delete):
+                result = mem.update(resolved, text="Replacement that must not resurrect the doc.")
+
+            assert result["status"] == "not_found", f"update replayed a stale snapshot: {result!r}"
+            assert [d for d in mem.list(collection=None) if d.path == resolved] == [], (
+                "update resurrected a concurrently-deleted document"
+            )
 
 
 class TestMemoryPruneAndCompact:

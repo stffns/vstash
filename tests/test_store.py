@@ -2164,3 +2164,142 @@ class TestSearchExactMatch:
         empty_result = populated_store.search(q, "python", top_k=5, exact_match="")
         assert [r.path for r in base] == [r.path for r in none_result]
         assert [r.path for r in base] == [r.path for r in empty_result]
+
+
+@requires_sqlite_vec
+class TestReplaceDocumentContent:
+    """replace_document_content: discovery + replace inside ONE write
+    lock + BEGIN IMMEDIATE (closes the SDK-level SELECT-then-act race
+    flagged on #424)."""
+
+    DIM = 4
+
+    def _store_with_two_collections(self, tmp_path) -> VstashStore:
+        store = VstashStore(str(tmp_path / "replace.db"), embedding_dim=self.DIM)
+        store.add_document(
+            path="/d.md",
+            title="Default Title",
+            chunks=["original default text"],
+            embeddings=[[0.1] * self.DIM],
+            source_type="markdown",
+            collection="default",
+            project="proj-a",
+            layer="layer-a",
+            tags="alpha",
+        )
+        store.add_document(
+            path="/d.md",
+            title="Research Title",
+            chunks=["original research text"],
+            embeddings=[[0.2] * self.DIM],
+            source_type="markdown",
+            collection="research",
+            project="proj-b",
+            layer="layer-b",
+            tags="beta",
+        )
+        return store
+
+    def _doc_rows(self, store: VstashStore) -> dict[str, dict]:
+        rows = store._conn.execute(
+            "SELECT collection, title, project, layer, tags, source_type, content_hash "
+            "FROM documents WHERE path = '/d.md'"
+        ).fetchall()
+        return {row["collection"]: dict(row) for row in rows}
+
+    def _chunk_texts(self, store: VstashStore, collection: str) -> list[str]:
+        return [
+            row[0]
+            for row in store._conn.execute(
+                "SELECT c.text FROM chunks c JOIN documents d ON c.doc_id = d.id "
+                "WHERE d.path = '/d.md' AND d.collection = ?",
+                [collection],
+            ).fetchall()
+        ]
+
+    def test_replaces_every_collection_preserving_metadata(self, tmp_path) -> None:
+        store = self._store_with_two_collections(tmp_path)
+        try:
+            n = store.replace_document_content(
+                "/d.md", chunks=["replacement text"], embeddings=[[0.3] * self.DIM]
+            )
+            assert n == 2
+            docs = self._doc_rows(store)
+            assert set(docs) == {"default", "research"}
+            # Per-copy metadata survives a content-only replace.
+            assert docs["default"]["title"] == "Default Title"
+            assert docs["default"]["project"] == "proj-a"
+            assert docs["default"]["layer"] == "layer-a"
+            assert docs["default"]["tags"] == "alpha"
+            assert docs["research"]["title"] == "Research Title"
+            assert docs["research"]["project"] == "proj-b"
+            assert docs["research"]["tags"] == "beta"
+            for coll in ("default", "research"):
+                assert self._chunk_texts(store, coll) == ["replacement text"]
+        finally:
+            store.close()
+
+    def test_scoped_to_one_collection(self, tmp_path) -> None:
+        store = self._store_with_two_collections(tmp_path)
+        try:
+            n = store.replace_document_content(
+                "/d.md",
+                chunks=["scoped replacement"],
+                embeddings=[[0.3] * self.DIM],
+                collection="research",
+            )
+            assert n == 1
+            assert self._chunk_texts(store, "research") == ["scoped replacement"]
+            assert self._chunk_texts(store, "default") == ["original default text"]
+        finally:
+            store.close()
+
+    def test_returns_zero_and_writes_nothing_when_missing(self, tmp_path) -> None:
+        store = self._store_with_two_collections(tmp_path)
+        try:
+            before = store._conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+            n = store.replace_document_content(
+                "/nope.md", chunks=["x"], embeddings=[[0.3] * self.DIM]
+            )
+            assert n == 0
+            after = store._conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+            assert after == before
+        finally:
+            store.close()
+
+    def test_title_and_tags_overrides_apply_to_every_copy(self, tmp_path) -> None:
+        store = self._store_with_two_collections(tmp_path)
+        try:
+            n = store.replace_document_content(
+                "/d.md",
+                chunks=["override replacement"],
+                embeddings=[[0.3] * self.DIM],
+                title="New Title",
+                tags="x, y",
+            )
+            assert n == 2
+            docs = self._doc_rows(store)
+            for coll in ("default", "research"):
+                assert docs[coll]["title"] == "New Title"
+                # Tags are normalized on write ("x, y" -> "x,y").
+                assert docs[coll]["tags"] == "x,y"
+            # Non-overridden fields still preserved per copy.
+            assert docs["default"]["project"] == "proj-a"
+            assert docs["research"]["project"] == "proj-b"
+        finally:
+            store.close()
+
+    def test_content_hash_stored_when_provided(self, tmp_path) -> None:
+        store = self._store_with_two_collections(tmp_path)
+        try:
+            store.replace_document_content(
+                "/d.md",
+                chunks=["hashed replacement"],
+                embeddings=[[0.3] * self.DIM],
+                content_hash="deadbeef",
+            )
+            docs = self._doc_rows(store)
+            assert docs["default"]["content_hash"] == "deadbeef"
+            assert docs["research"]["content_hash"] == "deadbeef"
+        finally:
+            store.close()

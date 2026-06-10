@@ -332,89 +332,24 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
             limits=self._limits,
         )
 
-        # Normalize the on-disk tag representation to match the form
-        # the search-side comma-anchored ``LIKE`` expects. Writers
-        # routinely hand us ``"alpha, beta"`` (frontmatter style); if
-        # we stored it verbatim, a query for ``tag="beta"`` would
-        # generate ``%,beta,%`` against ``,alpha, beta,`` and miss
-        # because of the leading space. Round-tripping through
-        # ``_normalize_tags`` strips that whitespace and dedupes
-        # repeats once, at ingest time, so the storage invariant is
-        # ``"tag1,tag2,..."`` with no spaces and no duplicates.
-        stored_tags = ",".join(_normalize_tags(tags)) if tags else None
-
-        doc_id = hashlib.sha256(f"{collection}:{path}".encode()).hexdigest()[:32]
-
         with self._write_lock:
             # Explicit transaction ensures atomicity — a crash mid-way
             # won't leave the database in an inconsistent state.
             self._conn.execute("BEGIN IMMEDIATE")
             try:
-                # Remove existing version if re-ingesting
-                self._delete_by_doc_id(doc_id)
-
-                self._conn.execute(
-                    """INSERT INTO documents
-                       (id, path, title, source_type, collection,
-                        project, layer, tags, content_hash,
-                        char_count, chunk_count, added_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    [
-                        doc_id,
-                        path,
-                        title,
-                        source_type,
-                        collection,
-                        project,
-                        layer,
-                        stored_tags,
-                        content_hash,
-                        sum(len(c) for c in chunks),
-                        len(chunks),
-                        datetime.now(timezone.utc).isoformat(),
-                    ],
+                doc_id, rowids, fts_data = self._insert_document_in_txn(
+                    path=path,
+                    title=title,
+                    chunks=chunks,
+                    embeddings=embeddings,
+                    source_type=source_type,
+                    collection=collection,
+                    project=project,
+                    layer=layer,
+                    tags=tags,
+                    content_hash=content_hash,
+                    now_iso=datetime.now(timezone.utc).isoformat(),
                 )
-
-                now_iso = datetime.now(timezone.utc).isoformat()
-
-                # Insert chunk — last_accessed_at is NULL until the chunk is actually accessed
-                # via search, so the decay formula doesn't treat new chunks as "recently accessed".
-                chunk_data = [(doc_id, seq, text, now_iso) for seq, text in enumerate(chunks)]
-                self._conn.executemany(
-                    "INSERT INTO chunks (doc_id, seq, text, access_count, created_at, last_accessed_at)"
-                    " VALUES (?, ?, ?, 0, ?, NULL)",
-                    chunk_data,
-                )
-
-                # Get rowids for linking vec + fts tables
-                rowids = [
-                    row[0]
-                    for row in self._conn.execute(
-                        "SELECT id FROM chunks WHERE doc_id = ? ORDER BY seq",
-                        [doc_id],
-                    ).fetchall()
-                ]
-
-                # Vector index entries. rowids comes from a SELECT-by-doc_id
-                # right after the chunk inserts above, so it must align 1:1
-                # with the input embeddings/chunks; strict=True surfaces any
-                # invariant violation as a ValueError instead of silently
-                # truncating to the shorter side.
-                vec_data = [
-                    (rowid, _serialize(emb)) for rowid, emb in zip(rowids, embeddings, strict=True)
-                ]
-                self._conn.executemany(
-                    "INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)",
-                    vec_data,
-                )
-
-                # FTS5 entries (rowid must match chunks.id)
-                fts_data = [(rowid, text) for rowid, text in zip(rowids, chunks, strict=True)]
-                if not self._defer_fts:
-                    self._conn.executemany(
-                        "INSERT INTO fts_chunks (rowid, text) VALUES (?, ?)",
-                        fts_data,
-                    )
 
                 # Add to snapvec in-memory (persisted after successful commit)
                 if self._snap is not None:
@@ -432,6 +367,117 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                 self._reload_snapvec()
                 raise
         return doc_id
+
+    def _insert_document_in_txn(
+        self,
+        *,
+        path: str,
+        title: str,
+        chunks: list[str],
+        embeddings: list[list[float]],
+        source_type: str,
+        collection: str,
+        project: str | None,
+        layer: str | None,
+        tags: str | None,
+        content_hash: str | None,
+        now_iso: str,
+    ) -> tuple[str, list[int], list[tuple[int, str]]]:
+        """Replace-insert one document's rows inside the caller's OPEN
+        transaction.
+
+        Shared per-document body of ``add_document``,
+        ``add_documents_batch``, and ``replace_document_content``:
+        normalize tags, delete the prior ``(collection, path)`` version,
+        insert documents/chunks/vec_chunks rows, and insert FTS rows
+        unless ``_defer_fts`` is on.
+
+        The caller owns the write lock, BEGIN/COMMIT/ROLLBACK, input
+        validation (kept at each public boundary per #133), snapvec
+        population (immediate vs coalesced varies by caller), deferred-
+        FTS buffering (extend ``_deferred_fts_rows`` only AFTER commit),
+        and cache invalidation.
+
+        Returns:
+            ``(doc_id, rowids, fts_data)`` — chunk rowids for snapvec
+            and the ``(rowid, text)`` pairs for deferred FTS.
+        """
+        # Normalize the on-disk tag representation to match the form
+        # the search-side comma-anchored ``LIKE`` expects. Writers
+        # routinely hand us ``"alpha, beta"`` (frontmatter style); if
+        # we stored it verbatim, a query for ``tag="beta"`` would
+        # generate ``%,beta,%`` against ``,alpha, beta,`` and miss
+        # because of the leading space. Round-tripping through
+        # ``_normalize_tags`` strips that whitespace and dedupes
+        # repeats once, at ingest time, so the storage invariant is
+        # ``"tag1,tag2,..."`` with no spaces and no duplicates.
+        stored_tags = ",".join(_normalize_tags(tags)) if tags else None
+
+        doc_id = hashlib.sha256(f"{collection}:{path}".encode()).hexdigest()[:32]
+
+        # Remove existing version if re-ingesting
+        self._delete_by_doc_id(doc_id)
+
+        self._conn.execute(
+            """INSERT INTO documents
+               (id, path, title, source_type, collection,
+                project, layer, tags, content_hash,
+                char_count, chunk_count, added_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                doc_id,
+                path,
+                title,
+                source_type,
+                collection,
+                project,
+                layer,
+                stored_tags,
+                content_hash,
+                sum(len(c) for c in chunks),
+                len(chunks),
+                now_iso,
+            ],
+        )
+
+        # Insert chunk — last_accessed_at is NULL until the chunk is actually accessed
+        # via search, so the decay formula doesn't treat new chunks as "recently accessed".
+        chunk_data = [(doc_id, seq, text, now_iso) for seq, text in enumerate(chunks)]
+        self._conn.executemany(
+            "INSERT INTO chunks (doc_id, seq, text, access_count, created_at, last_accessed_at)"
+            " VALUES (?, ?, ?, 0, ?, NULL)",
+            chunk_data,
+        )
+
+        # Get rowids for linking vec + fts tables
+        rowids = [
+            row[0]
+            for row in self._conn.execute(
+                "SELECT id FROM chunks WHERE doc_id = ? ORDER BY seq",
+                [doc_id],
+            ).fetchall()
+        ]
+
+        # Vector index entries. rowids comes from a SELECT-by-doc_id
+        # right after the chunk inserts above, so it must align 1:1
+        # with the input embeddings/chunks; strict=True surfaces any
+        # invariant violation as a ValueError instead of silently
+        # truncating to the shorter side.
+        vec_data = [(rowid, _serialize(emb)) for rowid, emb in zip(rowids, embeddings, strict=True)]
+        self._conn.executemany(
+            "INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)",
+            vec_data,
+        )
+
+        # FTS5 entries (rowid must match chunks.id)
+        fts_data = [(rowid, text) for rowid, text in zip(rowids, chunks, strict=True)]
+        if not self._defer_fts:
+            self._conn.executemany(
+                "INSERT INTO fts_chunks (rowid, text) VALUES (?, ?)",
+                fts_data,
+            )
+
+        return doc_id, rowids, fts_data
 
     def add_documents_batch(
         self,
@@ -472,91 +518,33 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                 now_iso = datetime.now(timezone.utc).isoformat()
 
                 for doc in documents:
-                    path = doc["path"]
-                    title = doc["title"]
                     chunks = doc["chunks"]
                     embeddings = doc["embeddings"]
-                    source_type = doc["source_type"]
-                    collection = doc.get("collection", "default")
-                    project = doc.get("project")
-                    layer = doc.get("layer")
-                    tags = doc.get("tags")
-                    content_hash = doc.get("content_hash")
 
                     validate_document_input(
-                        path=path,
+                        path=doc["path"],
                         chunks=chunks,
                         embeddings=embeddings,
                         limits=self._limits,
                     )
 
-                    # Normalize tags on write so the search-side
-                    # comma-anchored ``LIKE`` matches reliably. Same
-                    # invariant as ``add_document``: stored form is
-                    # ``"tag1,tag2,..."`` with no whitespace and no
-                    # duplicates.
-                    stored_tags = ",".join(_normalize_tags(tags)) if tags else None
-
-                    doc_id = hashlib.sha256(f"{collection}:{path}".encode()).hexdigest()[:32]
+                    doc_id, rowids, fts_data = self._insert_document_in_txn(
+                        path=doc["path"],
+                        title=doc["title"],
+                        chunks=chunks,
+                        embeddings=embeddings,
+                        source_type=doc["source_type"],
+                        collection=doc.get("collection", "default"),
+                        project=doc.get("project"),
+                        layer=doc.get("layer"),
+                        tags=doc.get("tags"),
+                        content_hash=doc.get("content_hash"),
+                        now_iso=now_iso,
+                    )
                     doc_ids.append(doc_id)
 
-                    self._delete_by_doc_id(doc_id)
-
-                    self._conn.execute(
-                        """INSERT INTO documents
-                           (id, path, title, source_type, collection,
-                            project, layer, tags, content_hash,
-                            char_count, chunk_count, added_at)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                        [
-                            doc_id,
-                            path,
-                            title,
-                            source_type,
-                            collection,
-                            project,
-                            layer,
-                            stored_tags,
-                            content_hash,
-                            sum(len(c) for c in chunks),
-                            len(chunks),
-                            now_iso,
-                        ],
-                    )
-
-                    chunk_data = [(doc_id, seq, text, now_iso) for seq, text in enumerate(chunks)]
-                    self._conn.executemany(
-                        "INSERT INTO chunks (doc_id, seq, text, access_count, "
-                        "created_at, last_accessed_at) VALUES (?, ?, ?, 0, ?, NULL)",
-                        chunk_data,
-                    )
-
-                    rowids = [
-                        row[0]
-                        for row in self._conn.execute(
-                            "SELECT id FROM chunks WHERE doc_id = ? ORDER BY seq",
-                            [doc_id],
-                        ).fetchall()
-                    ]
-
-                    vec_data = [
-                        (rowid, _serialize(emb))
-                        for rowid, emb in zip(rowids, embeddings, strict=True)
-                    ]
-                    self._conn.executemany(
-                        "INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)",
-                        vec_data,
-                    )
-
-                    fts_data = list(zip(rowids, chunks, strict=True))
                     if self._defer_fts:
                         pending_fts.extend(fts_data)
-                    else:
-                        self._conn.executemany(
-                            "INSERT INTO fts_chunks (rowid, text) VALUES (?, ?)",
-                            fts_data,
-                        )
-
                     if self._snap is not None:
                         pending_snap_rowids.extend(rowids)
                         pending_snap_vecs.append(np.asarray(embeddings, dtype=np.float32))
@@ -584,6 +572,115 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                 raise
 
         return doc_ids
+
+    def replace_document_content(
+        self,
+        path: str,
+        *,
+        chunks: list[str],
+        embeddings: list[list[float]],
+        title: str | None = None,
+        tags: str | None = None,
+        content_hash: str | None = None,
+        collection: str | None = None,
+    ) -> int:
+        """Atomically replace the chunk content of every ``(collection,
+        path)`` copy matching the filter, preserving each copy's
+        metadata fields the caller did not override.
+
+        Row discovery and replacement run inside ONE write lock +
+        ``BEGIN IMMEDIATE``: the matched set cannot change between
+        listing and replacing.  An SDK-level SELECT before the write
+        (the pre-#424 shape) could replay a stale snapshot — resurrect
+        a just-deleted copy, miss a newly-added collection copy, or
+        overwrite fresher metadata with old values.
+
+        Args:
+            path: Exact document path (caller resolves it first).
+            chunks: New text chunks, reused for every matching copy.
+            embeddings: Corresponding embedding vectors.
+            title: Optional override; ``None`` preserves each copy's title.
+            tags: Optional override; ``None`` preserves each copy's tags.
+            content_hash: Optional SHA-256 hex of the raw replacement
+                text (Tier-0 dedup; see ``add_document``).
+            collection: Exact collection to scope to, or ``None`` for
+                every collection holding ``path``.
+
+        Returns:
+            Number of copies replaced. 0 if nothing matched — nothing
+            is written in that case.
+        """
+        # Fail-safe validation at the public API boundary (#133),
+        # before we open a write transaction. The content is shared by
+        # every matching copy, so one check covers them all.
+        validate_document_input(
+            path=path,
+            chunks=chunks,
+            embeddings=embeddings,
+            limits=self._limits,
+        )
+
+        with self._write_lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            pending_fts: list[tuple[int, str]] = []
+            # Same coalescing rationale as add_documents_batch: one
+            # snapvec add_batch for the whole transaction.
+            pending_snap_rowids: list[int] = []
+            pending_snap_vecs: list[np.ndarray] = []
+            try:
+                # Discovery INSIDE the transaction: BEGIN IMMEDIATE has
+                # the write lock on the DB, so this is the authoritative
+                # matched set for the replace below.
+                existing = self._conn.execute(
+                    "SELECT title, source_type, collection, project, layer, tags "
+                    "FROM documents WHERE path = ?"
+                    + (" AND collection = ?" if collection is not None else ""),
+                    [path, collection] if collection is not None else [path],
+                ).fetchall()
+                if not existing:
+                    self._conn.rollback()
+                    return 0
+
+                now_iso = datetime.now(timezone.utc).isoformat()
+                for row in existing:
+                    _doc_id, rowids, fts_data = self._insert_document_in_txn(
+                        path=path,
+                        title=title if title is not None else row["title"],
+                        chunks=chunks,
+                        embeddings=embeddings,
+                        source_type=row["source_type"],
+                        collection=row["collection"],
+                        project=row["project"],
+                        layer=row["layer"],
+                        tags=tags if tags is not None else row["tags"],
+                        content_hash=content_hash,
+                        now_iso=now_iso,
+                    )
+                    if self._defer_fts:
+                        pending_fts.extend(fts_data)
+                    if self._snap is not None:
+                        pending_snap_rowids.extend(rowids)
+                        pending_snap_vecs.append(np.asarray(embeddings, dtype=np.float32))
+
+                if self._snap is not None and pending_snap_rowids:
+                    all_snap_vecs = (
+                        pending_snap_vecs[0]
+                        if len(pending_snap_vecs) == 1
+                        else np.concatenate(pending_snap_vecs, axis=0)
+                    )
+                    self._snap.add_batch(pending_snap_rowids, all_snap_vecs)
+                    self._snap_dirty = True
+
+                self._conn.commit()
+                if pending_fts:
+                    self._deferred_fts_rows.extend(pending_fts)
+                self._invalidate_idf_cache()
+                self._bump_cache_epoch()
+                return len(existing)
+            except Exception:
+                self._conn.rollback()
+                self._reload_snapvec()
+                raise
 
     def delete_by_path_prefix(self, prefix: str) -> int:
         """Remove all documents whose path starts with *prefix*.
