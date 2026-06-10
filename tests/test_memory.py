@@ -630,6 +630,65 @@ class TestMemoryUpdate:
             )
             assert {d.collection for d in after} == {"default", "research"}
 
+    @requires_sqlite_vec
+    def test_update_text_failure_rolls_back_all_collections(self, tmp_path: Path) -> None:
+        """A failure while re-adding any collection's copy must roll the
+        WHOLE content update back. The old delete-then-add-loop left a
+        torn state here: the doc was already deleted (and possibly
+        re-added into collection 1) when collection 2's add failed.
+        Now the replace runs in one ``add_documents_batch`` transaction."""
+        doc = tmp_path / "shared.md"
+        doc.write_text("Original aardvark content shared by the two collections.")
+        db = tmp_path / "test.db"
+        with Memory(db=db, collection="default") as mem:
+            mem.add(doc, collection="default")
+            mem.add(doc, collection="research")
+            resolved = str(doc.resolve())
+
+            from vstash.validation import validate_document_input as real_validate
+
+            calls = {"n": 0}
+
+            def fail_on_second(*args: object, **kwargs: object) -> None:
+                calls["n"] += 1
+                if calls["n"] >= 2:
+                    raise RuntimeError("boom: simulated failure on the 2nd collection")
+                real_validate(*args, **kwargs)
+
+            with patch("vstash.store.validate_document_input", side_effect=fail_on_second):
+                with pytest.raises(RuntimeError, match="boom"):
+                    mem.update(
+                        doc,
+                        text="Replacement zebra content that must NOT survive.",
+                        collection=None,
+                    )
+
+            # Both original copies must survive, with the ORIGINAL content.
+            after = [d for d in mem.list(collection=None) if d.path == resolved]
+            assert len(after) == 2, (
+                f"failed update tore the store: {[(d.collection, d.title) for d in after]}"
+            )
+            assert {d.collection for d in after} == {"default", "research"}
+            # Assert against the stored chunks per collection (not via
+            # search, whose ranking/dedup could mask a half-commit
+            # limited to one collection).
+            for coll in ("default", "research"):
+                texts = [
+                    row[0]
+                    for row in mem._store._conn.execute(
+                        "SELECT c.text FROM chunks c JOIN documents d ON c.doc_id = d.id "
+                        "WHERE d.path = ? AND d.collection = ?",
+                        [resolved, coll],
+                    ).fetchall()
+                ]
+                assert texts, f"collection {coll!r} lost its chunks"
+                assert all("aardvark" in t.lower() for t in texts), (
+                    f"collection {coll!r} lost the original content: {texts!r}"
+                )
+                assert all("zebra" not in t.lower() for t in texts), (
+                    f"half-committed update leaked new content into {coll!r}: {texts!r}"
+                )
+
 
 class TestMemoryPruneAndCompact:
     """Test Memory.prune and Memory.compact."""

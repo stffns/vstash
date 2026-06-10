@@ -971,26 +971,31 @@ class Memory:
             }
         new_embeddings = embed_texts(new_chunks, self._cfg.embeddings.model)
 
-        # Delete-then-add, scoped to the same set of collections we
+        # Replace-in-place, scoped to the same set of collections we
         # just listed. Re-add into *each* existing collection so a
         # multi-collection update does not silently collapse the doc
-        # into a single collection. Not strictly atomic (the doc is
-        # briefly missing between the two steps), but the same window
-        # already exists in the ``force=True`` re-ingest path used by
-        # ``add()`` and the watch worker.
-        self._store.delete_document(source_str, collection=col)
-        for existing in existing_docs:
-            self._store.add_document(
-                path=source_str,
-                title=title if title is not None else existing.title,
-                chunks=new_chunks,
-                embeddings=new_embeddings,
-                source_type=existing.source_type,
-                collection=existing.collection,
-                project=existing.project,
-                layer=existing.layer,
-                tags=tags if tags is not None else existing.tags,
-            )
+        # into a single collection. ``add_documents_batch`` replaces
+        # each (collection, path) copy inside ONE transaction (its
+        # per-doc ``_delete_by_doc_id`` covers exactly the rows the
+        # listing above matched), so a failure on any collection rolls
+        # the whole update back -- no window where the document is
+        # missing or replaced in one collection but not another.
+        self._store.add_documents_batch(
+            [
+                {
+                    "path": source_str,
+                    "title": title if title is not None else existing.title,
+                    "chunks": new_chunks,
+                    "embeddings": new_embeddings,
+                    "source_type": existing.source_type,
+                    "collection": existing.collection,
+                    "project": existing.project,
+                    "layer": existing.layer,
+                    "tags": tags if tags is not None else existing.tags,
+                }
+                for existing in existing_docs
+            ]
+        )
         fields = [k for k, v in (("text", text), ("title", title), ("tags", tags)) if v is not None]
         return {
             "status": "updated",
