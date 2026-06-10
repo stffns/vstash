@@ -103,6 +103,12 @@ class VstashRetriever(BaseRetriever):
 
         results = self.memory.search(query, **search_kwargs)
 
+        # Expose the full SearchResult surface (parity with the other
+        # adapters): chunk_id lets callers fetch context via
+        # Memory.get_chunk, and collection/tags/layer carry the
+        # organizational metadata LangChain filters routinely key on.
+        # chunk_id is only valid for the current index state (it may
+        # change on re-ingest) -- same contract as SearchResult.
         return [
             Document(
                 page_content=r.text,
@@ -111,6 +117,11 @@ class VstashRetriever(BaseRetriever):
                     "title": r.title,
                     "score": r.score,
                     "chunk": r.chunk,
+                    "chunk_id": r.chunk_id,
+                    "collection": r.collection,
+                    "tags": r.tags,
+                    "layer": r.layer,
+                    "added_at": r.added_at,
                 },
             )
             for r in results
