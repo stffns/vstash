@@ -198,15 +198,17 @@ class IVFPQBackend:
         )
         if Path(path).exists():
             loaded = IVFPQSnapIndex.load(path)
-            loaded_dim = getattr(loaded, "dim", None)
-            if loaded_dim is not None and int(loaded_dim) != dim:
+            # Direct attribute access on purpose: a corrupt index missing
+            # ``dim`` raises AttributeError, which the caller's
+            # failed-to-load handler turns into the unfitted fallback.
+            if int(loaded.dim) != dim:
                 logger.warning(
                     "IVFPQ index at %s was built for dim=%s but the store "
                     "needs dim=%d (embedding model changed?). Starting "
                     "unfitted; run 'vstash snapvec fit' to rebuild from "
                     "current vec_chunks.",
                     path,
-                    loaded_dim,
+                    loaded.dim,
                     dim,
                 )
                 return backend
