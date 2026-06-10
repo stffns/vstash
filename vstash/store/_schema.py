@@ -36,19 +36,24 @@ class _SchemaManagerMixin:
         """Initialize database schema if not present."""
         # Create tables first (without indexes on new columns)
         conn.executescript(f"""
-            -- Document metadata
+            -- Document metadata.  content_hash is the SHA-256 hex of the
+            -- raw ingested text (text:// ingest only for now); NULL for
+            -- file/url docs and rows written by older builds.  Used for
+            -- Tier-0 write-time dedup: a byte-identical re-remember is a
+            -- NOOP instead of a re-embed.
             CREATE TABLE IF NOT EXISTS documents (
-                id          TEXT PRIMARY KEY,
-                path        TEXT NOT NULL,
-                title       TEXT NOT NULL,
-                source_type TEXT NOT NULL DEFAULT 'file',
-                collection  TEXT NOT NULL DEFAULT 'default',
-                project     TEXT,
-                layer       TEXT,
-                tags        TEXT,
-                char_count  INTEGER DEFAULT 0,
-                chunk_count INTEGER DEFAULT 0,
-                added_at    TEXT NOT NULL
+                id           TEXT PRIMARY KEY,
+                path         TEXT NOT NULL,
+                title        TEXT NOT NULL,
+                source_type  TEXT NOT NULL DEFAULT 'file',
+                collection   TEXT NOT NULL DEFAULT 'default',
+                project      TEXT,
+                layer        TEXT,
+                tags         TEXT,
+                content_hash TEXT,
+                char_count   INTEGER DEFAULT 0,
+                chunk_count  INTEGER DEFAULT 0,
+                added_at     TEXT NOT NULL
             );
 
             -- Chunk text + position
@@ -353,6 +358,8 @@ class _SchemaManagerMixin:
             migrations.append("ALTER TABLE documents ADD COLUMN layer TEXT")
         if "tags" not in doc_columns:
             migrations.append("ALTER TABLE documents ADD COLUMN tags TEXT")
+        if "content_hash" not in doc_columns:
+            migrations.append("ALTER TABLE documents ADD COLUMN content_hash TEXT")
 
         # miss_hint column on search_events (issue #157 part 3, 2026-04-21)
         event_columns = {
