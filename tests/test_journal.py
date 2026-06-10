@@ -470,3 +470,69 @@ class TestMemoryJournal:
                 assert mock_prune.call_args.kwargs["dry_run"] is True
 
             mem.close()
+
+
+class TestMemoryJournalProjectOverride:
+    """journal_* parity with search/list: explicit ``project=`` override
+    beats the constructor default, explicit ``None`` clears the filter,
+    and omitting the argument keeps the instance default."""
+
+    def test_journal_save_project_override(self) -> None:
+        from unittest.mock import patch
+
+        with (
+            patch("vstash.memory.open_store_for_config"),
+            patch("vstash.memory.load_config"),
+        ):
+            from vstash.memory import Memory
+
+            mem = Memory(project="test-agent")
+            with patch("vstash.journal.journal_save") as mock_save:
+                mock_save.return_value = {"status": "ok"}
+                mem.journal_save("x", project="other-agent")
+                assert mock_save.call_args.kwargs["project"] == "other-agent"
+                mem.journal_save("x", project=None)
+                assert mock_save.call_args.kwargs["project"] is None
+                mem.journal_save("x")
+                assert mock_save.call_args.kwargs["project"] == "test-agent"
+            mem.close()
+
+    def test_journal_recall_log_prune_project_override(self) -> None:
+        from unittest.mock import patch
+
+        with (
+            patch("vstash.memory.open_store_for_config"),
+            patch("vstash.memory.load_config"),
+        ):
+            from vstash.memory import Memory
+
+            mem = Memory(project="test-agent")
+
+            with patch("vstash.journal.journal_recall") as mock_recall:
+                mock_recall.return_value = []
+                mem.journal_recall("q", project="other-agent")
+                assert mock_recall.call_args.kwargs["project"] == "other-agent"
+                mem.journal_recall("q", project=None)
+                assert mock_recall.call_args.kwargs["project"] is None
+                mem.journal_recall("q")
+                assert mock_recall.call_args.kwargs["project"] == "test-agent"
+
+            with patch("vstash.journal.journal_log") as mock_log:
+                mock_log.return_value = []
+                mem.journal_log(project="other-agent")
+                assert mock_log.call_args.kwargs["project"] == "other-agent"
+                mem.journal_log(project=None)
+                assert mock_log.call_args.kwargs["project"] is None
+                mem.journal_log()
+                assert mock_log.call_args.kwargs["project"] == "test-agent"
+
+            with patch("vstash.journal.journal_prune") as mock_prune:
+                mock_prune.return_value = {"status": "ok"}
+                mem.journal_prune("30d", project="other-agent")
+                assert mock_prune.call_args.kwargs["project"] == "other-agent"
+                mem.journal_prune("30d", project=None)
+                assert mock_prune.call_args.kwargs["project"] is None
+                mem.journal_prune("30d")
+                assert mock_prune.call_args.kwargs["project"] == "test-agent"
+
+            mem.close()
