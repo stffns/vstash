@@ -1060,6 +1060,7 @@ class Memory:
         title: str | None = None,
         tags: str | None = None,
         source: str | None = None,
+        project: object = _UNSET,
     ) -> dict:
         """Save a journal entry for cross-session recall.
 
@@ -1071,6 +1072,9 @@ class Memory:
             title: Optional title (auto-generated with timestamp if None).
             tags: Comma-separated tags (auto-adds 'journal').
             source: Source identifier (e.g. 'agent', 'session', 'hook').
+            project: Override the constructor's project tag for this
+                entry. Pass ``None`` to save without a project; omit to
+                use the instance default (same semantics as ``search``).
 
         Returns:
             Dict with entry metadata.
@@ -1085,7 +1089,7 @@ class Memory:
         return journal_save(
             text,
             title=title,
-            project=self._project,
+            project=self._resolve_project(project),
             tags=tags,
             source=source,
             cfg=self._cfg,
@@ -1099,6 +1103,7 @@ class Memory:
         tags: str | list[str] | None = None,
         added_after: str | None = None,
         added_before: str | None = None,
+        project: object = _UNSET,
     ) -> list[dict]:
         """Recall relevant journal entries from past sessions.
 
@@ -1116,6 +1121,9 @@ class Memory:
                 entries logged on or after this date.
             added_before: ISO date — only return entries logged strictly
                 before this date.
+            project: Override the constructor's project filter. Pass
+                ``None`` to recall across every project; omit to use the
+                instance default (same semantics as ``search``).
 
         Returns:
             List of dicts with text, title, score/added_at.
@@ -1131,7 +1139,7 @@ class Memory:
         return journal_recall(
             query=query,
             top_k=top_k,
-            project=self._project,
+            project=self._resolve_project(project),
             tags=tags,
             added_after=added_after,
             added_before=added_before,
@@ -1143,12 +1151,16 @@ class Memory:
         *,
         limit: int = 20,
         recent: str | None = None,
+        project: object = _UNSET,
     ) -> list[dict]:
         """Chronological view of journal entries (newest first).
 
         Args:
             limit: Max number of entries to return.
             recent: Time window filter (e.g. '7d', '24h', '2w').
+            project: Override the constructor's project filter. Pass
+                ``None`` to list every project; omit to use the instance
+                default (same semantics as ``search``).
 
         Returns:
             List of dicts with title, project, tags, chunks, chars, added_at.
@@ -1158,7 +1170,7 @@ class Memory:
         return journal_log(
             limit=limit,
             recent=recent,
-            project=self._project,
+            project=self._resolve_project(project),
             cfg=self._cfg,
         )
 
@@ -1167,12 +1179,16 @@ class Memory:
         age: str,
         *,
         dry_run: bool = False,
+        project: object = _UNSET,
     ) -> dict:
         """Remove journal entries older than the specified age.
 
         Args:
             age: Age threshold like '30d', '2w', '24h'.
             dry_run: If True, report what would be deleted without deleting.
+            project: Override the constructor's project filter. Pass
+                ``None`` to prune across every project; omit to use the
+                instance default (same semantics as ``search``).
 
         Returns:
             Dict with count of deleted entries and their titles.
@@ -1181,7 +1197,7 @@ class Memory:
 
         return journal_prune(
             age,
-            project=self._project,
+            project=self._resolve_project(project),
             dry_run=dry_run,
             cfg=self._cfg,
         )
