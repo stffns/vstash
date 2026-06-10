@@ -126,7 +126,18 @@ class _IndexBackendMixin:
             try:
                 sqlite_n = int(self._conn.execute("SELECT COUNT(*) FROM vec_chunks").fetchone()[0])
             except sqlite3.Error:
-                sqlite_n = 0
+                # The staleness probe itself failed (transient lock,
+                # vec0 hiccup) — that says nothing about the index, so
+                # do NOT downgrade a fitted index on it. A real parity
+                # problem will surface via integrity_check(); a real DB
+                # problem will surface loudly on first search.
+                logger.warning(
+                    "Could not verify IVFPQ staleness for %s (COUNT on "
+                    "vec_chunks failed); keeping the fitted index.",
+                    self._ivfpq_path,
+                    exc_info=True,
+                )
+                return
             snap_n = len(self._snap)
             if sqlite_n != snap_n:
                 logger.warning(

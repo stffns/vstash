@@ -93,6 +93,29 @@ class TestIVFPQBackendWrapper:
         with pytest.raises(ValueError, match="must divide embedding_dim"):
             IVFPQBackend(dim=384, nlist=16, M=10, K=32)  # 384 % 10 != 0
 
+    def test_load_dim_mismatch_starts_unfitted(self, tmp_path, caplog):
+        """A persisted index whose dim no longer matches the store's
+        (embedding model changed since the last fit) must NOT be
+        adopted -- searching it would feed mismatched-dim queries into
+        the quantizer. load() starts unfitted instead and warns."""
+        import logging
+
+        rng = np.random.default_rng(9)
+        vecs = _unit_vectors(rng, N, DIM)
+        path = str(tmp_path / "idx.snpi")
+        be = IVFPQBackend(dim=DIM, nlist=16, M=24, K=32, rerank_candidates=32)
+        be.fit(vecs)
+        be.add_batch(list(range(N)), vecs)
+        be.save(path)
+
+        with caplog.at_level(logging.WARNING, logger="vstash.vectorbackend"):
+            loaded = IVFPQBackend.load(path, dim=DIM * 2, nlist=16, M=24, K=32)
+        assert not loaded.fitted
+        assert len(loaded) == 0
+        assert any("dim" in r.message for r in caplog.records), (
+            f"dim-mismatch warning not emitted; got: {[r.message for r in caplog.records]}"
+        )
+
 
 class TestVstashStoreIVFPQIntegration:
     def test_backend_initialization(self, tmp_path):
@@ -444,3 +467,82 @@ class TestVstashStoreIVFPQIntegration:
         assert not store3._snap.fitted
         assert len(store3._snap) == 0
         store3.close()
+
+    def test_transient_count_error_does_not_downgrade_fitted_index(self, tmp_path, caplog):
+        """The staleness probe failing (transient lock, vec0 hiccup)
+        says nothing about the index itself. Previously a sqlite3.Error
+        on the COUNT defaulted ``sqlite_n = 0``, which always mismatched
+        a fitted index and silently downgraded it -- costing the user a
+        ~50s refit for a hiccup. The probe failure must keep the fitted
+        index and warn instead."""
+        import logging
+        import sqlite3
+
+        db_path = str(tmp_path / "count_fail.db")
+
+        store1 = VstashStore(
+            db_path,
+            embedding_dim=DIM,
+            vector_backend="snapvec-ivfpq",
+            ivfpq_M=24,
+            ivfpq_K=32,
+            ivfpq_nlist=16,
+        )
+        rng = np.random.default_rng(13)
+        vecs = _unit_vectors(rng, N, DIM)
+        store1.add_document(
+            path="/t/bulk.md",
+            title="bulk",
+            chunks=[f"c{i}" for i in range(N)],
+            embeddings=vecs.tolist(),
+            source_type="text",
+        )
+        store1.fit_ivfpq(training_sample=N)
+        store1.close()
+
+        class _FailingCountConn:
+            """Delegating proxy that fails ONLY the staleness COUNT."""
+
+            def __init__(self, real: sqlite3.Connection) -> None:
+                object.__setattr__(self, "_real", real)
+
+            def execute(self, sql: str, *args, **kwargs):
+                if "COUNT(*) FROM vec_chunks" in sql:
+                    raise sqlite3.OperationalError("simulated transient failure")
+                return self._real.execute(sql, *args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(object.__getattribute__(self, "_real"), name)
+
+            def __setattr__(self, name, value):
+                setattr(object.__getattribute__(self, "_real"), name, value)
+
+        real_connect = VstashStore._connect
+
+        def connect_with_failing_count(self):
+            return _FailingCountConn(real_connect(self))
+
+        try:
+            VstashStore._connect = connect_with_failing_count
+            with caplog.at_level(logging.WARNING, logger="vstash.store"):
+                store2 = VstashStore(
+                    db_path,
+                    embedding_dim=DIM,
+                    vector_backend="snapvec-ivfpq",
+                    ivfpq_M=24,
+                    ivfpq_K=32,
+                    ivfpq_nlist=16,
+                )
+        finally:
+            VstashStore._connect = real_connect
+
+        try:
+            assert store2._snap.fitted, (
+                "a transient COUNT failure must not downgrade a fitted index"
+            )
+            assert len(store2._snap) == N
+            assert any("keeping the fitted index" in r.message for r in caplog.records), (
+                f"probe-failure warning not emitted; got: {[r.message for r in caplog.records]}"
+            )
+        finally:
+            store2.close()
