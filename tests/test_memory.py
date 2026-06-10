@@ -669,10 +669,24 @@ class TestMemoryUpdate:
                 f"failed update tore the store: {[(d.collection, d.title) for d in after]}"
             )
             assert {d.collection for d in after} == {"default", "research"}
-            assert any("aardvark" in r.text.lower() for r in mem.search("aardvark original"))
-            for hit in mem.search("zebra replacement"):
-                assert "zebra" not in hit.text.lower(), (
-                    f"half-committed update leaked new content: {hit.text!r}"
+            # Assert against the stored chunks per collection (not via
+            # search, whose ranking/dedup could mask a half-commit
+            # limited to one collection).
+            for coll in ("default", "research"):
+                texts = [
+                    row[0]
+                    for row in mem._store._conn.execute(
+                        "SELECT c.text FROM chunks c JOIN documents d ON c.doc_id = d.id "
+                        "WHERE d.path = ? AND d.collection = ?",
+                        [resolved, coll],
+                    ).fetchall()
+                ]
+                assert texts, f"collection {coll!r} lost its chunks"
+                assert all("aardvark" in t.lower() for t in texts), (
+                    f"collection {coll!r} lost the original content: {texts!r}"
+                )
+                assert all("zebra" not in t.lower() for t in texts), (
+                    f"half-committed update leaked new content into {coll!r}: {texts!r}"
                 )
 
 
