@@ -23,10 +23,13 @@ Lifecycle:
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 class IVFPQBackend:
@@ -174,6 +177,12 @@ class IVFPQBackend:
         between an index file and a sidecar flag getting out of sync
         after a crash. Constructor validation (dim % M) still runs via
         the normal ``__init__`` path.
+
+        A persisted index whose dimension does not match ``dim`` (the
+        embedding model changed since the last ``snapvec fit``) is NOT
+        adopted: searching it would feed mismatched-dim queries into
+        the quantizer. The backend starts unfitted instead, so search
+        falls back to sqlite-vec until the user refits.
         """
         from snapvec import IVFPQSnapIndex
 
@@ -188,6 +197,19 @@ class IVFPQBackend:
             nprobe=nprobe,
         )
         if Path(path).exists():
-            backend._index = IVFPQSnapIndex.load(path)
+            loaded = IVFPQSnapIndex.load(path)
+            loaded_dim = getattr(loaded, "dim", None)
+            if loaded_dim is not None and int(loaded_dim) != dim:
+                logger.warning(
+                    "IVFPQ index at %s was built for dim=%s but the store "
+                    "needs dim=%d (embedding model changed?). Starting "
+                    "unfitted; run 'vstash snapvec fit' to rebuild from "
+                    "current vec_chunks.",
+                    path,
+                    loaded_dim,
+                    dim,
+                )
+                return backend
+            backend._index = loaded
             backend._fitted = True
         return backend
