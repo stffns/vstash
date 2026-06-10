@@ -97,3 +97,98 @@ class TestHFOnnxUnavailableConcurrency:
             assert 1 <= init_calls <= n_threads
         finally:
             embed_mod._hf_onnx_unavailable.discard("broken/model")
+
+
+class TestHFOnnxTransientFailures:
+    """A transient init failure (network down, cold cache) must NOT
+    permanently downgrade the model to the SentenceTransformer path;
+    only structural failures (broken export, missing repo entry) may
+    poison ``_hf_onnx_unavailable`` for the process."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_marker(self):
+        import vstash.embed as embed_mod
+
+        embed_mod._hf_onnx_unavailable.discard("some/model")
+        yield
+        embed_mod._hf_onnx_unavailable.discard("some/model")
+
+    def _embed_with_failing_init(self, monkeypatch: pytest.MonkeyPatch, exc: Exception) -> None:
+        import vstash.embed as embed_mod
+
+        def fail_init(model_name: str) -> tuple:
+            raise exc
+
+        monkeypatch.setattr(embed_mod, "_init_hf_onnx", fail_init)
+        monkeypatch.setattr(
+            embed_mod,
+            "_embed_hf_st",
+            lambda texts, model_name: [[0.0] for _ in texts],
+        )
+        embed_mod._embed_hf_onnx(["hello"], "some/model")
+
+    def test_transient_network_error_not_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import vstash.embed as embed_mod
+
+        self._embed_with_failing_init(monkeypatch, ConnectionError("connection reset"))
+        assert "some/model" not in embed_mod._hf_onnx_unavailable, (
+            "a transient network failure must not permanently downgrade the model"
+        )
+
+    def test_offline_cold_cache_not_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import vstash.embed as embed_mod
+
+        hub_errors = pytest.importorskip("huggingface_hub.errors")
+        self._embed_with_failing_init(
+            monkeypatch,
+            hub_errors.LocalEntryNotFoundError("offline and not in cache"),
+        )
+        assert "some/model" not in embed_mod._hf_onnx_unavailable
+
+    def test_structural_error_is_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import vstash.embed as embed_mod
+
+        self._embed_with_failing_init(monkeypatch, RuntimeError("broken ONNX export"))
+        assert "some/model" in embed_mod._hf_onnx_unavailable
+
+    def test_classifier_direct(self) -> None:
+        from vstash.embed import _hf_onnx_failure_is_permanent
+
+        # Transient: plain OSError family (requests errors subclass it).
+        assert _hf_onnx_failure_is_permanent(ConnectionError("reset")) is False
+        assert _hf_onnx_failure_is_permanent(TimeoutError("timed out")) is False
+        assert _hf_onnx_failure_is_permanent(OSError("disk hiccup")) is False
+        # Structural: anything raised constructing session/tokenizer.
+        assert _hf_onnx_failure_is_permanent(RuntimeError("bad protobuf")) is True
+        assert _hf_onnx_failure_is_permanent(ValueError("bad tokenizer json")) is True
+
+    def test_classifier_hub_errors(self) -> None:
+        hub_errors = pytest.importorskip("huggingface_hub.errors")
+
+        from vstash.embed import _hf_onnx_failure_is_permanent
+
+        # Offline cold-cache miss is transient even though it subclasses
+        # EntryNotFoundError.
+        assert _hf_onnx_failure_is_permanent(hub_errors.LocalEntryNotFoundError("offline")) is False
+        # Permanent hub failures: these subclass HfHubHTTPError (and
+        # through requests, OSError), so they must win over the broad
+        # transient OSError bucket. Some of them require a response
+        # object to construct.
+        import requests
+
+        resp = requests.Response()
+        resp.status_code = 404
+        assert _hf_onnx_failure_is_permanent(hub_errors.EntryNotFoundError("no such file")) is True
+        assert (
+            _hf_onnx_failure_is_permanent(
+                hub_errors.RepositoryNotFoundError("no repo", response=resp)
+            )
+            is True
+        )
+        assert (
+            _hf_onnx_failure_is_permanent(hub_errors.GatedRepoError("gated", response=resp)) is True
+        )
+        assert (
+            _hf_onnx_failure_is_permanent(hub_errors.RevisionNotFoundError("no rev", response=resp))
+            is True
+        )
