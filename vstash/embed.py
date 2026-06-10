@@ -602,6 +602,7 @@ def _hf_onnx_failure_is_permanent(exc: BaseException) -> bool:
             EntryNotFoundError,
             LocalEntryNotFoundError,
             RepositoryNotFoundError,
+            RevisionNotFoundError,
         )
     except ImportError:
         return True
@@ -609,7 +610,12 @@ def _hf_onnx_failure_is_permanent(exc: BaseException) -> bool:
     # canonical *transient* case -- test it first.
     if isinstance(exc, LocalEntryNotFoundError):
         return False
-    if isinstance(exc, (EntryNotFoundError, RepositoryNotFoundError)):
+    # These subclass HfHubHTTPError (and through requests, OSError), so
+    # they must be classified BEFORE the broad OSError bucket below: a
+    # repo/revision/entry that doesn't resolve won't fix itself by
+    # retrying, and neither will gated access (GatedRepoError
+    # subclasses RepositoryNotFoundError).
+    if isinstance(exc, (EntryNotFoundError, RepositoryNotFoundError, RevisionNotFoundError)):
         return True
     # requests' ConnectionError / Timeout / HTTPError all subclass
     # OSError, as does anything filesystem-transient.  The permanent

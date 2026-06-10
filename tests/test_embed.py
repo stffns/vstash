@@ -170,3 +170,25 @@ class TestHFOnnxTransientFailures:
         # Offline cold-cache miss is transient even though it subclasses
         # EntryNotFoundError.
         assert _hf_onnx_failure_is_permanent(hub_errors.LocalEntryNotFoundError("offline")) is False
+        # Permanent hub failures: these subclass HfHubHTTPError (and
+        # through requests, OSError), so they must win over the broad
+        # transient OSError bucket. Some of them require a response
+        # object to construct.
+        import requests
+
+        resp = requests.Response()
+        resp.status_code = 404
+        assert _hf_onnx_failure_is_permanent(hub_errors.EntryNotFoundError("no such file")) is True
+        assert (
+            _hf_onnx_failure_is_permanent(
+                hub_errors.RepositoryNotFoundError("no repo", response=resp)
+            )
+            is True
+        )
+        assert (
+            _hf_onnx_failure_is_permanent(hub_errors.GatedRepoError("gated", response=resp)) is True
+        )
+        assert (
+            _hf_onnx_failure_is_permanent(hub_errors.RevisionNotFoundError("no rev", response=resp))
+            is True
+        )
