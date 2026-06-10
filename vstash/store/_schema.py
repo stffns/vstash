@@ -185,6 +185,19 @@ class _SchemaManagerMixin:
         else:
             existing = stored_version
 
+        # Reject unknown versions BEFORE stamping anything: refusing to
+        # open a future DB must leave its store_meta untouched (the
+        # newer build's vstash_version row in particular), so the
+        # refused open is a pure no-op on the file.
+        if existing not in KNOWN_SCHEMA_VERSIONS:
+            msg = (
+                f"Database at {self.db_path} declares schema_version={existing!r}, "
+                f"which this build of vstash ({_vstash_version}) does not recognize. "
+                f"Known versions: {sorted(KNOWN_SCHEMA_VERSIONS)}. "
+                f"Upgrade vstash or restore the DB from a compatible backup."
+            )
+            raise SchemaVersionError(msg)
+
         now_iso = datetime.now(timezone.utc).isoformat()
         # Autocommit mode: stamp both meta rows in one explicit transaction so
         # a failure between them can't leave schema_version written without the
@@ -204,15 +217,6 @@ class _SchemaManagerMixin:
         except Exception:
             conn.rollback()
             raise
-
-        if existing not in KNOWN_SCHEMA_VERSIONS:
-            msg = (
-                f"Database at {self.db_path} declares schema_version={existing!r}, "
-                f"which this build of vstash ({_vstash_version}) does not recognize. "
-                f"Known versions: {sorted(KNOWN_SCHEMA_VERSIONS)}. "
-                f"Upgrade vstash or restore the DB from a compatible backup."
-            )
-            raise SchemaVersionError(msg)
 
     def _migrate_v1_to_v2(self, conn: sqlite3.Connection) -> bool:
         """In-place migrate a v1 DB's ``vec_chunks`` to cosine metric.
@@ -370,37 +374,39 @@ class _SchemaManagerMixin:
         if "created_at" not in chunk_columns:
             migrations.append("ALTER TABLE chunks ADD COLUMN created_at TEXT")
 
-        # Autocommit mode: run the ALTER TABLE batch in one explicit
-        # transaction so a failure partway through doesn't leave the schema
-        # half-migrated (in deferred mode the implicit transaction grouped
-        # them).
+        # Autocommit mode: run the ALTER TABLE batch AND the created_at
+        # backfill in ONE explicit transaction. The backfill only runs in
+        # the call that ADDS the column (guard below uses the pre-ALTER
+        # column snapshot), so committing the ALTER separately would mean
+        # a crash between the two leaves legacy rows NULL forever -- the
+        # reopen sees the column exists and never backfills.
         if migrations:
             conn.execute("BEGIN IMMEDIATE")
             try:
                 for sql in migrations:
                     conn.execute(sql)
+                # Backfill created_at from parent document's added_at
+                if "created_at" not in chunk_columns:
+                    conn.execute("""
+                        UPDATE chunks SET created_at = (
+                            SELECT d.added_at FROM documents d WHERE d.id = chunks.doc_id
+                        ) WHERE created_at IS NULL
+                    """)
                 conn.commit()
             except Exception:
                 conn.rollback()
                 raise
 
-        # Backfill created_at from parent document's added_at
-        if "created_at" not in chunk_columns:
-            conn.execute("""
-                UPDATE chunks SET created_at = (
-                    SELECT d.added_at FROM documents d WHERE d.id = chunks.doc_id
-                ) WHERE created_at IS NULL
-            """)
-            conn.commit()
-
         # Fix v0.5.0 data: ingestion set access_count=1 for chunks that were
-        # never actually searched. Detect by access_count=1 + no last_accessed_at.
+        # never actually searched. Detect by access_count=1 + no
+        # last_accessed_at. Independent of the ALTER batch (the column
+        # already existed); a single UPDATE is atomic on its own under
+        # autocommit.
         if "access_count" in chunk_columns:
             conn.execute("""
                 UPDATE chunks SET access_count = 0
                 WHERE access_count = 1 AND last_accessed_at IS NULL
             """)
-            conn.commit()
 
     # ------------------------------------------------------------------ #
     # Store metadata (key/value)                                            #
