@@ -5,3 +5,6 @@
 ## 2024-05-19 - Precompute Loop Invariants in Greedy Selection Algorithms
 **Learning:** In greedy selection algorithms like MMR deduplication, recalculating invariant values within nested loops (such as the term `mmr_lambda * norm_score`) drastically increases computational overhead. Because `norm_score` depends only on the candidate's static score and `mmr_lambda` is a constant, recalculating this product inside the inner loop wastes $O(K \times N)$ operations.
 **Action:** Always hoist per-item invariant calculations (like `mmr_lambda * norm_score` or `1 - mmr_lambda`) out of nested loops and precompute them in arrays or variables before the loop begins to reduce complexity and improve runtime performance.
+## 2024-05-18 - Lazy L2 Norms and In-Place Sorting
+**Learning:** Eager computation of L2 norms in MMR dedup is inefficient since many candidate embeddings are never compared when the candidate set is large and diverse. In Python, list `.sort()` is significantly faster and uses less memory than `sorted()` when we no longer need the original sequence.
+**Action:** Lazily evaluate Math computations (like `math.hypot`) only when needed. Use `list.sort()` instead of `sorted()` in hot paths where intermediate lists are discarded.

@@ -296,7 +296,8 @@ class _SearchEngineMixin:
                 decay = math.exp(-0.05 * days_ago)
                 r["rrf"] = float(r["rrf"]) * (1.0 + recency_boost * decay)
 
-        return sorted(ranked, key=lambda x: float(x["rrf"]), reverse=True)
+        ranked.sort(key=lambda x: float(x["rrf"]), reverse=True)
+        return ranked
 
     @staticmethod
     def _build_search_results(
@@ -919,7 +920,8 @@ class _SearchEngineMixin:
             )
 
             # Sort by RRF score descending
-            ranked = sorted(scores.values(), key=lambda x: float(x["rrf"]), reverse=True)
+            ranked = list(scores.values())
+            ranked.sort(key=lambda x: float(x["rrf"]), reverse=True)
 
             # --- Track: RRF fusion stage ---
             if track_target is not None:
@@ -1592,8 +1594,10 @@ class _SearchEngineMixin:
         doc_keys = [str(r["path"]) for r in ranked]
         chunk_embs = [embeddings.get(int(r["id"])) for r in ranked]
 
-        # Precompute L2 norms for cosine similarity to avoid O(K * N) recomputation.
-        chunk_norms = [math.hypot(*emb) if emb is not None else 0.0 for emb in chunk_embs]
+        # L2 norms for cosine similarity are computed lazily and cached
+        # to avoid O(N) eager computation when many candidates are never
+        # compared against a sibling.
+        chunk_norms: list[float | None] = [None] * len(ranked)
 
         # Pre-group ranked indices by document key so the sibling-penalty
         # update walks O(S) (siblings only) instead of O(N) (all remaining).
@@ -1648,18 +1652,27 @@ class _SearchEngineMixin:
             # Update max_sims for remaining chunks from the same document
             # by comparing against the newly selected embedding.
             new_doc_key = doc_keys[best_idx]
-            new_emb = chunk_embs[best_idx]
-            new_norm = chunk_norms[best_idx]
-            if new_emb is not None:
-                for idx in doc_to_indices[new_doc_key]:
-                    if in_remaining[idx]:
-                        idx_emb = chunk_embs[idx]
-                        if idx_emb is not None:
-                            sim = _cosine_sim(
-                                idx_emb, new_emb, norm_a=chunk_norms[idx], norm_b=new_norm
-                            )
-                            if sim > max_sims[idx]:
-                                max_sims[idx] = sim
+            doc_indices = doc_to_indices[new_doc_key]
+
+            # Optimization: If this is the only chunk from this document,
+            # we don't need to update sibling similarities.
+            if len(doc_indices) > 1:
+                new_emb = chunk_embs[best_idx]
+                if new_emb is not None:
+                    if chunk_norms[best_idx] is None:
+                        chunk_norms[best_idx] = math.hypot(*new_emb)
+                    new_norm = chunk_norms[best_idx]
+                    for idx in doc_indices:
+                        if in_remaining[idx]:
+                            idx_emb = chunk_embs[idx]
+                            if idx_emb is not None:
+                                if chunk_norms[idx] is None:
+                                    chunk_norms[idx] = math.hypot(*idx_emb)
+                                sim = _cosine_sim(
+                                    idx_emb, new_emb, norm_a=chunk_norms[idx], norm_b=new_norm
+                                )
+                                if sim > max_sims[idx]:
+                                    max_sims[idx] = sim
 
         return selected
 
