@@ -186,15 +186,24 @@ class _SchemaManagerMixin:
             existing = stored_version
 
         now_iso = datetime.now(timezone.utc).isoformat()
-        conn.execute(
-            "INSERT OR REPLACE INTO store_meta (key, value, updated_at) VALUES (?, ?, ?)",
-            ["schema_version", existing, now_iso],
-        )
-        conn.execute(
-            "INSERT OR REPLACE INTO store_meta (key, value, updated_at) VALUES (?, ?, ?)",
-            ["vstash_version", _vstash_version, now_iso],
-        )
-        conn.commit()
+        # Autocommit mode: stamp both meta rows in one explicit transaction so
+        # a failure between them can't leave schema_version written without the
+        # matching vstash_version (in deferred mode the implicit transaction
+        # batched the pair).
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO store_meta (key, value, updated_at) VALUES (?, ?, ?)",
+                ["schema_version", existing, now_iso],
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO store_meta (key, value, updated_at) VALUES (?, ?, ?)",
+                ["vstash_version", _vstash_version, now_iso],
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
         if existing not in KNOWN_SCHEMA_VERSIONS:
             msg = (
@@ -361,10 +370,19 @@ class _SchemaManagerMixin:
         if "created_at" not in chunk_columns:
             migrations.append("ALTER TABLE chunks ADD COLUMN created_at TEXT")
 
-        for sql in migrations:
-            conn.execute(sql)
+        # Autocommit mode: run the ALTER TABLE batch in one explicit
+        # transaction so a failure partway through doesn't leave the schema
+        # half-migrated (in deferred mode the implicit transaction grouped
+        # them).
         if migrations:
-            conn.commit()
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                for sql in migrations:
+                    conn.execute(sql)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
         # Backfill created_at from parent document's added_at
         if "created_at" not in chunk_columns:

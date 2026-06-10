@@ -252,6 +252,16 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
             conn = sqlite_vec.Connection(str(self.db_path))
             conn.row_factory = sqlite3.Row
 
+        # Autocommit mode (isolation_level=None): the driver no longer opens
+        # an implicit transaction before DML, so every write path manages
+        # atomicity explicitly with ``BEGIN IMMEDIATE`` ... ``COMMIT`` /
+        # ``ROLLBACK``. This removes the latent hazard where a prior
+        # implicit transaction left open by the legacy deferred driver made
+        # a subsequent ``BEGIN IMMEDIATE`` raise "cannot start a transaction
+        # within a transaction". Set as an attribute so it applies to both
+        # the standard connection and the sqlite_vec.Connection fallback.
+        conn.isolation_level = None
+
         # WAL mode — safe concurrent reads + single writer
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
@@ -1594,19 +1604,28 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         """
         now_iso = datetime.now(timezone.utc).isoformat()
         with self._write_lock:
-            self._conn.execute(
-                "INSERT INTO search_stats (spread, created_at) VALUES (?, ?)",
-                [spread, now_iso],
-            )
-            # Prune to keep only the last 50 entries. A range delete below the
-            # 50th-newest id (an index scan + MIN) is far cheaper than
-            # `NOT IN (subquery)`, which materialises the keep-set and tests
-            # every row -- this runs on every search.
-            self._conn.execute(
-                "DELETE FROM search_stats WHERE id < "
-                "(SELECT MIN(id) FROM (SELECT id FROM search_stats ORDER BY id DESC LIMIT 50))"
-            )
-            self._conn.commit()
+            try:
+                # Autocommit mode: the INSERT + prune DELETE need an explicit
+                # transaction so a failure between them can't leave the new
+                # row uncapped (in deferred mode the implicit transaction
+                # used to batch them).
+                self._conn.execute("BEGIN IMMEDIATE")
+                self._conn.execute(
+                    "INSERT INTO search_stats (spread, created_at) VALUES (?, ?)",
+                    [spread, now_iso],
+                )
+                # Prune to keep only the last 50 entries. A range delete below
+                # the 50th-newest id (an index scan + MIN) is far cheaper than
+                # `NOT IN (subquery)`, which materialises the keep-set and tests
+                # every row -- this runs on every search.
+                self._conn.execute(
+                    "DELETE FROM search_stats WHERE id < "
+                    "(SELECT MIN(id) FROM (SELECT id FROM search_stats ORDER BY id DESC LIMIT 50))"
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
 
     def adaptive_relevance_threshold(self, fallback: float = 0.15) -> float:
         """Compute a per-corpus adaptive relevance threshold.
@@ -1664,20 +1683,28 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         now_iso = datetime.now(timezone.utc).isoformat()
         hint_json = json.dumps(miss_hint) if miss_hint is not None else None
         with self._write_lock:
-            cursor = self._conn.execute(
-                "INSERT INTO search_events (query, best_distance, relevance_tier, "
-                "result_count, dismissed, created_at, miss_hint) "
-                "VALUES (?, ?, ?, ?, 0, ?, ?)",
-                [query, best_distance, relevance_tier, result_count, now_iso, hint_json],
-            )
-            # Prune to keep only the last 1000 entries (cheap range delete; see
-            # record_spread). `NOT IN (subquery)` re-tested every row on every
-            # search.
-            self._conn.execute(
-                "DELETE FROM search_events WHERE id < "
-                "(SELECT MIN(id) FROM (SELECT id FROM search_events ORDER BY id DESC LIMIT 1000))"
-            )
-            self._conn.commit()
+            try:
+                # Autocommit mode: keep the INSERT + prune DELETE in one
+                # explicit transaction (in deferred mode the implicit
+                # transaction batched them; see record_spread).
+                self._conn.execute("BEGIN IMMEDIATE")
+                cursor = self._conn.execute(
+                    "INSERT INTO search_events (query, best_distance, relevance_tier, "
+                    "result_count, dismissed, created_at, miss_hint) "
+                    "VALUES (?, ?, ?, ?, 0, ?, ?)",
+                    [query, best_distance, relevance_tier, result_count, now_iso, hint_json],
+                )
+                # Prune to keep only the last 1000 entries (cheap range delete;
+                # see record_spread). `NOT IN (subquery)` re-tested every row on
+                # every search.
+                self._conn.execute(
+                    "DELETE FROM search_events WHERE id < "
+                    "(SELECT MIN(id) FROM (SELECT id FROM search_events ORDER BY id DESC LIMIT 1000))"
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
             return cursor.lastrowid  # type: ignore[return-value]
 
     def recent_miss_hints(self, limit: int = 10) -> list[dict]:
@@ -1907,14 +1934,13 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
             try:
                 # Wrap the DROP/CREATE/INSERT in one explicit transaction so a
                 # failure mid-reindex rolls back to the original vec_chunks
-                # instead of an empty one. The connection uses the stdlib default
-                # (deferred) isolation -- NOT autocommit -- where on Python
-                # 3.10/3.11 a bare DROP TABLE commits any open transaction first
-                # (legacy DDL-implicit-commit), so the rollback() below could not
-                # undo it and the vector index would be silently wiped. The
-                # explicit BEGIN IMMEDIATE makes the whole reindex atomic; it is
-                # safe because every write path commits before the next BEGIN, so
-                # in_transaction is False here. Mirrors every other write path.
+                # instead of an empty one. The connection runs in autocommit
+                # mode (isolation_level=None), so no implicit transaction is
+                # ever open here and BEGIN IMMEDIATE always starts cleanly --
+                # without the explicit BEGIN a bare DROP TABLE would autocommit
+                # on the spot and the rollback() below could not undo it,
+                # silently wiping the vector index. Mirrors every other write
+                # path.
                 self._conn.execute("BEGIN IMMEDIATE")
 
                 # Drop and recreate vec_chunks with new dimensions
