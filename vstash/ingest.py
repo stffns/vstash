@@ -9,6 +9,7 @@ Progress: Rich bars at every stage — never looks frozen.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import time
 from pathlib import Path
@@ -711,6 +712,28 @@ def ingest_text(
     source_path = f"text://{title}"
     char_count = len(text)
 
+    # Tier-0 write-time dedup (memory-manager design doc, Phase 1
+    # precursor): hash the text EXACTLY as the caller sent it (before
+    # frontmatter stripping), so a byte-identical re-remember of the
+    # same (collection, title) is a NOOP -- no chunking, no embedding,
+    # no store write. Only an exact hash match on a COMPLETE existing
+    # copy short-circuits: changed text replaces as before, a legacy
+    # row without a stored hash is never treated as identical, and a
+    # partial copy falls through so the re-ingest heals it.
+    content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    existing_hash = store.get_document_content_hash(source_path, collection=collection)
+    if (
+        existing_hash == content_hash
+        and store.doc_completeness(source_path, collection=collection) == "complete"
+    ):
+        return IngestResult(
+            status="skipped",
+            source=source_path,
+            title=title,
+            chars=char_count,
+            elapsed_s=round(time.time() - start_time, 2),
+        )
+
     # Extract frontmatter if present
     frontmatter = _extract_frontmatter(text)
     fm_project = project or frontmatter.get("project")
@@ -761,6 +784,7 @@ def ingest_text(
         project=fm_project,
         layer=fm_layer,
         tags=fm_tags,
+        content_hash=content_hash,
     )
 
     elapsed = round(time.time() - start_time, 2)

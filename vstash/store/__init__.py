@@ -298,6 +298,7 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         project: str | None = None,
         layer: str | None = None,
         tags: str | None = None,
+        content_hash: str | None = None,
     ) -> str:
         """Add a document and its chunks to the store.
 
@@ -313,6 +314,9 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
             project: Project identifier from frontmatter.
             layer: Layer/category from frontmatter.
             tags: Comma-separated tags from frontmatter.
+            content_hash: SHA-256 hex of the raw ingested text, used for
+                Tier-0 write-time dedup (``ingest_text`` sets it; file
+                ingest leaves it None for now).
 
         Returns:
             The generated document ID (32-char hex hash).
@@ -352,9 +356,9 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                 self._conn.execute(
                     """INSERT INTO documents
                        (id, path, title, source_type, collection,
-                        project, layer, tags,
+                        project, layer, tags, content_hash,
                         char_count, chunk_count, added_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     [
                         doc_id,
                         path,
@@ -364,6 +368,7 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                         project,
                         layer,
                         stored_tags,
+                        content_hash,
                         sum(len(c) for c in chunks),
                         len(chunks),
                         datetime.now(timezone.utc).isoformat(),
@@ -476,6 +481,7 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                     project = doc.get("project")
                     layer = doc.get("layer")
                     tags = doc.get("tags")
+                    content_hash = doc.get("content_hash")
 
                     validate_document_input(
                         path=path,
@@ -499,9 +505,9 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                     self._conn.execute(
                         """INSERT INTO documents
                            (id, path, title, source_type, collection,
-                            project, layer, tags,
+                            project, layer, tags, content_hash,
                             char_count, chunk_count, added_at)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         [
                             doc_id,
                             path,
@@ -511,6 +517,7 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                             project,
                             layer,
                             stored_tags,
+                            content_hash,
                             sum(len(c) for c in chunks),
                             len(chunks),
                             now_iso,
@@ -674,6 +681,23 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                 return "partial"
 
         return "complete"
+
+    def get_document_content_hash(self, path: str, collection: str = "default") -> str | None:
+        """Stored content hash for the exact ``(collection, path)`` copy.
+
+        Returns ``None`` when the document is missing OR when the row
+        predates the ``content_hash`` column / was written by a path
+        that doesn't set it (file ingest, ``Memory.update``). ``None``
+        deliberately never matches: a legacy row is re-ingested rather
+        than wrongly skipped.
+        """
+        doc_id = hashlib.sha256(f"{collection}:{path}".encode()).hexdigest()[:32]
+        row = self._conn.execute(
+            "SELECT content_hash FROM documents WHERE id = ?", [doc_id]
+        ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        return str(row[0])
 
     def delete_document(self, path: str, collection: str | None = None) -> bool:
         """Remove a document and all its chunks from the store.
