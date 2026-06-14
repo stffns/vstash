@@ -296,7 +296,8 @@ class _SearchEngineMixin:
                 decay = math.exp(-0.05 * days_ago)
                 r["rrf"] = float(r["rrf"]) * (1.0 + recency_boost * decay)
 
-        return sorted(ranked, key=lambda x: float(x["rrf"]), reverse=True)
+        ranked.sort(key=lambda x: float(x["rrf"]), reverse=True)
+        return ranked
 
     @staticmethod
     def _build_search_results(
@@ -919,7 +920,8 @@ class _SearchEngineMixin:
             )
 
             # Sort by RRF score descending
-            ranked = sorted(scores.values(), key=lambda x: float(x["rrf"]), reverse=True)
+            ranked = list(scores.values())
+            ranked.sort(key=lambda x: float(x["rrf"]), reverse=True)
 
             # --- Track: RRF fusion stage ---
             if track_target is not None:

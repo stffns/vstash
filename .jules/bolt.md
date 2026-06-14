@@ -5,3 +5,6 @@
 ## 2024-05-19 - Precompute Loop Invariants in Greedy Selection Algorithms
 **Learning:** In greedy selection algorithms like MMR deduplication, recalculating invariant values within nested loops (such as the term `mmr_lambda * norm_score`) drastically increases computational overhead. Because `norm_score` depends only on the candidate's static score and `mmr_lambda` is a constant, recalculating this product inside the inner loop wastes $O(K \times N)$ operations.
 **Action:** Always hoist per-item invariant calculations (like `mmr_lambda * norm_score` or `1 - mmr_lambda`) out of nested loops and precompute them in arrays or variables before the loop begins to reduce complexity and improve runtime performance.
+## 2024-06-14 - In-place Sorting for Hot Paths
+**Learning:** Using `sorted()` on lists in hot paths like search ranking allocates unnecessary memory and incurs overhead. While small per call, it adds up quickly under high search load.
+**Action:** Always prefer converting iterables to a list and calling `.sort()` in-place (e.g. `list(iterable).sort()`) or directly using `existing_list.sort()` instead of `sorted()` to avoid unnecessary object allocation during performance-critical routines.
