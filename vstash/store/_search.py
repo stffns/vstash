@@ -1508,25 +1508,31 @@ class _SearchEngineMixin:
 
         # Fast path: if mmr_lambda == 1.0, no diversity penalty — just dedup.
         # Also fast-path when there are no same-doc duplicates.
-        from collections import Counter
+        # Avoid Counter overhead, explicitly track duplicates and unique order.
+        seen: set[str] = set()
+        duplicates: set[str] = set()
+        for r in ranked:
+            doc_key = str(r["path"])
+            if doc_key in seen:
+                duplicates.add(doc_key)
+            else:
+                seen.add(doc_key)
 
-        doc_counts = Counter(str(r["path"]) for r in ranked)
-        has_duplicates = any(c > 1 for c in doc_counts.values())
-
-        if mmr_lambda >= 1.0 or not has_duplicates:
+        if mmr_lambda >= 1.0 or not duplicates:
             # Hard dedup: keep first (highest-scoring) chunk per document.
-            seen: set[str] = set()
+            seen.clear()
             deduped: list[dict[str, str | int | float]] = []
             for r in ranked:
                 doc_key = str(r["path"])
                 if doc_key not in seen:
                     seen.add(doc_key)
                     deduped.append(r)
-            return deduped[:top_k]
+                    if len(deduped) == top_k:
+                        break
+            return deduped
 
         # --- Fetch embeddings for chunks with same-doc duplicates ---
-        dup_doc_paths = {p for p, c in doc_counts.items() if c > 1}
-        dup_ids = [int(r["id"]) for r in ranked if str(r["path"]) in dup_doc_paths]
+        dup_ids = [int(r["id"]) for r in ranked if str(r["path"]) in duplicates]
 
         embeddings: dict[int, list[float]] = {}
         if dup_ids:
@@ -1592,9 +1598,6 @@ class _SearchEngineMixin:
         doc_keys = [str(r["path"]) for r in ranked]
         chunk_embs = [embeddings.get(int(r["id"])) for r in ranked]
 
-        # Precompute L2 norms for cosine similarity to avoid O(K * N) recomputation.
-        chunk_norms = [math.hypot(*emb) if emb is not None else 0.0 for emb in chunk_embs]
-
         # Pre-group ranked indices by document key so the sibling-penalty
         # update walks O(S) (siblings only) instead of O(N) (all remaining).
         # Together with the in_remaining mask this turns the dedup loop from
@@ -1606,6 +1609,10 @@ class _SearchEngineMixin:
         # Track the maximum similarity to any selected chunk from the *same document*.
         # Replaces O(N * S) recomputation with O(1) lookup + O(N) update.
         max_sims = [0.0] * len(ranked)
+
+        # Precompute L2 norms for cosine similarity lazily to avoid O(N) recomputation
+        # for chunks that are never evaluated for siblings.
+        chunk_norms: list[float | None] = [None] * len(chunk_embs)
 
         for _ in range(min(top_k, len(ranked))):
             best_idx = -1
@@ -1648,18 +1655,26 @@ class _SearchEngineMixin:
             # Update max_sims for remaining chunks from the same document
             # by comparing against the newly selected embedding.
             new_doc_key = doc_keys[best_idx]
-            new_emb = chunk_embs[best_idx]
-            new_norm = chunk_norms[best_idx]
-            if new_emb is not None:
-                for idx in doc_to_indices[new_doc_key]:
-                    if in_remaining[idx]:
-                        idx_emb = chunk_embs[idx]
-                        if idx_emb is not None:
-                            sim = _cosine_sim(
-                                idx_emb, new_emb, norm_a=chunk_norms[idx], norm_b=new_norm
-                            )
-                            if sim > max_sims[idx]:
-                                max_sims[idx] = sim
+            doc_indices = doc_to_indices[new_doc_key]
+            # Bypass similarity calculation entirely if there are no siblings.
+            if len(doc_indices) > 1:
+                new_emb = chunk_embs[best_idx]
+                if new_emb is not None:
+                    new_norm = chunk_norms[best_idx]
+                    if new_norm is None:
+                        new_norm = chunk_norms[best_idx] = math.hypot(*new_emb)
+                    for idx in doc_indices:
+                        if in_remaining[idx]:
+                            idx_emb = chunk_embs[idx]
+                            if idx_emb is not None:
+                                idx_norm = chunk_norms[idx]
+                                if idx_norm is None:
+                                    idx_norm = chunk_norms[idx] = math.hypot(*idx_emb)
+                                sim = _cosine_sim(
+                                    idx_emb, new_emb, norm_a=idx_norm, norm_b=new_norm
+                                )
+                                if sim > max_sims[idx]:
+                                    max_sims[idx] = sim
 
         return selected
 
