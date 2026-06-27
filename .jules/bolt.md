@@ -5,3 +5,7 @@
 ## 2024-05-19 - Precompute Loop Invariants in Greedy Selection Algorithms
 **Learning:** In greedy selection algorithms like MMR deduplication, recalculating invariant values within nested loops (such as the term `mmr_lambda * norm_score`) drastically increases computational overhead. Because `norm_score` depends only on the candidate's static score and `mmr_lambda` is a constant, recalculating this product inside the inner loop wastes $O(K \times N)$ operations.
 **Action:** Always hoist per-item invariant calculations (like `mmr_lambda * norm_score` or `1 - mmr_lambda`) out of nested loops and precompute them in arrays or variables before the loop begins to reduce complexity and improve runtime performance.
+
+## 2024-05-20 - In-Place Sort Over `sorted()` For Fast Paths
+**Learning:** In hot paths like search ranking (e.g., `_apply_recency_boost`), using `sorted()` incurs unnecessary time and memory overhead by allocating a completely new list. Conversely, using an in-place `.sort()` operates directly on the existing array, avoiding this overhead while achieving the same result. However, for dict structures like `.values()`, `sorted()` handles list creation efficiently in C.
+**Action:** When working with existing lists that need reordering in hot-paths (and the list itself doesn't need to be preserved exactly as-is for the caller's state), prefer `in-place .sort()` rather than `sorted()`. Keep using `sorted()` for iterables where a list would have to be created anyway, like `.values()`.

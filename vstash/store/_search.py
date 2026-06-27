@@ -266,8 +266,8 @@ class _SearchEngineMixin:
         """Multiply each chunk's RRF score by an exponential decay factor.
 
         ``recency_boost=0`` disables the boost. Chunks whose ``created_at``
-        is unparseable are left untouched. Returns a newly sorted list
-        so callers always see post-boost ordering.
+        is unparseable are left untouched. Sorts the list in place so
+        callers always see post-boost ordering.
         """
         if recency_boost <= 0 or not ranked:
             return ranked
@@ -296,7 +296,8 @@ class _SearchEngineMixin:
                 decay = math.exp(-0.05 * days_ago)
                 r["rrf"] = float(r["rrf"]) * (1.0 + recency_boost * decay)
 
-        return sorted(ranked, key=lambda x: float(x["rrf"]), reverse=True)
+        ranked.sort(key=lambda x: float(x["rrf"]), reverse=True)
+        return ranked
 
     @staticmethod
     def _build_search_results(
