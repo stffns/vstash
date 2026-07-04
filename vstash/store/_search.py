@@ -296,7 +296,8 @@ class _SearchEngineMixin:
                 decay = math.exp(-0.05 * days_ago)
                 r["rrf"] = float(r["rrf"]) * (1.0 + recency_boost * decay)
 
-        return sorted(ranked, key=lambda x: float(x["rrf"]), reverse=True)
+        ranked.sort(key=lambda x: float(x["rrf"]), reverse=True)
+        return ranked
 
     @staticmethod
     def _build_search_results(
@@ -1593,7 +1594,7 @@ class _SearchEngineMixin:
         chunk_embs = [embeddings.get(int(r["id"])) for r in ranked]
 
         # Precompute L2 norms for cosine similarity to avoid O(K * N) recomputation.
-        chunk_norms = [math.hypot(*emb) if emb is not None else 0.0 for emb in chunk_embs]
+        chunk_norms = [None] * len(ranked)
 
         # Pre-group ranked indices by document key so the sibling-penalty
         # update walks O(S) (siblings only) instead of O(N) (all remaining).
@@ -1648,15 +1649,27 @@ class _SearchEngineMixin:
             # Update max_sims for remaining chunks from the same document
             # by comparing against the newly selected embedding.
             new_doc_key = doc_keys[best_idx]
+            if len(doc_to_indices[new_doc_key]) <= 1:
+                continue
+
             new_emb = chunk_embs[best_idx]
-            new_norm = chunk_norms[best_idx]
             if new_emb is not None:
+                new_norm = chunk_norms[best_idx]
+                if new_norm is None:
+                    new_norm = math.hypot(*new_emb)
+                    chunk_norms[best_idx] = new_norm
+
                 for idx in doc_to_indices[new_doc_key]:
                     if in_remaining[idx]:
                         idx_emb = chunk_embs[idx]
                         if idx_emb is not None:
+                            idx_norm = chunk_norms[idx]
+                            if idx_norm is None:
+                                idx_norm = math.hypot(*idx_emb)
+                                chunk_norms[idx] = idx_norm
+
                             sim = _cosine_sim(
-                                idx_emb, new_emb, norm_a=chunk_norms[idx], norm_b=new_norm
+                                idx_emb, new_emb, norm_a=idx_norm, norm_b=new_norm
                             )
                             if sim > max_sims[idx]:
                                 max_sims[idx] = sim
