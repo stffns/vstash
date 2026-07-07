@@ -1662,7 +1662,10 @@ class _SearchEngineMixin:
                             if chunk_norms[idx] is None:
                                 chunk_norms[idx] = math.hypot(*idx_emb)
                             sim = _cosine_sim(
-                                idx_emb, new_emb, norm_a=chunk_norms[idx], norm_b=new_norm  # type: ignore[arg-type]
+                                idx_emb,
+                                new_emb,
+                                norm_a=chunk_norms[idx],
+                                norm_b=new_norm,  # type: ignore[arg-type]
                             )
                             if sim > max_sims[idx]:
                                 max_sims[idx] = sim
