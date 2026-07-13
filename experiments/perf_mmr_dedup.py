@@ -171,9 +171,7 @@ def _mmr_dedup_o1(
                             if idx_norm is None:
                                 idx_norm = math.hypot(*idx_emb)
                                 chunk_norms[idx] = idx_norm
-                            sim = _cosine_sim(
-                                idx_emb, new_emb, norm_a=idx_norm, norm_b=new_norm
-                            )
+                            sim = _cosine_sim(idx_emb, new_emb, norm_a=idx_norm, norm_b=new_norm)
                             if sim > max_sims[idx]:
                                 max_sims[idx] = sim
     return selected
