@@ -1592,9 +1592,6 @@ class _SearchEngineMixin:
         doc_keys = [str(r["path"]) for r in ranked]
         chunk_embs = [embeddings.get(int(r["id"])) for r in ranked]
 
-        # Precompute L2 norms for cosine similarity to avoid O(K * N) recomputation.
-        chunk_norms = [math.hypot(*emb) if emb is not None else 0.0 for emb in chunk_embs]
-
         # Pre-group ranked indices by document key so the sibling-penalty
         # update walks O(S) (siblings only) instead of O(N) (all remaining).
         # Together with the in_remaining mask this turns the dedup loop from
@@ -1602,6 +1599,11 @@ class _SearchEngineMixin:
         doc_to_indices: dict[str, list[int]] = {}
         for i, doc_key in enumerate(doc_keys):
             doc_to_indices.setdefault(doc_key, []).append(i)
+
+        # Lazy evaluation of L2 norms for cosine similarity. We avoid O(N) eager
+        # recomputation by only evaluating norms when chunks are actually compared
+        # against a selected sibling.
+        chunk_norms: list[float | None] = [None] * len(ranked)
 
         # Track the maximum similarity to any selected chunk from the *same document*.
         # Replaces O(N * S) recomputation with O(1) lookup + O(N) update.
@@ -1649,12 +1651,20 @@ class _SearchEngineMixin:
             # by comparing against the newly selected embedding.
             new_doc_key = doc_keys[best_idx]
             new_emb = chunk_embs[best_idx]
-            new_norm = chunk_norms[best_idx]
-            if new_emb is not None:
+
+            # Optimization: Bypass similarity penalty updates if the selected
+            # chunk is the only one from its document.
+            if new_emb is not None and len(doc_to_indices[new_doc_key]) > 1:
+                if chunk_norms[best_idx] is None:
+                    chunk_norms[best_idx] = math.hypot(*new_emb)
+                new_norm = chunk_norms[best_idx]
+
                 for idx in doc_to_indices[new_doc_key]:
                     if in_remaining[idx]:
                         idx_emb = chunk_embs[idx]
                         if idx_emb is not None:
+                            if chunk_norms[idx] is None:
+                                chunk_norms[idx] = math.hypot(*idx_emb)
                             sim = _cosine_sim(
                                 idx_emb, new_emb, norm_a=chunk_norms[idx], norm_b=new_norm
                             )
