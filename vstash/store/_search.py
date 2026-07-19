@@ -1671,9 +1671,7 @@ class _SearchEngineMixin:
                                 chunk_norms[idx] = math.hypot(*idx_emb)
                             idx_norm = chunk_norms[idx]
 
-                            sim = _cosine_sim(
-                                idx_emb, new_emb, norm_a=idx_norm, norm_b=new_norm
-                            )
+                            sim = _cosine_sim(idx_emb, new_emb, norm_a=idx_norm, norm_b=new_norm)
                             if sim > max_sims[idx]:
                                 max_sims[idx] = sim
 
