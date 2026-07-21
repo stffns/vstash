@@ -1602,7 +1602,7 @@ class _SearchEngineMixin:
 
         # Lazily evaluate L2 norms only when needed to avoid O(N) precomputation
         # for chunks that are never compared against siblings.
-        chunk_norms: list[float | None] = [None] * len(ranked)
+        chunk_norms = [None] * len(ranked)
 
         # Track the maximum similarity to any selected chunk from the *same document*.
         # Replaces O(N * S) recomputation with O(1) lookup + O(N) update.
@@ -1653,28 +1653,28 @@ class _SearchEngineMixin:
             # Bypass similarity penalty updates entirely if the selected chunk
             # is the only one from its document.
             doc_indices = doc_to_indices[new_doc_key]
-            if len(doc_indices) <= 1:
-                continue
+            if len(doc_indices) > 1:
+                new_emb = chunk_embs[best_idx]
+                if new_emb is not None:
+                    new_norm = chunk_norms[best_idx]
+                    if new_norm is None:
+                        new_norm = math.hypot(*new_emb)
+                        chunk_norms[best_idx] = new_norm
 
-            new_emb = chunk_embs[best_idx]
-            if new_emb is not None:
-                if chunk_norms[best_idx] is None:
-                    chunk_norms[best_idx] = math.hypot(*new_emb)
-                new_norm = chunk_norms[best_idx]
+                    for idx in doc_indices:
+                        if in_remaining[idx]:
+                            idx_emb = chunk_embs[idx]
+                            if idx_emb is not None:
+                                norm_idx = chunk_norms[idx]
+                                if norm_idx is None:
+                                    norm_idx = math.hypot(*idx_emb)
+                                    chunk_norms[idx] = norm_idx
 
-                for idx in doc_indices:
-                    if in_remaining[idx]:
-                        idx_emb = chunk_embs[idx]
-                        if idx_emb is not None:
-                            if chunk_norms[idx] is None:
-                                chunk_norms[idx] = math.hypot(*idx_emb)
-                            norm_idx = chunk_norms[idx]
-
-                            sim = _cosine_sim(
-                                idx_emb, new_emb, norm_a=norm_idx, norm_b=new_norm
-                            )
-                            if sim > max_sims[idx]:
-                                max_sims[idx] = sim
+                                sim = _cosine_sim(
+                                    idx_emb, new_emb, norm_a=norm_idx, norm_b=new_norm
+                                )
+                                if sim > max_sims[idx]:
+                                    max_sims[idx] = sim
 
         return selected
 
