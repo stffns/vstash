@@ -211,6 +211,10 @@ class _SearchEngineMixin:
         for rank, row in enumerate(vec_rows):
             chunk_id: int = row["id"]
             vec_contrib = vec_weight * (1.0 / (RRF_K + rank))
+            try:
+                created_at = row["created_at"]
+            except IndexError:
+                created_at = None
             scores[chunk_id] = {
                 "id": chunk_id,
                 "text": row["text"],
@@ -219,6 +223,7 @@ class _SearchEngineMixin:
                 "chunk": row["seq"],
                 "rrf": vec_contrib,
                 "added_at": row["added_at"],
+                "created_at": created_at,
                 "collection": row["collection"],
                 "tags": row["tags"],
                 "layer": row["layer"],
@@ -240,6 +245,10 @@ class _SearchEngineMixin:
                     explain_rrf_fts[chunk_id] = fts_contribution
                     explain_fts_rank[chunk_id] = rank
             elif chunk_id in relevant_chunk_ids or is_fts_top:
+                try:
+                    created_at = row["created_at"]
+                except IndexError:
+                    created_at = None
                 scores[chunk_id] = {
                     "id": chunk_id,
                     "text": row["text"],
@@ -248,6 +257,7 @@ class _SearchEngineMixin:
                     "chunk": row["seq"],
                     "rrf": fts_contribution,
                     "added_at": row["added_at"],
+                    "created_at": created_at,
                     "collection": row["collection"],
                     "tags": row["tags"],
                     "layer": row["layer"],
@@ -273,30 +283,20 @@ class _SearchEngineMixin:
             return ranked
 
         now = datetime.now(timezone.utc)
-        chunk_ids = [int(r["id"]) for r in ranked]
-        # Batch the IN clause so large top_k / candidate pools don't trip
-        # SQLite's default SQLITE_LIMIT_VARIABLE_NUMBER (999 on most builds).
-        created_map: dict[int, datetime] = {}
-        for start in range(0, len(chunk_ids), _SQLITE_PARAM_BATCH):
-            batch = chunk_ids[start : start + _SQLITE_PARAM_BATCH]
-            placeholders = ",".join("?" * len(batch))
-            for row in self._conn.execute(
-                f"SELECT id, created_at FROM chunks WHERE id IN ({placeholders})",
-                batch,
-            ).fetchall():
+
+        for r in ranked:
+            created_at_str = r.get("created_at")
+            if created_at_str is not None:
                 try:
-                    created_map[row["id"]] = datetime.fromisoformat(row["created_at"])
+                    created_at_dt = datetime.fromisoformat(str(created_at_str))
+                    days_ago = max(0.0, (now - created_at_dt).total_seconds() / 86400)
+                    decay = math.exp(-0.05 * days_ago)
+                    r["rrf"] = float(r["rrf"]) * (1.0 + recency_boost * decay)
                 except (TypeError, ValueError):
                     pass
 
-        for r in ranked:
-            cid = int(r["id"])
-            if cid in created_map:
-                days_ago = max(0.0, (now - created_map[cid]).total_seconds() / 86400)
-                decay = math.exp(-0.05 * days_ago)
-                r["rrf"] = float(r["rrf"]) * (1.0 + recency_boost * decay)
-
-        return sorted(ranked, key=lambda x: float(x["rrf"]), reverse=True)
+        ranked.sort(key=lambda x: float(x["rrf"]), reverse=True)
+        return ranked
 
     @staticmethod
     def _build_search_results(
@@ -650,7 +650,7 @@ class _SearchEngineMixin:
                     snap_filter = vec_clause.replace("v.rowid", "c.id") if vec_clause else ""
                     rows = self._conn.execute(
                         f"""
-                        SELECT c.id, c.text, d.title, d.path, c.seq, d.added_at, d.collection, d.tags, d.layer
+                        SELECT c.id, c.text, d.title, d.path, c.seq, c.created_at, d.added_at, d.collection, d.tags, d.layer
                         FROM chunks c
                         JOIN documents d ON d.id = c.doc_id
                         WHERE c.id IN ({placeholders})
@@ -671,7 +671,7 @@ class _SearchEngineMixin:
             else:
                 vec_rows = self._conn.execute(
                     f"""
-                    SELECT c.id, c.text, d.title, d.path, c.seq, v.distance, d.added_at, d.collection, d.tags, d.layer
+                    SELECT c.id, c.text, d.title, d.path, c.seq, c.created_at, v.distance, d.added_at, d.collection, d.tags, d.layer
                     FROM vec_chunks v
                     JOIN chunks c ON c.id = v.rowid
                     JOIN documents d ON d.id = c.doc_id
@@ -818,7 +818,7 @@ class _SearchEngineMixin:
                 try:
                     fts_rows = self._conn.execute(
                         f"""
-                        SELECT c.id, c.text, d.title, d.path, c.seq,
+                        SELECT c.id, c.text, d.title, d.path, c.seq, c.created_at,
                                rank as fts_rank, d.added_at, d.collection, d.tags, d.layer
                         FROM fts_chunks f
                         JOIN chunks c ON c.id = f.rowid
