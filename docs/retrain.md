@@ -297,16 +297,18 @@ for session_id, turns in chat_sessions.items():
     text = _format_session(turns)
     chunks = chunk_text(text, cfg.chunking.size, cfg.chunking.overlap)
     embeddings = embed_texts(chunks, cfg.embeddings.model)
-    store.add_documents_batch([
-        {
-            "path": session_id,
-            "title": session_id,
-            "chunks": chunks,
-            "embeddings": embeddings,
-            "source_type": "chat",
-            "collection": "my-chats",
-        }
-    ])
+    store.add_documents_batch(
+        [
+            {
+                "path": session_id,
+                "title": session_id,
+                "chunks": chunks,
+                "embeddings": embeddings,
+                "source_type": "chat",
+                "collection": "my-chats",
+            }
+        ]
+    )
 ```
 
 The labeled-query JSONL then references each `session_id`
