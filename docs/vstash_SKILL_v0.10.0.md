@@ -47,8 +47,7 @@ Examples: `2026-03-31 — Meetings`, `2026-03-30 — Daily Outlook`, `2026-03-30
 **Example:**
 ```python
 vstash_remember(
-    text="- 11:30 OKR Monthly Review\n- 13:00 Daily standup...",
-    title="2026-03-31 — Meetings"
+    text="- 11:30 OKR Monthly Review\n- 13:00 Daily standup...", title="2026-03-31 — Meetings"
 )
 ```
 

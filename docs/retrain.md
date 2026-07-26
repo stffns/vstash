@@ -292,18 +292,21 @@ schema varies too much across products. The pattern is:
 def _format_session(turns: list[dict]) -> str:
     return "\n\n".join(f"[{t['role'].upper()}]\n{t['content']}" for t in turns)
 
+
 for session_id, turns in chat_sessions.items():
     text = _format_session(turns)
     chunks = chunk_text(text, cfg.chunking.size, cfg.chunking.overlap)
     embeddings = embed_texts(chunks, cfg.embeddings.model)
-    store.add_documents_batch([{
-        "path": session_id,
-        "title": session_id,
-        "chunks": chunks,
-        "embeddings": embeddings,
-        "source_type": "chat",
-        "collection": "my-chats",
-    }])
+    store.add_documents_batch([
+        {
+            "path": session_id,
+            "title": session_id,
+            "chunks": chunks,
+            "embeddings": embeddings,
+            "source_type": "chat",
+            "collection": "my-chats",
+        }
+    ])
 ```
 
 The labeled-query JSONL then references each `session_id`
@@ -481,9 +484,10 @@ eval_queries = {
 retrain_multi(
     stores=stores,
     base_model="BAAI/bge-small-en-v1.5",
-    training_queries_by_dataset=eval_queries,   # v5 recipe
+    training_queries_by_dataset=eval_queries,  # v5 recipe
     eval_queries_by_dataset=eval_queries,
-    bulk_mine=True, bulk_eval=True,
+    bulk_mine=True,
+    bulk_eval=True,
     total_triples=30000,
     output_path="~/.vstash/models/bge-small-rrf-custom",
 )
