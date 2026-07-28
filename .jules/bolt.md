@@ -5,3 +5,7 @@
 ## 2024-05-19 - Precompute Loop Invariants in Greedy Selection Algorithms
 **Learning:** In greedy selection algorithms like MMR deduplication, recalculating invariant values within nested loops (such as the term `mmr_lambda * norm_score`) drastically increases computational overhead. Because `norm_score` depends only on the candidate's static score and `mmr_lambda` is a constant, recalculating this product inside the inner loop wastes $O(K \times N)$ operations.
 **Action:** Always hoist per-item invariant calculations (like `mmr_lambda * norm_score` or `1 - mmr_lambda`) out of nested loops and precompute them in arrays or variables before the loop begins to reduce complexity and improve runtime performance.
+
+## YYYY-MM-DD - Pre-fetch and Sort In-place for Post-Processing
+**Learning:** Post-processing steps like `_apply_recency_boost` that perform secondary database queries, even when batched, introduce significant overhead. Furthermore, allocating new lists with `sorted()` in hot paths is inefficient compared to in-place `.sort()`.
+**Action:** Pre-fetch necessary properties (e.g., `created_at`) in initial candidate generation SQL queries and carry them through the processing pipeline (e.g., in dictionaries). Additionally, use in-place `.sort()` on existing lists during ranking.
