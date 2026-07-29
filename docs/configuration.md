@@ -124,8 +124,8 @@ When `code_aware` is enabled, source code files are split at top-level function 
 ```python
 # SDK — larger chunks for medical/legal documents
 mem = Memory(project="medical", chunk_size=2048, chunk_overlap=256)
-mem.add("protocol.pdf")                        # uses 2048
-mem.add("code.py", chunk_size=512)             # per-file override
+mem.add("protocol.pdf")  # uses 2048
+mem.add("code.py", chunk_size=512)  # per-file override
 ```
 
 ```bash
@@ -149,11 +149,12 @@ Per-call usage (SDK, MCP, store):
 
 ```python
 from vstash import Memory
+
 mem = Memory(project="default")
 
-mem.search("error code E401")                       # hybrid (default)
+mem.search("error code E401")  # hybrid (default)
 mem.search("conceptual paraphrase", retrieval_mode="vec_only")  # skip FTS5
-mem.search("DRG-470", retrieval_mode="fts_only")    # skip vector ANN
+mem.search("DRG-470", retrieval_mode="fts_only")  # skip vector ANN
 ```
 
 Use `vec_only` when keyword noise dominates (e.g. legal/clinical queries where literal-token matches mislead) and you want pure semantic ranking. Use `fts_only` when you have a known literal token (drug name, error code, SKU, hash) and the vector path adds nothing. Use `hybrid` (default) for everything else -- the adaptive IDF weighting dynamically adjusts the balance per query.
