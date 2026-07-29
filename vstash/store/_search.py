@@ -1594,7 +1594,7 @@ class _SearchEngineMixin:
 
         # Lazy compute L2 norms for cosine similarity to avoid O(N) recomputation
         # when most chunks will never be compared against a sibling.
-        chunk_norms: list[float | None] = [None] * len(ranked)
+        chunk_norms = [None] * len(ranked)
 
         # Pre-group ranked indices by document key so the sibling-penalty
         # update walks O(S) (siblings only) instead of O(N) (all remaining).
