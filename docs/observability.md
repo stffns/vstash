@@ -157,6 +157,7 @@ HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
 # scrape.py — runs as a sidecar, translates JSON → Prom text
 import requests
 
+
 def scrape():
     data = requests.get("http://localhost:8585/metrics").json()
     lines = []
