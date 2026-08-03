@@ -5,3 +5,6 @@
 ## 2024-05-19 - Precompute Loop Invariants in Greedy Selection Algorithms
 **Learning:** In greedy selection algorithms like MMR deduplication, recalculating invariant values within nested loops (such as the term `mmr_lambda * norm_score`) drastically increases computational overhead. Because `norm_score` depends only on the candidate's static score and `mmr_lambda` is a constant, recalculating this product inside the inner loop wastes $O(K \times N)$ operations.
 **Action:** Always hoist per-item invariant calculations (like `mmr_lambda * norm_score` or `1 - mmr_lambda`) out of nested loops and precompute them in arrays or variables before the loop begins to reduce complexity and improve runtime performance.
+## YYYY-MM-DD - Lazy Evaluation and Fast Paths in MMR Deduplication
+**Learning:** In MMR deduplication, computing L2 norms for cosine similarity eagerly for all candidates costs O(N), even though the penalty is only applied to siblings of selected chunks. Furthermore, updating similarity penalties is completely unnecessary if a selected chunk has no siblings in the candidate pool.
+**Action:** Always lazily evaluate expensive mathematical operations (like `math.hypot`) only when the values are actually needed for comparison, and bypass similarity loops entirely when a chunk is the only candidate from its document (`len(siblings) <= 1`).
