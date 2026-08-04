@@ -265,38 +265,28 @@ class _SearchEngineMixin:
     ) -> list[dict[str, str | int | float]]:
         """Multiply each chunk's RRF score by an exponential decay factor.
 
-        ``recency_boost=0`` disables the boost. Chunks whose ``created_at``
-        is unparseable are left untouched. Returns a newly sorted list
-        so callers always see post-boost ordering.
+        ``recency_boost=0`` disables the boost. Chunks whose ``added_at``
+        is unparseable are left untouched. Sorts the list in-place and
+        returns it so callers always see post-boost ordering.
         """
         if recency_boost <= 0 or not ranked:
             return ranked
 
         now = datetime.now(timezone.utc)
-        chunk_ids = [int(r["id"]) for r in ranked]
-        # Batch the IN clause so large top_k / candidate pools don't trip
-        # SQLite's default SQLITE_LIMIT_VARIABLE_NUMBER (999 on most builds).
-        created_map: dict[int, datetime] = {}
-        for start in range(0, len(chunk_ids), _SQLITE_PARAM_BATCH):
-            batch = chunk_ids[start : start + _SQLITE_PARAM_BATCH]
-            placeholders = ",".join("?" * len(batch))
-            for row in self._conn.execute(
-                f"SELECT id, created_at FROM chunks WHERE id IN ({placeholders})",
-                batch,
-            ).fetchall():
+
+        for r in ranked:
+            added_at = r.get("added_at")
+            if added_at:
                 try:
-                    created_map[row["id"]] = datetime.fromisoformat(row["created_at"])
+                    created_dt = datetime.fromisoformat(str(added_at))
+                    days_ago = max(0.0, (now - created_dt).total_seconds() / 86400)
+                    decay = math.exp(-0.05 * days_ago)
+                    r["rrf"] = float(r["rrf"]) * (1.0 + recency_boost * decay)
                 except (TypeError, ValueError):
                     pass
 
-        for r in ranked:
-            cid = int(r["id"])
-            if cid in created_map:
-                days_ago = max(0.0, (now - created_map[cid]).total_seconds() / 86400)
-                decay = math.exp(-0.05 * days_ago)
-                r["rrf"] = float(r["rrf"]) * (1.0 + recency_boost * decay)
-
-        return sorted(ranked, key=lambda x: float(x["rrf"]), reverse=True)
+        ranked.sort(key=lambda x: float(x["rrf"]), reverse=True)
+        return ranked
 
     @staticmethod
     def _build_search_results(
