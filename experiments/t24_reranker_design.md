@@ -84,8 +84,8 @@ store.search(
     query_embedding=...,
     query_text="...",
     top_k=10,
-    rerank=True,           # NEW: opt-in per call, overrides config
-    rerank_top_n=50,       # NEW: how many pre-rerank candidates
+    rerank=True,  # NEW: opt-in per call, overrides config
+    rerank_top_n=50,  # NEW: how many pre-rerank candidates
 )
 ```
 
