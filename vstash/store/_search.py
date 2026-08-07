@@ -1648,18 +1648,23 @@ class _SearchEngineMixin:
             # Update max_sims for remaining chunks from the same document
             # by comparing against the newly selected embedding.
             new_doc_key = doc_keys[best_idx]
-            new_emb = chunk_embs[best_idx]
-            new_norm = chunk_norms[best_idx]
-            if new_emb is not None:
-                for idx in doc_to_indices[new_doc_key]:
-                    if in_remaining[idx]:
-                        idx_emb = chunk_embs[idx]
-                        if idx_emb is not None:
-                            sim = _cosine_sim(
-                                idx_emb, new_emb, norm_a=chunk_norms[idx], norm_b=new_norm
-                            )
-                            if sim > max_sims[idx]:
-                                max_sims[idx] = sim
+
+            # Performance Pattern Optimization: Skip penalty updates entirely
+            # if the selected chunk is the only one from its document.
+            doc_indices = doc_to_indices[new_doc_key]
+            if len(doc_indices) > 1:
+                new_emb = chunk_embs[best_idx]
+                new_norm = chunk_norms[best_idx]
+                if new_emb is not None:
+                    for idx in doc_indices:
+                        if in_remaining[idx]:
+                            idx_emb = chunk_embs[idx]
+                            if idx_emb is not None:
+                                sim = _cosine_sim(
+                                    idx_emb, new_emb, norm_a=chunk_norms[idx], norm_b=new_norm
+                                )
+                                if sim > max_sims[idx]:
+                                    max_sims[idx] = sim
 
         return selected
 
