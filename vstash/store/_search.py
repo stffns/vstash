@@ -273,30 +273,46 @@ class _SearchEngineMixin:
             return ranked
 
         now = datetime.now(timezone.utc)
-        chunk_ids = [int(r["id"]) for r in ranked]
-        # Batch the IN clause so large top_k / candidate pools don't trip
-        # SQLite's default SQLITE_LIMIT_VARIABLE_NUMBER (999 on most builds).
+
+        # ⚡ Bolt Optimization: Use the already-fetched `added_at` field from the chunk dict
+        # instead of performing an O(N) batched database query for `created_at` (which is logically identical).
+        # We keep a fallback to the database query ONLY for chunks missing this property to preserve correctness.
+        # We also use in-place `.sort()` instead of `sorted()` to avoid unnecessary list allocation overhead.
+
+        missing_ids = [int(r["id"]) for r in ranked if r.get("added_at") is None]
         created_map: dict[int, datetime] = {}
-        for start in range(0, len(chunk_ids), _SQLITE_PARAM_BATCH):
-            batch = chunk_ids[start : start + _SQLITE_PARAM_BATCH]
-            placeholders = ",".join("?" * len(batch))
-            for row in self._conn.execute(
-                f"SELECT id, created_at FROM chunks WHERE id IN ({placeholders})",
-                batch,
-            ).fetchall():
-                try:
-                    created_map[row["id"]] = datetime.fromisoformat(row["created_at"])
-                except (TypeError, ValueError):
-                    pass
+
+        if missing_ids:
+            for start in range(0, len(missing_ids), _SQLITE_PARAM_BATCH):
+                batch = missing_ids[start : start + _SQLITE_PARAM_BATCH]
+                placeholders = ",".join("?" * len(batch))
+                for row in self._conn.execute(
+                    f"SELECT id, created_at FROM chunks WHERE id IN ({placeholders})",
+                    batch,
+                ).fetchall():
+                    try:
+                        created_map[row["id"]] = datetime.fromisoformat(row["created_at"])
+                    except (TypeError, ValueError):
+                        pass
 
         for r in ranked:
-            cid = int(r["id"])
-            if cid in created_map:
-                days_ago = max(0.0, (now - created_map[cid]).total_seconds() / 86400)
+            added_at = r.get("added_at")
+            dt = None
+            if added_at is not None:
+                try:
+                    dt = datetime.fromisoformat(str(added_at))
+                except (TypeError, ValueError):
+                    pass
+            elif int(r["id"]) in created_map:
+                dt = created_map[int(r["id"])]
+
+            if dt is not None:
+                days_ago = max(0.0, (now - dt).total_seconds() / 86400)
                 decay = math.exp(-0.05 * days_ago)
                 r["rrf"] = float(r["rrf"]) * (1.0 + recency_boost * decay)
 
-        return sorted(ranked, key=lambda x: float(x["rrf"]), reverse=True)
+        ranked.sort(key=lambda x: float(x["rrf"]), reverse=True)
+        return ranked
 
     @staticmethod
     def _build_search_results(
