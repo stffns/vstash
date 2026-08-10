@@ -273,30 +273,22 @@ class _SearchEngineMixin:
             return ranked
 
         now = datetime.now(timezone.utc)
-        chunk_ids = [int(r["id"]) for r in ranked]
-        # Batch the IN clause so large top_k / candidate pools don't trip
-        # SQLite's default SQLITE_LIMIT_VARIABLE_NUMBER (999 on most builds).
-        created_map: dict[int, datetime] = {}
-        for start in range(0, len(chunk_ids), _SQLITE_PARAM_BATCH):
-            batch = chunk_ids[start : start + _SQLITE_PARAM_BATCH]
-            placeholders = ",".join("?" * len(batch))
-            for row in self._conn.execute(
-                f"SELECT id, created_at FROM chunks WHERE id IN ({placeholders})",
-                batch,
-            ).fetchall():
-                try:
-                    created_map[row["id"]] = datetime.fromisoformat(row["created_at"])
-                except (TypeError, ValueError):
-                    pass
 
         for r in ranked:
-            cid = int(r["id"])
-            if cid in created_map:
-                days_ago = max(0.0, (now - created_map[cid]).total_seconds() / 86400)
-                decay = math.exp(-0.05 * days_ago)
-                r["rrf"] = float(r["rrf"]) * (1.0 + recency_boost * decay)
+            # The chunks.created_at column is logically identical to documents.added_at,
+            # which is already pre-fetched in the search candidates. We avoid an N+1 query.
+            try:
+                added_at_str = r["added_at"]
+                if added_at_str:
+                    created = datetime.fromisoformat(added_at_str)
+                    days_ago = max(0.0, (now - created).total_seconds() / 86400)
+                    decay = math.exp(-0.05 * days_ago)
+                    r["rrf"] = float(r["rrf"]) * (1.0 + recency_boost * decay)
+            except (KeyError, TypeError, ValueError):
+                pass
 
-        return sorted(ranked, key=lambda x: float(x["rrf"]), reverse=True)
+        ranked.sort(key=lambda x: float(x["rrf"]), reverse=True)
+        return ranked
 
     @staticmethod
     def _build_search_results(
