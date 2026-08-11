@@ -58,8 +58,8 @@ Each result is a standard LangChain `Document` with metadata:
 ```python
 docs = retriever.get_relevant_documents("query")
 for doc in docs:
-    print(doc.page_content)       # chunk text
-    print(doc.metadata["source"]) # file path or URL
+    print(doc.page_content)  # chunk text
+    print(doc.metadata["source"])  # file path or URL
     print(doc.metadata["title"])  # document title
     print(doc.metadata["score"])  # hybrid search score
 ```
