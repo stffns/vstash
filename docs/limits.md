@@ -42,7 +42,7 @@ All validators raise a subclass of `vstash.validation.LimitError`, which itself 
 
 ```python
 from vstash.validation import (
-    LimitError,                       # base class
+    LimitError,  # base class
     QueryInvalidError,
     QueryTooLongError,
     TopKOutOfRangeError,
