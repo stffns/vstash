@@ -273,17 +273,28 @@ class _SearchEngineMixin:
             return ranked
 
         now = datetime.now(timezone.utc)
+        chunk_ids = [int(r["id"]) for r in ranked]
+        # Batch the IN clause so large top_k / candidate pools don't trip
+        # SQLite's default SQLITE_LIMIT_VARIABLE_NUMBER (999 on most builds).
+        created_map: dict[int, datetime] = {}
+        for start in range(0, len(chunk_ids), _SQLITE_PARAM_BATCH):
+            batch = chunk_ids[start : start + _SQLITE_PARAM_BATCH]
+            placeholders = ",".join("?" * len(batch))
+            for row in self._conn.execute(
+                f"SELECT id, created_at FROM chunks WHERE id IN ({placeholders})",
+                batch,
+            ).fetchall():
+                try:
+                    created_map[row["id"]] = datetime.fromisoformat(row["created_at"])
+                except (TypeError, ValueError):
+                    pass
 
         for r in ranked:
-            try:
-                # added_at was pre-fetched in the initial search queries and
-                # carried through the pipeline to avoid N+1 DB round-trips.
-                added_at = datetime.fromisoformat(str(r["added_at"]))
-                days_ago = max(0.0, (now - added_at).total_seconds() / 86400)
+            cid = int(r["id"])
+            if cid in created_map:
+                days_ago = max(0.0, (now - created_map[cid]).total_seconds() / 86400)
                 decay = math.exp(-0.05 * days_ago)
                 r["rrf"] = float(r["rrf"]) * (1.0 + recency_boost * decay)
-            except (TypeError, ValueError, KeyError):
-                pass
 
         return sorted(ranked, key=lambda x: float(x["rrf"]), reverse=True)
 
