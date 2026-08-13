@@ -25,6 +25,7 @@ system provides an elegant way to implement RBAC:
 from fastapi import Depends, HTTPException, Security
 from fastapi.security import SecurityScopes
 
+
 async def check_permissions(
     security_scopes: SecurityScopes,
     token: str = Depends(oauth2_scheme),
