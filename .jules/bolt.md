@@ -5,7 +5,3 @@
 ## 2024-05-19 - Precompute Loop Invariants in Greedy Selection Algorithms
 **Learning:** In greedy selection algorithms like MMR deduplication, recalculating invariant values within nested loops (such as the term `mmr_lambda * norm_score`) drastically increases computational overhead. Because `norm_score` depends only on the candidate's static score and `mmr_lambda` is a constant, recalculating this product inside the inner loop wastes $O(K \times N)$ operations.
 **Action:** Always hoist per-item invariant calculations (like `mmr_lambda * norm_score` or `1 - mmr_lambda`) out of nested loops and precompute them in arrays or variables before the loop begins to reduce complexity and improve runtime performance.
-
-## 2024-05-20 - Avoid `sorted(dict.values())` when possible
-**Learning:** `sorted()` creates a new list and sorts it. For list inputs `my_list.sort()` sorts in-place. For dict values `sorted(dict.values())` is well-optimized in C but it's not possible to perform in-place without creating a list first. Micro-optimizing this by manually converting to a list and calling `.sort()` is a Python anti-pattern and often slightly slower due to the overhead of interpreter calls and breaking out of C optimizations. However, for an already existing list, calling `.sort()` is definitively faster than `sorted(my_list)` because it avoids the memory allocation.
-**Action:** Use `.sort()` on existing lists. Keep `sorted()` for iterables where you would have to manually allocate a list first.
