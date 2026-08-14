@@ -273,30 +273,24 @@ class _SearchEngineMixin:
             return ranked
 
         now = datetime.now(timezone.utc)
-        chunk_ids = [int(r["id"]) for r in ranked]
-        # Batch the IN clause so large top_k / candidate pools don't trip
-        # SQLite's default SQLITE_LIMIT_VARIABLE_NUMBER (999 on most builds).
-        created_map: dict[int, datetime] = {}
-        for start in range(0, len(chunk_ids), _SQLITE_PARAM_BATCH):
-            batch = chunk_ids[start : start + _SQLITE_PARAM_BATCH]
-            placeholders = ",".join("?" * len(batch))
-            for row in self._conn.execute(
-                f"SELECT id, created_at FROM chunks WHERE id IN ({placeholders})",
-                batch,
-            ).fetchall():
-                try:
-                    created_map[row["id"]] = datetime.fromisoformat(row["created_at"])
-                except (TypeError, ValueError):
-                    pass
 
         for r in ranked:
-            cid = int(r["id"])
-            if cid in created_map:
-                days_ago = max(0.0, (now - created_map[cid]).total_seconds() / 86400)
-                decay = math.exp(-0.05 * days_ago)
-                r["rrf"] = float(r["rrf"]) * (1.0 + recency_boost * decay)
+            added_at = r.get("added_at")
+            if added_at:
+                try:
+                    if isinstance(added_at, str) and added_at.endswith(("Z", "z")):
+                        added_at = added_at[:-1] + "+00:00"
+                    created_dt = datetime.fromisoformat(added_at)
+                    if created_dt.tzinfo is None:
+                        created_dt = created_dt.replace(tzinfo=timezone.utc)
+                    days_ago = max(0.0, (now - created_dt).total_seconds() / 86400)
+                    decay = math.exp(-0.05 * days_ago)
+                    r["rrf"] = float(r["rrf"]) * (1.0 + recency_boost * decay)
+                except (TypeError, ValueError, AttributeError):
+                    pass
 
-        return sorted(ranked, key=lambda x: float(x["rrf"]), reverse=True)
+        ranked.sort(key=lambda x: float(x["rrf"]), reverse=True)
+        return ranked
 
     @staticmethod
     def _build_search_results(
