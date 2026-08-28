@@ -566,9 +566,26 @@ class _SearchEngineMixin:
             vec_weight, fts_weight = self._resolve_rrf_weights(vec_weight, fts_weight)
 
             # Adaptive candidate pool — avoid pulling half the corpus on small DBs
+            # while ensuring sufficient candidates for known-item retrieval in
+            # larger corpora. Issue: with top_k=5 the old formula capped at 50
+            # candidates regardless of corpus size, causing known-item misses
+            # when thousands of near-duplicate documents dominated the top-50.
+            # Now scale the pool with corpus size to maintain ranking quality.
             effective_k = top_k
             total_chunks = self._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
-            candidate_pool = min(effective_k * 10, max(effective_k * 3, total_chunks // 3))
+            
+            # Base pool: 10x top_k for small corpora
+            base_pool = effective_k * 10
+            
+            # For larger corpora, ensure a minimum candidate pool to avoid
+            # crowding effects from near-duplicate document clusters.
+            if total_chunks > 5000:
+                base_pool = max(base_pool, 200)
+            elif total_chunks > 2000:
+                base_pool = max(base_pool, 100)
+            
+            # Cap at 1/3 of corpus or the base pool, whichever is smaller
+            candidate_pool = min(base_pool, max(effective_k * 3, total_chunks // 3))
 
             # --- Build metadata filter ---
             vec_clause, col_clause, filter_params = self._build_doc_filter(
