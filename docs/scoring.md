@@ -142,7 +142,7 @@ dropped when its cosine similarity to an already-kept, **higher-ranked**
 chunk is `>= dedup_threshold`, regardless of which document each belongs to.
 
 ```python
-store.search(q_emb, query, top_k=10)                        # unchanged
+store.search(q_emb, query, top_k=10)  # unchanged
 store.search(q_emb, query, top_k=10, dedup_threshold=0.95)  # collapse
 ```
 
@@ -163,7 +163,7 @@ vstash search "query" --dedup 0.95
 ```
 
 ```python
-memory.search("query", dedup_threshold=0.95)          # SDK
+memory.search("query", dedup_threshold=0.95)  # SDK
 ```
 
 MCP exposes it as the `dedup_threshold` argument of `vstash_search`.
