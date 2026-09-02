@@ -174,6 +174,13 @@ except AttributeError:
         return sum(map(operator.mul, a, b))
 
 
+# Float32 tolerance for the near-duplicate collapse comparison. The dot
+# product of a float32 unit vector with an identical copy frequently
+# lands on 0.99999994 rather than 1.0, so a bare ``>= 1.0`` would miss
+# about half of the byte-identical pairs a threshold of 1.0 promises.
+_DEDUP_SIM_EPS = 1e-6
+
+
 def _cosine_sim(
     a: list[float],
     b: list[float],

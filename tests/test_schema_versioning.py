@@ -276,6 +276,142 @@ class TestSchemaVersionMismatch:
         # what range this build can read.
         assert "1" in str(exc_info.value)
 
+    def test_refused_open_does_not_mutate_store_meta(self, tmp_path: Path) -> None:
+        """Refusing to open a future DB must leave its store_meta
+        untouched. Previously the meta pair was stamped BEFORE the
+        KNOWN_SCHEMA_VERSIONS check, so an old build refusing a newer
+        DB still overwrote the newer build's vstash_version row."""
+        import sqlite3
+
+        db = tmp_path / "future.db"
+        store = VstashStore(str(db), embedding_dim=4)
+        try:
+            now = datetime.now(timezone.utc).isoformat()
+            # Simulate a DB written by a future build.
+            store._conn.execute(
+                "INSERT OR REPLACE INTO store_meta (key, value, updated_at) VALUES (?, ?, ?)",
+                ["schema_version", "999", now],
+            )
+            store._conn.execute(
+                "INSERT OR REPLACE INTO store_meta (key, value, updated_at) VALUES (?, ?, ?)",
+                ["vstash_version", "9.9.9", now],
+            )
+            store._conn.commit()
+        finally:
+            store.close()
+
+        with pytest.raises(SchemaVersionError):
+            VstashStore(str(db), embedding_dim=4)
+
+        conn = sqlite3.connect(str(db))
+        try:
+            rows = dict(
+                conn.execute(
+                    "SELECT key, value FROM store_meta "
+                    "WHERE key IN ('schema_version', 'vstash_version')"
+                ).fetchall()
+            )
+        finally:
+            conn.close()
+        assert rows["schema_version"] == "999"
+        assert rows["vstash_version"] == "9.9.9", (
+            "refused open overwrote the future build's vstash_version"
+        )
+
+
+class TestMigrationAtomicity:
+    """The legacy ALTER batch and the created_at backfill must commit
+    atomically: the backfill only runs in the call that ADDS the
+    column, so committing the ALTER separately means a crash between
+    the two leaves legacy rows NULL forever (the reopen sees the
+    column exists and never backfills)."""
+
+    @staticmethod
+    def _chunk_columns(db: Path) -> set[str]:
+        import sqlite3
+
+        conn = sqlite3.connect(str(db))
+        try:
+            return {row[1] for row in conn.execute("PRAGMA table_info(chunks)").fetchall()}
+        finally:
+            conn.close()
+
+    def test_backfill_failure_rolls_back_the_alter(self, tmp_path: Path) -> None:
+        import sqlite3
+
+        if sqlite3.sqlite_version_info < (3, 35, 0):
+            pytest.skip("ALTER TABLE DROP COLUMN needs sqlite >= 3.35")
+
+        # 1. Build a normal store with one chunk, then strip created_at
+        # to fake a pre-migration legacy DB.
+        db = tmp_path / "legacy.db"
+        store = VstashStore(str(db), embedding_dim=4)
+        try:
+            store.add_document(
+                path="/t/doc.md",
+                title="t",
+                chunks=["legacy chunk"],
+                embeddings=[[0.1] * 4],
+            )
+        finally:
+            store.close()
+        conn = sqlite3.connect(str(db))
+        try:
+            conn.execute("ALTER TABLE chunks DROP COLUMN created_at")
+            conn.commit()
+        finally:
+            conn.close()
+        assert "created_at" not in self._chunk_columns(db)
+
+        # 2. Reopen with a connection proxy that fails ONLY the
+        # backfill UPDATE, simulating a crash mid-migration. The proxy
+        # must wrap the raw sqlite3.connect result (not
+        # VstashStore._connect) because _create_tables -- and with it
+        # the whole migration -- runs INSIDE _connect on the raw
+        # connection.
+        from unittest.mock import patch
+
+        class _FailBackfillConn:
+            def __init__(self, real: sqlite3.Connection) -> None:
+                object.__setattr__(self, "_real", real)
+
+            def execute(self, sql: str, *args, **kwargs):
+                if "SET created_at" in sql:
+                    raise sqlite3.OperationalError("simulated crash during backfill")
+                return object.__getattribute__(self, "_real").execute(sql, *args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(object.__getattribute__(self, "_real"), name)
+
+            def __setattr__(self, name, value):
+                setattr(object.__getattribute__(self, "_real"), name, value)
+
+        real_sqlite_connect = sqlite3.connect
+
+        def failing_connect(*args, **kwargs):
+            return _FailBackfillConn(real_sqlite_connect(*args, **kwargs))
+
+        with patch("sqlite3.connect", new=failing_connect):
+            with pytest.raises(sqlite3.OperationalError, match="simulated crash"):
+                VstashStore(str(db), embedding_dim=4)
+
+        # 3. Atomicity: the ALTER must have rolled back WITH the failed
+        # backfill, so the next open retries the whole migration.
+        assert "created_at" not in self._chunk_columns(db), (
+            "ALTER committed without its backfill -- a reopen would now "
+            "skip the backfill and leave legacy rows NULL forever"
+        )
+
+        # 4. A clean reopen completes the migration: column present AND
+        # every legacy row backfilled from its document's added_at.
+        store2 = VstashStore(str(db), embedding_dim=4)
+        try:
+            rows = store2._conn.execute("SELECT created_at FROM chunks").fetchall()
+            assert rows
+            assert all(r[0] is not None for r in rows), "legacy rows left NULL"
+        finally:
+            store2.close()
+
 
 # ------------------------------------------------------------------ #
 # Config forward compatibility                                         #

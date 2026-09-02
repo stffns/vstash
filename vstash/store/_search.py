@@ -10,6 +10,7 @@ MRO), so the class is never instantiated on its own.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import sqlite3
@@ -29,6 +30,7 @@ from ..models import (
 from ..validation import validate_search_input
 from ._common import (
     _ADAPTIVE_RRF_LONG_QUERY,
+    _DEDUP_SIM_EPS,
     _LONG_QUERY_DISTANCE_CUTOFF,
     _PipelineTracer,
     _SQLITE_PARAM_BATCH,
@@ -70,6 +72,8 @@ class _SearchEngineMixin:
         mmr_lambda: float,
         retrieval_mode: str,
         cache_epoch: int,
+        filters: dict | None = None,
+        dedup_threshold: float | None = None,
     ) -> int:
         """Build the search cache key from the full set of query parameters.
 
@@ -79,6 +83,8 @@ class _SearchEngineMixin:
         short-circuit one branch do not collide with hybrid queries of
         the same text. ``tags`` is normalized to a tuple so the same
         filter expressed as ``"a,b"`` and ``["a", "b"]`` shares a key.
+        ``filters`` is canonicalised to sorted JSON because a #106 filter
+        tree is a nested (unhashable) dict.
         """
         # Hash the embedding as a float tuple rather than allocating a numpy
         # array + bytes blob on every search. embed_query is deterministic, so
@@ -106,6 +112,15 @@ class _SearchEngineMixin:
                 tuple(sorted(_normalize_tags(tags))),
                 mmr_lambda,
                 retrieval_mode,
+                # The #106 boolean filter tree was missing from the key
+                # entirely, and unlike ``exact_match`` it does not skip the
+                # cache either: with the query cache enabled, ``search(q)``
+                # and ``search(q, filters={"not": {...}})`` shared one slot,
+                # so whichever ran first served the other its results.
+                # ``sort_keys`` makes sibling dict order irrelevant; list
+                # order stays significant, which only costs a cache miss.
+                None if filters is None else json.dumps(filters, sort_keys=True, default=str),
+                dedup_threshold,
                 cache_epoch,
             )
         )
@@ -273,30 +288,24 @@ class _SearchEngineMixin:
             return ranked
 
         now = datetime.now(timezone.utc)
-        chunk_ids = [int(r["id"]) for r in ranked]
-        # Batch the IN clause so large top_k / candidate pools don't trip
-        # SQLite's default SQLITE_LIMIT_VARIABLE_NUMBER (999 on most builds).
-        created_map: dict[int, datetime] = {}
-        for start in range(0, len(chunk_ids), _SQLITE_PARAM_BATCH):
-            batch = chunk_ids[start : start + _SQLITE_PARAM_BATCH]
-            placeholders = ",".join("?" * len(batch))
-            for row in self._conn.execute(
-                f"SELECT id, created_at FROM chunks WHERE id IN ({placeholders})",
-                batch,
-            ).fetchall():
-                try:
-                    created_map[row["id"]] = datetime.fromisoformat(row["created_at"])
-                except (TypeError, ValueError):
-                    pass
 
         for r in ranked:
-            cid = int(r["id"])
-            if cid in created_map:
-                days_ago = max(0.0, (now - created_map[cid]).total_seconds() / 86400)
-                decay = math.exp(-0.05 * days_ago)
-                r["rrf"] = float(r["rrf"]) * (1.0 + recency_boost * decay)
+            added_at = r.get("added_at")
+            if added_at:
+                try:
+                    if isinstance(added_at, str) and added_at.endswith(("Z", "z")):
+                        added_at = added_at[:-1] + "+00:00"
+                    created_dt = datetime.fromisoformat(added_at)
+                    if created_dt.tzinfo is None:
+                        created_dt = created_dt.replace(tzinfo=timezone.utc)
+                    days_ago = max(0.0, (now - created_dt).total_seconds() / 86400)
+                    decay = math.exp(-0.05 * days_ago)
+                    r["rrf"] = float(r["rrf"]) * (1.0 + recency_boost * decay)
+                except (TypeError, ValueError, AttributeError):
+                    pass
 
-        return sorted(ranked, key=lambda x: float(x["rrf"]), reverse=True)
+        ranked.sort(key=lambda x: float(x["rrf"]), reverse=True)
+        return ranked
 
     @staticmethod
     def _build_search_results(
@@ -373,6 +382,7 @@ class _SearchEngineMixin:
         tags: str | list[str] | None = None,
         filters: dict | None = None,
         mmr_lambda: float = 0.5,
+        dedup_threshold: float | None = None,
         retrieval_mode: Literal["hybrid", "vec_only", "fts_only"] | None = None,
         exact_match: str | None = None,
         exact_match_case_sensitive: bool = False,
@@ -402,6 +412,17 @@ class _SearchEngineMixin:
             collection: If set, restrict search to documents in this collection.
             project: If set, restrict search to documents with this project tag.
             layer: If set, restrict search to documents with this layer tag.
+            dedup_threshold: Opt-in cross-document near-duplicate collapse.
+                ``None`` (default) leaves the pipeline untouched. When set,
+                a chunk is dropped if its cosine similarity to an already
+                kept, higher-ranked chunk is ``>= dedup_threshold``, even
+                when the two live in different documents -- which
+                ``mmr_lambda`` never does, since MMR only penalises
+                same-document siblings. Valid range ``(0.0, 1.0]``; ``1.0``
+                collapses exact duplicates only, ``0.95`` is a reasonable
+                starting point for restated content. Use it when one answer
+                is mirrored across many documents (audit logs, re-ingested
+                revisions) and floods every result slot.
             exact_match: Optional substring that each returned chunk's
                 ``text`` must contain. Applied as a post-filter after
                 the full pipeline so the upstream candidate pool does
@@ -456,6 +477,7 @@ class _SearchEngineMixin:
             limits=self._limits,
             vec_weight=vec_weight,
             fts_weight=fts_weight,
+            dedup_threshold=dedup_threshold,
         )
 
         # --- Query cache key ---
@@ -485,6 +507,8 @@ class _SearchEngineMixin:
                 mmr_lambda=mmr_lambda,
                 retrieval_mode=_mode,
                 cache_epoch=self._cache_epoch,
+                filters=filters,
+                dedup_threshold=dedup_threshold,
             )
 
         # Per-search miss-analysis tracker (#108).  The tracer is owned
@@ -972,6 +996,16 @@ class _SearchEngineMixin:
                             f"After recency_boost={recency_boost}: rank {target_after_boost + 1}"
                         ),
                     )
+
+            # --- Cross-document near-duplicate collapse (opt-in) ---
+            # Placed after the recency boost, which re-sorts ``ranked``:
+            # keep-first only means "the highest scoring member of a
+            # duplicate cluster survives" while the list is in final score
+            # order. Placed before MMR and the top_k cut so a slot freed by
+            # a collapsed duplicate is refilled with distinct content
+            # instead of shortening the result list.
+            if dedup_threshold is not None:
+                ranked = self._collapse_near_duplicates(ranked, dedup_threshold)
 
             # --- Pre-MMR ranks (for tracking what MMR removes) ---
             pre_mmr_rank_of_target: int | None = None
@@ -1481,6 +1515,110 @@ class _SearchEngineMixin:
     # ------------------------------------------------------------------ #
     # MMR intra-document deduplication                                      #
     # ------------------------------------------------------------------ #
+
+    def _collapse_near_duplicates(
+        self,
+        ranked: list[dict[str, str | int | float]],
+        threshold: float,
+    ) -> list[dict[str, str | int | float]]:
+        """Drop chunks that near-duplicate a higher-ranked chunk, across documents.
+
+        ``_mmr_dedup`` penalises only *same-document* siblings, so a corpus
+        holding many near-identical documents -- audit logs, mirrored notes,
+        re-ingested revisions -- can fill every result slot with restatements
+        of a single answer. This collapse is the cross-document counterpart,
+        and it is opt-in: ``VstashStore.search`` calls it only when the caller
+        passes ``dedup_threshold``.
+
+        Keep-first: ``ranked`` arrives in final score order, so the surviving
+        member of a duplicate cluster is its highest-scoring one. A chunk is
+        dropped when its cosine similarity to an already-kept chunk is
+        ``>= threshold``, which makes ``threshold=1.0`` an exact-duplicate
+        collapse rather than a no-op. The comparison carries a small float32
+        tolerance: the dot product of a vector with an identical copy lands on
+        0.99999994 often enough that a bare ``>= 1.0`` would miss roughly half
+        of the byte-identical pairs it is supposed to catch.
+
+        A chunk whose embedding is missing or zero-length is always kept --
+        an unknown vector must never be treated as a duplicate. If the
+        embeddings cannot be read at all, ``ranked`` is returned unchanged:
+        degrading to "no collapse" keeps the caller's result set complete,
+        whereas MMR's hard-dedup fallback would silently drop content.
+
+        Args:
+            ranked: Candidates in final score order (pre-MMR, pre-``top_k``).
+            threshold: Cosine similarity at or above which a chunk counts as
+                a duplicate of a kept one. Caller-validated to ``(0.0, 1.0]``.
+
+        Returns:
+            The surviving candidates, in the input order.
+        """
+        if len(ranked) < 2:
+            return ranked
+
+        ids = [int(r["id"]) for r in ranked]
+        embeddings: dict[int, list[float]] = {}
+        try:
+            for start in range(0, len(ids), _SQLITE_PARAM_BATCH):
+                batch = ids[start : start + _SQLITE_PARAM_BATCH]
+                placeholders = ",".join("?" * len(batch))
+                rows = self._conn.execute(
+                    f"SELECT rowid, embedding FROM vec_chunks WHERE rowid IN ({placeholders})",
+                    batch,
+                ).fetchall()
+                for row in rows:
+                    embeddings[row["rowid"]] = _deserialize(row["embedding"])
+        except sqlite3.Error:
+            logger.warning(
+                "Near-duplicate embedding fetch failed - skipping cross-document "
+                "dedup for this query. Results may contain duplicates.",
+                exc_info=True,
+            )
+            return ranked
+
+        # Unit-normalise once so similarity is a plain dot product, and
+        # remember which positions in ``ranked`` have a usable vector.
+        rows_with_vec: list[int] = []
+        unit_vecs: list[np.ndarray] = []
+        for pos, chunk_id in enumerate(ids):
+            emb = embeddings.get(chunk_id)
+            if emb is None:
+                continue
+            vec = np.asarray(emb, dtype=np.float32)
+            norm = float(np.linalg.norm(vec))
+            if norm == 0.0:
+                continue
+            rows_with_vec.append(pos)
+            unit_vecs.append(vec / norm)
+
+        if len(unit_vecs) < 2:
+            return ranked
+
+        # Compare each candidate against the vectors kept so far rather than
+        # materialising the full N x N gram matrix. ``ranked`` is the pre-MMR
+        # candidate pool, whose size scales with top_k
+        # (``min(top_k * 10, ...)`` over the vector + FTS union), so an N^2
+        # float32 matrix reaches gigabytes at a large top_k on a big corpus.
+        # The preallocated buffer keeps each compare a single BLAS call with
+        # no per-candidate allocation, and skips the pairs the greedy scan
+        # would never consult.
+        vec_by_pos = dict(zip(rows_with_vec, unit_vecs, strict=True))
+        kept_mat = np.empty((len(unit_vecs), len(unit_vecs[0])), dtype=np.float32)
+        n_kept = 0
+        cutoff = threshold - _DEDUP_SIM_EPS
+
+        survivors: list[dict[str, str | int | float]] = []
+        for pos, result in enumerate(ranked):
+            vec = vec_by_pos.get(pos)
+            if vec is None:
+                survivors.append(result)
+                continue
+            if n_kept and float((kept_mat[:n_kept] @ vec).max()) >= cutoff:
+                continue
+            kept_mat[n_kept] = vec
+            n_kept += 1
+            survivors.append(result)
+        return survivors
 
     def _mmr_dedup(
         self,

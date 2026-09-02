@@ -212,6 +212,15 @@ Adaptive RRF, self-supervised embedding refinement, a negative result on post-RR
 
 ---
 
+## What's New in v0.39
+
+- **Cross-document near-duplicate collapse** (v0.39) -- MMR only penalises chunks of the *same* document, so a corpus holding many near-identical **documents** (audit logs, mirrored notes, a file ingested repeatedly) could fill every result slot with restatements of one answer. `dedup_threshold=0.95` drops a chunk whose cosine similarity to an already-kept, higher-ranked chunk is at or above the threshold, regardless of document. Opt-in: the default leaves ranking untouched. Available on `VstashStore.search`, `Memory.search`, MCP `vstash_search`, and CLI `vstash search --dedup 0.95` (#509).
+- **Query cache correctness fix** (v0.39) -- with `[cache] query_cache_size > 0`, a filtered search (`filters={"not": {...}}`) could be served the cached results of the *unfiltered* query, because the filter tree was missing from the cache key entirely (#509).
+- **Tier-0 content-hash dedup on `remember`** (v0.39) -- re-ingesting byte-identical content is now a NOOP instead of a re-chunk plus re-embed (#429).
+- **Atomic content updates + autocommit connection** (v0.39) -- `Memory.update(text=...)` replaces every chunk through `add_documents_batch`, and the SQLite connection runs in autocommit with explicit `BEGIN IMMEDIATE` so a write lock is never held open across a read (#423, #424, #430).
+- **Frozen result models** (v0.39) -- the query LRU cache hands out shared objects, so every result model is now immutable; one caller can no longer corrupt another's cached entry (#427).
+- **Python 3.13 in CI** (v0.39) -- tested on 3.10 through 3.13, matching the classifiers (#431).
+
 ## What's New in v0.37
 
 - **`Memory.update()` — in-place document mutation** (v0.37) -- update a stored doc without re-adding it. `Memory.update(path, title=..., tags=...)` runs a single atomic metadata `UPDATE` (no re-chunking, no embedding); `Memory.update(path, text=...)` re-chunks + re-embeds and replaces every chunk while preserving all other metadata. CLI `vstash update <path> [--text|--title|--tags]` (`--text -` for stdin); MCP `vstash_update` (#365).

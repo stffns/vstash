@@ -586,6 +586,45 @@ def _embed_hf_st(texts: list[str], model_name: str) -> list[list[float]]:
     return [list(map(float, v)) for v in vecs]
 
 
+def _hf_onnx_failure_is_permanent(exc: BaseException) -> bool:
+    """Classify an ``_init_hf_onnx`` failure as structural or transient.
+
+    Only structural failures (the repo genuinely lacks the artifact, or
+    the downloaded export itself is broken -- e.g. a ``model.onnx`` stub
+    whose external data file was never uploaded) may mark the model in
+    ``_hf_onnx_unavailable`` for the rest of the process.  Network-ish
+    failures (offline with a cold cache, connection reset, HTTP 5xx)
+    must NOT: the next call retries ONNX once the network recovers
+    instead of silently paying the SentenceTransformer path forever.
+    """
+    try:
+        from huggingface_hub.errors import (
+            EntryNotFoundError,
+            LocalEntryNotFoundError,
+            RepositoryNotFoundError,
+            RevisionNotFoundError,
+        )
+    except ImportError:
+        return True
+    # Offline / cold-cache miss subclasses EntryNotFoundError but is the
+    # canonical *transient* case -- test it first.
+    if isinstance(exc, LocalEntryNotFoundError):
+        return False
+    # These subclass HfHubHTTPError (and through requests, OSError), so
+    # they must be classified BEFORE the broad OSError bucket below: a
+    # repo/revision/entry that doesn't resolve won't fix itself by
+    # retrying, and neither will gated access (GatedRepoError
+    # subclasses RepositoryNotFoundError).
+    if isinstance(exc, (EntryNotFoundError, RepositoryNotFoundError, RevisionNotFoundError)):
+        return True
+    # requests' ConnectionError / Timeout / HTTPError all subclass
+    # OSError, as does anything filesystem-transient.  The permanent
+    # HTTP cases (missing repo/entry, gated) were caught above.
+    # Anything else came from constructing the session/tokenizer out of
+    # already-downloaded files: structural.
+    return not isinstance(exc, OSError)
+
+
 def _embed_hf_onnx(texts: list[str], model_name: str) -> list[list[float]]:
     """Embed texts using a custom HF ONNX model with mean pooling.
 
@@ -604,12 +643,15 @@ def _embed_hf_onnx(texts: list[str], model_name: str) -> list[list[float]]:
     try:
         session, tokenizer, max_len = _init_hf_onnx(model_name)
     except Exception as exc:  # includes onnxruntime RuntimeException
+        permanent = _hf_onnx_failure_is_permanent(exc)
         _logger.warning(
-            "HF ONNX init failed for %s (%s); falling back to sentence-transformers.",
+            "HF ONNX init failed for %s (%s); falling back to sentence-transformers%s.",
             model_name,
             exc.__class__.__name__,
+            " for this process" if permanent else "; will retry ONNX on the next call",
         )
-        _hf_onnx_unavailable.add(model_name)
+        if permanent:
+            _hf_onnx_unavailable.add(model_name)
         return _embed_hf_st(texts, model_name)
     all_embeddings: list[list[float]] = []
     batch_size = 32
@@ -744,13 +786,23 @@ def _warmup_mlx(model_name: str) -> None:
 
 # Active backend — set once by warmup() or first call
 _active_backend: Literal["onnx", "mlx"] | None = None
+_active_backend_lock = threading.Lock()
 
 
 def _resolve(backend: BackendType = "auto") -> Literal["onnx", "mlx"]:
-    """Resolve and cache the active backend."""
+    """Resolve and cache the active backend.
+
+    Double-checked locking: concurrent first callers must not both run
+    ``resolve_backend`` (it probes optional imports like mlx and the
+    last writer would win, so two callers passing different ``backend``
+    hints could observe different resolutions for the same process).
+    The fast path stays lock-free once the backend is pinned.
+    """
     global _active_backend
     if _active_backend is None:
-        _active_backend = resolve_backend(backend)
+        with _active_backend_lock:
+            if _active_backend is None:
+                _active_backend = resolve_backend(backend)
     return _active_backend
 
 

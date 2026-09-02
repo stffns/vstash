@@ -19,6 +19,7 @@ Design:
 
 from __future__ import annotations
 
+import bisect
 import threading
 import time
 from collections import defaultdict
@@ -108,10 +109,16 @@ class Histogram:
         """
         self._sum += value_ms
         self._count += 1
-        for i, upper in enumerate(self._buckets_upper):
-            if value_ms <= upper:
-                self._bucket_counts[i] += 1
-                return
+        # Buckets are sorted ascending, so the first upper bound >= value_ms
+        # (i.e. value_ms <= upper) is bisect_left -- O(log b) in C vs the previous
+        # O(b) Python scan, which runs under the registry lock on every
+        # store.search(). The default buckets end with +Inf so the index is
+        # always in range; the guard preserves the old loop's fall-through for a
+        # custom buckets_ms without an +Inf sentinel (value above all bounds is
+        # counted in sum/count but increments no bucket).
+        idx = bisect.bisect_left(self._buckets_upper, value_ms)
+        if idx < len(self._bucket_counts):
+            self._bucket_counts[idx] += 1
 
     def count(self) -> int:
         return self._count

@@ -361,6 +361,7 @@ class Memory:
         tags: str | list[str] | None = None,
         filters: dict | None = None,
         mmr_lambda: float = 0.5,
+        dedup_threshold: float | None = None,
         vec_weight: float | None = None,
         fts_weight: float | None = None,
         retrieval_mode: Literal["hybrid", "vec_only", "fts_only"] | None = None,
@@ -397,6 +398,16 @@ class Memory:
                 ``{"or": [{"collection": "docs"}, {"tags": "urgent"}]}``.
                 AND-combined with the flat filters above. Values are always
                 bound as SQL parameters.
+            dedup_threshold: Opt-in cross-document near-duplicate
+                collapse. ``None`` (default) leaves ranking untouched.
+                When set, a chunk is dropped if its cosine similarity to
+                an already kept, higher-ranked chunk is
+                ``>= dedup_threshold``, even across different documents
+                -- which ``mmr_lambda`` never does, since MMR only
+                penalises same-document siblings. Range ``(0.0, 1.0]``;
+                try ``0.95`` when one answer is mirrored across many
+                documents (audit logs, re-ingested revisions) and floods
+                every result slot.
             vec_weight: Pin the RRF vector weight for this single call,
                 overriding adaptive RRF. Valid range ``[0.0, 1.0]``.
                 Pass ``None`` (default) to keep adaptive per-query
@@ -461,6 +472,7 @@ class Memory:
             tags=tags,
             filters=filters,
             mmr_lambda=mmr_lambda,
+            dedup_threshold=dedup_threshold,
             vec_weight=vec_weight,
             fts_weight=fts_weight,
             retrieval_mode=_mode,
@@ -929,28 +941,34 @@ class Memory:
         # Content update: replace the chunks in place with the
         # caller-supplied text. We deliberately do NOT re-read the
         # path from disk (the caller is overriding the content), and
-        # we preserve every metadata field the caller did NOT pass so
-        # tags / project / layer / source_type / collection survive a
-        # content-only refresh.
+        # the store preserves every metadata field the caller did NOT
+        # pass so tags / project / layer / source_type / collection
+        # survive a content-only refresh.
         #
         # The scope is whatever the caller asked for: ``col`` is
         # ``"default"`` / explicit string / ``None`` (=all collections).
         # We do NOT collapse ``"default"`` to ``None`` -- doing so
         # would silently widen the scope and re-introduce #165.
-        existing_rows = self._store._conn.execute(
-            "SELECT path, title, source_type, collection, "
-            "project, layer, tags, chunk_count, char_count, added_at "
-            "FROM documents WHERE path = ?" + (" AND collection = ?" if col is not None else ""),
+        #
+        # Advisory existence probe so a not-found update returns before
+        # paying the chunk+embed pipeline. The AUTHORITATIVE matched set
+        # is discovered inside ``replace_document_content``'s own
+        # transaction, so a concurrent writer in the embed window below
+        # cannot make us replay a stale snapshot (resurrect a deleted
+        # copy / miss a new one).
+        probe = self._store._conn.execute(
+            "SELECT 1 FROM documents WHERE path = ?"
+            + (" AND collection = ?" if col is not None else "")
+            + " LIMIT 1",
             [source_str, col] if col is not None else [source_str],
-        ).fetchall()
-        if not existing_rows:
+        ).fetchone()
+        if probe is None:
             return {
                 "status": "not_found",
                 "mode": "content",
                 "fields": [],
                 "chunks": 0,
             }
-        existing_docs = [DocumentInfo(**dict(row)) for row in existing_rows]
 
         # Chunk + embed the new text once and reuse for every
         # collection that holds this ``source``. ``chunk_text`` and
@@ -971,32 +989,33 @@ class Memory:
             }
         new_embeddings = embed_texts(new_chunks, self._cfg.embeddings.model)
 
-        # Delete-then-add, scoped to the same set of collections we
-        # just listed. Re-add into *each* existing collection so a
-        # multi-collection update does not silently collapse the doc
-        # into a single collection. Not strictly atomic (the doc is
-        # briefly missing between the two steps), but the same window
-        # already exists in the ``force=True`` re-ingest path used by
-        # ``add()`` and the watch worker.
-        self._store.delete_document(source_str, collection=col)
-        for existing in existing_docs:
-            self._store.add_document(
-                path=source_str,
-                title=title if title is not None else existing.title,
-                chunks=new_chunks,
-                embeddings=new_embeddings,
-                source_type=existing.source_type,
-                collection=existing.collection,
-                project=existing.project,
-                layer=existing.layer,
-                tags=tags if tags is not None else existing.tags,
-            )
+        # One store call: discovery + per-collection replace run inside
+        # a single write lock + BEGIN IMMEDIATE, so a failure on any
+        # collection rolls the whole update back and a concurrent
+        # delete/add cannot slip between listing and replacing.
+        replaced = self._store.replace_document_content(
+            source_str,
+            chunks=new_chunks,
+            embeddings=new_embeddings,
+            title=title,
+            tags=tags,
+            collection=col,
+        )
+        if replaced == 0:
+            # The doc disappeared between the advisory probe and the
+            # replace (e.g. a concurrent remove). Nothing was written.
+            return {
+                "status": "not_found",
+                "mode": "content",
+                "fields": [],
+                "chunks": 0,
+            }
         fields = [k for k, v in (("text", text), ("title", title), ("tags", tags)) if v is not None]
         return {
             "status": "updated",
             "mode": "content",
             "fields": fields,
-            "chunks": len(new_chunks) * len(existing_docs),
+            "chunks": len(new_chunks) * replaced,
         }
 
     def list(
@@ -1055,6 +1074,7 @@ class Memory:
         title: str | None = None,
         tags: str | None = None,
         source: str | None = None,
+        project: object = _UNSET,
     ) -> dict:
         """Save a journal entry for cross-session recall.
 
@@ -1066,6 +1086,9 @@ class Memory:
             title: Optional title (auto-generated with timestamp if None).
             tags: Comma-separated tags (auto-adds 'journal').
             source: Source identifier (e.g. 'agent', 'session', 'hook').
+            project: Override the constructor's project tag for this
+                entry. Pass ``None`` to save without a project; omit to
+                use the instance default (same semantics as ``search``).
 
         Returns:
             Dict with entry metadata.
@@ -1080,7 +1103,7 @@ class Memory:
         return journal_save(
             text,
             title=title,
-            project=self._project,
+            project=self._resolve_project(project),
             tags=tags,
             source=source,
             cfg=self._cfg,
@@ -1094,6 +1117,7 @@ class Memory:
         tags: str | list[str] | None = None,
         added_after: str | None = None,
         added_before: str | None = None,
+        project: object = _UNSET,
     ) -> list[dict]:
         """Recall relevant journal entries from past sessions.
 
@@ -1111,6 +1135,9 @@ class Memory:
                 entries logged on or after this date.
             added_before: ISO date — only return entries logged strictly
                 before this date.
+            project: Override the constructor's project filter. Pass
+                ``None`` to recall across every project; omit to use the
+                instance default (same semantics as ``search``).
 
         Returns:
             List of dicts with text, title, score/added_at.
@@ -1126,7 +1153,7 @@ class Memory:
         return journal_recall(
             query=query,
             top_k=top_k,
-            project=self._project,
+            project=self._resolve_project(project),
             tags=tags,
             added_after=added_after,
             added_before=added_before,
@@ -1138,12 +1165,16 @@ class Memory:
         *,
         limit: int = 20,
         recent: str | None = None,
+        project: object = _UNSET,
     ) -> list[dict]:
         """Chronological view of journal entries (newest first).
 
         Args:
             limit: Max number of entries to return.
             recent: Time window filter (e.g. '7d', '24h', '2w').
+            project: Override the constructor's project filter. Pass
+                ``None`` to list every project; omit to use the instance
+                default (same semantics as ``search``).
 
         Returns:
             List of dicts with title, project, tags, chunks, chars, added_at.
@@ -1153,7 +1184,7 @@ class Memory:
         return journal_log(
             limit=limit,
             recent=recent,
-            project=self._project,
+            project=self._resolve_project(project),
             cfg=self._cfg,
         )
 
@@ -1162,12 +1193,16 @@ class Memory:
         age: str,
         *,
         dry_run: bool = False,
+        project: object = _UNSET,
     ) -> dict:
         """Remove journal entries older than the specified age.
 
         Args:
             age: Age threshold like '30d', '2w', '24h'.
             dry_run: If True, report what would be deleted without deleting.
+            project: Override the constructor's project filter. Pass
+                ``None`` to prune across every project; omit to use the
+                instance default (same semantics as ``search``).
 
         Returns:
             Dict with count of deleted entries and their titles.
@@ -1176,7 +1211,7 @@ class Memory:
 
         return journal_prune(
             age,
-            project=self._project,
+            project=self._resolve_project(project),
             dry_run=dry_run,
             cfg=self._cfg,
         )

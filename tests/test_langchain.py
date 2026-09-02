@@ -32,15 +32,19 @@ class TestVstashRetrieverUnit:
         mock_memory = MagicMock(spec=Memory)
         mock_memory.search.return_value = [
             SearchResult(
-                chunk_id=0,
+                chunk_id=7,
                 text="Python is a programming language.",
                 title="Python Guide",
                 path="/docs/python.md",
                 chunk=0,
                 score=0.95,
+                collection="docs",
+                tags="python,guide",
+                layer="reference",
+                added_at="2026-06-10T00:00:00+00:00",
             ),
             SearchResult(
-                chunk_id=1,
+                chunk_id=8,
                 text="Python supports multiple paradigms.",
                 title="Python Guide",
                 path="/docs/python.md",
@@ -67,7 +71,9 @@ class TestVstashRetrieverUnit:
         assert docs[1].page_content == "Python supports multiple paradigms."
 
     def test_document_metadata(self) -> None:
-        """Document metadata contains source, title, score, and chunk."""
+        """Document metadata exposes the full SearchResult surface
+        (parity with the other adapters): source/title/score/chunk plus
+        chunk_id, collection, tags, layer, and added_at."""
         retriever = self._make_retriever()
         docs = retriever.invoke("programming language")
 
@@ -76,6 +82,17 @@ class TestVstashRetrieverUnit:
         assert meta["title"] == "Python Guide"
         assert meta["score"] == 0.95
         assert meta["chunk"] == 0
+        assert meta["chunk_id"] == 7
+        assert meta["collection"] == "docs"
+        assert meta["tags"] == "python,guide"
+        assert meta["layer"] == "reference"
+        assert meta["added_at"] == "2026-06-10T00:00:00+00:00"
+        # Optional fields default to None (still present, never missing).
+        meta2 = docs[1].metadata
+        assert meta2["chunk_id"] == 8
+        assert meta2["collection"] is None
+        assert meta2["tags"] is None
+        assert meta2["layer"] is None
 
     def test_top_k_passed_to_search(self) -> None:
         """top_k parameter is forwarded to Memory.search()."""

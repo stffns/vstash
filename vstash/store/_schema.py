@@ -36,19 +36,24 @@ class _SchemaManagerMixin:
         """Initialize database schema if not present."""
         # Create tables first (without indexes on new columns)
         conn.executescript(f"""
-            -- Document metadata
+            -- Document metadata.  content_hash is the SHA-256 hex of the
+            -- raw ingested text (text:// ingest only for now); NULL for
+            -- file/url docs and rows written by older builds.  Used for
+            -- Tier-0 write-time dedup: a byte-identical re-remember is a
+            -- NOOP instead of a re-embed.
             CREATE TABLE IF NOT EXISTS documents (
-                id          TEXT PRIMARY KEY,
-                path        TEXT NOT NULL,
-                title       TEXT NOT NULL,
-                source_type TEXT NOT NULL DEFAULT 'file',
-                collection  TEXT NOT NULL DEFAULT 'default',
-                project     TEXT,
-                layer       TEXT,
-                tags        TEXT,
-                char_count  INTEGER DEFAULT 0,
-                chunk_count INTEGER DEFAULT 0,
-                added_at    TEXT NOT NULL
+                id           TEXT PRIMARY KEY,
+                path         TEXT NOT NULL,
+                title        TEXT NOT NULL,
+                source_type  TEXT NOT NULL DEFAULT 'file',
+                collection   TEXT NOT NULL DEFAULT 'default',
+                project      TEXT,
+                layer        TEXT,
+                tags         TEXT,
+                content_hash TEXT,
+                char_count   INTEGER DEFAULT 0,
+                chunk_count  INTEGER DEFAULT 0,
+                added_at     TEXT NOT NULL
             );
 
             -- Chunk text + position
@@ -185,17 +190,10 @@ class _SchemaManagerMixin:
         else:
             existing = stored_version
 
-        now_iso = datetime.now(timezone.utc).isoformat()
-        conn.execute(
-            "INSERT OR REPLACE INTO store_meta (key, value, updated_at) VALUES (?, ?, ?)",
-            ["schema_version", existing, now_iso],
-        )
-        conn.execute(
-            "INSERT OR REPLACE INTO store_meta (key, value, updated_at) VALUES (?, ?, ?)",
-            ["vstash_version", _vstash_version, now_iso],
-        )
-        conn.commit()
-
+        # Reject unknown versions BEFORE stamping anything: refusing to
+        # open a future DB must leave its store_meta untouched (the
+        # newer build's vstash_version row in particular), so the
+        # refused open is a pure no-op on the file.
         if existing not in KNOWN_SCHEMA_VERSIONS:
             msg = (
                 f"Database at {self.db_path} declares schema_version={existing!r}, "
@@ -204,6 +202,26 @@ class _SchemaManagerMixin:
                 f"Upgrade vstash or restore the DB from a compatible backup."
             )
             raise SchemaVersionError(msg)
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        # Autocommit mode: stamp both meta rows in one explicit transaction so
+        # a failure between them can't leave schema_version written without the
+        # matching vstash_version (in deferred mode the implicit transaction
+        # batched the pair).
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO store_meta (key, value, updated_at) VALUES (?, ?, ?)",
+                ["schema_version", existing, now_iso],
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO store_meta (key, value, updated_at) VALUES (?, ?, ?)",
+                ["vstash_version", _vstash_version, now_iso],
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
     def _migrate_v1_to_v2(self, conn: sqlite3.Connection) -> bool:
         """In-place migrate a v1 DB's ``vec_chunks`` to cosine metric.
@@ -344,6 +362,8 @@ class _SchemaManagerMixin:
             migrations.append("ALTER TABLE documents ADD COLUMN layer TEXT")
         if "tags" not in doc_columns:
             migrations.append("ALTER TABLE documents ADD COLUMN tags TEXT")
+        if "content_hash" not in doc_columns:
+            migrations.append("ALTER TABLE documents ADD COLUMN content_hash TEXT")
 
         # miss_hint column on search_events (issue #157 part 3, 2026-04-21)
         event_columns = {
@@ -361,28 +381,39 @@ class _SchemaManagerMixin:
         if "created_at" not in chunk_columns:
             migrations.append("ALTER TABLE chunks ADD COLUMN created_at TEXT")
 
-        for sql in migrations:
-            conn.execute(sql)
+        # Autocommit mode: run the ALTER TABLE batch AND the created_at
+        # backfill in ONE explicit transaction. The backfill only runs in
+        # the call that ADDS the column (guard below uses the pre-ALTER
+        # column snapshot), so committing the ALTER separately would mean
+        # a crash between the two leaves legacy rows NULL forever -- the
+        # reopen sees the column exists and never backfills.
         if migrations:
-            conn.commit()
-
-        # Backfill created_at from parent document's added_at
-        if "created_at" not in chunk_columns:
-            conn.execute("""
-                UPDATE chunks SET created_at = (
-                    SELECT d.added_at FROM documents d WHERE d.id = chunks.doc_id
-                ) WHERE created_at IS NULL
-            """)
-            conn.commit()
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                for sql in migrations:
+                    conn.execute(sql)
+                # Backfill created_at from parent document's added_at
+                if "created_at" not in chunk_columns:
+                    conn.execute("""
+                        UPDATE chunks SET created_at = (
+                            SELECT d.added_at FROM documents d WHERE d.id = chunks.doc_id
+                        ) WHERE created_at IS NULL
+                    """)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
         # Fix v0.5.0 data: ingestion set access_count=1 for chunks that were
-        # never actually searched. Detect by access_count=1 + no last_accessed_at.
+        # never actually searched. Detect by access_count=1 + no
+        # last_accessed_at. Independent of the ALTER batch (the column
+        # already existed); a single UPDATE is atomic on its own under
+        # autocommit.
         if "access_count" in chunk_columns:
             conn.execute("""
                 UPDATE chunks SET access_count = 0
                 WHERE access_count = 1 AND last_accessed_at IS NULL
             """)
-            conn.commit()
 
     # ------------------------------------------------------------------ #
     # Store metadata (key/value)                                            #

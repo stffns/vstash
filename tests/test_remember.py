@@ -202,6 +202,126 @@ class TestGenerateTitle:
         assert match is not None
 
 
+class TestRememberContentHashDedup:
+    """Tier-0 write-time dedup (memory-manager design doc, Phase 1
+    precursor): a byte-identical re-remember of the same (collection,
+    title) is a NOOP -- no chunking, no embedding, no store write.
+    Changed text still replaces; legacy rows without a stored hash and
+    partial copies are never wrongly skipped."""
+
+    TEXT = "The aardvark memo: decision record about local coder models."
+
+    def _remember(self, mem, text: str):
+        return mem.remember(text, title="dedup-note")
+
+    def test_identical_re_remember_is_skipped(self, tmp_path) -> None:
+        from tests.conftest import requires_sqlite_vec  # noqa: F401
+        from vstash.memory import Memory
+
+        with Memory(db=tmp_path / "t.db") as mem:
+            r1 = self._remember(mem, self.TEXT)
+            assert r1.status == "ok"
+            chunk_count_before = mem._store._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[
+                0
+            ]
+
+            # The skip path must not touch the embed pipeline at all.
+            with patch(
+                "vstash.ingest._embed_with_progress",
+                side_effect=AssertionError("dedup skip must not embed"),
+            ):
+                r2 = self._remember(mem, self.TEXT)
+            assert r2.status == "skipped"
+            assert r2.source == "text://dedup-note"
+
+            chunk_count_after = mem._store._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[
+                0
+            ]
+            assert chunk_count_after == chunk_count_before
+
+    def test_changed_text_replaces(self, tmp_path) -> None:
+        from vstash.memory import Memory
+
+        with Memory(db=tmp_path / "t.db") as mem:
+            assert self._remember(mem, self.TEXT).status == "ok"
+            r2 = self._remember(mem, self.TEXT + " Updated with a zebra clause.")
+            assert r2.status == "ok"
+            texts = [
+                row[0] for row in mem._store._conn.execute("SELECT text FROM chunks").fetchall()
+            ]
+            assert any("zebra" in t for t in texts), "changed text must replace the old copy"
+
+    def test_legacy_row_without_hash_is_not_skipped(self, tmp_path) -> None:
+        """Rows written before the content_hash column (or by paths
+        that don't set it) must never be treated as identical."""
+        from vstash.memory import Memory
+
+        with Memory(db=tmp_path / "t.db") as mem:
+            assert self._remember(mem, self.TEXT).status == "ok"
+            # Fake a legacy row: NULL the stored hash.
+            mem._store._conn.execute("UPDATE documents SET content_hash = NULL")
+            mem._store._conn.commit()
+
+            r2 = self._remember(mem, self.TEXT)
+            assert r2.status == "ok", "legacy row must re-ingest, not skip"
+            # The re-ingest stored the hash, so the THIRD call skips.
+            r3 = self._remember(mem, self.TEXT)
+            assert r3.status == "skipped"
+
+    def test_partial_copy_is_healed_not_skipped(self, tmp_path) -> None:
+        """A hash match on a PARTIAL copy (crash mid-ingest) must fall
+        through to re-ingest, mirroring the file-ingest healing path."""
+        from vstash.memory import Memory
+
+        with Memory(db=tmp_path / "t.db") as mem:
+            assert self._remember(mem, self.TEXT).status == "ok"
+            # Simulate a torn ingest: declared chunk_count no longer
+            # matches the actual chunk rows.
+            mem._store._conn.execute("UPDATE documents SET chunk_count = chunk_count + 1")
+            mem._store._conn.commit()
+            assert (
+                mem._store.doc_completeness("text://dedup-note", collection="default") == "partial"
+            )
+
+            r2 = self._remember(mem, self.TEXT)
+            assert r2.status == "ok", "partial copy must heal via re-ingest"
+            assert (
+                mem._store.doc_completeness("text://dedup-note", collection="default") == "complete"
+            )
+
+    def test_content_hash_column_migrates_on_open(self, tmp_path) -> None:
+        """An existing DB without the content_hash column gains it on
+        the next open (additive ALTER migration)."""
+        import sqlite3
+
+        from vstash.memory import Memory
+
+        if sqlite3.sqlite_version_info < (3, 35, 0):
+            import pytest
+
+            pytest.skip("ALTER TABLE DROP COLUMN needs sqlite >= 3.35")
+
+        db = tmp_path / "t.db"
+        with Memory(db=db) as mem:
+            assert self._remember(mem, self.TEXT).status == "ok"
+        # Strip the column to fake a pre-migration DB.
+        conn = sqlite3.connect(str(db))
+        conn.execute("ALTER TABLE documents DROP COLUMN content_hash")
+        conn.commit()
+        conn.close()
+
+        with Memory(db=db) as mem:
+            cols = {
+                row[1]
+                for row in mem._store._conn.execute("PRAGMA table_info(documents)").fetchall()
+            }
+            assert "content_hash" in cols
+            # Hash is NULL post-migration, so the same text re-ingests
+            # (no false skip) and re-stamps the hash.
+            assert self._remember(mem, self.TEXT).status == "ok"
+            assert self._remember(mem, self.TEXT).status == "skipped"
+
+
 class TestRememberCLI:
     """Test the vstash remember CLI command."""
 

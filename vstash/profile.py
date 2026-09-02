@@ -243,6 +243,7 @@ def federated_search(
     added_after: str | None = None,
     added_before: str | None = None,
     expand_window: int = 0,
+    dedup_threshold: float | None = None,
 ) -> list[tuple[str, SearchResult]]:
     """Search across all profiles and merge results with RRF.
 
@@ -265,12 +266,26 @@ def federated_search(
         project: Optional project filter.
         layer: Optional layer filter.
         expand_window: Adjacent-chunk window for context expansion (0 = off).
+        dedup_threshold: Opt-in cross-document near-duplicate collapse,
+            applied **per profile** before the cross-profile RRF merge --
+            each store collapses its own duplicates, so two profiles that
+            each hold a copy of the same document still contribute one
+            result apiece. Cross-profile collapse would need embeddings
+            from stores that are already closed by merge time.
+            ``None`` (default) leaves ranking untouched.
 
     Returns:
         List of (profile_name, SearchResult) tuples sorted by merged score.
         Profile name is "default" for the global database.
     """
     from ._store_open import open_store_for_config
+    from .validation import validate_dedup_threshold
+
+    # Validate before the per-profile loop: each profile's search runs inside
+    # an ``except Exception`` that treats a failure as "this profile had no
+    # results", which would turn an out-of-range threshold into an empty
+    # result set and a zero exit code instead of an error.
+    validate_dedup_threshold(dedup_threshold)
 
     # Collect all profile db paths (deduplicated by resolved path)
     profiles: list[tuple[str, Path]] = []
@@ -312,6 +327,7 @@ def federated_search(
                     tags=tags,
                     added_after=added_after,
                     added_before=added_before,
+                    dedup_threshold=dedup_threshold,
                 )
                 # Expand context per-store before closing (the only
                 # opportunity — stores are closed after this).  Note: this

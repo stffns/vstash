@@ -51,6 +51,21 @@ class TestQueryCache:
         r2 = cached_store.search(q_emb, "python", top_k=2)
         assert r1 is not r2
 
+    def test_cache_hit_results_are_immutable(self, cached_store: VstashStore):
+        """The cache copies only the LIST on a hit; the SearchResult
+        instances inside are shared with the cached entry. They must be
+        frozen: a caller mutating ``r.score`` would otherwise silently
+        poison every later hit for that query."""
+        import pydantic
+
+        q_emb = [0.1] * cached_store.embedding_dim
+        r1 = cached_store.search(q_emb, "python", top_k=2)
+        original_score = r1[0].score
+        with pytest.raises(pydantic.ValidationError):
+            r1[0].score = 999.0
+        r2 = cached_store.search(q_emb, "python", top_k=2)
+        assert r2[0].score == original_score, "mutation leaked into the cached entry"
+
     def test_cache_miss_on_different_query(self, cached_store: VstashStore):
         dim = cached_store.embedding_dim
         r1 = cached_store.search([0.1] * dim, "python", top_k=2)

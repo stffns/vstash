@@ -184,12 +184,10 @@ filterwarnings = [
 source = ["vstash"]
 branch = true
 parallel = true
-# Skip the auto-generated CLI entry shim and the optional sub-backends
-# whose code paths are exercised by integration tests gated off the
-# default CI run (snapvec backends require the `snapvec` package and
-# fitted index files; treesitter requires the language pack).
+# Skip the optional sub-backend shim whose code paths are exercised by
+# integration tests gated off the default CI run (snapvec backends
+# require the `snapvec` package and fitted index files).
 omit = [
-    "vstash/__main__.py",
     "vstash/_ivfpq_backend.py",
 ]
 

@@ -86,6 +86,32 @@ class TestHistogram:
         assert set(snap.keys()) == {"count", "sum_ms", "mean_ms", "buckets_ms"}
         assert isinstance(snap["buckets_ms"], list)
 
+    def test_observe_boundary_values_land_in_le_bucket(self):
+        """A value exactly on a bucket boundary lands in that bucket (value <=
+        upper) -- the discriminating case for the bisect_left lookup vs the old
+        linear `<=` scan."""
+        h = Histogram()
+        for v in (1.0, 2.0, 5.0, 0.5, 7000.0):
+            h.observe(v)
+        buckets = {b["le"]: b["count"] for b in h.snapshot()["buckets_ms"]}
+        # cumulative: <=1.0 -> {1.0, 0.5}; +2.0; +5.0; the 7000.0 only at +Inf
+        assert buckets[1.0] == 2
+        assert buckets[2.0] == 3
+        assert buckets[5.0] == 4
+        assert buckets[5000.0] == 4
+        assert buckets["+Inf"] == 5
+
+    def test_observe_custom_buckets_without_inf_does_not_crash(self):
+        """A value above all bounds in a custom (no +Inf) bucket set is counted
+        in sum/count but increments no bucket -- preserving the old loop's
+        fall-through (the bisect index would otherwise be out of range)."""
+        h = Histogram(buckets_ms=(1.0, 5.0))  # deliberately no +Inf sentinel
+        h.observe(100.0)  # above every bound
+        assert h.count() == 1
+        assert h.sum_ms() == 100.0
+        buckets = {b["le"]: b["count"] for b in h.snapshot()["buckets_ms"]}
+        assert buckets[5.0] == 0  # no bucket incremented, no IndexError
+
 
 # ------------------------------------------------------------------ #
 # MetricsRegistry                                                        #
@@ -200,6 +226,22 @@ class TestStoreInstrumentation:
         snap = registry.snapshot()
         assert "search_latency_ms" in snap["histograms"]
         assert snap["histograms"]["search_latency_ms"]["count"] == 1
+
+    def test_record_spread_prunes_to_last_50(self, sample_store: VstashStore):
+        """record_spread keeps a sliding window of the last 50 entries -- the
+        cheap range-delete that replaced the per-search NOT IN (subquery) prune
+        must keep the newest and drop the oldest."""
+        for i in range(60):
+            sample_store.record_spread(float(i))
+        spreads = [
+            r[0]
+            for r in sample_store._conn.execute(
+                "SELECT spread FROM search_stats ORDER BY id"
+            ).fetchall()
+        ]
+        assert len(spreads) == 50  # capped at the window size
+        assert spreads[-1] == 59.0  # newest kept
+        assert min(spreads) == 10.0  # oldest (0..9) pruned
 
     def test_idf_cache_hits_and_misses(self, sample_store: VstashStore):
         """The IDF cache should record exactly one miss per invalidation

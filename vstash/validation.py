@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING
 # imports keep working. The single source of truth is `errors.py`.
 from .errors import (
     ChunkTooLargeError,
+    DedupThresholdOutOfRangeError,
     DistanceCutoffOutOfRangeError,
     EmbeddingMismatchError,
     EmptyDocumentError,
@@ -50,6 +51,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ChunkTooLargeError",
+    "DedupThresholdOutOfRangeError",
     "DistanceCutoffOutOfRangeError",
     "EmbeddingMismatchError",
     "EmptyDocumentError",
@@ -62,6 +64,7 @@ __all__ = [
     "RecencyBoostOutOfRangeError",
     "TooManyChunksError",
     "TopKOutOfRangeError",
+    "validate_dedup_threshold",
     "validate_document_input",
     "validate_identifier",
     "validate_search_input",
@@ -102,6 +105,27 @@ def validate_identifier(
         raise InvalidIdentifierError(msg)
 
 
+def validate_dedup_threshold(dedup_threshold: float | None) -> None:
+    """Validate the cross-document near-duplicate collapse threshold.
+
+    Standalone because ``federated_search`` needs the same check without the
+    rest of the search-input surface: it runs each profile's query inside a
+    per-profile ``except Exception``, which would otherwise swallow the range
+    error and return an empty result set instead of failing.
+    """
+    if dedup_threshold is None:
+        return
+    if not isinstance(dedup_threshold, (int, float)) or isinstance(dedup_threshold, bool):
+        msg = (
+            "dedup_threshold must be a float in (0.0, 1.0] or None, "
+            f"got {type(dedup_threshold).__name__}"
+        )
+        raise DedupThresholdOutOfRangeError(msg)
+    if not 0.0 < dedup_threshold <= 1.0:
+        msg = f"dedup_threshold {dedup_threshold} out of range (0.0, 1.0]"
+        raise DedupThresholdOutOfRangeError(msg)
+
+
 def validate_search_input(
     *,
     query_text: str,
@@ -111,6 +135,7 @@ def validate_search_input(
     limits: LimitsConfig,
     vec_weight: float | None = None,
     fts_weight: float | None = None,
+    dedup_threshold: float | None = None,
 ) -> None:
     """Validate the public arguments to :meth:`VstashStore.search`.
 
@@ -162,6 +187,8 @@ def validate_search_input(
         if value < 0.0 or value > 1.0:
             msg = f"{name} {value} out of range [0.0, 1.0]"
             raise RRFWeightOutOfRangeError(msg)
+
+    validate_dedup_threshold(dedup_threshold)
 
 
 def validate_document_input(
