@@ -51,6 +51,35 @@ class TestSearchValidation:
         result = runner.invoke(app, ["search", "python", "--top-k", "3"])
         assert result.exit_code == 0
 
+    def test_search_rejects_out_of_range_dedup(self) -> None:
+        """--dedup validates at the boundary like every other knob, instead of
+        reaching the store and raising a raw traceback."""
+        result = runner.invoke(app, ["search", "python", "--dedup", "1.5"])
+        assert result.exit_code == 2
+        assert "dedup_threshold" in result.output
+
+    def test_search_rejects_out_of_range_dedup_json(self) -> None:
+        result = runner.invoke(app, ["search", "python", "--dedup", "1.5", "--json"])
+        assert result.exit_code == 2
+        import json
+
+        payload = json.loads(result.output.strip())
+        assert "dedup_threshold" in payload["error"]
+
+    def test_search_accepts_valid_dedup(self) -> None:
+        result = runner.invoke(app, ["search", "python", "--dedup", "0.95"])
+        assert result.exit_code == 0
+
+    def test_dedup_rejected_with_miss_analysis(self) -> None:
+        """miss_analysis traces the pipeline without the collapse, so silently
+        ignoring --dedup could report a document as present that the real
+        deduped query drops."""
+        result = runner.invoke(
+            app, ["search", "python", "--miss", "/test/python_guide.md", "--dedup", "0.95"]
+        )
+        assert result.exit_code == 1
+        assert "--dedup is not supported" in result.output
+
 
 class TestListCommand:
     """Test 'vstash list' command."""

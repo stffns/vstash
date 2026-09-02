@@ -361,6 +361,7 @@ class Memory:
         tags: str | list[str] | None = None,
         filters: dict | None = None,
         mmr_lambda: float = 0.5,
+        dedup_threshold: float | None = None,
         vec_weight: float | None = None,
         fts_weight: float | None = None,
         retrieval_mode: Literal["hybrid", "vec_only", "fts_only"] | None = None,
@@ -397,6 +398,16 @@ class Memory:
                 ``{"or": [{"collection": "docs"}, {"tags": "urgent"}]}``.
                 AND-combined with the flat filters above. Values are always
                 bound as SQL parameters.
+            dedup_threshold: Opt-in cross-document near-duplicate
+                collapse. ``None`` (default) leaves ranking untouched.
+                When set, a chunk is dropped if its cosine similarity to
+                an already kept, higher-ranked chunk is
+                ``>= dedup_threshold``, even across different documents
+                -- which ``mmr_lambda`` never does, since MMR only
+                penalises same-document siblings. Range ``(0.0, 1.0]``;
+                try ``0.95`` when one answer is mirrored across many
+                documents (audit logs, re-ingested revisions) and floods
+                every result slot.
             vec_weight: Pin the RRF vector weight for this single call,
                 overriding adaptive RRF. Valid range ``[0.0, 1.0]``.
                 Pass ``None`` (default) to keep adaptive per-query
@@ -461,6 +472,7 @@ class Memory:
             tags=tags,
             filters=filters,
             mmr_lambda=mmr_lambda,
+            dedup_threshold=dedup_threshold,
             vec_weight=vec_weight,
             fts_weight=fts_weight,
             retrieval_mode=_mode,

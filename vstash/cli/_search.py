@@ -223,6 +223,19 @@ def search(
         "--miss-chunk",
         help="Diagnose why this expected chunk id did not appear in results",
     ),
+    dedup_threshold: float | None = typer.Option(
+        None,
+        "--dedup",
+        help=(
+            "Collapse near-duplicate chunks ACROSS documents: drop a chunk "
+            "whose cosine similarity to an already kept, higher-ranked chunk "
+            "is >= this value. Range (0.0, 1.0]; try 0.95. Off by default. "
+            "--mmr-lambda never does this -- MMR only penalises chunks of "
+            "the same document, so a corpus with many near-identical "
+            "documents (audit logs, re-ingested revisions) can fill every "
+            "slot with restatements of one answer."
+        ),
+    ),
     exact_match: str | None = typer.Option(
         None,
         "--exact-match",
@@ -264,6 +277,12 @@ def search(
 
         if all_profiles:
             raise _miss_error("Miss analysis is not supported with --all-profiles.")
+        if dedup_threshold is not None:
+            # miss_analysis() traces the pipeline without the collapse, so
+            # honouring the flag here is impossible and ignoring it would let
+            # the trace report a document as present that the real deduped
+            # query drops.
+            raise _miss_error("--dedup is not supported with --miss / --miss-chunk.")
         with store:
             k = top_k or cfg.chunking.top_k
             # Normalize the path the same way add() does
@@ -347,6 +366,7 @@ def search(
                 distance_cutoff=cfg.limits.max_distance_cutoff,
                 recency_boost=0.0,
                 limits=cfg.limits,
+                dedup_threshold=dedup_threshold,
             )
         except LimitError as exc:
             # Honor --json: emit a JSON error object (not Rich markup) so piped
@@ -377,6 +397,7 @@ def search(
                     added_after=added_after,
                     added_before=added_before,
                     expand_window=1,
+                    dedup_threshold=dedup_threshold,
                 )
                 chunks = [r for _, r in tagged]
                 _search_tagged = tagged
@@ -407,6 +428,7 @@ def search(
                     added_after=added_after,
                     added_before=added_before,
                     explain=explain,
+                    dedup_threshold=dedup_threshold,
                     exact_match=exact_match,
                     exact_match_case_sensitive=exact_match_case_sensitive,
                 )

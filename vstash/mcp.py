@@ -635,6 +635,7 @@ def vstash_search(
     added_before: str | None = None,
     tags: str | None = None,
     mmr_lambda: float = 0.5,
+    dedup_threshold: float | None = None,
     vec_weight: float | None = None,
     fts_weight: float | None = None,
     retrieval_mode: str | None = None,
@@ -663,6 +664,13 @@ def vstash_search(
             ``alphabet``. Tags are case-sensitive.
         mmr_lambda: Intra-document MMR diversity parameter (0.0=max diversity,
             1.0=hard dedup). Default 0.5.
+        dedup_threshold: Opt-in CROSS-document near-duplicate collapse, which
+            mmr_lambda never does (MMR only penalises chunks of the same
+            document). None (default) leaves ranking untouched. When set, a
+            chunk is dropped if its cosine similarity to an already kept,
+            higher-ranked chunk is >= this value. Range (0.0, 1.0]; try 0.95
+            when one answer is mirrored across many documents (audit logs,
+            re-ingested revisions) and floods every result slot.
         vec_weight: Pin the RRF vector weight for this query (overrides adaptive
             RRF). Valid range [0.0, 1.0]. Pass None (default) for adaptive
             per-query weighting. See vstash docs/embedding-models.md for the
@@ -719,6 +727,8 @@ def vstash_search(
         # better answers). Validation errors raise LimitError (a
         # ValueError subclass) and bubble up to the existing
         # ValueError handler below.
+        dedup_coerced = _coerce_optional_float(dedup_threshold, "dedup_threshold")
+
         chunks: list[SearchResult] = search_with_embedding(
             cfg=cfg,
             store=store,
@@ -733,6 +743,7 @@ def vstash_search(
             added_before=added_before,
             tags=tags,
             mmr_lambda=float(mmr_lambda),
+            dedup_threshold=dedup_coerced,
             vec_weight=vec_weight_coerced,
             fts_weight=fts_weight_coerced,
             retrieval_mode=resolved_mode,
