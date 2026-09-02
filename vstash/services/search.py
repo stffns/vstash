@@ -48,6 +48,7 @@ def search_with_embedding(
     tags: str | list[str] | None = None,
     filters: dict | None = None,
     mmr_lambda: float = 0.5,
+    dedup_threshold: float | None = None,
     vec_weight: float | None = None,
     fts_weight: float | None = None,
     retrieval_mode: Literal["hybrid", "vec_only", "fts_only"] | None = None,
@@ -86,6 +87,13 @@ def search_with_embedding(
             Comma-anchored LIKE match so ``alpha`` does not false-match
             ``alphabet``.
         mmr_lambda: MMR diversity coefficient (0.0 to 1.0).
+        dedup_threshold: Opt-in cross-document near-duplicate collapse.
+            ``None`` (default) leaves ranking untouched. When set, a chunk
+            is dropped if its cosine similarity to an already kept,
+            higher-ranked chunk is ``>= dedup_threshold``, even across
+            different documents -- which ``mmr_lambda`` never does, since
+            MMR only penalises same-document siblings. Range ``(0.0, 1.0]``;
+            try ``0.95`` when one answer is mirrored across many documents.
         vec_weight: Pin RRF vector weight; None keeps adaptive RRF.
         fts_weight: Pin RRF FTS weight; None keeps adaptive RRF.
         retrieval_mode: ``"hybrid"`` (default), ``"vec_only"``, or
@@ -174,6 +182,7 @@ def search_with_embedding(
         tags=tags,
         filters=filters,
         mmr_lambda=mmr_lambda,
+        dedup_threshold=dedup_threshold,
         exact_match=exact_match,
         exact_match_case_sensitive=exact_match_case_sensitive,
         **extra_kwargs,

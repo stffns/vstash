@@ -130,6 +130,65 @@ Chunks from *different* documents compete purely on score. When multiple chunks 
 
 ---
 
+## Cross-Document Near-Duplicate Collapse
+
+MMR is deliberately intra-document, which leaves one gap: when the *same
+answer* is mirrored across many **different** documents -- audit logs, a
+re-ingested file, notes copied between collections -- nothing suppresses
+them, and they can take every result slot.
+
+`dedup_threshold` is the opt-in cross-document counterpart. A chunk is
+dropped when its cosine similarity to an already-kept, **higher-ranked**
+chunk is `>= dedup_threshold`, regardless of which document each belongs to.
+
+```python
+store.search(q_emb, query, top_k=10)                        # unchanged
+store.search(q_emb, query, top_k=10, dedup_threshold=0.95)  # collapse
+```
+
+| Property | Behaviour |
+|----------|-----------|
+| Default | `None` -- the collapse never runs and ranking is unchanged |
+| Range | `(0.0, 1.0]`; out-of-range raises `ValueError` |
+| `1.0` | Collapses exact duplicates only (with a float32 tolerance -- the dot product of identical vectors often lands on `0.99999994`) |
+| `0.95` | Reasonable starting point for restated content |
+| Order | Keep-first: the highest-scoring member of a cluster survives |
+| Placement | After the recency boost, **before** MMR and the `top_k` cut, so a slot freed by a duplicate is refilled with distinct content rather than shortening the result list |
+| Missing embedding | Always kept -- an unknown vector is never treated as a duplicate |
+
+Available on every surface:
+
+```bash
+vstash search "query" --dedup 0.95
+```
+
+```python
+memory.search("query", dedup_threshold=0.95)          # SDK
+```
+
+MCP exposes it as the `dedup_threshold` argument of `vstash_search`.
+Under `--all-profiles`, the collapse is applied **per profile** before the
+cross-profile RRF merge: two profiles that each hold a copy of the same
+document still contribute one result apiece, because cross-profile
+comparison would need embeddings from stores that are already closed by
+merge time.
+
+### When to use it
+
+Reach for it when a corpus holds redundant *documents* rather than
+redundant chunks: agent audit trails, mirrored note vaults, snapshots of
+a file ingested repeatedly. A store of distinct documents gains nothing
+from it and should leave it off.
+
+Cost is one embedding fetch over the candidate pool plus a similarity
+compare of each candidate against the ones kept so far. At the default
+`top_k` the pool is 50-200 and this is negligible. It grows with `top_k`
+(the pool is `min(top_k * 10, ...)` over the vector + FTS union), so a
+`top_k` in the thousands on a large corpus makes it measurable: 20 000
+candidates cost ~3.7 s and ~314 MB.
+
+---
+
 ## Relevance Signal
 
 Separate from recency and scoring, vstash provides a **distance-based relevance signal** that works from the very first search:

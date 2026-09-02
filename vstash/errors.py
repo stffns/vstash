@@ -90,6 +90,10 @@ class RecencyBoostOutOfRangeError(LimitError):
     """``recency_boost`` is negative or above the configured maximum."""
 
 
+class DedupThresholdOutOfRangeError(LimitError):
+    """``dedup_threshold`` outside ``(0.0, 1.0]``."""
+
+
 class RRFWeightOutOfRangeError(LimitError):
     """``vec_weight`` or ``fts_weight`` is outside the ``[0.0, 1.0]`` range."""
 
