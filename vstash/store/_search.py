@@ -10,6 +10,7 @@ MRO), so the class is never instantiated on its own.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import sqlite3
@@ -70,6 +71,7 @@ class _SearchEngineMixin:
         mmr_lambda: float,
         retrieval_mode: str,
         cache_epoch: int,
+        filters: dict | None = None,
     ) -> int:
         """Build the search cache key from the full set of query parameters.
 
@@ -79,6 +81,8 @@ class _SearchEngineMixin:
         short-circuit one branch do not collide with hybrid queries of
         the same text. ``tags`` is normalized to a tuple so the same
         filter expressed as ``"a,b"`` and ``["a", "b"]`` shares a key.
+        ``filters`` is canonicalised to sorted JSON because a #106 filter
+        tree is a nested (unhashable) dict.
         """
         # Hash the embedding as a float tuple rather than allocating a numpy
         # array + bytes blob on every search. embed_query is deterministic, so
@@ -106,6 +110,14 @@ class _SearchEngineMixin:
                 tuple(sorted(_normalize_tags(tags))),
                 mmr_lambda,
                 retrieval_mode,
+                # The #106 boolean filter tree was missing from the key
+                # entirely, and unlike ``exact_match`` it does not skip the
+                # cache either: with the query cache enabled, ``search(q)``
+                # and ``search(q, filters={"not": {...}})`` shared one slot,
+                # so whichever ran first served the other its results.
+                # ``sort_keys`` makes sibling dict order irrelevant; list
+                # order stays significant, which only costs a cache miss.
+                None if filters is None else json.dumps(filters, sort_keys=True, default=str),
                 cache_epoch,
             )
         )
@@ -479,6 +491,7 @@ class _SearchEngineMixin:
                 mmr_lambda=mmr_lambda,
                 retrieval_mode=_mode,
                 cache_epoch=self._cache_epoch,
+                filters=filters,
             )
 
         # Per-search miss-analysis tracker (#108).  The tracer is owned
