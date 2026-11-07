@@ -16,7 +16,8 @@
     "dev_frac": 0.1,
     "seed": 42,
     "skip_v3": false,
-    "skip_hybrid": false
+    "skip_hybrid": false,
+    "out": "experiments/results/query_adapter_probe.json"
   },
   "training": {
     "scifact/bias": {
@@ -26,7 +27,7 @@
       "dev_ndcg_base": 0.76,
       "dev_ndcg_best": 0.76,
       "best_epoch": 0,
-      "train_seconds": 0.1,
+      "train_seconds": 0.4,
       "n_pairs": 831
     },
     "scifact/lowrank": {
@@ -34,9 +35,9 @@
       "params": 12288,
       "size_kb_fp32": 48.0,
       "dev_ndcg_base": 0.76,
-      "dev_ndcg_best": 0.8016,
+      "dev_ndcg_best": 0.7955,
       "best_epoch": 6,
-      "train_seconds": 0.1,
+      "train_seconds": 0.5,
       "n_pairs": 831
     },
     "scifact/full": {
@@ -44,9 +45,9 @@
       "params": 147456,
       "size_kb_fp32": 576.0,
       "dev_ndcg_base": 0.76,
-      "dev_ndcg_best": 0.8503,
+      "dev_ndcg_best": 0.8549,
       "best_epoch": 16,
-      "train_seconds": 0.3,
+      "train_seconds": 1.0,
       "n_pairs": 831
     },
     "nfcorpus/bias": {
@@ -56,7 +57,7 @@
       "dev_ndcg_base": 0.3384,
       "dev_ndcg_best": 0.3384,
       "best_epoch": 0,
-      "train_seconds": 5.1,
+      "train_seconds": 41.1,
       "n_pairs": 83774
     },
     "nfcorpus/lowrank": {
@@ -66,7 +67,7 @@
       "dev_ndcg_base": 0.3384,
       "dev_ndcg_best": 0.3384,
       "best_epoch": 0,
-      "train_seconds": 6.8,
+      "train_seconds": 42.8,
       "n_pairs": 83774
     },
     "nfcorpus/full": {
@@ -76,7 +77,7 @@
       "dev_ndcg_base": 0.3384,
       "dev_ndcg_best": 0.3384,
       "best_epoch": 0,
-      "train_seconds": 7.1,
+      "train_seconds": 43.1,
       "n_pairs": 83774
     },
     "fiqa/bias": {
@@ -86,7 +87,7 @@
       "dev_ndcg_base": 0.392,
       "dev_ndcg_best": 0.392,
       "best_epoch": 0,
-      "train_seconds": 2.4,
+      "train_seconds": 7.4,
       "n_pairs": 12718
     },
     "fiqa/lowrank": {
@@ -96,7 +97,7 @@
       "dev_ndcg_base": 0.392,
       "dev_ndcg_best": 0.392,
       "best_epoch": 0,
-      "train_seconds": 2.6,
+      "train_seconds": 7.7,
       "n_pairs": 12718
     },
     "fiqa/full": {
@@ -106,7 +107,7 @@
       "dev_ndcg_base": 0.392,
       "dev_ndcg_best": 0.392,
       "best_epoch": 0,
-      "train_seconds": 2.7,
+      "train_seconds": 7.8,
       "n_pairs": 12718
     },
     "shared/lowrank": {
@@ -116,7 +117,7 @@
       "dev_ndcg_base": 0.4968,
       "dev_ndcg_best": 0.4968,
       "best_epoch": 0,
-      "train_seconds": 9.5,
+      "train_seconds": 49.0,
       "n_pairs": 97323
     }
   },
@@ -154,31 +155,31 @@
           }
         },
         "lowrank": {
-          "dense_ndcg_10": 0.7354,
-          "dense_ndcg_10_unseen": 0.6781,
+          "dense_ndcg_10": 0.7298,
+          "dense_ndcg_10_unseen": 0.67,
           "hybrid": {
-            "ndcg_10": 0.7595,
-            "best_distance_median": 0.5797,
+            "ndcg_10": 0.7544,
+            "best_distance_median": 0.585,
             "tier_share": {
-              "high": 0.077,
+              "high": 0.07,
               "medium": 0.06,
-              "low": 0.863
+              "low": 0.87
             },
-            "ndcg_10_unseen": 0.7027
+            "ndcg_10_unseen": 0.7048
           }
         },
         "full": {
-          "dense_ndcg_10": 0.8267,
-          "dense_ndcg_10_unseen": 0.694,
+          "dense_ndcg_10": 0.824,
+          "dense_ndcg_10_unseen": 0.6883,
           "hybrid": {
-            "ndcg_10": 0.8184,
-            "best_distance_median": 0.6215,
+            "ndcg_10": 0.819,
+            "best_distance_median": 0.6206,
             "tier_share": {
               "high": 0.007,
               "medium": 0.027,
               "low": 0.967
             },
-            "ndcg_10_unseen": 0.7163
+            "ndcg_10_unseen": 0.717
           }
         },
         "lowrank_shared": {
@@ -213,14 +214,14 @@
       "share_of_v3_gain": {
         "dense": {
           "bias": 0.0,
-          "lowrank": 0.27,
-          "full": 1.883,
+          "lowrank": 0.171,
+          "full": 1.836,
           "lowrank_shared": 0.0
         },
         "hybrid": {
           "bias": 0.0,
-          "lowrank": 0.76,
-          "full": 2.105,
+          "lowrank": 0.644,
+          "full": 2.119,
           "lowrank_shared": 0.0
         }
       }

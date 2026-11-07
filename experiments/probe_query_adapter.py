@@ -308,11 +308,20 @@ def build_pairs(emb: dict, qrels: dict, n_hard: int, pool: int) -> dict:
                 nv.append(hard[i])
                 owner.append(qid)
     qindex = {q: i for i, q in enumerate(dict.fromkeys(owner))}
+    # Every known (query, relevant doc) pair, encoded as q * n_docs + d and
+    # sorted, so training can mask ALL of a query's positives anywhere in the
+    # candidate block with one vectorised isin -- not just its own target.
+    n_docs = len(emb["doc_ids"])
+    pos_keys = sorted(
+        qindex[q] * n_docs + dpos[d] for q in qindex for d, sc in qrels[q].items() if sc > 0
+    )
     return {
         "Q": np.asarray(qv, np.float32),
         "pos": np.asarray(pv, np.int64),
         "neg": np.asarray(nv, np.int64),
         "qid": np.asarray([qindex[q] for q in owner], np.int64),
+        "pos_keys": np.asarray(pos_keys, np.int64),
+        "n_docs": n_docs,
     }
 
 
@@ -344,6 +353,7 @@ def train_adapter(
     # larger step than the full matrix to leave the identity in a few epochs.
     opt = torch.optim.Adam(adapter.parameters(), lr=lr if kind == "full" else lr * 10)
     Dt = [torch.from_numpy(g["D"]) for g in groups]
+    pos_keys = [torch.from_numpy(g["pairs"]["pos_keys"]) for g in groups]
 
     def dev_score() -> float:
         return float(
@@ -380,13 +390,15 @@ def train_adapter(
             # Score each query against every in-batch positive + every hard
             # negative; the target is its own positive (column i).
             logits = (q @ Dt[gi][cand].T) / tau
-            # Another pair's positive is not a negative when it is the same
-            # doc, or another positive of the same query (multi-positive
-            # qrels): mask both off the in-batch block.
+            # A candidate is never a negative for row i if it is ANY known
+            # positive of row i's query: another pair's in-batch positive
+            # (same doc, or a doc that query also labels relevant) or another
+            # row's hard negative. Mask all of them except the target column.
             qid_ids = torch.from_numpy(p["qid"][idx])
-            same = (pos_ids[:, None] == pos_ids[None, :]) | (qid_ids[:, None] == qid_ids[None, :])
-            same.fill_diagonal_(False)
-            logits[:, : len(idx)] = logits[:, : len(idx)].masked_fill(same, -1e4)
+            keys = qid_ids[:, None] * p["n_docs"] + cand[None, :]
+            known_pos = torch.isin(keys, pos_keys[gi])
+            known_pos[torch.arange(len(idx)), torch.arange(len(idx))] = False
+            logits = logits.masked_fill(known_pos, -1e4)
             loss = torch.nn.functional.cross_entropy(logits, torch.arange(len(idx)))
             reg = sum((d**2).sum() for d in adapter.delta_params())
             opt.zero_grad()
