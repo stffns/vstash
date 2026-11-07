@@ -126,6 +126,34 @@ class _SchemaManagerMixin:
             CREATE INDEX IF NOT EXISTS idx_search_events_tier
             ON search_events(relevance_tier, created_at);
 
+            -- Usage log: the ranked chunks each search actually returned
+            -- to its caller, one row per (event, rank).  ``used`` flips
+            -- to 1 when the caller reports the result was consumed
+            -- (``mark_result_used``), which turns "returned and used" vs
+            -- "returned and ignored" into an implicit relevance label for
+            -- retrain.  Both FKs cascade: pruning search_events (rolling
+            -- cap, ``vstash compact``) or deleting a document (its chunks)
+            -- drops the matching rows, so labels never point at chunk
+            -- ids that no longer exist.  Additive table created with
+            -- IF NOT EXISTS, so no SCHEMA_VERSION bump: older builds
+            -- open the DB unchanged and newer builds add it on open.
+            CREATE TABLE IF NOT EXISTS search_results (
+                event_id  INTEGER NOT NULL
+                          REFERENCES search_events(id) ON DELETE CASCADE,
+                rank      INTEGER NOT NULL,
+                chunk_id  INTEGER NOT NULL
+                          REFERENCES chunks(id) ON DELETE CASCADE,
+                score     REAL NOT NULL,
+                used      INTEGER NOT NULL DEFAULT 0,
+                used_at   TEXT,
+                PRIMARY KEY (event_id, rank)
+            ) WITHOUT ROWID;
+
+            -- Child-side index for the chunks(id) cascade: without it every
+            -- chunk delete would scan search_results.
+            CREATE INDEX IF NOT EXISTS idx_search_results_chunk
+            ON search_results(chunk_id);
+
             -- Auto-sync FTS5 when chunks are deleted directly
             CREATE TRIGGER IF NOT EXISTS trg_chunks_delete
             AFTER DELETE ON chunks

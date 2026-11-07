@@ -15,6 +15,7 @@ poison every later hit for that query. Use
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -104,6 +105,30 @@ class SearchResult(BaseModel):
     collection: str | None = Field(default=None, description="Named collection")
     tags: str | None = Field(default=None, description="Comma-separated tags from frontmatter")
     layer: str | None = Field(default=None, description="Layer/category from frontmatter")
+
+
+class SearchResults(list):  # list[SearchResult]
+    """A ``list[SearchResult]`` that also carries the usage-log ``event_id``.
+
+    Returned by :func:`vstash.services.search.search_with_embedding` (and
+    therefore ``Memory.search``). It is a plain ``list`` subclass, so every
+    existing caller that iterates, indexes or ``len()``s the results keeps
+    working. ``event_id`` is the ``search_events`` row the search was
+    logged under, to be passed back to ``Memory.mark_used`` /
+    ``services.search.mark_used`` when the caller consumes a result.
+    ``None`` when logging is disabled
+    (``observability.log_search_results = false``) or the log write
+    failed. Slicing returns a plain ``list`` and drops the attribute.
+    """
+
+    __slots__ = ("event_id",)
+
+    def __init__(self, items: Iterable[SearchResult] = (), event_id: int | None = None) -> None:
+        super().__init__(items)
+        self.event_id = event_id
+
+    def __repr__(self) -> str:
+        return f"SearchResults({list.__repr__(self)}, event_id={self.event_id!r})"
 
 
 class DocumentInfo(BaseModel):

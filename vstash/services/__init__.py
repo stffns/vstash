@@ -33,9 +33,10 @@ testable in isolation and re-usable across the four adapters.
 from __future__ import annotations
 
 from .ask import ask_with_context
-from .search import search_with_embedding
+from .search import mark_used, search_with_embedding
 
 __all__ = [
     "ask_with_context",
+    "mark_used",
     "search_with_embedding",
 ]
