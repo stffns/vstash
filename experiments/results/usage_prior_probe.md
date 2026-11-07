@@ -6,98 +6,112 @@ semantics. The usage log (#513) records that prior directly
 (`search_results.used`). Does feeding it to the ranker *explicitly* keep the
 gain without the harm?
 
-**Answer.** It works only when it is conditioned on the query.
+**Answer: only when the prior is conditioned on the query.**
 
-- **Rejected: a global use-count boost.** This is the same failure as the
-  adapter. It lifts SciFact's repeat queries, costs accuracy on everything
-  else, and the best single default chosen on dev is β = 0, so it ships
-  nothing.
-- **Works: a query-conditioned boost.** Boost only the documents that *similar
-  past queries* used, with kNN over past query embeddings and a high
-  similarity threshold. This captures most of the gain with no measurable
-  harm: SciFact rises 0.727 → 0.761, the unseen subset is untouched, and FiQA
-  is flat to within 0.001.
+- **Global use-count boost: rejected.** It fails the same way the adapter
+  did: SciFact's repeat queries go up and everything else goes down. Even the
+  smallest β costs about 0.02 on the strict harm subset.
+- **Query-conditioned kNN boost: works.** Boost only the documents that past
+  queries *similar to this one* used, with a high similarity threshold. A
+  dev-only "safe" selection rule picks τ = 0.9, β = 2.0. On test that setting
+  gives SciFact 0.727 → 0.761, and the harm subsets stay within 0.001 of base.
 
 Script: `experiments/probe_usage_prior.py`. Raw numbers:
 `usage_prior_probe.json`.
 
 ## Setup
 
-**Data.** SciFact, NFCorpus and FiQA, with BGE-small base embeddings and
-retrieval through the real hybrid `VstashStore.search`. The top 50 candidates
-are re-scored with the prior and then cut to 10.
+**Data and retrieval.** SciFact, NFCorpus and FiQA, with BGE-small base
+embeddings. Retrieval goes through the real hybrid `VstashStore.search`: the
+top 50 candidates are re-scored with the prior, then cut to 10.
 
 **Simulated usage log.** Each dataset's `train` queries play the agent's past
-searches. There are two versions:
+searches. The log is generated from separate **`top_k=10`** searches.
+`VstashStore.search` scales its candidate pool and its FTS admission with
+`top_k`, so the head of a `top_k=50` search is not what a normal search
+shows. Two versions of the log:
 
 - **`logged` (realistic):** a document is "used" only if base search
-  *returned* it in the top 10 for that train query and it is relevant. Each
-  such use is kept with p = 0.9. In addition, with p = 0.2 per query, one
-  returned document that is *not* relevant is marked used.
+  *returned* it and it is relevant, and each use is kept with p = 0.9. In
+  addition, with p = 0.2 per query, one returned document that is *not*
+  relevant is marked used.
 - **`oracle` (upper bound):** every train positive counts as used.
 
-**Priors.** Three ways of applying the log:
+**Priors.**
 
 - **`mult`:** `score · (1 + β · log1p(uses))`, using one global count per
   document.
 - **`rrf3`:** a third RRF list ordered by global use count, weighted by β.
-- **`knn`:** the uses come only from past queries whose embedding has
-  cosine ≥ τ with the current query (top 20, weighted by similarity), then the
-  same formula as `mult`. A query with no near past query keeps the base
-  ranking.
+- **`knn`:** uses only from past queries with embedding cosine ≥ τ to the
+  current query (top 20, weighted by similarity), then the same formula as
+  `mult`. A query with no near past query keeps the base ranking.
 
-**Protocol.** β and τ are chosen on a dev split (10% of train). The dev split
-gets usage counts built **only from the other 90%**, so a dev query never sees
-its own positives. Test uses the full train log.
+**Two selection rules.** Both use dev only: 10% of train, with usage counts
+built from the other 90%, so a dev query never sees its own positives.
 
-**Subsets reported.**
+- **avg-dev:** the setting with the best mean dev NDCG over the three
+  datasets.
+- **safe:** the best mean dev gain, subject to no dataset losing more than
+  0.002 on dev against β = 0.
 
-- **SciFact "unseen":** 104 queries none of whose relevant documents is a
-  train positive. The prior can only hurt these.
-- **FiQA:** train and test share no relevant document at all, so FiQA is
-  a pure harm test.
+**Subsets reported on `test`.**
+
+- **all:** every test query.
+- **unseen:** no relevant document is a train positive.
+- **untouched:** no relevant document received *any* use in that log, false
+  uses included. Only `untouched` is a strict harm test for the noisy
+  `logged` log. A false use can land on a document relevant to an "unseen"
+  query and help it, so an unchanged "unseen" mean could hide offsetting
+  losses. Sizes:
+  - SciFact: 104 unseen; 104 untouched with `oracle`, 139 with `logged`.
+  - NFCorpus: 0 unseen; 0 untouched with `oracle`, 6 with `logged`.
+  - FiQA: 648 unseen; 648 untouched with `oracle`, 582 with `logged`.
 
 ## Results (hybrid NDCG@10, test, `logged` log)
 
-| prior | SciFact all | SciFact unseen | NFCorpus | FiQA |
-|---|---|---|---|---|
-| base | 0.727 | 0.750 | 0.361 | 0.393 |
-| global `mult`, β = 0.05 (best on dev) | 0.742 | **0.728** | 0.362 | 0.376 |
-| global `mult`, β = 0.1 | 0.747 | 0.711 | 0.361 | 0.356 |
-| global `rrf3`, β = 0.25 | 0.734 | 0.636 | 0.352 | 0.266 |
-| **`knn` τ = 0.9, β = 1.0** | **0.761** | 0.750 | 0.363 | 0.392 |
-| `knn` τ = 0.85, β = 1.0 | 0.766 | 0.750 | 0.366 | 0.387 |
-| `knn` τ = 0.8, β = 1.0 | 0.775 | 0.750 | 0.367 | 0.364 |
-| `knn` τ = 0.75, β = 1.0 | 0.764 | 0.723 | 0.371 | 0.327 |
+| prior | how chosen | SciFact all | SciFact untouched | NFCorpus all | FiQA all | FiQA untouched |
+|---|---|---|---|---|---|---|
+| base | none | 0.727 | 0.656 | 0.361 | 0.393 | 0.389 |
+| `mult` β = 0.05 | avg-dev | 0.741 | **0.635** | 0.362 | **0.373** | **0.366** |
+| `mult` / `rrf3` | safe | β = 0, i.e. base | | | | |
+| `rrf3` β = 0.25 | sweep | 0.732 | 0.553 | 0.354 | 0.260 | 0.246 |
+| `knn` τ = 0.85, β = 0.5 | avg-dev | 0.764 | 0.655 | 0.365 | 0.388 | 0.383 |
+| **`knn` τ = 0.9, β = 2.0** | **safe** | **0.761** | 0.656 | 0.362 | 0.392 | 0.388 |
+| `knn` τ = 0.8, β = 1.0 | sweep | 0.775 | 0.655 | 0.368 | 0.367 | 0.361 |
 
-The upper bound with a perfect log (`oracle`, `knn` τ = 0.8, β = 2.0) reaches
-0.800 on SciFact and 0.392 on NFCorpus.
+With the `oracle` log, the safe rule also picks τ = 0.9, β = 2.0. That
+setting gives SciFact 0.776 (untouched 0.750, unchanged), NFCorpus 0.368 and
+FiQA 0.392. The oracle's best case is `knn` τ = 0.8, β = 2.0, which reaches
+0.800 on SciFact and 0.392 on NFCorpus but costs FiQA 0.038.
 
 ## Findings
 
-1. **A global popularity prior is a trade, not a gain.** SciFact queries that
-   repeat known answers go up, and every other query goes down: SciFact
-   unseen falls 0.750 → 0.728 and FiQA 0.393 → 0.376 at the smallest useful
-   β. Picking one β on dev across all three datasets gives β = 0 for both
-   `mult` and `rrf3`. `rrf3` is strictly worse than `mult`; on FiQA it can
-   halve NDCG.
+1. **A global popularity prior is a trade, not a gain.** It helps queries
+   that repeat a known answer and costs everything else. At the smallest β
+   the avg-dev rule accepts (0.05), SciFact untouched falls 0.656 → 0.635 and
+   FiQA untouched 0.389 → 0.366. The safe rule rejects every non-zero β for
+   both `mult` and `rrf3`.
 2. **Conditioning on the query removes the harm.** The `knn` prior changes a
-   ranking only when a similar past query exists. With τ ≥ 0.8 the SciFact
-   unseen subset is bit-for-bit unchanged (0.7504). At τ = 0.9, FiQA moves by
-   less than 0.001 while SciFact gains +0.034 even with a noisy log
-   (10% missed uses, 20% wrong uses).
-3. **τ is the safety knob, and it has to be high.** BGE query–query cosines
-   are compressed: FiQA's finance questions sit at 0.75–0.85 cosine from each
-   other yet need different answers. At τ = 0.8, FiQA already loses −0.029.
-   The dev split, averaged over the three datasets, picks τ = 0.8 / β = 0.25
-   (FiQA −0.020), so **an averaged-dev default is not safe**. τ = 0.9 should
-   be chosen deliberately as the conservative default.
+   ranking only when a similar past query exists. At the safe-rule setting
+   (τ = 0.9), SciFact gains +0.034 even with a noisy log (10% missed uses,
+   20% wrong ones). The strict harm subsets move by at most 0.001: SciFact
+   untouched by 0.000, FiQA untouched by −0.0008, NFCorpus untouched (only 6
+   queries) by 0.000.
+3. **τ is the safety knob, and the averaged choice is not safe.** BGE
+   query–query cosines are compressed. FiQA's finance questions sit at
+   0.75–0.85 cosine from each other yet need different answers, and FiQA
+   loses −0.026 at τ = 0.8. Averaging dev over datasets picks τ = 0.85
+   (FiQA −0.005); bounding each dataset's dev loss picks τ = 0.9 on its own.
+   The τ = 0.9 default is therefore dev-selected under that rule, not read
+   off the test set. It has not yet been confirmed on fresh held-out data or
+   on real agent logs.
 4. **The upside scales with how often questions repeat.** In BEIR, "past
-   queries" are other people's questions. An agent's own memory repeats
-   itself far more, which is where this signal pays most. With a perfect log
-   the ceiling is +0.07 on SciFact and +0.03 on NFCorpus.
+   queries" are other people's questions. An agent's own memory repeats far
+   more, which is where this signal pays. With a perfect log the ceiling is
+   about +0.07 on SciFact and +0.04 on NFCorpus, but only at lower τ, which
+   costs FiQA.
 5. **Distances are untouched by construction.** Unlike the adapter, the
-   `relevance_tier` calibration cannot break.
+   prior cannot break the `relevance_tier` calibration.
 
 ## What shipping it would take (not in this PR)
 
@@ -108,7 +122,10 @@ The upper bound with a perfect log (`oracle`, `knn` τ = 0.8, β = 2.0) reaches
   Find past events with cosine ≥ τ, sum similarity-weighted `used` counts per
   chunk, and boost the candidates before the `top_k` cut. Over 10,000 events
   this is a single 10k × 384 matrix-vector product, well under a millisecond.
-- **Defaults:** τ = 0.9 and β ≈ 1.0, opt-in, plus an `explain` field showing
-  the prior's contribution so a boosted result is never a mystery.
-- **Validate on real usage data.** Once merken reports `mark_used`, check the
-  τ / β choice against real agent repeat rates, not BEIR's.
+- **Defaults:** τ = 0.9 and β ≈ 1–2, as selected by the safe rule here, opt-in.
+  Add an `explain` field showing the prior's contribution so a boosted result
+  is never a mystery.
+- **Re-validate τ / β on real usage.** Once merken reports `mark_used`,
+  re-check against real agent logs rather than BEIR's repeat rates. Until
+  then the defaults are a dev-selected starting point, not a validated
+  setting.

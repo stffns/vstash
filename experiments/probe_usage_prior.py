@@ -47,8 +47,11 @@ Protocol
 ``beta`` is picked on a dev split (10% of train queries) using use counts built
 **only from the other 90%**, so a dev query never sees its own positives.
 Test then uses counts from the full train log. Reported on ``test``: all
-queries, the ``unseen`` subset (no relevant doc is a train positive, i.e. the
-prior can only hurt), and FiQA, where train and test share no relevant doc.
+queries, the ``unseen`` subset (no relevant doc is a train positive), and the
+``untouched`` subset (no relevant doc received any use in that log, false uses
+included). Only ``untouched`` is a strict harm test for the noisy ``logged``
+log: a false use can land on a doc relevant to an ``unseen`` / FiQA query and
+help it, so an unchanged mean there could hide offsetting losses.
 
 Run::
 
@@ -88,6 +91,9 @@ BETAS = {
 # Query-conditioned (kNN over past queries) prior grid.
 KNN_TAUS = [0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
 KNN_BETAS = [0.1, 0.25, 0.5, 1.0, 2.0]
+# Max dev NDCG@10 loss any single dataset may take under the dev-only
+# "safe" selection rule (see main).
+SAFE_DEV_LOSS = 0.002
 
 
 # ------------------------------------------------------------------ #
@@ -304,6 +310,12 @@ def main() -> None:
             dev, fit = train[:n_dev], train[n_dev:]
             test = sorted(ds["test"])
             cands = retrieve(store, emb, ds, train + test, args.pool)
+            # The simulated log must come from what a normal top-10 search
+            # returns. VstashStore.search scales its candidate pool and FTS
+            # admission with top_k, so the head of a top_k=50 search is not
+            # the same list; use separate top_k=10 searches for the log and
+            # keep the 50-pool only for re-ranking.
+            shown = retrieve(store, emb, ds, train, TOP_K)
             store.close()
             qpos = {q: i for i, q in enumerate(emb["qids"])}
 
@@ -333,7 +345,7 @@ def main() -> None:
                     log_kind,
                     fit,
                     ds["train"],
-                    cands,
+                    shown,
                     np.random.default_rng(args.seed + 1),
                     args.p_keep,
                     args.p_false,
@@ -342,13 +354,31 @@ def main() -> None:
                     log_kind,
                     train,
                     ds["train"],
-                    cands,
+                    shown,
                     np.random.default_rng(args.seed + 2),
                     args.p_keep,
                     args.p_false,
                 )
-                fit_global = sum(fit_log.values(), Counter())
-                all_global = sum(all_log.values(), Counter())
+                # Counter.update: linear in logged entries (sum() re-copied the
+                # growing total for every query).
+                fit_global: Counter = Counter()
+                for c in fit_log.values():
+                    fit_global.update(c)
+                all_global: Counter = Counter()
+                for c in all_log.values():
+                    all_global.update(c)
+                # "untouched": test queries none of whose relevant docs got
+                # ANY use in this log. Unlike "unseen" (no train positive),
+                # this also excludes docs hit by the logged log's false uses,
+                # so on this subset a prior can only hurt -- a true harm test
+                # for the noisy log as well as the oracle.
+                untouched = np.asarray(
+                    [
+                        not any(all_global.get(d, 0) > 0 for d, s in ds["test"][q].items() if s > 0)
+                        for q in test
+                    ]
+                )
+                r.setdefault("n_test_untouched", {})[log_kind] = int(untouched.sum())
                 knn_cache: dict = {}
 
                 def uses_for(split: str, mode: str, tau: float | None) -> list[Counter]:
@@ -379,6 +409,9 @@ def main() -> None:
                             "ndcg_10": round(float(v.mean()), 4),
                             "ndcg_10_unseen": round(float(v[unseen].mean()), 4)
                             if unseen.any()
+                            else None,
+                            "ndcg_10_untouched": round(float(v[untouched].mean()), 4)
+                            if untouched.any()
                             else None,
                         }
                     dev_tables[(name, log_kind, mode)] = dev_curve
@@ -423,6 +456,32 @@ def main() -> None:
                 ),
             )
             glob[f"{log_kind}/{mode}"] = {
+                "param": best,
+                "test": {
+                    n: results["datasets"][n]["arms"][f"{log_kind}/{mode}"]["test_sweep"][best]
+                    for n in args.datasets
+                },
+            }
+    # Dev-only *safe* selection rule: the setting with the highest mean dev
+    # gain subject to no dataset losing more than SAFE_DEV_LOSS on dev vs
+    # beta=0. Picked without looking at test, so its test numbers are an
+    # honest check of whether "safe on dev" transfers.
+    for log_kind in ("oracle", "logged"):
+        for mode in ("mult", "rrf3", "knn"):
+            curves = [dev_tables[(n, log_kind, mode)] for n in args.datasets]
+            ok = [
+                lb
+                for lb in curves[0]
+                if all(c[lb] - c["beta=0.0"] >= -SAFE_DEV_LOSS for c in curves)
+            ]
+            best = max(
+                ok,
+                key=lambda lb: (
+                    round(float(np.mean([c[lb] - c["beta=0.0"] for c in curves])), 6),
+                    lb == "beta=0.0",
+                ),
+            )
+            glob[f"{log_kind}/{mode}"]["safe_rule"] = {
                 "param": best,
                 "test": {
                     n: results["datasets"][n]["arms"][f"{log_kind}/{mode}"]["test_sweep"][best]
