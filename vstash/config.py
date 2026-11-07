@@ -369,6 +369,34 @@ class CacheConfig(BaseModel):
     )
 
 
+class JudgeConfig(BaseModel):
+    """Local decision model that gates and verifies ``ask`` (see ``vstash.judge``).
+
+    Off by default; needs ``pip install vstash[judge]`` (PyTorch + transformers). The model is
+    Liquid AI's open d1 (``LiquidAI/d1-2B``), downloaded from Hugging Face on first use.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    enabled: bool = Field(default=False, description="Run the judge around every ask")
+    model: str = Field(default="LiquidAI/d1-2B", description="Hugging Face id of a d1 model")
+    device: str = Field(default="auto", description="auto | mps | cuda | cpu")
+    gate: bool = Field(
+        default=True, description="Skip the LLM when the context does not hold the answer"
+    )
+    gate_threshold: float = Field(
+        default=0.2,
+        ge=0.0,
+        le=1.0,
+        description="Below this P(answerable), reply 'not in memory' instead of calling the LLM",
+    )
+    verify: bool = Field(default=True, description="Check each claim of the reply")
+    claim_threshold: float = Field(
+        default=0.5, ge=0.0, le=1.0, description="Below this P(supported), a claim is flagged"
+    )
+    max_claims: int = Field(default=20, ge=1, le=200, description="Claims checked per reply")
+
+
 class VstashConfig(BaseModel):
     """Root configuration for vstash.
 
@@ -412,6 +440,7 @@ class VstashConfig(BaseModel):
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
     cache: CacheConfig = Field(default_factory=CacheConfig)
+    judge: JudgeConfig = Field(default_factory=JudgeConfig)
 
     @property
     def cerebras_api_key(self) -> str:

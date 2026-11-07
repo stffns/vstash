@@ -677,6 +677,10 @@ class Memory:
             fts_weight=fts_weight,
             retrieval_mode=retrieval_mode,
         )
+        if self._cfg.judge.enabled:
+            from .services.ask import judged_ask
+
+            return judged_ask(query, chunks, self._cfg, history)
         return _chat_ask_full(query, chunks, self._cfg, history)
 
     def prune(

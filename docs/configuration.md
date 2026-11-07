@@ -258,6 +258,31 @@ When enabled, repeated identical searches return instantly from an in-memory LRU
 
 ---
 
+## `[judge]`
+
+A local decision model around `ask` (`vstash.judge`). Needs `pip install 'vstash[judge]'` (PyTorch, torchvision, transformers); the model (Liquid AI's open d1) downloads from Hugging Face on first use and runs on Apple Silicon (MPS), CUDA or CPU.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Run the judge around every `ask` (CLI: `--judge/--no-judge` per call) |
+| `model` | str | `"LiquidAI/d1-2B"` | Hugging Face id of a d1 decision model |
+| `device` | str | `"auto"` | `auto`, `mps`, `cuda` or `cpu` |
+| `gate` | bool | `true` | Skip the LLM when the retrieved context does not hold the answer |
+| `gate_threshold` | float | `0.2` | Below this P(answerable), reply "not in memory" instead of calling the LLM |
+| `verify` | bool | `true` | Check each claim of the reply against the retrieved context |
+| `claim_threshold` | float | `0.5` | Below this P(supported), a claim is flagged |
+| `max_claims` | int | `20` | Claims checked per reply |
+
+```toml
+[judge]
+enabled = true
+gate_threshold = 0.2
+```
+
+**Gate** (before the LLM): one calibrated yes/no read of whether the retrieved chunks can answer the question; below the threshold vstash answers that memory does not hold it, with no inference call. **Verify** (after): the reply is split into sentences and list items, and each gets P(supported by the same context the LLM saw); unsupported ones are flagged in the CLI and returned in `AskResult.judgment` for the SDK, MCP and web. With `enabled = false` the `ask` path is unchanged. The thresholds are defaults, not calibrated per corpus: tune them on your own questions.
+
+---
+
 ## Environment Variables
 
 | Variable | Purpose |

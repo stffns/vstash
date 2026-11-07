@@ -36,3 +36,16 @@ top_k = 5        # chunks retrieved per query
 [storage]
 # Path to the vstash database file
 db_path = "~/.vstash/memory.db"
+
+# Local judge around `vstash ask` (pip install 'vstash[judge]'): a small decision model
+# (Liquid AI's open d1) checks whether memory holds the answer before calling the LLM,
+# and verifies each claim of the reply against the retrieved context afterwards.
+[judge]
+enabled = false
+model = "LiquidAI/d1-2B"
+device = "auto"            # auto | mps | cuda | cpu
+gate = true
+gate_threshold = 0.2       # below this P(answerable): reply "not in memory", skip the LLM
+verify = true
+claim_threshold = 0.5      # below this P(supported): flag the claim
+max_claims = 20

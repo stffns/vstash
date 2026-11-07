@@ -46,9 +46,16 @@ def ask(
     all_profiles: bool = typer.Option(
         False, "--all-profiles", "-A", help="Search across all profiles"
     ),
+    judge: bool | None = typer.Option(
+        None,
+        "--judge/--no-judge",
+        help="Gate and verify the answer with the local judge (default: [judge] enabled)",
+    ),
 ) -> None:
     """Ask a question about your documents."""
     cfg, store = _get_store(warm=True, profile=_profile_from_ctx(ctx))
+    if judge is not None:
+        cfg = cfg.model_copy(update={"judge": cfg.judge.model_copy(update={"enabled": judge})})
 
     with store:
         k = top_k or cfg.chunking.top_k
@@ -131,6 +138,19 @@ def ask(
         if not all_profiles:
             chunks = store.expand_context(chunks, window=1)
 
+        judgment = None
+        if cfg.judge.enabled:
+            from .. import judge as judge_mod
+
+            with console.status("[dim]Checking memory...[/dim]", spinner="dots"):
+                judge_model = judge_mod.get_judge(cfg.judge)
+                judgment = judge_mod.gate(judge_model, query, chunks, cfg.judge)
+            if judgment.gated:
+                console.print(
+                    "[yellow]" + judge_mod.NOT_IN_MEMORY.format(p=judgment.answerable) + "[/yellow]"
+                )
+                raise typer.Exit()
+
         # Show sources
         if sources:
             source_list = list({c.title for c in chunks})
@@ -141,10 +161,13 @@ def ask(
         if stream:
             try:
                 token_count = 0
+                streamed: list[str] = []
                 for token in chat_module.stream(query, chunks, cfg):
                     print(token, end="", flush=True)
+                    streamed.append(token)
                     token_count += 1
                 print()  # newline after stream
+                response = "".join(streamed)
             except ConnectionError as exc:
                 if token_count > 0:
                     console.print(
@@ -166,6 +189,26 @@ def ask(
                         console.print(f"[dim]  Hint: {hint}[/dim]")
                     raise typer.Exit(1) from exc
             console.print(Markdown(response))
+
+        if judgment is not None and cfg.judge.verify:
+            with console.status("[dim]Verifying the answer...[/dim]", spinner="dots"):
+                judgment = judge_mod.verify(judge_model, judgment, response, chunks, cfg.judge)
+            _print_judgment(judgment)
+
+
+def _print_judgment(judgment) -> None:
+    """One line of support, then each claim the context does not back."""
+    share = judgment.supported_share
+    if share is None:
+        return
+    n = len(judgment.claims)
+    color = "green" if share == 1 else "yellow" if share >= 0.5 else "red"
+    console.print(
+        f"\n[{color}]✓ {n - len(judgment.flagged)}/{n} claims supported by your memory[/{color}]"
+        f" [dim](answerable {judgment.answerable:.0%})[/dim]"
+    )
+    for c in judgment.flagged:
+        console.print(f"[red]  ✗ {c.supported:.0%}[/red] [dim]{c.text}[/dim]")
 
 
 # ------------------------------------------------------------------ #
