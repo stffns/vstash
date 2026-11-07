@@ -271,6 +271,27 @@ class ObservabilityConfig(BaseModel):
             "issue #157 part 3."
         ),
     )
+    log_search_results: bool = Field(
+        default=True,
+        description=(
+            "Usage log: record the ranked chunk ids every adapter-facing "
+            "search (SDK / MCP / web / CLI via ``vstash.services``) "
+            "returned, in the ``search_results`` table, and expose the "
+            "``event_id`` so callers can report which results they used "
+            "(``Memory.mark_used``). Feeds implicit relevance labels for "
+            "retrain. Costs one small write transaction per search; set "
+            "to false to opt out."
+        ),
+    )
+    search_log_max_events: int = Field(
+        default=10_000,
+        ge=1,
+        description=(
+            "Rolling cap on ``search_events`` rows (and, by cascade, their "
+            "``search_results`` rows). Older events are pruned on every "
+            "insert."
+        ),
+    )
 
 
 class LimitsConfig(BaseModel):

@@ -17,7 +17,7 @@ import math
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from types import TracebackType
 from typing import Any, Literal
@@ -1784,6 +1784,7 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         relevance_tier: str,
         result_count: int,
         miss_hint: dict | None = None,
+        results: Sequence[SearchResult] | None = None,
     ) -> int:
         """Record a search event for discard telemetry.
 
@@ -1798,6 +1799,11 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                 ``{"reason": "empty" | "all_low", "best_distance": ...,
                 "tier": ..., "result_count": ..., "top_k_requested": ...}``.
                 Consumed by ``vstash why --recent``.
+            results: Optional ranked results the caller was handed. When
+                given, one ``search_results`` row per result (rank, chunk
+                id, score) is written in the same transaction as the
+                event, so ``mark_result_used`` / ``export_usage_labels``
+                can later turn them into implicit relevance labels.
 
         Returns the event ID so it can be marked as dismissed later.
         """
@@ -1815,18 +1821,171 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                     "VALUES (?, ?, ?, ?, 0, ?, ?)",
                     [query, best_distance, relevance_tier, result_count, now_iso, hint_json],
                 )
-                # Prune to keep only the last 1000 entries (cheap range delete;
-                # see record_spread). `NOT IN (subquery)` re-tested every row on
-                # every search.
+                event_id = int(cursor.lastrowid)  # type: ignore[arg-type]
+                if results:
+                    self._conn.executemany(
+                        "INSERT INTO search_results (event_id, rank, chunk_id, score) "
+                        "VALUES (?, ?, ?, ?)",
+                        [
+                            (event_id, rank, int(r.chunk_id), float(r.score))
+                            for rank, r in enumerate(results)
+                        ],
+                    )
+                # Rolling cap (``observability.search_log_max_events``).  ids
+                # are AUTOINCREMENT (monotonic, never reused), so "older than
+                # the newest N ids" is a single PK range delete -- O(log n)
+                # instead of the previous ORDER BY ... LIMIT subquery that
+                # walked the whole window on every search.  Gaps left by
+                # compact only make the kept set smaller, never larger.
+                # search_results rows go with their event (ON DELETE CASCADE).
                 self._conn.execute(
-                    "DELETE FROM search_events WHERE id < "
-                    "(SELECT MIN(id) FROM (SELECT id FROM search_events ORDER BY id DESC LIMIT 1000))"
+                    "DELETE FROM search_events WHERE id <= ?",
+                    [event_id - self._observability.search_log_max_events],
                 )
                 self._conn.commit()
             except Exception:
                 self._conn.rollback()
                 raise
-            return cursor.lastrowid  # type: ignore[return-value]
+            return event_id
+
+    def annotate_search_event(self, event_id: int, miss_hint: dict) -> None:
+        """Attach a ``miss_hint`` to an already-recorded search event.
+
+        Used by adapters whose search went through ``vstash.services``
+        (which records the event plus its usage-log rows) and that want
+        to add a miss diagnosis without writing a second event.
+        """
+        with self._write_lock:
+            self._conn.execute(
+                "UPDATE search_events SET miss_hint = ? WHERE id = ?",
+                [json.dumps(miss_hint), int(event_id)],
+            )
+
+    def mark_result_used(self, event_id: int, chunk_ids: int | Sequence[int]) -> int:
+        """Mark returned results of a search event as used by the caller.
+
+        Only chunks that event actually returned can be marked; anything
+        else is ignored (an unknown event id, or a chunk id that was not
+        in that result list, is not an error -- the label simply cannot
+        exist). Idempotent: re-marking keeps the first ``used_at``.
+
+        Args:
+            event_id: The ``event_id`` exposed on the search response.
+            chunk_ids: One chunk id or several.
+
+        Returns:
+            Number of result rows newly marked as used.
+        """
+        ids = [int(chunk_ids)] if isinstance(chunk_ids, int) else [int(c) for c in chunk_ids]
+        if not ids:
+            return 0
+        now_iso = datetime.now(timezone.utc).isoformat()
+        placeholders = ",".join("?" * len(ids))
+        with self._write_lock:
+            cursor = self._conn.execute(
+                "UPDATE search_results SET used = 1, used_at = ? "
+                f"WHERE event_id = ? AND used = 0 AND chunk_id IN ({placeholders})",
+                [now_iso, int(event_id), *ids],
+            )
+            return int(cursor.rowcount)
+
+    def export_usage_labels(
+        self,
+        *,
+        since_iso: str | None = None,
+        feedback_only: bool = True,
+        include_text: bool = True,
+        limit: int | None = None,
+    ) -> list[dict]:
+        """Export (query, chunk, rank, used) rows from the usage log.
+
+        One dict per returned result, oldest event first, ready to feed
+        a retrain miner: ``used=True`` rows are positives ("returned and
+        used"), ``used=False`` rows of the same event are implicit
+        negatives ("returned and ignored").
+
+        Args:
+            since_iso: Only events with ``created_at >= since_iso``.
+            feedback_only: Default ``True`` keeps only events where at
+                least one result was marked used. Events nobody reported
+                back on carry no signal -- an unmarked result there means
+                "unknown", not "ignored".
+            include_text: Join the chunk text (and document path/title).
+            limit: Cap on returned rows (newest events win when set).
+
+        Returns:
+            List of dicts with ``event_id``, ``query``, ``created_at``,
+            ``rank``, ``chunk_id``, ``score``, ``used``, ``used_at``,
+            ``path``, ``title`` and (when ``include_text``) ``text``.
+        """
+        if limit is not None and int(limit) < 1:
+            raise ValueError(f"limit must be >= 1, got {limit}")
+        where: list[str] = []
+        params: list[Any] = []
+        if since_iso is not None:
+            where.append("e.created_at >= ?")
+            params.append(_canonicalize_added_filter(since_iso, label="since_iso"))
+        if feedback_only:
+            where.append(
+                "EXISTS (SELECT 1 FROM search_results u WHERE u.event_id = e.id AND u.used = 1)"
+            )
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+        text_col = ", c.text AS text" if include_text else ""
+        sql = (
+            "SELECT e.id AS event_id, e.query, e.created_at, r.rank, r.chunk_id, "
+            "r.score, r.used, r.used_at, d.path, d.title"
+            f"{text_col} "
+            "FROM search_results r "
+            "JOIN search_events e ON e.id = r.event_id "
+            "JOIN chunks c ON c.id = r.chunk_id "
+            "JOIN documents d ON d.id = c.doc_id "
+            f"{where_sql} "
+            "ORDER BY e.id DESC, r.rank ASC"
+        )
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(int(limit))
+        rows = self._conn.execute(sql, params).fetchall()
+        out = [
+            {
+                "event_id": int(r["event_id"]),
+                "query": str(r["query"]),
+                "created_at": str(r["created_at"]),
+                "rank": int(r["rank"]),
+                "chunk_id": int(r["chunk_id"]),
+                "score": float(r["score"]),
+                "used": bool(r["used"]),
+                "used_at": r["used_at"],
+                "path": str(r["path"]),
+                "title": str(r["title"]),
+                **({"text": str(r["text"])} if include_text else {}),
+            }
+            for r in rows
+        ]
+        # Newest-first in SQL so LIMIT keeps the most recent events;
+        # flip events back to chronological order for the caller.
+        out.sort(key=lambda d: (d["event_id"], d["rank"]))
+        return out
+
+    def prune_search_events(self, *, before_iso: str) -> int:
+        """Delete search events (and their usage-log rows) older than ``before_iso``.
+
+        ``before_iso`` is canonicalised to UTC like ``prune_documents``
+        so the lexical ``created_at < ?`` compare matches chronological
+        order. Returns the number of events deleted.
+        """
+        cutoff = _canonicalize_added_filter(before_iso, label="before_iso")
+        with self._write_lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                cursor = self._conn.execute(
+                    "DELETE FROM search_events WHERE created_at < ?", [cutoff]
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+            return int(cursor.rowcount)
 
     def recent_miss_hints(self, limit: int = 10) -> list[dict]:
         """Return the N most recent search_events that carry a miss_hint,

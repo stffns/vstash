@@ -4,6 +4,10 @@ All notable changes to vstash are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **Search usage log** (`observability.log_search_results`, default on).  Adapter-facing searches record the ranked chunks they returned in a new `search_results` table (`event_id` FK -> `search_events`, `rank`, `chunk_id` FK -> `chunks`, `score`, `used`, `used_at`; both FKs cascade).  The search response carries the `event_id` (`SearchResults.event_id` on the SDK / services list, `"event_id"` in MCP and web JSON) and callers report consumption with `Memory.mark_used` / `services.search.mark_used`, MCP `vstash_mark_used`, or `POST /api/search/used`.  `Memory.export_usage()` / `VstashStore.export_usage_labels()` export (query, chunk, rank, used) rows for retrain.  `Memory.compact(before=...)` also prunes old events; `observability.search_log_max_events` (default 10 000) caps the table.  Additive table, no schema-version bump.  Cost: +0.11 ms median per search on a 5 000-chunk store.
+
 ## [0.37.0] - 2026-05-27
 
 ### Added

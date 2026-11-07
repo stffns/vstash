@@ -215,6 +215,8 @@ Use this when FTS5 stemming / lowercasing would eat a term you care about (code 
 |-----|------|---------|-------------|
 | `slow_query_ms` | float | `100.0` | Search queries slower than this threshold log to stderr with their query, latency, and result count. Set to 0 to log every query (debug). |
 | `auto_miss_hint` | bool | `true` | When a search returns empty or an all-low-tier result set, persist a lightweight `miss_hint` JSON on the `search_events` row. Consumed by `vstash why --recent` for post-hoc diagnosis. Added in issue #157 part 3. |
+| `log_search_results` | bool | `true` | Usage log. Every adapter-facing search (SDK `Memory.search`, MCP `vstash_search` / `vstash_ask`, web `/api/search`, CLI `ask` / `chat` / `search`) records the ranked chunk ids it returned in the `search_results` table and exposes the `event_id` (`SearchResults.event_id`, `"event_id"` in MCP / web JSON). Callers report what they used with `Memory.mark_used(event_id, chunk_id)`, MCP `vstash_mark_used`, or `POST /api/search/used`; `Memory.export_usage()` / `VstashStore.export_usage_labels()` turn that into (query, chunk, rank, used) training rows. Query-cache hits are logged (the caller still saw them); `VstashStore.search` called directly, `explain`, `miss_analysis` and federated search are not. Measured cost: +0.11 ms median per search on a 5 000-chunk store. Set `false` to opt out. |
+| `search_log_max_events` | int | `10000` | Rolling cap on `search_events` rows; older events and their `search_results` rows are pruned on every insert. `vstash compact --before X` also drops events older than `X`, and deleting a document drops the rows that point at its chunks. |
 
 ---
 

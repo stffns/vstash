@@ -99,6 +99,7 @@ def ask(
                     tier="low",
                     result_count=0,
                     top_k_requested=k,
+                    event_id=getattr(chunks, "event_id", None),
                 )
             console.print(
                 "[yellow]No relevant documents found. "
@@ -117,6 +118,7 @@ def ask(
                 tier=tier,
                 result_count=len(chunks),
                 top_k_requested=k,
+                event_id=getattr(chunks, "event_id", None),
             )
             if tier == "low":
                 console.print(
@@ -469,6 +471,9 @@ def search(
                 tier=tier,
                 result_count=len(chunks),
                 top_k_requested=k,
+                # explain output is a debugging view, not a usage signal
+                # (same rule as the query cache).
+                results=None if explain else chunks,
             )
 
         if json_output:
@@ -664,12 +669,14 @@ def chat(
                 # MCP migration pattern -- semantically identical to
                 # the old pre-expand placement).
                 tier = relevance_tier(store.last_best_distance)
-                last_event_id = store.record_search_event(
-                    query=query,
-                    best_distance=store.last_best_distance,
-                    relevance_tier=tier,
-                    result_count=len(chunks),
-                )
+                last_event_id = getattr(chunks, "event_id", None)
+                if last_event_id is None:
+                    last_event_id = store.record_search_event(
+                        query=query,
+                        best_distance=store.last_best_distance,
+                        relevance_tier=tier,
+                        result_count=len(chunks),
+                    )
                 last_tier = tier
                 if tier == "low":
                     console.print("[dim]⚠ Low relevance — context may not match well.[/dim]")

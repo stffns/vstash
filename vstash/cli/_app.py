@@ -205,10 +205,18 @@ def _record_miss_event(
     tier: str,
     result_count: int,
     top_k_requested: int,
-) -> None:
+    event_id: int | None = None,
+    results: list | None = None,
+) -> int | None:
     """Build + persist a miss_hint search event in one place. Shared
     between ``vstash ask`` and ``vstash search`` to kill the
-    copy-paste this PR introduced."""
+    copy-paste this PR introduced.
+
+    When ``event_id`` is given the search was already logged by the
+    services layer (usage log on), so only the hint is attached to that
+    row instead of writing a second event. ``results`` (the ranked list
+    the user saw) is written to the usage log alongside a new event when
+    ``observability.log_search_results`` is on."""
     hint = _build_miss_hint(
         cfg_auto_hint=cfg.observability.auto_miss_hint,
         result_count=result_count,
@@ -216,12 +224,17 @@ def _record_miss_event(
         best_distance=best_distance,
         top_k_requested=top_k_requested,
     )
-    store.record_search_event(
+    if event_id is not None:
+        if hint is not None:
+            store.annotate_search_event(event_id, hint)
+        return event_id
+    return store.record_search_event(
         query=query,
         best_distance=best_distance,
         relevance_tier=tier,
         result_count=result_count,
         miss_hint=hint,
+        results=results if cfg.observability.log_search_results else None,
     )
 
 

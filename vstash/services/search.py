@@ -16,15 +16,20 @@ the window from config.
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Literal
 
 from ..embed import embed_query
+from ..models import SearchResults
 from ..validation import LimitError, validate_search_input
 
 if TYPE_CHECKING:
     from ..config import VstashConfig
     from ..models import SearchResult
     from ..store import VstashStore
+
+logger = logging.getLogger(__name__)
 
 # The literal Protocol of valid retrieval modes. Kept as a module
 # constant so the runtime check in `search_with_embedding` does not
@@ -55,7 +60,8 @@ def search_with_embedding(
     distance_cutoff: float | None = None,
     exact_match: str | None = None,
     exact_match_case_sensitive: bool = False,
-) -> list[SearchResult]:
+    log_usage: bool = True,
+) -> SearchResults:
     """Embed ``query`` then hybrid-search ``store`` then expand context.
 
     The single replacement for the
@@ -105,9 +111,18 @@ def search_with_embedding(
         exact_match: Literal substring required in the result text.
         exact_match_case_sensitive: Whether ``exact_match`` is
             case-sensitive.
+        log_usage: Record this search in the usage log (``search_events``
+            + one ``search_results`` row per returned chunk) when
+            ``cfg.observability.log_search_results`` is on. Internal
+            callers that are not a user-visible search (benchmarks,
+            federated fan-out) pass ``False``. Query-cache hits ARE
+            logged: the caller still saw those results, so they are as
+            much a usage signal as a cold search.
 
     Returns:
-        List of ``SearchResult`` ranked by relevance. May be empty.
+        ``SearchResults`` (a ``list[SearchResult]`` ranked by relevance,
+        possibly empty) whose ``event_id`` names the usage-log event to
+        pass to :func:`mark_used`; ``None`` when logging is off.
 
     Raises:
         LimitError: Any input exceeded the configured limit.
@@ -188,7 +203,63 @@ def search_with_embedding(
         **extra_kwargs,
     )
 
+    # Log the ranked list BEFORE context expansion: expansion only widens
+    # each result's text, the chunk ids / ranks the caller acts on are the
+    # ones ranking produced.
+    event_id: int | None = None
+    if log_usage and cfg.observability.log_search_results:
+        event_id = _log_search(store, query, results)
+
     if expand_window > 0 and results:
         results = store.expand_context(results, window=expand_window)
 
-    return results
+    return SearchResults(results, event_id=event_id)
+
+
+def _log_search(store: VstashStore, query: str, results: list[SearchResult]) -> int | None:
+    """Write the usage-log event for one search; never fails the search.
+
+    A logging failure (locked DB past the busy timeout, a chunk deleted by
+    another process between ranking and logging tripping the FK) must not
+    turn a successful search into an error, so it degrades to "not logged".
+    The catch is deliberately broad: this is telemetry on the read path.
+    """
+    from ..store import relevance_tier
+
+    try:
+        best_distance = store.last_best_distance
+        return store.record_search_event(
+            query=query,
+            best_distance=best_distance,
+            relevance_tier=relevance_tier(best_distance),
+            result_count=len(results),
+            results=results,
+        )
+    except Exception:
+        logger.warning("usage log: could not record search event", exc_info=True)
+        return None
+
+
+def mark_used(*, store: VstashStore, event_id: int, chunk_ids: int | Sequence[int]) -> int:
+    """Report that the caller used one or more results of a logged search.
+
+    Shared entry point for the SDK (``Memory.mark_used``), MCP
+    (``vstash_mark_used``) and web (``POST /api/search/used``).
+
+    Args:
+        store: Open ``VstashStore`` the search ran against.
+        event_id: ``SearchResults.event_id`` of that search.
+        chunk_ids: ``SearchResult.chunk_id`` of the result(s) used.
+
+    Returns:
+        Number of results newly marked. ``0`` when the event was pruned,
+        the chunk was not in that result list, or it was already marked.
+
+    Raises:
+        LimitError: ``event_id`` / ``chunk_ids`` are not integers.
+    """
+    ids = [chunk_ids] if isinstance(chunk_ids, int) else list(chunk_ids)
+    for v in (event_id, *ids):
+        if not isinstance(v, int) or isinstance(v, bool):
+            raise LimitError(f"event_id / chunk_ids must be ints, got {v!r}")
+    return store.mark_result_used(event_id, ids)
