@@ -55,6 +55,54 @@ jobs:
           done
           echo "::error::embedding model download failed after 5 attempts (HF hub flake)"
           exit 1
+      # tree-sitter-language-pack >= 1.x no longer ships grammars in the wheel:
+      # get_parser() downloads them on first use from the project's GitHub
+      # releases. A 504 there raises DownloadError, code_split silently falls
+      # back to regex, and test_code_split fails on every Python version -- for
+      # a reason that has nothing to do with the change under test. Cache the
+      # versioned parser dir and fetch every grammar vstash maps in an isolated,
+      # retrying step, mirroring the embedding-model warm-up above.
+      - name: Locate tree-sitter parser cache
+        id: tslp
+        run: |
+          python - <<'EOF' >> "$GITHUB_OUTPUT"
+          import importlib.metadata as m
+          import os
+          import tree_sitter_language_pack as t
+          print(f"version={m.version('tree-sitter-language-pack')}")
+          d = t.cache_dir() if hasattr(t, "cache_dir") else ""
+          print(f"dir={os.path.dirname(d) if d else ''}")
+          EOF
+      - name: Cache tree-sitter parsers
+        if: steps.tslp.outputs.dir != ''
+        uses: actions/cache@v6
+        with:
+          path: ${{ steps.tslp.outputs.dir }}
+          key: tslp-${{ runner.os }}-${{ steps.tslp.outputs.version }}
+      - name: Download tree-sitter parsers (retry transient GitHub failures)
+        if: steps.tslp.outputs.dir != ''
+        run: |
+          for attempt in 1 2 3 4 5; do
+            python - <<'EOF' && exit 0
+          import tree_sitter_language_pack as t
+          from vstash.code_split import _TS_LANG_MAP
+          langs = sorted(set(_TS_LANG_MAP.values()))
+          # The pack's manifest names differ for a few entries (e.g. 'csharp'
+          # vs vstash's 'c_sharp', which has no definition node types and so
+          # never takes the AST path anyway). download() rejects the whole
+          # list on one unknown name, so fetch only the ones it knows.
+          known = set(t.manifest_languages())
+          langs = [lang for lang in langs if lang in known]
+          t.download(langs)
+          for lang in langs:
+              t.get_parser(lang)
+          print(f"tree-sitter parsers ready: {len(langs)} languages")
+          EOF
+            echo "::warning::tree-sitter parser download attempt $attempt failed; retrying in $((attempt * 15))s"
+            sleep $((attempt * 15))
+          done
+          echo "::error::tree-sitter parser download failed after 5 attempts (GitHub releases flake)"
+          exit 1
       - name: Run tests with coverage
         # tree-sitter-language-pack bundles every grammar in a single native lib
         # (_native.abi3.so). On the 3.10/3.11 runners that lib intermittently
