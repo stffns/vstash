@@ -138,6 +138,9 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         self.db_path = Path(db_path).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.embedding_dim = embedding_dim
+        # (key, event ids, unit query vectors) for the usage prior; see
+        # ``_usage_prior_matrix``.
+        self._usage_prior_cache: tuple[tuple[int, int, int], np.ndarray, np.ndarray] | None = None
         self._write_lock = threading.Lock()
         # Per-thread state for the cosine distance of the best vector match.
         # Thread-local so concurrent searches on a shared instance don't race.
@@ -1785,6 +1788,7 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         result_count: int,
         miss_hint: dict | None = None,
         results: Sequence[SearchResult] | None = None,
+        query_embedding: np.ndarray | Sequence[float] | None = None,
     ) -> int:
         """Record a search event for discard telemetry.
 
@@ -1804,11 +1808,20 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                 id, score) is written in the same transaction as the
                 event, so ``mark_result_used`` / ``export_usage_labels``
                 can later turn them into implicit relevance labels.
+            query_embedding: Optional query vector, stored as float32
+                bytes so the opt-in usage prior
+                (:meth:`usage_prior_doc_weights`) can find past searches
+                similar to a new one.
 
         Returns the event ID so it can be marked as dismissed later.
         """
         now_iso = datetime.now(timezone.utc).isoformat()
         hint_json = json.dumps(miss_hint) if miss_hint is not None else None
+        emb_blob = (
+            np.asarray(query_embedding, dtype=np.float32).tobytes()
+            if query_embedding is not None
+            else None
+        )
         with self._write_lock:
             try:
                 # Autocommit mode: keep the INSERT + prune DELETE in one
@@ -1817,9 +1830,17 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                 self._conn.execute("BEGIN IMMEDIATE")
                 cursor = self._conn.execute(
                     "INSERT INTO search_events (query, best_distance, relevance_tier, "
-                    "result_count, dismissed, created_at, miss_hint) "
-                    "VALUES (?, ?, ?, ?, 0, ?, ?)",
-                    [query, best_distance, relevance_tier, result_count, now_iso, hint_json],
+                    "result_count, dismissed, created_at, miss_hint, query_embedding) "
+                    "VALUES (?, ?, ?, ?, 0, ?, ?, ?)",
+                    [
+                        query,
+                        best_distance,
+                        relevance_tier,
+                        result_count,
+                        now_iso,
+                        hint_json,
+                        emb_blob,
+                    ],
                 )
                 event_id = int(cursor.lastrowid)  # type: ignore[arg-type]
                 if results:
@@ -1888,6 +1909,107 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                 [now_iso, int(event_id), *ids],
             )
             return int(cursor.rowcount)
+
+    def usage_prior_doc_weights(
+        self,
+        query_embedding: np.ndarray | Sequence[float],
+        *,
+        tau: float,
+        max_neighbors: int,
+    ) -> dict[str, float]:
+        """Similarity-weighted use counts per document from similar past searches.
+
+        The query-conditioned usage prior: find the (at most
+        ``max_neighbors``) logged searches whose query embedding has cosine
+        ``>= tau`` to ``query_embedding`` and in which at least one result
+        was marked used, then credit each document with
+        ``sum(similarity * used chunks of that document)`` over those
+        searches. A query with no similar past search gets ``{}``.
+
+        Only events with a stored ``query_embedding`` of the current
+        dimension take part; vectors are compared as unit-normalised
+        float32 (cosine).
+
+        Args:
+            query_embedding: The current query vector.
+            tau: Minimum query-query cosine for a past search to count.
+            max_neighbors: Cap on past searches consulted.
+
+        Returns:
+            ``{doc_id: weight}`` for every document used by a neighbour.
+        """
+        q = np.asarray(query_embedding, dtype=np.float32).ravel()
+        q_norm = float(np.linalg.norm(q))
+        if q_norm == 0.0 or max_neighbors < 1:
+            return {}
+        ids, mat = self._usage_prior_matrix(q.size)
+        if ids.size == 0:
+            return {}
+        sims = (mat @ q) / q_norm
+        keep = np.flatnonzero(sims >= tau)
+        if keep.size == 0:
+            return {}
+        if keep.size > max_neighbors:
+            keep = keep[np.argsort(-sims[keep], kind="stable")[:max_neighbors]]
+        sim_by_event = {int(ids[i]): float(sims[i]) for i in keep}
+        placeholders = ",".join("?" * len(sim_by_event))
+        used = self._conn.execute(
+            "SELECT r.event_id, c.doc_id, COUNT(*) FROM search_results r "
+            "JOIN chunks c ON c.id = r.chunk_id "
+            f"WHERE r.used = 1 AND r.event_id IN ({placeholders}) "
+            "GROUP BY r.event_id, c.doc_id",
+            list(sim_by_event),
+        ).fetchall()
+        weights: dict[str, float] = {}
+        for event_id, doc_id, n in used:
+            weights[str(doc_id)] = weights.get(str(doc_id), 0.0) + sim_by_event[
+                int(event_id)
+            ] * int(n)
+        return weights
+
+    def _usage_prior_matrix(self, dim: int) -> tuple[np.ndarray, np.ndarray]:
+        """(event ids, unit-normalised query vectors) of every event with a use.
+
+        Cached in memory: re-reading up to ``search_log_max_events`` blobs on
+        every search cost ~15 ms at 10k used events. The cache key is the
+        count and id-sum of the used rows, read from the partial index
+        ``idx_search_results_used`` (covering, sub-millisecond), so a new
+        ``mark_used`` or a pruned event -- from this process or another one
+        sharing the file -- rebuilds it. A stale entry can only be an event
+        whose rows were since deleted, which the per-document join in
+        :meth:`usage_prior_doc_weights` then finds empty.
+        """
+        count, id_sum = self._conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(event_id), 0) FROM search_results WHERE used = 1"
+        ).fetchone()
+        key = (int(count), int(id_sum), dim)
+        cached = self._usage_prior_cache
+        if cached is not None and cached[0] == key:
+            return cached[1], cached[2]
+        rows = self._conn.execute(
+            "SELECT id, query_embedding FROM search_events "
+            "WHERE query_embedding IS NOT NULL AND id IN "
+            "(SELECT event_id FROM search_results WHERE used = 1)"
+        ).fetchall()
+        rows = [r for r in rows if len(r[1]) == dim * 4]
+        ids = np.fromiter((int(r[0]) for r in rows), dtype=np.int64, count=len(rows))
+        mat = np.frombuffer(b"".join(r[1] for r in rows), dtype=np.float32).reshape(len(rows), dim)
+        norms = np.linalg.norm(mat, axis=1, keepdims=True)
+        norms[norms == 0.0] = 1.0
+        mat = mat / norms
+        self._usage_prior_cache = (key, ids, mat)
+        return ids, mat
+
+    def chunk_doc_ids(self, chunk_ids: Sequence[int]) -> dict[int, str]:
+        """Map chunk ids to their document id (missing chunks are omitted)."""
+        ids = [int(c) for c in chunk_ids]
+        if not ids:
+            return {}
+        placeholders = ",".join("?" * len(ids))
+        rows = self._conn.execute(
+            f"SELECT id, doc_id FROM chunks WHERE id IN ({placeholders})", ids
+        ).fetchall()
+        return {int(r[0]): str(r[1]) for r in rows}
 
     def export_usage_labels(
         self,
@@ -2153,17 +2275,9 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                     parts.append(text)
 
             if parts:
-                expanded.append(
-                    SearchResult(
-                        chunk_id=r.chunk_id,
-                        text="\n".join(parts),
-                        title=r.title,
-                        path=r.path,
-                        chunk=r.chunk,
-                        score=r.score,
-                        explain=r.explain,
-                    )
-                )
+                # model_copy keeps every other field (metadata, explain,
+                # usage_boost); rebuilding the model dropped them.
+                expanded.append(r.model_copy(update={"text": "\n".join(parts)}))
             else:
                 expanded.append(r)
 
@@ -2222,6 +2336,15 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                 # silently wiping the vector index. Mirrors every other write
                 # path.
                 self._conn.execute("BEGIN IMMEDIATE")
+
+                # Past query vectors (usage prior) were embedded with the old
+                # model: comparing them against new-model queries is
+                # meaningless, so drop them with the index they belong to.
+                self._conn.execute(
+                    "UPDATE search_events SET query_embedding = NULL "
+                    "WHERE query_embedding IS NOT NULL"
+                )
+                self._usage_prior_cache = None
 
                 # Drop and recreate vec_chunks with new dimensions
                 self._conn.execute("DROP TABLE IF EXISTS vec_chunks")

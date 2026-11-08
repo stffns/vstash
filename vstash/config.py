@@ -294,6 +294,61 @@ class ObservabilityConfig(BaseModel):
     )
 
 
+class UsagePriorConfig(BaseModel):
+    """Opt-in query-conditioned usage prior (``[usage_prior]``).
+
+    Boosts documents that past searches *similar to the current one*
+    marked as used (``Memory.mark_used``). For each search it finds the
+    (at most ``max_neighbors``) logged queries whose embedding cosine to
+    the current query is ``>= tau`` and in which a result was used, sums
+    ``similarity * uses`` per document, and rescales the candidates as
+    ``score * (1 + beta * log1p(uses))`` before the ``top_k`` cut. A
+    search with no similar past query is left exactly as it would be
+    with the prior off.
+
+    Measured in ``experiments/results/usage_prior_probe.md`` (#515): on
+    BEIR with a noisy simulated log, ``tau = 0.9`` / ``beta = 2.0`` --
+    picked on dev by a rule that caps each dataset's loss -- lifted
+    SciFact hybrid NDCG@10 0.727 -> 0.761 while queries whose answers
+    were never used moved by at most 0.001. A *global* (unconditioned)
+    popularity boost was rejected there: it trades unseen queries for
+    repeat ones. ``tau`` is the safety knob: lowering it to 0.8 cost
+    FiQA 0.026. Needs ``observability.log_search_results`` (the prior
+    reads the usage log) and is off by default.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    enabled: bool = Field(
+        default=False,
+        description="Apply the query-conditioned usage prior to adapter searches.",
+    )
+    tau: float = Field(
+        default=0.9,
+        gt=0.0,
+        le=1.0,
+        description="Minimum query-query cosine for a past search to count.",
+    )
+    beta: float = Field(
+        default=2.0,
+        ge=0.0,
+        description="Boost strength: score *= 1 + beta * log1p(weighted uses).",
+    )
+    max_neighbors: int = Field(
+        default=20,
+        ge=1,
+        description="Cap on similar past searches consulted per query.",
+    )
+    candidate_pool: int = Field(
+        default=50,
+        ge=1,
+        description=(
+            "Candidates re-scored when a similar past search exists "
+            "(clamped to limits.max_top_k, never below top_k)."
+        ),
+    )
+
+
 class LimitsConfig(BaseModel):
     """Explicit limits for the public store/search APIs (#133).
 
@@ -433,6 +488,7 @@ class VstashConfig(BaseModel):
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
     cache: CacheConfig = Field(default_factory=CacheConfig)
+    usage_prior: UsagePriorConfig = Field(default_factory=UsagePriorConfig)
 
     @property
     def cerebras_api_key(self) -> str:

@@ -105,6 +105,14 @@ class SearchResult(BaseModel):
     collection: str | None = Field(default=None, description="Named collection")
     tags: str | None = Field(default=None, description="Comma-separated tags from frontmatter")
     layer: str | None = Field(default=None, description="Layer/category from frontmatter")
+    usage_boost: float | None = Field(
+        default=None,
+        description=(
+            "Multiplier the opt-in usage prior applied to ``score`` "
+            "(1.0 = candidate untouched). ``None`` when the prior did not "
+            "run for this search (off, or no similar past search)."
+        ),
+    )
 
 
 class SearchResults(list):  # list[SearchResult]

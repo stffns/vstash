@@ -207,6 +207,7 @@ def _record_miss_event(
     top_k_requested: int,
     event_id: int | None = None,
     results: list | None = None,
+    query_embedding=None,
 ) -> int | None:
     """Build + persist a miss_hint search event in one place. Shared
     between ``vstash ask`` and ``vstash search`` to kill the
@@ -235,6 +236,7 @@ def _record_miss_event(
         result_count=result_count,
         miss_hint=hint,
         results=results if cfg.observability.log_search_results else None,
+        query_embedding=query_embedding if cfg.observability.log_search_results else None,
     )
 
 
