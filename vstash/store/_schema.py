@@ -110,7 +110,8 @@ class _SchemaManagerMixin:
                 result_count    INTEGER NOT NULL,
                 dismissed       INTEGER NOT NULL DEFAULT 0,
                 created_at      TEXT NOT NULL,
-                miss_hint       TEXT
+                miss_hint       TEXT,
+                query_embedding BLOB
             );
 
             -- Store metadata: key-value table for tracking what the
@@ -125,6 +126,40 @@ class _SchemaManagerMixin:
 
             CREATE INDEX IF NOT EXISTS idx_search_events_tier
             ON search_events(relevance_tier, created_at);
+
+            -- Usage log: the ranked chunks each search actually returned
+            -- to its caller, one row per (event, rank).  ``used`` flips
+            -- to 1 when the caller reports the result was consumed
+            -- (``mark_result_used``), which turns "returned and used" vs
+            -- "returned and ignored" into an implicit relevance label for
+            -- retrain.  Both FKs cascade: pruning search_events (rolling
+            -- cap, ``vstash compact``) or deleting a document (its chunks)
+            -- drops the matching rows, so labels never point at chunk
+            -- ids that no longer exist.  Additive table created with
+            -- IF NOT EXISTS, so no SCHEMA_VERSION bump: older builds
+            -- open the DB unchanged and newer builds add it on open.
+            CREATE TABLE IF NOT EXISTS search_results (
+                event_id  INTEGER NOT NULL
+                          REFERENCES search_events(id) ON DELETE CASCADE,
+                rank      INTEGER NOT NULL,
+                chunk_id  INTEGER NOT NULL
+                          REFERENCES chunks(id) ON DELETE CASCADE,
+                score     REAL NOT NULL,
+                used      INTEGER NOT NULL DEFAULT 0,
+                used_at   TEXT,
+                PRIMARY KEY (event_id, rank)
+            ) WITHOUT ROWID;
+
+            -- Child-side index for the chunks(id) cascade: without it every
+            -- chunk delete would scan search_results.
+            CREATE INDEX IF NOT EXISTS idx_search_results_chunk
+            ON search_results(chunk_id);
+
+            -- Partial index over the (few) used rows: the opt-in usage
+            -- prior looks up "events where something was used" on every
+            -- search, and without it that is a scan of every result row.
+            CREATE INDEX IF NOT EXISTS idx_search_results_used
+            ON search_results(event_id) WHERE used = 1;
 
             -- Auto-sync FTS5 when chunks are deleted directly
             CREATE TRIGGER IF NOT EXISTS trg_chunks_delete
@@ -371,6 +406,10 @@ class _SchemaManagerMixin:
         }
         if event_columns and "miss_hint" not in event_columns:
             migrations.append("ALTER TABLE search_events ADD COLUMN miss_hint TEXT")
+        # query_embedding on search_events: float32 bytes of the query vector,
+        # read by the opt-in query-conditioned usage prior.
+        if event_columns and "query_embedding" not in event_columns:
+            migrations.append("ALTER TABLE search_events ADD COLUMN query_embedding BLOB")
 
         # Frequency + decay scoring columns on chunks
         chunk_columns = {row[1] for row in conn.execute("PRAGMA table_info(chunks)").fetchall()}

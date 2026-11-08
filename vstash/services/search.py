@@ -16,15 +16,21 @@ the window from config.
 
 from __future__ import annotations
 
+import logging
+import math
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Literal
 
 from ..embed import embed_query
+from ..models import SearchResults
 from ..validation import LimitError, validate_search_input
 
 if TYPE_CHECKING:
     from ..config import VstashConfig
     from ..models import SearchResult
     from ..store import VstashStore
+
+logger = logging.getLogger(__name__)
 
 # The literal Protocol of valid retrieval modes. Kept as a module
 # constant so the runtime check in `search_with_embedding` does not
@@ -55,7 +61,9 @@ def search_with_embedding(
     distance_cutoff: float | None = None,
     exact_match: str | None = None,
     exact_match_case_sensitive: bool = False,
-) -> list[SearchResult]:
+    log_usage: bool = True,
+    usage_prior: bool | None = None,
+) -> SearchResults:
     """Embed ``query`` then hybrid-search ``store`` then expand context.
 
     The single replacement for the
@@ -105,9 +113,25 @@ def search_with_embedding(
         exact_match: Literal substring required in the result text.
         exact_match_case_sensitive: Whether ``exact_match`` is
             case-sensitive.
+        log_usage: Record this search in the usage log (``search_events``
+            + one ``search_results`` row per returned chunk) when
+            ``cfg.observability.log_search_results`` is on. Internal
+            callers that are not a user-visible search (benchmarks,
+            federated fan-out) pass ``False``. Query-cache hits ARE
+            logged: the caller still saw those results, so they are as
+            much a usage signal as a cold search.
+        usage_prior: Apply the query-conditioned usage prior
+            (``[usage_prior]``, see :class:`vstash.config.UsagePriorConfig`).
+            ``None`` (default) follows ``cfg.usage_prior.enabled``. When it
+            runs and a similar past search exists, ``candidate_pool``
+            candidates are re-scored and cut to ``top_k``; each returned
+            result carries ``usage_boost``. Without a similar past search
+            the ranking is exactly the prior-off ranking.
 
     Returns:
-        List of ``SearchResult`` ranked by relevance. May be empty.
+        ``SearchResults`` (a ``list[SearchResult]`` ranked by relevance,
+        possibly empty) whose ``event_id`` names the usage-log event to
+        pass to :func:`mark_used`; ``None`` when logging is off.
 
     Raises:
         LimitError: Any input exceeded the configured limit.
@@ -166,10 +190,14 @@ def search_with_embedding(
     if distance_cutoff is not None:
         extra_kwargs["distance_cutoff"] = distance_cutoff
 
+    prior_weights = usage_prior_weights(
+        cfg=cfg, store=store, query_embedding=q_embedding, enabled=usage_prior
+    )
+
     results = store.search(
         query_embedding=q_embedding,
         query_text=query,
-        top_k=top_k,
+        top_k=usage_prior_pool(cfg, top_k, prior_weights),
         vec_weight=vec_weight,
         fts_weight=fts_weight,
         retrieval_mode=mode,
@@ -187,8 +215,148 @@ def search_with_embedding(
         exact_match_case_sensitive=exact_match_case_sensitive,
         **extra_kwargs,
     )
+    if prior_weights:
+        results = apply_usage_prior(
+            store=store,
+            results=results,
+            weights=prior_weights,
+            beta=cfg.usage_prior.beta,
+            top_k=top_k,
+        )
+
+    # Log the ranked list BEFORE context expansion: expansion only widens
+    # each result's text, the chunk ids / ranks the caller acts on are the
+    # ones ranking produced.
+    event_id: int | None = None
+    if log_usage and cfg.observability.log_search_results:
+        event_id = _log_search(store, query, results, q_embedding)
 
     if expand_window > 0 and results:
         results = store.expand_context(results, window=expand_window)
 
-    return results
+    return SearchResults(results, event_id=event_id)
+
+
+def _log_search(
+    store: VstashStore, query: str, results: list[SearchResult], query_embedding=None
+) -> int | None:
+    """Write the usage-log event for one search; never fails the search.
+
+    A logging failure (locked DB past the busy timeout, a chunk deleted by
+    another process between ranking and logging tripping the FK) must not
+    turn a successful search into an error, so it degrades to "not logged".
+    The catch is deliberately broad: this is telemetry on the read path.
+    """
+    from ..store import relevance_tier
+
+    try:
+        best_distance = store.last_best_distance
+        return store.record_search_event(
+            query=query,
+            best_distance=best_distance,
+            relevance_tier=relevance_tier(best_distance),
+            result_count=len(results),
+            results=results,
+            query_embedding=query_embedding,
+        )
+    except Exception:
+        logger.warning("usage log: could not record search event", exc_info=True)
+        return None
+
+
+def usage_prior_weights(
+    *,
+    cfg: VstashConfig,
+    store: VstashStore,
+    query_embedding,
+    enabled: bool | None = None,
+) -> dict[str, float]:
+    """Per-document weights of the query-conditioned usage prior.
+
+    ``{}`` when the prior is off (``enabled`` falls back to
+    ``cfg.usage_prior.enabled``), ``beta`` is 0, no logged search is
+    similar enough, or the lookup fails -- a broken prior must never break
+    the search, so errors degrade to "no prior".
+    """
+    prior = cfg.usage_prior
+    on = prior.enabled if enabled is None else enabled
+    # ``is not True``: only a real opt-in turns the prior on (a mocked or
+    # mis-typed config must not silently enable a ranking change).
+    if on is not True or not prior.beta > 0.0:
+        return {}
+    try:
+        return store.usage_prior_doc_weights(
+            query_embedding, tau=prior.tau, max_neighbors=prior.max_neighbors
+        )
+    except Exception:
+        logger.warning("usage prior: lookup failed; searching without it", exc_info=True)
+        return {}
+
+
+def usage_prior_pool(cfg: VstashConfig, top_k: int, weights: dict[str, float]) -> int:
+    """``top_k`` to ask the store for: the candidate pool when the prior will run."""
+    if not weights:
+        return top_k
+    return max(top_k, min(cfg.usage_prior.candidate_pool, cfg.limits.max_top_k))
+
+
+def apply_usage_prior(
+    *,
+    store: VstashStore,
+    results: list[SearchResult],
+    weights: dict[str, float],
+    beta: float,
+    top_k: int,
+) -> list[SearchResult]:
+    """Re-score ``results`` with ``score * (1 + beta * log1p(uses))`` and cut to ``top_k``.
+
+    ``uses`` is the document's similarity-weighted use count from
+    :func:`usage_prior_weights`. Every returned result carries the
+    multiplier in ``usage_boost`` (1.0 for candidates the prior did not
+    touch) and ``score * usage_boost`` as its score.
+
+    The order respects the pipeline's MMR selection. ``results`` arrive in
+    MMR order, but ``score`` is the raw fusion score without the diversity
+    penalty, so re-sorting on it would pull a demoted same-document sibling
+    back above distinct documents. The sort key therefore multiplies a
+    non-increasing envelope of the scores (each candidate capped at the
+    key of the one ranked above it) instead of the raw score: with no
+    boost the MMR order comes back unchanged, and a boosted candidate can
+    only climb by its own multiplier. Ties keep the pipeline's order.
+    """
+    doc_of = store.chunk_doc_ids([r.chunk_id for r in results])
+    keyed: list[tuple[float, SearchResult]] = []
+    envelope = math.inf
+    for r in results:
+        envelope = min(envelope, r.score)
+        mult = 1.0 + beta * math.log1p(weights.get(doc_of.get(r.chunk_id, ""), 0.0))
+        keyed.append(
+            (envelope * mult, r.model_copy(update={"score": r.score * mult, "usage_boost": mult}))
+        )
+    keyed.sort(key=lambda kr: -kr[0])
+    return [r for _, r in keyed[:top_k]]
+
+
+def mark_used(*, store: VstashStore, event_id: int, chunk_ids: int | Sequence[int]) -> int:
+    """Report that the caller used one or more results of a logged search.
+
+    Shared entry point for the SDK (``Memory.mark_used``), MCP
+    (``vstash_mark_used``) and web (``POST /api/search/used``).
+
+    Args:
+        store: Open ``VstashStore`` the search ran against.
+        event_id: ``SearchResults.event_id`` of that search.
+        chunk_ids: ``SearchResult.chunk_id`` of the result(s) used.
+
+    Returns:
+        Number of results newly marked. ``0`` when the event was pruned,
+        the chunk was not in that result list, or it was already marked.
+
+    Raises:
+        LimitError: ``event_id`` / ``chunk_ids`` are not integers.
+    """
+    ids = [chunk_ids] if isinstance(chunk_ids, int) else list(chunk_ids)
+    for v in (event_id, *ids):
+        if not isinstance(v, int) or isinstance(v, bool):
+            raise LimitError(f"event_id / chunk_ids must be ints, got {v!r}")
+    return store.mark_result_used(event_id, ids)

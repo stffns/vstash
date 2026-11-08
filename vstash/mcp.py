@@ -32,7 +32,7 @@ from ._store_open import open_store_for_config
 from .config import VstashConfig, load_config
 from .embed import embed_query, warmup
 from .models import DocumentInfo, IngestResult, SearchResult, StoreStats
-from .services import search_with_embedding
+from .services import mark_used, search_with_embedding
 from .store import VstashStore, relevance_tier
 
 logger = logging.getLogger(__name__)
@@ -572,15 +572,17 @@ def vstash_ask(
                 }
             )
 
-        # Record search telemetry (same as vstash_search)
-        best_distance = store.last_best_distance
-        tier = relevance_tier(best_distance)
-        store.record_search_event(
-            query=query,
-            best_distance=best_distance,
-            relevance_tier=tier,
-            result_count=len(chunks),
-        )
+        # Record search telemetry (same as vstash_search). The services
+        # layer already logged the event (plus its usage-log rows) unless
+        # ``observability.log_search_results`` is off; never write twice.
+        if getattr(chunks, "event_id", None) is None:
+            best_distance = store.last_best_distance
+            store.record_search_event(
+                query=query,
+                best_distance=best_distance,
+                relevance_tier=relevance_tier(best_distance),
+                result_count=len(chunks),
+            )
 
         # Get LLM answer via ask_full so the reasoning channel + token usage
         # the backend produces (Cerebras gpt-oss message.reasoning, Ollama
@@ -692,7 +694,10 @@ def vstash_search(
             ignored.
 
     Returns:
-        JSON object with chunks array and relevance hint.
+        JSON object with chunks array and relevance hint, plus an
+        ``event_id`` when the usage log is on. After you actually use a
+        returned chunk (quote it, act on it), call ``vstash_mark_used``
+        with that ``event_id`` and the chunk's ``chunk_id``.
     """
     try:
         top_k = int(top_k)
@@ -762,21 +767,25 @@ def vstash_search(
         }
         hint = _hints[relevance]
 
-        store.record_search_event(
-            query=query,
-            best_distance=best_distance,
-            relevance_tier=relevance,
-            result_count=len(chunks),
-        )
+        event_id = getattr(chunks, "event_id", None)
+        if event_id is None:
+            store.record_search_event(
+                query=query,
+                best_distance=best_distance,
+                relevance_tier=relevance,
+                result_count=len(chunks),
+            )
 
-        return _ok(
-            {
-                "chunks": [c.model_dump(exclude_none=True) for c in chunks],
-                "relevance": relevance,
-                "hint": hint,
-                "best_distance": round(best_distance, 4),
-            }
-        )
+        payload: dict[str, Any] = {
+            "chunks": [c.model_dump(exclude_none=True) for c in chunks],
+            "relevance": relevance,
+            "hint": hint,
+            "best_distance": round(best_distance, 4),
+        }
+        if event_id is not None:
+            # Pass back to vstash_mark_used with the chunk_id(s) you used.
+            payload["event_id"] = event_id
+        return _ok(payload)
 
     except FileNotFoundError:
         return _error("vstash database not found. Ingest documents first with vstash_add.")
@@ -788,6 +797,43 @@ def vstash_search(
     except Exception as exc:
         logger.exception("vstash_search failed")
         return _error(f"Search failed: {exc}")
+
+
+@mcp_server.tool()
+def vstash_mark_used(event_id: int, chunk_ids: list[int] | int | str) -> str:
+    """Report which results of a previous ``vstash_search`` you actually used.
+
+    Call after relying on search results (quoting them, acting on them).
+    Builds the implicit relevance signal vstash uses to retrain its
+    retrieval: used results are positives, returned-but-unused ones of
+    the same search are negatives. Cheap; safe to call more than once.
+
+    Args:
+        event_id: The ``event_id`` field of the ``vstash_search`` response.
+        chunk_ids: ``chunk_id`` of each used result: a list, a single id,
+            or a comma-separated string (``"12,40"``).
+
+    Returns:
+        JSON object ``{"marked": N}`` with the number of results newly marked.
+    """
+    try:
+        eid = int(event_id)
+        if isinstance(chunk_ids, str):
+            ids = [int(p) for p in chunk_ids.split(",") if p.strip()]
+        elif isinstance(chunk_ids, int):
+            ids = [chunk_ids]
+        else:
+            ids = [int(c) for c in chunk_ids]
+    except (TypeError, ValueError):
+        return _error(f"event_id and chunk_ids must be integers, got {event_id!r}, {chunk_ids!r}")
+    try:
+        marked = mark_used(store=_get_store(), event_id=eid, chunk_ids=ids)
+        return _ok({"marked": marked})
+    except FileNotFoundError:
+        return _error("vstash database not found. Ingest documents first with vstash_add.")
+    except Exception as exc:
+        logger.exception("vstash_mark_used failed")
+        return _error(f"Mark used failed: {exc}")
 
 
 @mcp_server.tool()

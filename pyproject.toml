@@ -53,13 +53,13 @@ vstash-mcp = "vstash.mcp:main"
 [project.optional-dependencies]
 cerebras = ["cerebras-cloud-sdk>=1.0.0,<2"]
 ollama = ["ollama>=0.3.0,<1"]
-openai = ["openai>=1.0.0,<3"]
+openai = ["openai>=1.0.0,<4"]
 mcp = ["mcp>=1.0.0,<2"]
 ingest = ["markitdown>=0.1.0"]
 serve = ["starlette>=0.37.0", "uvicorn>=0.30.0"]
 langchain = ["langchain-core>=0.2.0,<2"]
 watch = ["watchdog>=4.0.0"]
-treesitter = ["tree-sitter-language-pack>=0.7.0,<1.8"]
+treesitter = ["tree-sitter-language-pack>=0.7.0,<1.16"]
 snapvec = ["snapvec>=0.7.1"]
 judge = [
     "torch>=2.4",

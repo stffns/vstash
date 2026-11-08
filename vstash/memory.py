@@ -29,9 +29,10 @@ from .models import (
     DocumentInfo,
     IngestResult,
     MissAnalysis,
-    SearchResult,
+    SearchResults,
     StoreStats,
 )
+from .services import mark_used as _mark_used
 from .services import search_with_embedding
 
 # Sentinel for distinguishing "parameter not provided" from explicit None.
@@ -367,7 +368,8 @@ class Memory:
         retrieval_mode: Literal["hybrid", "vec_only", "fts_only"] | None = None,
         exact_match: str | None = None,
         exact_match_case_sensitive: bool = False,
-    ) -> list[SearchResult]:
+        usage_prior: bool | None = None,
+    ) -> SearchResults:
         """Semantic search without LLM inference.
 
         Returns ranked chunks from the most relevant documents.
@@ -445,9 +447,15 @@ class Memory:
                 pair like ``retrieval_mode="fts_only", vec_weight=1.5``
                 does not raise. The mode is a stronger statement of
                 intent than pinned weights.
+            usage_prior: Boost documents that similar past searches marked
+                used (:meth:`mark_used`). ``None`` (default) follows the
+                ``[usage_prior] enabled`` config (off by default). Results
+                re-scored by the prior carry ``usage_boost``.
 
         Returns:
-            Ranked list of SearchResult ordered by relevance.
+            Ranked ``SearchResults`` (a ``list[SearchResult]``) ordered by
+            relevance. Its ``event_id`` identifies this search in the usage
+            log; pass it to :meth:`mark_used` for the results you act on.
         """
         # Resolve the retrieval mode through the store helper first --
         # it handles legacy aliases (like ``fts_only=True`` bool that
@@ -478,6 +486,61 @@ class Memory:
             retrieval_mode=_mode,
             exact_match=exact_match,
             exact_match_case_sensitive=exact_match_case_sensitive,
+            usage_prior=usage_prior,
+        )
+
+    def mark_used(self, event_id: int, chunk_id: int | list[int]) -> int:
+        """Report that results of a previous :meth:`search` were used.
+
+        This is the implicit relevance signal: a result that was returned
+        and used is a positive for that query, results of the same search
+        that were returned but not used are implicit negatives (see
+        :meth:`export_usage`).
+
+        Example::
+
+            hits = mem.search("how do I rotate keys?")
+            mem.mark_used(hits.event_id, hits[0].chunk_id)
+
+        Args:
+            event_id: ``SearchResults.event_id`` of the search.
+            chunk_id: ``SearchResult.chunk_id`` of the result used (or a
+                list of them).
+
+        Returns:
+            Number of results newly marked (``0`` if the event was pruned,
+            the chunk was not returned by that search, or it was already
+            marked).
+        """
+        return _mark_used(store=self._store, event_id=event_id, chunk_ids=chunk_id)
+
+    def export_usage(
+        self,
+        *,
+        since: str | None = None,
+        feedback_only: bool = True,
+        include_text: bool = True,
+        limit: int | None = None,
+    ) -> list[dict]:
+        """Export usage-log rows as training labels.
+
+        One dict per (search, returned chunk): ``query``, ``chunk_id``,
+        ``rank``, ``score``, ``used`` plus the chunk ``text`` / ``path`` /
+        ``title``. See ``VstashStore.export_usage_labels``.
+
+        Args:
+            since: Age string (``"30d"``) or ISO date; only newer events.
+            feedback_only: Only events with at least one ``mark_used``
+                (default). Unreported events carry no "ignored" signal.
+            include_text: Include the chunk text.
+            limit: Cap on rows (most recent events win).
+        """
+        since_iso = _resolve_before(since) if since is not None else None
+        return self._store.export_usage_labels(
+            since_iso=since_iso,
+            feedback_only=feedback_only,
+            include_text=include_text,
+            limit=limit,
         )
 
     def miss_analysis(
@@ -791,7 +854,12 @@ class Memory:
             ``Memory.prune`` returns, or ``None`` when ``before`` was
             not provided.
         """
-        report: dict = {"prune": None, "vacuum": False, "optimize_fts": False}
+        report: dict = {
+            "prune": None,
+            "search_events_pruned": 0,
+            "vacuum": False,
+            "optimize_fts": False,
+        }
         if before is not None:
             report["prune"] = self.prune(
                 before=before,
@@ -801,6 +869,13 @@ class Memory:
                 tags=tags,
                 dry_run=dry_run,
             )
+            if not dry_run:
+                # Usage-log events (and their search_results rows) older
+                # than the same cutoff go too. Not collection-scoped: an
+                # event spans whatever the query matched.
+                report["search_events_pruned"] = self._store.prune_search_events(
+                    before_iso=_resolve_before(before)
+                )
         if dry_run:
             return report
         if vacuum:

@@ -38,6 +38,7 @@ vstash.toml
 experiments/data/beir_*/
 experiments/data/beir_*_raw/
 experiments/data/arxiv_cache/
+experiments/data/adapter_cache/
 experiments/data/hf_cache/
 experiments/data/snapvec_bench_cache/
 experiments/data/wikipedia_corpus.json

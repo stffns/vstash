@@ -215,8 +215,35 @@ Use this when FTS5 stemming / lowercasing would eat a term you care about (code 
 |-----|------|---------|-------------|
 | `slow_query_ms` | float | `100.0` | Search queries slower than this threshold log to stderr with their query, latency, and result count. Set to 0 to log every query (debug). |
 | `auto_miss_hint` | bool | `true` | When a search returns empty or an all-low-tier result set, persist a lightweight `miss_hint` JSON on the `search_events` row. Consumed by `vstash why --recent` for post-hoc diagnosis. Added in issue #157 part 3. |
+| `log_search_results` | bool | `true` | Usage log. Every adapter-facing search (SDK `Memory.search`, MCP `vstash_search` / `vstash_ask`, web `/api/search`, CLI `ask` / `chat` / `search`) records the ranked chunk ids it returned in the `search_results` table and exposes the `event_id` (`SearchResults.event_id`, `"event_id"` in MCP / web JSON). Callers report what they used with `Memory.mark_used(event_id, chunk_id)`, MCP `vstash_mark_used`, or `POST /api/search/used`; `Memory.export_usage()` / `VstashStore.export_usage_labels()` turn that into (query, chunk, rank, used) training rows. Query-cache hits are logged (the caller still saw them); `VstashStore.search` called directly, `explain`, `miss_analysis` and federated search are not. Measured cost: +0.11 ms median per search on a 5 000-chunk store. Set `false` to opt out. |
+| `search_log_max_events` | int | `10000` | Rolling cap on `search_events` rows; older events and their `search_results` rows are pruned on every insert. `vstash compact --before X` also drops events older than `X`, and deleting a document drops the rows that point at its chunks. |
 
 ---
+
+## `[usage_prior]`
+
+Opt-in, query-conditioned usage prior. When on, each search looks for logged searches whose query embedding has cosine `>= tau` to the current query and in which a result was marked used (`Memory.mark_used`, MCP `vstash_mark_used`, `POST /api/search/used`). Each document those searches used gets `uses = sum(similarity x used chunks)`, and the candidates are re-scored as `score * (1 + beta * log1p(uses))` before the `top_k` cut. A search with no similar past search returns exactly the ranking it would with the prior off.
+
+```toml
+[usage_prior]
+enabled = true   # default false
+# tau = 0.9            # query-query cosine threshold (the safety knob)
+# beta = 2.0           # boost strength
+# max_neighbors = 20   # similar past searches consulted
+# candidate_pool = 50  # candidates re-scored when a similar search exists
+```
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `false` | Apply the prior to adapter searches (SDK, MCP, web, CLI `search` / `ask`). `Memory.search(..., usage_prior=True/False)` overrides it per call. |
+| `tau` | float | `0.9` | Minimum query-query cosine for a past search to count. Lowering it reaches more queries but boosts answers to merely related questions: at `0.8` FiQA lost 0.026 NDCG@10 in the probe. |
+| `beta` | float | `2.0` | Boost strength. `0` disables the prior. |
+| `max_neighbors` | int | `20` | Cap on similar past searches consulted per query. |
+| `candidate_pool` | int | `50` | Candidates re-scored when a similar past search exists (clamped to `limits.max_top_k`, never below `top_k`), so a used document just outside `top_k` can still be promoted. |
+
+Each returned result carries `usage_boost` (the multiplier applied; `1.0` = untouched, `None` when the prior did not run), and `vstash search --explain` prints it. The defaults come from `experiments/results/usage_prior_probe.md`: on BEIR with a noisy simulated log, `tau = 0.9`, `beta = 2.0` (chosen on dev by a rule that caps every dataset's loss) lifted SciFact NDCG@10 0.727 -> 0.761 while queries whose answers were never used moved by at most 0.001. They have not yet been re-validated on real agent logs.
+
+The prior reads the usage log, so it needs `observability.log_search_results` (each logged event stores its query vector, 1.5 KB at 384 dims, ~15 MB at the 10 000-event cap). `vstash reindex` clears stored query vectors, since they belong to the old model. Cost on a 5 000-chunk store with 10 000 logged events: about +0.1-0.8 ms when no similar past search exists (the past vectors are cached in memory); about +9 ms when one does, which is the price of ranking the 50-candidate pool instead of `top_k`.
 
 ## `[scoring]` (removed)
 
