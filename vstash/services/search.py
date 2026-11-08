@@ -311,17 +311,30 @@ def apply_usage_prior(
     """Re-score ``results`` with ``score * (1 + beta * log1p(uses))`` and cut to ``top_k``.
 
     ``uses`` is the document's similarity-weighted use count from
-    :func:`usage_prior_weights`. Ties keep the pipeline's order (stable
-    sort). Every returned result carries the multiplier in
-    ``usage_boost`` (1.0 for candidates the prior did not touch).
+    :func:`usage_prior_weights`. Every returned result carries the
+    multiplier in ``usage_boost`` (1.0 for candidates the prior did not
+    touch) and ``score * usage_boost`` as its score.
+
+    The order respects the pipeline's MMR selection. ``results`` arrive in
+    MMR order, but ``score`` is the raw fusion score without the diversity
+    penalty, so re-sorting on it would pull a demoted same-document sibling
+    back above distinct documents. The sort key therefore multiplies a
+    non-increasing envelope of the scores (each candidate capped at the
+    key of the one ranked above it) instead of the raw score: with no
+    boost the MMR order comes back unchanged, and a boosted candidate can
+    only climb by its own multiplier. Ties keep the pipeline's order.
     """
     doc_of = store.chunk_doc_ids([r.chunk_id for r in results])
-    rescored: list[SearchResult] = []
+    keyed: list[tuple[float, SearchResult]] = []
+    envelope = math.inf
     for r in results:
+        envelope = min(envelope, r.score)
         mult = 1.0 + beta * math.log1p(weights.get(doc_of.get(r.chunk_id, ""), 0.0))
-        rescored.append(r.model_copy(update={"score": r.score * mult, "usage_boost": mult}))
-    rescored.sort(key=lambda r: -r.score)
-    return rescored[:top_k]
+        keyed.append(
+            (envelope * mult, r.model_copy(update={"score": r.score * mult, "usage_boost": mult}))
+        )
+    keyed.sort(key=lambda kr: -kr[0])
+    return [r for _, r in keyed[:top_k]]
 
 
 def mark_used(*, store: VstashStore, event_id: int, chunk_ids: int | Sequence[int]) -> int:

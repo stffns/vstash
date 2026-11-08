@@ -106,6 +106,9 @@ if sqlite3.threadsafety == 0:  # pragma: no cover
 
 logger = logging.getLogger(__name__)
 
+# store_meta key bumped by ``reindex`` to invalidate usage-prior caches.
+_USAGE_PRIOR_GENERATION_KEY = "usage_prior_generation"
+
 
 class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _SearchEngineMixin):
     """SQLite-backed vector + FTS5 hybrid store with RRF ranking.
@@ -140,7 +143,9 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         self.embedding_dim = embedding_dim
         # (key, event ids, unit query vectors) for the usage prior; see
         # ``_usage_prior_matrix``.
-        self._usage_prior_cache: tuple[tuple[int, int, int], np.ndarray, np.ndarray] | None = None
+        self._usage_prior_cache: tuple[tuple[int, int, int, str], np.ndarray, np.ndarray] | None = (
+            None
+        )
         self._write_lock = threading.Lock()
         # Per-thread state for the cosine distance of the best vector match.
         # Thread-local so concurrent searches on a shared instance don't race.
@@ -1978,11 +1983,18 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         sharing the file -- rebuilds it. A stale entry can only be an event
         whose rows were since deleted, which the per-document join in
         :meth:`usage_prior_doc_weights` then finds empty.
+
+        ``reindex`` nulls the stored query vectors without touching the used
+        rows, so it also bumps ``store_meta['usage_prior_generation']``,
+        which is part of the key: a reindex through *another* open store on
+        the same file still invalidates this store's warmed cache (one PK
+        lookup, cheaper than joining every used row to its event).
         """
         count, id_sum = self._conn.execute(
             "SELECT COUNT(*), COALESCE(SUM(event_id), 0) FROM search_results WHERE used = 1"
         ).fetchone()
-        key = (int(count), int(id_sum), dim)
+        generation = self.get_meta(_USAGE_PRIOR_GENERATION_KEY) or "0"
+        key = (int(count), int(id_sum), dim, generation)
         cached = self._usage_prior_cache
         if cached is not None and cached[0] == key:
             return cached[1], cached[2]
@@ -2343,6 +2355,16 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                 self._conn.execute(
                     "UPDATE search_events SET query_embedding = NULL "
                     "WHERE query_embedding IS NOT NULL"
+                )
+                # Invalidate the usage-prior cache of every store sharing
+                # this file, not just this one (see _usage_prior_matrix).
+                self._conn.execute(
+                    "INSERT INTO store_meta (key, value, updated_at) "
+                    "VALUES (?, '1', datetime('now')) "
+                    "ON CONFLICT(key) DO UPDATE SET "
+                    "value = CAST(CAST(value AS INTEGER) + 1 AS TEXT), "
+                    "updated_at = excluded.updated_at",
+                    [_USAGE_PRIOR_GENERATION_KEY],
                 )
                 self._usage_prior_cache = None
 

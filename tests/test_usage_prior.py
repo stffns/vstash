@@ -317,3 +317,72 @@ class TestSurfaces:
             "SELECT COUNT(*) FROM search_events WHERE query_embedding IS NOT NULL"
         ).fetchone()[0]
         assert n == 0
+
+
+# --------------------------------------------------------------------- #
+# Review follow-ups (#516)                                               #
+# --------------------------------------------------------------------- #
+
+
+class _FakeStore:
+    def __init__(self, doc_of: dict[int, str]) -> None:
+        self._doc_of = doc_of
+
+    def chunk_doc_ids(self, chunk_ids):
+        return {c: self._doc_of[c] for c in chunk_ids if c in self._doc_of}
+
+
+def _sr(chunk_id: int, score: float, title: str):
+    from vstash.models import SearchResult
+
+    return SearchResult(
+        chunk_id=chunk_id, text=title, title=title, path=f"/{title}", chunk=0, score=score
+    )
+
+
+class TestMmrOrder:
+    # MMR order: A1, B, A2 -- A2 (same doc as A1) was demoted below B by the
+    # diversity penalty even though its raw fusion score is higher.
+    RESULTS = [_sr(1, 0.016, "A1"), _sr(2, 0.012, "B"), _sr(3, 0.015, "A2")]
+    DOCS = {1: "docA", 2: "docB", 3: "docA"}
+
+    def test_unboosted_candidates_keep_mmr_order(self) -> None:
+        from vstash.services.search import apply_usage_prior
+
+        out = apply_usage_prior(
+            store=_FakeStore(self.DOCS), results=self.RESULTS, weights={"other": 1.0},
+            beta=2.0, top_k=3,
+        )  # fmt: skip
+        assert _titles(out) == ["A1", "B", "A2"]
+
+    def test_boost_lifts_only_the_boosted_doc(self) -> None:
+        from vstash.services.search import apply_usage_prior
+
+        out = apply_usage_prior(
+            store=_FakeStore(self.DOCS), results=self.RESULTS, weights={"docB": 1.0},
+            beta=2.0, top_k=3,
+        )  # fmt: skip
+        assert _titles(out) == ["B", "A1", "A2"]
+        assert out[0].score == pytest.approx(0.012 * (1 + 2 * math.log1p(1.0)))
+
+
+@requires_sqlite_vec
+def test_reindex_through_another_store_invalidates_warm_cache(tmp_path: Path) -> None:
+    db = str(tmp_path / "shared.db")
+    a = VstashStore(db, embedding_dim=DIM)
+    try:
+        for name, emb in EMB.items():
+            a.add_document(
+                path=f"/t/{name}.md", title=name, chunks=[f"document {name}"],
+                embeddings=[emb], source_type="markdown",
+            )  # fmt: skip
+        _past_search(a, Q, used="B")
+        assert len(a.usage_prior_doc_weights(Q, tau=0.9, max_neighbors=20)) == 1  # warm
+        b = VstashStore(db, embedding_dim=DIM)
+        try:
+            b.reindex(lambda texts: [Q for _ in texts], new_dim=DIM)  # same dim
+        finally:
+            b.close()
+        assert a.usage_prior_doc_weights(Q, tau=0.9, max_neighbors=20) == {}
+    finally:
+        a.close()
