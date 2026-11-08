@@ -54,7 +54,7 @@ vstash-mcp = "vstash.mcp:main"
 cerebras = ["cerebras-cloud-sdk>=1.0.0,<2"]
 ollama = ["ollama>=0.3.0,<1"]
 openai = ["openai>=1.0.0,<3"]
-mcp = ["mcp>=1.0.0,<2"]
+mcp = ["mcp>=1.0.0,<3"]
 ingest = ["markitdown>=0.1.0"]
 serve = ["starlette>=0.37.0", "uvicorn>=0.30.0"]
 langchain = ["langchain-core>=0.2.0,<2"]
