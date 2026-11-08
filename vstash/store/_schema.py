@@ -110,7 +110,8 @@ class _SchemaManagerMixin:
                 result_count    INTEGER NOT NULL,
                 dismissed       INTEGER NOT NULL DEFAULT 0,
                 created_at      TEXT NOT NULL,
-                miss_hint       TEXT
+                miss_hint       TEXT,
+                query_embedding BLOB
             );
 
             -- Store metadata: key-value table for tracking what the
@@ -153,6 +154,12 @@ class _SchemaManagerMixin:
             -- chunk delete would scan search_results.
             CREATE INDEX IF NOT EXISTS idx_search_results_chunk
             ON search_results(chunk_id);
+
+            -- Partial index over the (few) used rows: the opt-in usage
+            -- prior looks up "events where something was used" on every
+            -- search, and without it that is a scan of every result row.
+            CREATE INDEX IF NOT EXISTS idx_search_results_used
+            ON search_results(event_id) WHERE used = 1;
 
             -- Auto-sync FTS5 when chunks are deleted directly
             CREATE TRIGGER IF NOT EXISTS trg_chunks_delete
@@ -399,6 +406,10 @@ class _SchemaManagerMixin:
         }
         if event_columns and "miss_hint" not in event_columns:
             migrations.append("ALTER TABLE search_events ADD COLUMN miss_hint TEXT")
+        # query_embedding on search_events: float32 bytes of the query vector,
+        # read by the opt-in query-conditioned usage prior.
+        if event_columns and "query_embedding" not in event_columns:
+            migrations.append("ALTER TABLE search_events ADD COLUMN query_embedding BLOB")
 
         # Frequency + decay scoring columns on chunks
         chunk_columns = {row[1] for row in conn.execute("PRAGMA table_info(chunks)").fetchall()}

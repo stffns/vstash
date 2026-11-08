@@ -368,6 +368,7 @@ class Memory:
         retrieval_mode: Literal["hybrid", "vec_only", "fts_only"] | None = None,
         exact_match: str | None = None,
         exact_match_case_sensitive: bool = False,
+        usage_prior: bool | None = None,
     ) -> SearchResults:
         """Semantic search without LLM inference.
 
@@ -446,6 +447,10 @@ class Memory:
                 pair like ``retrieval_mode="fts_only", vec_weight=1.5``
                 does not raise. The mode is a stronger statement of
                 intent than pinned weights.
+            usage_prior: Boost documents that similar past searches marked
+                used (:meth:`mark_used`). ``None`` (default) follows the
+                ``[usage_prior] enabled`` config (off by default). Results
+                re-scored by the prior carry ``usage_boost``.
 
         Returns:
             Ranked ``SearchResults`` (a ``list[SearchResult]``) ordered by
@@ -481,6 +486,7 @@ class Memory:
             retrieval_mode=_mode,
             exact_match=exact_match,
             exact_match_case_sensitive=exact_match_case_sensitive,
+            usage_prior=usage_prior,
         )
 
     def mark_used(self, event_id: int, chunk_id: int | list[int]) -> int:

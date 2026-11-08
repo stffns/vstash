@@ -220,6 +220,31 @@ Use this when FTS5 stemming / lowercasing would eat a term you care about (code 
 
 ---
 
+## `[usage_prior]`
+
+Opt-in, query-conditioned usage prior. When on, each search looks for logged searches whose query embedding has cosine `>= tau` to the current query and in which a result was marked used (`Memory.mark_used`, MCP `vstash_mark_used`, `POST /api/search/used`). Each document those searches used gets `uses = sum(similarity x used chunks)`, and the candidates are re-scored as `score * (1 + beta * log1p(uses))` before the `top_k` cut. A search with no similar past search returns exactly the ranking it would with the prior off.
+
+```toml
+[usage_prior]
+enabled = true   # default false
+# tau = 0.9            # query-query cosine threshold (the safety knob)
+# beta = 2.0           # boost strength
+# max_neighbors = 20   # similar past searches consulted
+# candidate_pool = 50  # candidates re-scored when a similar search exists
+```
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `false` | Apply the prior to adapter searches (SDK, MCP, web, CLI `search` / `ask`). `Memory.search(..., usage_prior=True/False)` overrides it per call. |
+| `tau` | float | `0.9` | Minimum query-query cosine for a past search to count. Lowering it reaches more queries but boosts answers to merely related questions: at `0.8` FiQA lost 0.026 NDCG@10 in the probe. |
+| `beta` | float | `2.0` | Boost strength. `0` disables the prior. |
+| `max_neighbors` | int | `20` | Cap on similar past searches consulted per query. |
+| `candidate_pool` | int | `50` | Candidates re-scored when a similar past search exists (clamped to `limits.max_top_k`, never below `top_k`), so a used document just outside `top_k` can still be promoted. |
+
+Each returned result carries `usage_boost` (the multiplier applied; `1.0` = untouched, `None` when the prior did not run), and `vstash search --explain` prints it. The defaults come from `experiments/results/usage_prior_probe.md`: on BEIR with a noisy simulated log, `tau = 0.9`, `beta = 2.0` (chosen on dev by a rule that caps every dataset's loss) lifted SciFact NDCG@10 0.727 -> 0.761 while queries whose answers were never used moved by at most 0.001. They have not yet been re-validated on real agent logs.
+
+The prior reads the usage log, so it needs `observability.log_search_results` (each logged event stores its query vector, 1.5 KB at 384 dims, ~15 MB at the 10 000-event cap). `vstash reindex` clears stored query vectors, since they belong to the old model. Cost on a 5 000-chunk store with 10 000 logged events: about +0.1-0.8 ms when no similar past search exists (the past vectors are cached in memory); about +9 ms when one does, which is the price of ranking the 50-candidate pool instead of `top_k`.
+
 ## `[scoring]` (removed)
 
 The frequency+decay scoring pipeline was removed in v0.18.0 (replaced by the simpler `[recency]` boost in v0.19.0), and its config model was dropped entirely afterwards — all `[scoring]` parameters had been silently ignored since v0.18.0. A `[scoring]` section in an existing `vstash.toml` is now reported as an unknown section (warn-on-unknown), not an error, so old files still load. Use `mmr_lambda` per-call on `search()` for intra-document dedup tuning.

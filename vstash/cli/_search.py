@@ -16,6 +16,7 @@ from rich.table import Table
 from .. import chat as chat_module
 from ..embed import embed_query
 from ..services import search_with_embedding
+from ..services.search import apply_usage_prior, usage_prior_pool, usage_prior_weights
 from ..store import relevance_tier
 from ..validation import LimitError, validate_search_input
 from ._app import (
@@ -419,10 +420,13 @@ def search(
                         ]
                     chunks = [r for _, r in _search_tagged]
             else:
+                prior_weights = usage_prior_weights(
+                    cfg=cfg, store=store, query_embedding=q_embedding
+                )
                 chunks = store.search(
                     q_embedding,
                     query,
-                    top_k=k,
+                    top_k=usage_prior_pool(cfg, k, prior_weights),
                     collection=collection,
                     project=project,
                     layer=layer,
@@ -434,6 +438,14 @@ def search(
                     exact_match=exact_match,
                     exact_match_case_sensitive=exact_match_case_sensitive,
                 )
+                if prior_weights:
+                    chunks = apply_usage_prior(
+                        store=store,
+                        results=chunks,
+                        weights=prior_weights,
+                        beta=cfg.usage_prior.beta,
+                        top_k=k,
+                    )
 
         if not chunks:
             if not all_profiles:
@@ -474,6 +486,7 @@ def search(
                 # explain output is a debugging view, not a usage signal
                 # (same rule as the query cache).
                 results=None if explain else chunks,
+                query_embedding=None if explain else q_embedding,
             )
 
         if json_output:
@@ -578,6 +591,15 @@ def search(
                     lines.append(f"  MMR:     -{ex.mmr_penalty:.2f} penalty (same-doc similarity)")
                 else:
                     lines.append("  MMR:     no penalty (unique document)")
+
+                # Usage prior (opt-in): only shown when it ran for this search
+                if c.usage_boost is not None:
+                    if c.usage_boost > 1.0:
+                        lines.append(
+                            f"  Usage:   x{c.usage_boost:.2f} (used by similar past searches)"
+                        )
+                    else:
+                        lines.append("  Usage:   no boost (not used by similar past searches)")
 
                 for line in lines:
                     console.print(f"[dim]{line}[/dim]")
