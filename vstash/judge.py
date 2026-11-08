@@ -106,6 +106,9 @@ class D1Judge:
             )
         dtype = torch.float32 if dev == "cpu" else torch.bfloat16
         self._torch = torch
+        # One forward pass at a time: the verify adapter is switched on and off on the shared
+        # model, so a concurrent gate read must not run while it is on (web / MCP threads).
+        self._infer_lock = threading.Lock()
         self._model = AutoModel.from_pretrained(
             self.model_name, trust_remote_code=True, dtype=dtype
         ).to(dev)
@@ -151,7 +154,7 @@ class D1Judge:
             m.enable_adapters(on)
 
     def _noul(self, requests: list[tuple[str, dict]], *, adapter: bool = False) -> list[float]:
-        with self._torch.inference_mode():
+        with self._infer_lock, self._torch.inference_mode():
             if adapter and self._lora:
                 self._use_adapter(True)
                 try:

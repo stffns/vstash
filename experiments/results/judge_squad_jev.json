@@ -6,7 +6,7 @@
     "unanswerable": 100,
     "llm": "deepseek-flash",
     "judge": "LiquidAI/d1-2B",
-    "verify_adapter": "/Users/jaysonsteffens/code/destila/adapters/jev",
+    "verify_adapter": "jev",
     "top_k": 5,
     "gate_ms_per_question": 0
   },

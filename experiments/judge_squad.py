@@ -218,7 +218,8 @@ def report(qs: list[dict], a, gate_ms: float) -> None:
             "unanswerable": len(imp),
             "llm": a.model,
             "judge": a.judge_model,
-            "verify_adapter": a.verify_adapter,
+            # The adapter's directory name only: a full path would carry the local user and layout.
+            "verify_adapter": Path(a.verify_adapter).name if a.verify_adapter else None,
             "top_k": a.top_k,
             "gate_ms_per_question": round(gate_ms),
         },

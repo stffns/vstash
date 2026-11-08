@@ -116,7 +116,7 @@ class TestJudgedAsk:
         ):
             out = judged_ask("who built the bridge?", [_chunk("cats and dogs")], _cfg())
         ask.assert_not_called()
-        assert out.backend == "judge" and out.judgment is not None and out.judgment.gated
+        assert out.backend is None and out.judgment is not None and out.judgment.gated
         assert "couldn't find this in your memory" in out.content
 
     def test_answerable_calls_llm_and_verifies(self) -> None:

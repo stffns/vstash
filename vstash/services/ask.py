@@ -143,8 +143,8 @@ def judged_ask(
     if judgment.gated:
         return AskResult(
             content=judge_mod.NOT_IN_MEMORY.format(p=judgment.answerable),
-            backend="judge",
-            model=jcfg.model,
+            # No LLM ran: backend/model stay unset (their domain is the inference backend);
+            # ``judgment.gated`` and ``judgment.model`` say the judge answered.
             judgment=judgment,
         )
     result = _chat_ask_full(query, chunks, cfg, history)
