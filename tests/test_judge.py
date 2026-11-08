@@ -155,3 +155,20 @@ def test_config_defaults_off() -> None:
 def test_config_from_toml_section() -> None:
     cfg = VstashConfig.model_validate({"judge": {"enabled": True, "gate_threshold": 0.35}})
     assert cfg.judge.enabled and cfg.judge.gate_threshold == 0.35
+
+
+def test_get_judge_keys_the_cache_on_the_verify_adapter():
+    """A judge with a fact-checking adapter is a different model: it must not reuse the plain one."""
+    built: list[tuple] = []
+
+    class Spy:
+        def __init__(self, *args) -> None:
+            built.append(args)
+
+    with patch.object(judge_mod, "D1Judge", Spy), patch.dict(judge_mod._cache, clear=True):
+        plain = judge_mod.get_judge(JudgeConfig(enabled=True))
+        again = judge_mod.get_judge(JudgeConfig(enabled=True))
+        tuned = judge_mod.get_judge(JudgeConfig(enabled=True, verify_adapter="/a/jev"))
+    assert plain is again
+    assert tuned is not plain
+    assert built == [("LiquidAI/d1-2B", "auto", None), ("LiquidAI/d1-2B", "auto", "/a/jev")]

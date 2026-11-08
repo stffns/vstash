@@ -268,18 +268,21 @@ A local decision model around `ask` (`vstash.judge`). Needs `pip install 'vstash
 | `model` | str | `"LiquidAI/d1-2B"` | Hugging Face id of a d1 decision model |
 | `device` | str | `"auto"` | `auto`, `mps`, `cuda` or `cpu` |
 | `gate` | bool | `true` | Skip the LLM when the retrieved context does not hold the answer |
-| `gate_threshold` | float | `0.2` | Below this P(answerable), reply "not in memory" instead of calling the LLM |
+| `gate_threshold` | float | `0.4` | Below this P(answerable), reply "not in memory" instead of calling the LLM |
 | `verify` | bool | `true` | Check each claim of the reply against the retrieved context |
 | `claim_threshold` | float | `0.5` | Below this P(supported), a claim is flagged |
 | `max_claims` | int | `20` | Claims checked per reply |
+| `verify_adapter` | str | none | Directory of a LoRA fact-checking adapter (`lora.json` + `adapter.safetensors`, needs `peft`), switched on only for claim checks; the gate always reads the base model |
 
 ```toml
 [judge]
 enabled = true
-gate_threshold = 0.2
+gate_threshold = 0.4
 ```
 
-**Gate** (before the LLM): one calibrated yes/no read of whether the retrieved chunks can answer the question; below the threshold vstash answers that memory does not hold it, with no inference call. **Verify** (after): the reply is split into sentences and list items, and each gets P(supported by the same context the LLM saw); unsupported ones are flagged in the CLI and returned in `AskResult.judgment` for the SDK, MCP and web. With `enabled = false` the `ask` path is unchanged. The thresholds are defaults, not calibrated per corpus: tune them on your own questions.
+**Gate** (before the LLM): one calibrated yes/no read of whether the retrieved chunks can answer the question; below the threshold vstash answers that memory does not hold it, with no inference call. **Verify** (after): the reply is split into sentences and list items, and each gets P(supported by the same context the LLM saw); unsupported ones are flagged in the CLI and returned in `AskResult.judgment` for the SDK, MCP and web. With `enabled = false` the `ask` path is unchanged.
+
+**Measured** (`python -m experiments.judge_squad`, results in `experiments/results/judge_squad.json`): all 35 SQuAD 2.0 validation articles ingested, 100 answerable questions plus 100 of SQuAD's human-written *unanswerable* ones, DeepSeek flash as the LLM. The gate separates the two with AUROC 0.83 (0.91 when retrieval found the gold passage). At `gate_threshold = 0.4` it blocks 75% of unanswerable questions and 20% of answerable ones, yet correct answers stay at 68% with or without the judge: the answerable questions it blocks are the ones the LLM would not have answered correctly anyway (retrieval missed, or the LLM abstained). Wrong answers to unanswerable questions drop from 16% to 10%, and about half of all LLM calls are skipped. Per-claim verification catches facts the context does not contain, but not answers built from real context sentences that miss the question (SQuAD's adversarial cases): it flagged a claim in only 8% of the wrong answers (4% of the correct ones; AUROC 0.58 for the weakest claim), so treat flags as a hallucination signal, not a correctness check. A fact-checking `verify_adapter` (destila's Jev-distilled LoRA, 76.5 vs 75.2 balanced accuracy on the full LLM-AggreFact) does not change this on the same replies (`experiments/results/judge_squad_jev.json`: 12.5% vs 7%, AUROC 0.57): the wrong SQuAD answers are mostly grounded sentences that miss the question, which no groundedness check can catch. Re-tune the threshold on your own questions if your LLM or corpus differ.
 
 ---
 

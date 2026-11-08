@@ -30,10 +30,12 @@ ANSWERABLE = (
     "Does the CONTEXT contain the information needed to answer the QUESTION? Answer yes only if a "
     "careful reader could answer it from the context alone, without outside knowledge or guessing."
 )
+# Worded exactly as the fact-checking adapters were trained (destila's LLM-AggreFact recipe), so a
+# ``verify_adapter`` reads the question it learnt; the base model reads it just as well.
 SUPPORTED = (
-    "Is every piece of information in the CLAIM supported by the CONTEXT? Answer yes only if the "
-    "context states or directly implies all of it; answer no if any part is contradicted, missing, "
-    "or unverifiable from the context alone."
+    "Is every piece of information in the CLAIM supported by the DOCUMENT? Answer yes only if the "
+    "document states or directly implies all of it; answer no if any part is contradicted, missing, "
+    "or unverifiable from the document alone."
 )
 NOT_IN_MEMORY = (
     "I couldn't find this in your memory: the retrieved documents don't seem to contain the answer "
@@ -83,6 +85,7 @@ class D1Judge:
 
     model_name: str = "LiquidAI/d1-2B"
     device: str = "auto"
+    verify_adapter: str | None = None
 
     def __post_init__(self) -> None:
         try:
@@ -103,15 +106,60 @@ class D1Judge:
             )
         dtype = torch.float32 if dev == "cpu" else torch.bfloat16
         self._torch = torch
-        self._model = (
-            AutoModel.from_pretrained(self.model_name, trust_remote_code=True, dtype=dtype)
-            .to(dev)
-            .eval()
-        )
+        self._model = AutoModel.from_pretrained(
+            self.model_name, trust_remote_code=True, dtype=dtype
+        ).to(dev)
+        self._lora: list = []
+        if self.verify_adapter:
+            self._attach(self.verify_adapter)
+        self._model.eval()
 
-    def _noul(self, requests: list[tuple[str, dict]]) -> list[float]:
+    def _attach(self, adapter: str) -> None:
+        """Load a LoRA fact-checking adapter, switched on only while claims are verified.
+
+        It must go in before the first ``system_one`` call: d1 fuses q/k/v (and the feed-forward
+        gates) into single matmuls the first time it builds its engine, and only plain ``Linear``
+        layers are fused, so an adapter trained on the unfused layers has to be injected first.
+        """
+        import json
+        from pathlib import Path
+
+        try:
+            from peft import LoraConfig, inject_adapter_in_model, set_peft_model_state_dict
+            from peft.tuners.tuners_utils import BaseTunerLayer
+            from safetensors.torch import load_file
+        except ImportError as exc:  # pragma: no cover - exercised only without the extra
+            raise ImportError("verify_adapter needs peft: pip install 'vstash[judge]'") from exc
+        root = Path(adapter).expanduser()
+        cfg = LoraConfig(**json.loads((root / "lora.json").read_text()))
+        # Building the LoRA layers runs CPU init kernels on torch's OpenMP pool. snapvec (imported by
+        # vstash) bundles its own libomp, and two OpenMP runtimes in one process segfault there on
+        # macOS; one thread keeps the init off the pool. Inference afterwards is unaffected.
+        threads = self._torch.get_num_threads()
+        self._torch.set_num_threads(1)
+        try:
+            inject_adapter_in_model(cfg, self._model)
+            set_peft_model_state_dict(self._model, load_file(str(root / "adapter.safetensors")))
+        finally:
+            self._torch.set_num_threads(threads)
+        self._lora = [m for m in self._model.modules() if isinstance(m, BaseTunerLayer)]
+        self._model.to(next(self._model.parameters()).device)
+        self._use_adapter(False)
+
+    def _use_adapter(self, on: bool) -> None:
+        for m in self._lora:
+            m.enable_adapters(on)
+
+    def _noul(self, requests: list[tuple[str, dict]], *, adapter: bool = False) -> list[float]:
         with self._torch.inference_mode():
-            out = self._model.system_one_batch(requests)
+            if adapter and self._lora:
+                self._use_adapter(True)
+                try:
+                    out = self._model.system_one_batch(requests)
+                finally:
+                    self._use_adapter(False)
+            else:
+                out = self._model.system_one_batch(requests)
         return [float(o["answers"]["q"]["noul"]) for o in out]
 
     def answerable(self, query: str, context: str) -> float:
@@ -122,19 +170,20 @@ class D1Judge:
         if not claims:
             return []
         q = {"q": {"type": "noul", "instructions": SUPPORTED}}
-        return self._noul([(f"CONTEXT:\n{context}\n\nCLAIM:\n{c}", q) for c in claims])
+        reqs = [(f"DOCUMENT:\n{context}\n\nCLAIM:\n{c}", q) for c in claims]
+        return self._noul(reqs, adapter=True)
 
 
-_cache: dict[tuple[str, str], Judge] = {}
+_cache: dict[tuple[str, str, str | None], Judge] = {}
 _lock = threading.Lock()
 
 
 def get_judge(cfg: JudgeConfig) -> Judge:
     """One loaded judge per (model, device) for the life of the process: loading costs seconds."""
-    key = (cfg.model, cfg.device)
+    key = (cfg.model, cfg.device, cfg.verify_adapter)
     with _lock:
         if key not in _cache:
-            _cache[key] = D1Judge(cfg.model, cfg.device)
+            _cache[key] = D1Judge(cfg.model, cfg.device, cfg.verify_adapter)
         return _cache[key]
 
 

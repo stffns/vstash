@@ -385,7 +385,7 @@ class JudgeConfig(BaseModel):
         default=True, description="Skip the LLM when the context does not hold the answer"
     )
     gate_threshold: float = Field(
-        default=0.2,
+        default=0.4,
         ge=0.0,
         le=1.0,
         description="Below this P(answerable), reply 'not in memory' instead of calling the LLM",
@@ -395,6 +395,11 @@ class JudgeConfig(BaseModel):
         default=0.5, ge=0.0, le=1.0, description="Below this P(supported), a claim is flagged"
     )
     max_claims: int = Field(default=20, ge=1, le=200, description="Claims checked per reply")
+    verify_adapter: str | None = Field(
+        default=None,
+        description="Directory of a LoRA fact-checking adapter (lora.json + adapter.safetensors) "
+        "switched on only for claim checks; the gate always reads the base model",
+    )
 
 
 class VstashConfig(BaseModel):
