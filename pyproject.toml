@@ -61,6 +61,14 @@ langchain = ["langchain-core>=0.2.0,<2"]
 watch = ["watchdog>=4.0.0"]
 treesitter = ["tree-sitter-language-pack>=0.7.0,<1.16"]
 snapvec = ["snapvec>=0.7.1"]
+judge = [
+    "torch>=2.4",
+    "torchvision",
+    "pillow",
+    "transformers>=5.19",
+    "peft>=0.13",
+    "safetensors>=0.4",
+]
 all = [
     "vstash[cerebras]",
     "vstash[ollama]",

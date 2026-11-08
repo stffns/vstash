@@ -85,3 +85,6 @@ paper/arxiv/vstash-v2.*
 * [2-9]
 * [0-9][0-9].*
 * [0-9][0-9]
+
+# SQuAD 2.0 cache + scratch memory for experiments.judge_squad
+experiments/data/squad_v2/

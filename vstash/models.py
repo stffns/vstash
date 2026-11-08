@@ -329,6 +329,41 @@ class MissAnalysis(BaseModel):
     )
 
 
+class ClaimCheck(BaseModel):
+    """One statement of an LLM reply, checked against the context the LLM was given."""
+
+    model_config = ConfigDict(frozen=True)
+
+    text: str = Field(description="The claim as it appears in the reply")
+    supported: float = Field(description="P(the retrieved context supports it), from the judge")
+    flagged: bool = Field(description="supported < [judge] claim_threshold")
+
+
+class Judgment(BaseModel):
+    """What the local judge (``vstash.judge``) read around one ``ask``."""
+
+    model_config = ConfigDict(frozen=True)
+
+    answerable: float = Field(description="P(the retrieved context holds the answer)")
+    gated: bool = Field(
+        default=False,
+        description="True when answerable fell below the gate threshold and the LLM was skipped",
+    )
+    claims: list[ClaimCheck] = Field(default_factory=list, description="Per-claim support")
+    model: str | None = Field(default=None, description="Judge model used")
+
+    @property
+    def flagged(self) -> list[ClaimCheck]:
+        return [c for c in self.claims if c.flagged]
+
+    @property
+    def supported_share(self) -> float | None:
+        """Share of claims the context supports; None when there were none to check."""
+        if not self.claims:
+            return None
+        return sum(not c.flagged for c in self.claims) / len(self.claims)
+
+
 class AskResult(BaseModel):
     """Normalized result from a chat backend, returned by ``chat.ask_full()``.
 
@@ -365,3 +400,7 @@ class AskResult(BaseModel):
         description="Resolved backend ('cerebras' | 'ollama' | 'openai')",
     )
     model: str | None = Field(default=None, description="Resolved model name")
+    judgment: Judgment | None = Field(
+        default=None,
+        description="The local judge's reads ([judge] enabled): answerability gate + per-claim support",
+    )
