@@ -93,9 +93,10 @@ class TestMinRelevance:
         res = _search(store, FAR, query="apple", retrieval_mode="fts_only", min_relevance="high")
         assert [r.title for r in res] == ["apple"]
 
-    def test_invalid_value_rejected(self, store) -> None:
+    @pytest.mark.parametrize("bad", ["certain", "low", ""])
+    def test_invalid_value_rejected(self, store, bad) -> None:
         with pytest.raises(LimitError):
-            _search(store, NEAR, min_relevance="certain")
+            _search(store, NEAR, min_relevance=bad)
 
     def test_gated_search_is_logged_as_empty(self, store) -> None:
         res = _search(store, FAR, min_relevance="medium")

@@ -42,6 +42,9 @@ _VALID_RETRIEVAL_MODES: frozenset[str] = frozenset({"hybrid", "vec_only", "fts_o
 
 # Ordering of :func:`vstash.store.relevance_tier` labels for ``min_relevance``.
 _TIER_RANK: dict[str, int] = {"low": 0, "medium": 1, "high": 2}
+# Accepted ``min_relevance`` inputs. "low" is an output tier, not a gate: every
+# result clears it, so accepting it would silently disable the filter.
+_VALID_MIN_RELEVANCE: frozenset[str] = frozenset({"medium", "high"})
 
 #: End-to-end latency of :func:`search_with_embedding`: validation, query
 #: embedding, ``store.search``, the usage prior, the usage log and context
@@ -192,7 +195,7 @@ def search_with_embedding(
             f"retrieval_mode must be one of "
             f"{sorted(_VALID_RETRIEVAL_MODES)} or None, got {retrieval_mode!r}"
         )
-    if min_relevance is not None and min_relevance not in _TIER_RANK:
+    if min_relevance is not None and min_relevance not in _VALID_MIN_RELEVANCE:
         raise LimitError(f"min_relevance must be 'high', 'medium' or None, got {min_relevance!r}")
 
     # Resolve the mode and drop caller weights BEFORE validation when

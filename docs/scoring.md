@@ -168,23 +168,6 @@ memory.search("query", dedup_threshold=0.95)  # SDK
 
 MCP exposes it as the `dedup_threshold` argument of `vstash_search`.
 
-## "Nothing found": `min_relevance`
-
-By default a search always returns up to `top_k` results, however weak the
-best match is. `min_relevance` (opt-in) turns the relevance tier into a
-gate: with `"medium"` or `"high"`, the search returns an empty list when the
-best vector match falls below that tier.
-
-```python
-memory.search("a question the store cannot answer", min_relevance="medium")  # -> []
-```
-
-The tiers are cosine-distance thresholds (`high <= 0.4513 < medium <= 0.4802 <
-low`) calibrated on BGE-small; with another embedding model, check where your
-own answerable and unanswerable queries land before relying on them. The gate
-is not applied with `retrieval_mode="fts_only"` (no vector distance). MCP
-exposes it as the `min_relevance` argument of `vstash_search`; a gated call
-returns `"relevance": "none"` plus the `best_relevance` / `best_distance` it saw.
 Under `--all-profiles`, the collapse is applied **per profile** before the
 cross-profile RRF merge: two profiles that each hold a copy of the same
 document still contribute one result apiece, because cross-profile
@@ -204,6 +187,24 @@ compare of each candidate against the ones kept so far. At the default
 (the pool is `min(top_k * 10, ...)` over the vector + FTS union), so a
 `top_k` in the thousands on a large corpus makes it measurable: 20 000
 candidates cost ~3.7 s and ~314 MB.
+
+## "Nothing found": `min_relevance`
+
+By default a search always returns up to `top_k` results, however weak the
+best match is. `min_relevance` (opt-in) turns the relevance tier into a
+gate: with `"medium"` or `"high"`, the search returns an empty list when the
+best vector match falls below that tier.
+
+```python
+memory.search("a question the store cannot answer", min_relevance="medium")  # -> []
+```
+
+The tiers are cosine-distance thresholds (`high <= 0.4513 < medium <= 0.4802 <
+low`) calibrated on BGE-small; with another embedding model, check where your
+own answerable and unanswerable queries land before relying on them. The gate
+is not applied with `retrieval_mode="fts_only"` (no vector distance). MCP
+exposes it as the `min_relevance` argument of `vstash_search`; a gated call
+returns `"relevance": "none"` plus the `best_relevance` / `best_distance` it saw.
 
 ---
 
