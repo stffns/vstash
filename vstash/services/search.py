@@ -37,6 +37,9 @@ logger = logging.getLogger(__name__)
 # have to maintain a parallel list to the Literal type alias above.
 _VALID_RETRIEVAL_MODES: frozenset[str] = frozenset({"hybrid", "vec_only", "fts_only"})
 
+# Ordering of :func:`vstash.store.relevance_tier` labels for ``min_relevance``.
+_TIER_RANK: dict[str, int] = {"low": 0, "medium": 1, "high": 2}
+
 
 def search_with_embedding(
     *,
@@ -63,6 +66,7 @@ def search_with_embedding(
     exact_match_case_sensitive: bool = False,
     log_usage: bool = True,
     usage_prior: bool | None = None,
+    min_relevance: Literal["high", "medium"] | None = None,
 ) -> SearchResults:
     """Embed ``query`` then hybrid-search ``store`` then expand context.
 
@@ -127,6 +131,15 @@ def search_with_embedding(
             candidates are re-scored and cut to ``top_k``; each returned
             result carries ``usage_boost``. Without a similar past search
             the ranking is exactly the prior-off ranking.
+        min_relevance: Opt-in "nothing found" gate. ``None`` (default)
+            always returns up to ``top_k`` results, however weak. With
+            ``"medium"`` or ``"high"``, the whole result list is dropped
+            (an empty list is returned) when the query's best vector
+            match falls below that :func:`vstash.store.relevance_tier`.
+            The tiers are cosine-distance thresholds calibrated on
+            BGE-small; recalibrate them for other embedding models. Not
+            applied under ``retrieval_mode="fts_only"``, which has no
+            vector distance to judge.
 
     Returns:
         ``SearchResults`` (a ``list[SearchResult]`` ranked by relevance,
@@ -150,6 +163,10 @@ def search_with_embedding(
         raise LimitError(
             f"retrieval_mode must be one of "
             f"{sorted(_VALID_RETRIEVAL_MODES)} or None, got {retrieval_mode!r}"
+        )
+    if min_relevance is not None and min_relevance not in _TIER_RANK:
+        raise LimitError(
+            f"min_relevance must be 'high', 'medium' or None, got {min_relevance!r}"
         )
 
     # Resolve the mode and drop caller weights BEFORE validation when
@@ -223,6 +240,13 @@ def search_with_embedding(
             beta=cfg.usage_prior.beta,
             top_k=top_k,
         )
+
+    if min_relevance is not None and mode != "fts_only" and results:
+        from ..store import relevance_tier
+
+        tier = relevance_tier(store.last_best_distance)
+        if _TIER_RANK[tier] < _TIER_RANK[min_relevance]:
+            results = []
 
     # Log the ranked list BEFORE context expansion: expansion only widens
     # each result's text, the chunk ids / ranks the caller acts on are the

@@ -369,6 +369,7 @@ class Memory:
         exact_match: str | None = None,
         exact_match_case_sensitive: bool = False,
         usage_prior: bool | None = None,
+        min_relevance: Literal["high", "medium"] | None = None,
     ) -> SearchResults:
         """Semantic search without LLM inference.
 
@@ -451,6 +452,13 @@ class Memory:
                 used (:meth:`mark_used`). ``None`` (default) follows the
                 ``[usage_prior] enabled`` config (off by default). Results
                 re-scored by the prior carry ``usage_boost``.
+            min_relevance: Opt-in "nothing found" gate. ``None`` (default)
+                always returns up to ``top_k`` results. ``"medium"`` or
+                ``"high"`` returns an empty list when the best vector match
+                falls below that relevance tier, so a question the store
+                cannot answer yields nothing instead of the closest
+                off-topic chunks. Tiers are calibrated on BGE-small; not
+                applied with ``retrieval_mode="fts_only"``.
 
         Returns:
             Ranked ``SearchResults`` (a ``list[SearchResult]``) ordered by
@@ -487,6 +495,7 @@ class Memory:
             exact_match=exact_match,
             exact_match_case_sensitive=exact_match_case_sensitive,
             usage_prior=usage_prior,
+            min_relevance=min_relevance,
         )
 
     def mark_used(self, event_id: int, chunk_id: int | list[int]) -> int:

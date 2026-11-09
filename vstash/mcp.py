@@ -641,6 +641,7 @@ def vstash_search(
     vec_weight: float | None = None,
     fts_weight: float | None = None,
     retrieval_mode: str | None = None,
+    min_relevance: str | None = None,
 ) -> str:
     """Search vstash memory without LLM — returns raw chunks with scores.
 
@@ -692,6 +693,12 @@ def vstash_search(
               signal is known to be unreliable.
             When a non-hybrid mode is set, vec_weight/fts_weight are
             ignored.
+        min_relevance: Opt-in "nothing found" gate: ``"medium"`` or
+            ``"high"``. When the best match is below that relevance tier
+            the call returns no chunks (``"relevance": "none"``) plus the
+            ``best_relevance`` / ``best_distance`` it saw, instead of the
+            closest off-topic chunks. None (default) always returns up to
+            top_k chunks. Not applied with retrieval_mode="fts_only".
 
     Returns:
         JSON object with chunks array and relevance hint, plus an
@@ -752,10 +759,20 @@ def vstash_search(
             vec_weight=vec_weight_coerced,
             fts_weight=fts_weight_coerced,
             retrieval_mode=resolved_mode,
+            min_relevance=min_relevance or None,
         )
 
         if not chunks:
-            return _ok({"chunks": [], "relevance": "none"})
+            empty: dict[str, Any] = {"chunks": [], "relevance": "none"}
+            if min_relevance:
+                # Tell the caller how close the store came, so it can tell
+                # "nothing stored" from "below the bar it asked for".
+                empty["best_relevance"] = relevance_tier(store.last_best_distance)
+                empty["best_distance"] = round(store.last_best_distance, 4)
+            empty_event_id = getattr(chunks, "event_id", None)
+            if isinstance(empty_event_id, int):
+                empty["event_id"] = empty_event_id
+            return _ok(empty)
 
         # Tiered relevance signal based on vector distance.
         best_distance = store.last_best_distance
