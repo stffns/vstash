@@ -10,8 +10,13 @@ All notable changes to vstash are documented here.
 
 - **Query-conditioned usage prior** (`[usage_prior]`, opt-in, default off).  Boosts documents that past searches *similar to the current one* (query cosine `>= tau`, default 0.9) marked used: `score * (1 + beta * log1p(similarity-weighted uses))` over a 50-candidate pool, cut to `top_k`.  A search with no similar past search is ranked exactly as with the prior off.  `search_events` gains a `query_embedding` BLOB column (additive migration, no schema-version bump) plus a partial index over used result rows; past vectors are cached in memory.  Per-call override `Memory.search(usage_prior=...)` / `services.search_with_embedding(usage_prior=...)`; results carry `usage_boost`, shown by `vstash search --explain`.  `vstash reindex` clears stored query vectors.  Defaults from `experiments/results/usage_prior_probe.md` (SciFact 0.727 -> 0.761 NDCG@10 with never-used queries within 0.001); a global popularity prior was rejected there.
 
+- **`min_relevance` "nothing found" gate** (opt-in, default `None`).  `Memory.search(min_relevance="medium"|"high")`, `services.search_with_embedding(min_relevance=...)` and MCP `vstash_search(min_relevance=...)` return an empty list when the query's best vector match falls below that `relevance_tier`, instead of the closest off-topic chunks.  MCP's empty payload then carries `best_relevance` / `best_distance`.  Tiers are calibrated on BGE-small; not applied with `retrieval_mode="fts_only"`.  The gated search is still logged (with `result_count = 0`).
+- **`service_search_latency_ms` histogram**: end-to-end latency of `services.search_with_embedding` (validation + query embedding + search + usage prior + usage log + context expansion).  `search_latency_ms` only covers `store.search` and read ~4x low against what callers measured.  Histogram buckets gain `0.1` / `0.25` / `0.5` ms bounds.
+
 ### Fixed
 
+- A query-cache hit returned without updating `last_best_distance`, so `relevance_tier` (MCP `relevance`, the logged tier, the new `min_relevance`) reported the previous query's distance.  The cache now stores the distance alongside the results.
+- `Memory.remember`, MCP `vstash_remember` and `journal_save` printed a Rich "Embedding" progress bar to stderr on every call.  `ingest_text` gains `quiet` (default `False`, kept by the CLI); the programmatic callers pass `True`.
 - `VstashStore.expand_context` rebuilt each `SearchResult` from a subset of fields, dropping `added_at` / `collection` / `tags` / `layer` (and now `usage_boost`) from expanded results; it now copies the result and replaces only `text`.
 
 ## [0.37.0] - 2026-05-27

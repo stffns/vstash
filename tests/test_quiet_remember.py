@@ -43,7 +43,12 @@ class TestQuietRemember:
     def test_ingest_text_keeps_bar_by_default(self, tmp_path: Path, fake_embed, capsys) -> None:
         store = VstashStore(str(tmp_path / "b.db"), embedding_dim=DIM)
         try:
-            ingest_text("un texto de prueba algo más largo para la memoria", VstashConfig(), store, title="b")
+            ingest_text(
+                "un texto de prueba algo más largo para la memoria",
+                VstashConfig(),
+                store,
+                title="b",
+            )
         finally:
             store.close()
         assert "Embedding" in capsys.readouterr().err
@@ -51,7 +56,13 @@ class TestQuietRemember:
     def test_ingest_text_quiet(self, tmp_path: Path, fake_embed, capsys) -> None:
         store = VstashStore(str(tmp_path / "c.db"), embedding_dim=DIM)
         try:
-            res = ingest_text("un texto de prueba algo más largo para la memoria", VstashConfig(), store, title="c", quiet=True)
+            res = ingest_text(
+                "un texto de prueba algo más largo para la memoria",
+                VstashConfig(),
+                store,
+                title="c",
+                quiet=True,
+            )
         finally:
             store.close()
         assert res.status == "ok"

@@ -193,9 +193,7 @@ def search_with_embedding(
             f"{sorted(_VALID_RETRIEVAL_MODES)} or None, got {retrieval_mode!r}"
         )
     if min_relevance is not None and min_relevance not in _TIER_RANK:
-        raise LimitError(
-            f"min_relevance must be 'high', 'medium' or None, got {min_relevance!r}"
-        )
+        raise LimitError(f"min_relevance must be 'high', 'medium' or None, got {min_relevance!r}")
 
     # Resolve the mode and drop caller weights BEFORE validation when
     # the mode is non-hybrid. The store forces (1.0, 0.0) or (0.0,
