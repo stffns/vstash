@@ -457,6 +457,7 @@ def vstash_remember(
             project=project,
             layer=layer,
             tags=tags,
+            quiet=True,
         )
         return _ok(result)
 

@@ -346,6 +346,7 @@ class Memory:
             tags=tags,
             chunk_size=chunk_size if chunk_size is not None else self._chunk_size,
             chunk_overlap=chunk_overlap if chunk_overlap is not None else self._chunk_overlap,
+            quiet=True,
         )
 
     def search(
