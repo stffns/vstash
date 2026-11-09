@@ -14,6 +14,7 @@ All notable changes to vstash are documented here.
 
 ### Fixed
 
+- `vstash retrain` / `retrain-multi` crashed at import under typer 0.29, which removed the `click_type` keyword: `--training-pair-source` and `--sampling-strategy` are now `Enum`-typed options.
 - `VstashStore.expand_context` rebuilt each `SearchResult` from a subset of fields, dropping `added_at` / `collection` / `tags` / `layer` (and now `usage_boost`) from expanded results; it now copies the result and replaces only `text`.
 
 ## [0.37.0] - 2026-05-27
