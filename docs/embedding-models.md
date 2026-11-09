@@ -37,7 +37,7 @@ vstash uses [FastEmbed](https://github.com/qdrant/fastembed) for local embedding
 | Model | dense NDCG@10 | hybrid NDCG@10 | dense Recall@100 | passages/s | query p50 |
 |---|---|---|---|---|---|
 | `BAAI/bge-small-en-v1.5` (default) | 0.252 | 0.279 | 0.563 | 31 | 2.8 ms |
-| `paraphrase-multilingual-MiniLM-L12-v2` | 0.168 | 0.316 | 0.527 | 138 | 2.5 ms |
+| `paraphrase-multilingual-MiniLM-L12-v2` | 0.255 | 0.316 | 0.738 | 135 | 2.4 ms |
 | `embeddinggemma-300m` | 0.424 | 0.472 | 0.930 | 3.7 | 5.8 ms |
 | **`jina-embeddings-v5-text-nano-retrieval`** | **0.517** | **0.505** | **0.952** | 9.5 | 4.7 ms |
 
@@ -48,10 +48,10 @@ Things to know before switching to Jina v5 nano:
 - **License: CC BY-NC 4.0** (non-commercial). Fine for personal memory; check before shipping it in a product.
 - **Asymmetric prompts are handled for you**: queries are embedded as `Query: ...`, stored chunks as `Document: ...` (also through the `vstash serve --warm` daemon).
 - **Runs on onnxruntime + tokenizers**, no torch and no `trust_remote_code`. First use downloads ~850 MB (pinned revision) to `~/.vstash/models/` (`VSTASH_MODELS_DIR` overrides).
-- **Hybrid does not help it**: on the Spanish set, adding FTS5 cost 0.012 NDCG@10, while it rescues the weaker models. Consider `retrieval_mode="vec_only"` if your own queries agree.
+- **Hybrid does not help it**: on the Spanish set, adding FTS5 cost 0.012 NDCG@10, while it lifts the weaker models. Consider `retrieval_mode="vec_only"` if your own queries agree.
 - **Recalibrate relevance tiers**: `relevance_tier` / `min_relevance` thresholds are calibrated on BGE-small.
 
-For **general-purpose** multilingual corpora where ingest speed matters more than retrieval quality, `paraphrase-multilingual-MiniLM-L12-v2` keeps the 384 dimensions of the default model and embeds ~4x faster than the default on long passages, but measured *dense* quality on Spanish retrieval was below the English default; only the hybrid pipeline lifts it.
+For **general-purpose** multilingual corpora where ingest speed matters more than retrieval quality, `paraphrase-multilingual-MiniLM-L12-v2` keeps the 384 dimensions of the default model and embeds ~4x faster than it on long passages. On Spanish retrieval its dense NDCG@10 only matches the English default (0.255 vs 0.252) but its Recall@100 is clearly higher (0.738 vs 0.563), and through the hybrid pipeline it is ahead (0.316 vs 0.279).
 
 ---
 

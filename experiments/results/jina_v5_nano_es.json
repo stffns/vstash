@@ -15,13 +15,13 @@
     {
       "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
       "dim": 384,
-      "dense_ndcg@10": 0.168,
-      "dense_recall@100": 0.5271,
+      "dense_ndcg@10": 0.2552,
+      "dense_recall@100": 0.7383,
       "hybrid_ndcg@10": 0.3158,
       "hybrid_recall@10": 0.3296,
-      "corpus_embed_s": 72.6,
-      "passages_per_s": 138.3,
-      "query_embed_p50_ms": 2.51
+      "corpus_embed_s": 74.3,
+      "passages_per_s": 135.1,
+      "query_embed_p50_ms": 2.36
     },
     {
       "model": "jinaai/jina-embeddings-v5-text-nano-retrieval",

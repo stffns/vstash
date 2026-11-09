@@ -104,8 +104,13 @@ def _run_model(model: str, corpus, queries, qrels) -> dict:
         q_lat.append((time.perf_counter() - t) * 1000.0)
     q_mat = np.asarray(q_vecs, dtype=np.float32)
 
-    # Dense: brute-force cosine (all vectors are unit-normalised).
-    sims = q_mat @ doc_vecs.T
+    # Dense: brute-force cosine. Normalise explicitly: not every model returns
+    # unit vectors (paraphrase-multilingual-MiniLM does not), and a raw inner
+    # product would rank by vector length as well as angle.
+    def _unit(m: np.ndarray) -> np.ndarray:
+        return m / np.maximum(np.linalg.norm(m, axis=1, keepdims=True), 1e-12)
+
+    sims = _unit(q_mat) @ _unit(doc_vecs).T
     dense_ndcg, dense_r100 = [], []
     for row, qid in zip(sims, q_ids, strict=True):
         ranked = [ids[j] for j in np.argsort(-row)[:100]]
