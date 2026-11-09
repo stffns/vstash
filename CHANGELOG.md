@@ -15,6 +15,7 @@ All notable changes to vstash are documented here.
 
 ### Fixed
 
+- `vstash retrain` / `retrain-multi` crashed at import under typer 0.29, which removed the `click_type` keyword: `--training-pair-source` and `--sampling-strategy` are now `Enum`-typed options.
 - A query-cache hit returned without updating `last_best_distance`, so `relevance_tier` (MCP `relevance`, the logged tier, the new `min_relevance`) reported the previous query's distance.  The cache now stores the distance alongside the results.
 - `Memory.remember`, MCP `vstash_remember` and `journal_save` printed a Rich "Embedding" progress bar to stderr on every call.  `ingest_text` gains `quiet` (default `False`, kept by the CLI); the programmatic callers pass `True`.
 - `VstashStore.expand_context` rebuilt each `SearchResult` from a subset of fields, dropping `added_at` / `collection` / `tags` / `layer` (and now `usage_boost`) from expanded results; it now copies the result and replaces only `text`.
