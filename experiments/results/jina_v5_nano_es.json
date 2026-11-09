@@ -1,0 +1,49 @@
+{
+  "dataset": "mteb/SpanishPassageRetrievalS2P",
+  "results": [
+    {
+      "model": "BAAI/bge-small-en-v1.5",
+      "dim": 384,
+      "dense_ndcg@10": 0.2515,
+      "dense_recall@100": 0.5626,
+      "hybrid_ndcg@10": 0.2786,
+      "hybrid_recall@10": 0.2793,
+      "corpus_embed_s": 327.6,
+      "passages_per_s": 30.6,
+      "query_embed_p50_ms": 2.75
+    },
+    {
+      "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+      "dim": 384,
+      "dense_ndcg@10": 0.168,
+      "dense_recall@100": 0.5271,
+      "hybrid_ndcg@10": 0.3158,
+      "hybrid_recall@10": 0.3296,
+      "corpus_embed_s": 72.6,
+      "passages_per_s": 138.3,
+      "query_embed_p50_ms": 2.51
+    },
+    {
+      "model": "jinaai/jina-embeddings-v5-text-nano-retrieval",
+      "dim": 768,
+      "dense_ndcg@10": 0.5165,
+      "dense_recall@100": 0.9522,
+      "hybrid_ndcg@10": 0.5053,
+      "hybrid_recall@10": 0.5116,
+      "corpus_embed_s": 1055.5,
+      "passages_per_s": 9.5,
+      "query_embed_p50_ms": 4.73
+    },
+    {
+      "model": "embeddinggemma-300m",
+      "dim": 768,
+      "dense_ndcg@10": 0.4243,
+      "dense_recall@100": 0.9295,
+      "hybrid_ndcg@10": 0.4716,
+      "hybrid_recall@10": 0.507,
+      "corpus_embed_s": 2688.9,
+      "passages_per_s": 3.7,
+      "query_embed_p50_ms": 5.76
+    }
+  ]
+}

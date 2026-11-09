@@ -44,6 +44,7 @@ MODELS = [
     "BAAI/bge-small-en-v1.5",
     "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
     "jinaai/jina-embeddings-v5-text-nano-retrieval",
+    "embeddinggemma-300m",
 ]
 DATASET = "mteb/SpanishPassageRetrievalS2P"
 OUT = Path(__file__).parent / "results" / "jina_v5_nano_es.json"
@@ -172,7 +173,13 @@ def main() -> None:
 
     if not args.limit_corpus:
         OUT.parent.mkdir(parents=True, exist_ok=True)
-        OUT.write_text(json.dumps({"dataset": DATASET, "results": rows}, indent=2) + "\n")
+        # Merge by model so a run with --models adds to earlier results.
+        merged: dict[str, dict] = {}
+        if OUT.exists():
+            merged = {r["model"]: r for r in json.loads(OUT.read_text())["results"]}
+        merged.update({r["model"]: r for r in rows})
+        payload = {"dataset": DATASET, "results": list(merged.values())}
+        OUT.write_text(json.dumps(payload, indent=2) + "\n")
         print(f"wrote {OUT}")
 
 
