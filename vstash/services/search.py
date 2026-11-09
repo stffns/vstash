@@ -16,12 +16,15 @@ the window from config.
 
 from __future__ import annotations
 
+import functools
 import logging
 import math
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Literal
 
 from ..embed import embed_query
+from ..metrics import registry
 from ..models import SearchResults
 from ..validation import LimitError, validate_search_input
 
@@ -40,7 +43,32 @@ _VALID_RETRIEVAL_MODES: frozenset[str] = frozenset({"hybrid", "vec_only", "fts_o
 # Ordering of :func:`vstash.store.relevance_tier` labels for ``min_relevance``.
 _TIER_RANK: dict[str, int] = {"low": 0, "medium": 1, "high": 2}
 
+#: End-to-end latency of :func:`search_with_embedding`: validation, query
+#: embedding, ``store.search``, the usage prior, the usage log and context
+#: expansion. ``search_latency_ms`` (recorded inside ``store.search``) only
+#: covers the retrieval pipeline, which on a small store is a fraction of
+#: what the caller waits for.
+SERVICE_SEARCH_LATENCY_METRIC = "service_search_latency_ms"
 
+
+def _timed(metric: str) -> Callable:
+    """Record the wrapped call's wall time in ``metric``, even when it raises."""
+
+    def decorate(fn: Callable) -> Callable:
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            start = time.perf_counter()
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                registry.histogram_observe(metric, (time.perf_counter() - start) * 1000.0)
+
+        return wrapper
+
+    return decorate
+
+
+@_timed(SERVICE_SEARCH_LATENCY_METRIC)
 def search_with_embedding(
     *,
     cfg: VstashConfig,
