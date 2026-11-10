@@ -63,6 +63,7 @@ def search_with_embedding(
     exact_match_case_sensitive: bool = False,
     log_usage: bool = True,
     usage_prior: bool | None = None,
+    include_superseded: bool = False,
 ) -> SearchResults:
     """Embed ``query`` then hybrid-search ``store`` then expand context.
 
@@ -127,6 +128,9 @@ def search_with_embedding(
             candidates are re-scored and cut to ``top_k``; each returned
             result carries ``usage_boost``. Without a similar past search
             the ranking is exactly the prior-off ranking.
+        include_superseded: Also return documents another document
+            replaced (``supersedes`` on remember). Default ``False`` hides
+            them; with ``True`` they come back marked ``superseded_by``.
 
     Returns:
         ``SearchResults`` (a ``list[SearchResult]`` ranked by relevance,
@@ -213,6 +217,7 @@ def search_with_embedding(
         dedup_threshold=dedup_threshold,
         exact_match=exact_match,
         exact_match_case_sensitive=exact_match_case_sensitive,
+        include_superseded=include_superseded,
         **extra_kwargs,
     )
     if prior_weights:

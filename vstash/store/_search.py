@@ -40,6 +40,7 @@ from ._common import (
     _deserialize,
     _normalize_tags,
     _serialize,
+    _superseded_active_sql,
     RRF_K,
 )
 
@@ -74,6 +75,7 @@ class _SearchEngineMixin:
         cache_epoch: int,
         filters: dict | None = None,
         dedup_threshold: float | None = None,
+        include_superseded: bool = False,
     ) -> int:
         """Build the search cache key from the full set of query parameters.
 
@@ -121,6 +123,7 @@ class _SearchEngineMixin:
                 # order stays significant, which only costs a cache miss.
                 None if filters is None else json.dumps(filters, sort_keys=True, default=str),
                 dedup_threshold,
+                include_superseded,
                 cache_epoch,
             )
         )
@@ -386,6 +389,7 @@ class _SearchEngineMixin:
         retrieval_mode: Literal["hybrid", "vec_only", "fts_only"] | None = None,
         exact_match: str | None = None,
         exact_match_case_sensitive: bool = False,
+        include_superseded: bool = False,
         _tracer: _PipelineTracer | None = None,
     ) -> list[SearchResult]:
         """Hybrid search: vector (semantic) + FTS5 (keyword) combined with RRF.
@@ -436,6 +440,11 @@ class _SearchEngineMixin:
             exact_match_case_sensitive: Toggle for the above. Default
                 ``False`` does a casefold comparison which matches
                 typical retrieval-filter UX expectations.
+            include_superseded: Also return documents replaced by a newer
+                one (:meth:`supersede`), each marked ``superseded_by``.
+                Default ``False`` hides a document while the document that
+                supersedes it exists in the same collection. Stores with no
+                active supersede skip the filter entirely.
             retrieval_mode: Which search branches to run (default
                 ``"hybrid"``). Three values:
 
@@ -509,6 +518,7 @@ class _SearchEngineMixin:
                 cache_epoch=self._cache_epoch,
                 filters=filters,
                 dedup_threshold=dedup_threshold,
+                include_superseded=include_superseded,
             )
 
         # Per-search miss-analysis tracker (#108).  The tracer is owned
@@ -610,6 +620,21 @@ class _SearchEngineMixin:
                 added_before=added_before,
                 filters=filters,
             )
+            # Hide documents replaced by a newer one (``supersede``). Only
+            # added when the store has an active supersede, so stores that
+            # never use the feature pay one indexed probe and nothing else.
+            # Exclusion (NOT IN over the small superseded set) rather than
+            # inclusion keeps the vec0 KNN unconstrained; the candidate pool
+            # is ~10x top_k, so the few rows dropped after KNN do not starve it.
+            _hide_superseded = not include_superseded and self.has_active_supersedes()
+            if _hide_superseded:
+                vec_clause += (
+                    " AND v.rowid NOT IN (SELECT c_s.id FROM chunks c_s "
+                    "JOIN documents d_s ON d_s.id = c_s.doc_id WHERE "
+                    + _superseded_active_sql("d_s")
+                    + ")"
+                )
+                col_clause += " AND NOT " + _superseded_active_sql("d")
 
             # --- Vector search ---
             vec_rows: list = []
@@ -1104,6 +1129,16 @@ class _SearchEngineMixin:
                 else:
                     needle = exact_match.casefold()
                     results = [r for r in results if needle in r.text.casefold()]
+
+            if include_superseded and results and self.has_active_supersedes():
+                by = self.superseded_map([r.path for r in results])
+                if by:
+                    results = [
+                        r.model_copy(update={"superseded_by": by[(r.path, r.collection)]})
+                        if (r.path, r.collection) in by
+                        else r
+                        for r in results
+                    ]
 
             # Stash values the finally block needs to log slow queries
             # with accurate data.

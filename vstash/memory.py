@@ -303,6 +303,7 @@ class Memory:
         tags: str | None = None,
         chunk_size: int | None = None,
         chunk_overlap: int | None = None,
+        supersedes: str | list[str] | None = None,
     ) -> IngestResult:
         """Ingest raw text directly — no file needed.
 
@@ -319,14 +320,19 @@ class Memory:
             project: Override the default project tag. Pass None for no project.
             layer: Layer/category tag.
             tags: Comma-separated tags.
+            supersedes: Path(s) of documents in the same collection that this
+                one replaces (a decision that overrides an older one). Search
+                stops returning them while this document exists; see
+                :meth:`supersede`.
 
         Returns:
-            Single IngestResult.
+            Single IngestResult (``superseded`` lists the paths marked).
 
         Example::
 
             mem = Memory(project="myproj")
             mem.remember("OAuth2 uses PKCE for public clients", title="auth-notes")
+            mem.remember("Use PKCE + DPoP", title="auth-v2", supersedes="text://auth-notes")
         """
         from .ingest import ingest_text
 
@@ -346,7 +352,36 @@ class Memory:
             tags=tags,
             chunk_size=chunk_size if chunk_size is not None else self._chunk_size,
             chunk_overlap=chunk_overlap if chunk_overlap is not None else self._chunk_overlap,
+            supersedes=supersedes,
         )
+
+    def supersede(
+        self,
+        old_paths: str | list[str],
+        new_path: str,
+        *,
+        collection: object = _UNSET,
+    ) -> dict:
+        """Record that ``new_path`` replaces ``old_paths`` (same collection).
+
+        Search hides the old documents while ``new_path`` exists; pass
+        ``include_superseded=True`` to :meth:`search` to see them, marked
+        with ``superseded_by``. Deleting ``new_path`` brings them back.
+
+        Returns:
+            ``{"superseded": [...], "not_found": [...]}``.
+
+        Raises:
+            ValueError: ``new_path`` is missing, a path supersedes itself,
+                or the link would close a cycle.
+        """
+        col = self._collection if collection is _UNSET else collection
+        return self._store.supersede(old_paths, new_path, collection=col or "default")
+
+    def unsupersede(self, path: str, *, collection: object = _UNSET) -> bool:
+        """Undo :meth:`supersede` for ``path``; ``True`` if it was superseded."""
+        col = self._collection if collection is _UNSET else collection
+        return self._store.unsupersede(path, collection=col or "default")
 
     def search(
         self,
@@ -369,6 +404,7 @@ class Memory:
         exact_match: str | None = None,
         exact_match_case_sensitive: bool = False,
         usage_prior: bool | None = None,
+        include_superseded: bool = False,
     ) -> SearchResults:
         """Semantic search without LLM inference.
 
@@ -451,6 +487,9 @@ class Memory:
                 used (:meth:`mark_used`). ``None`` (default) follows the
                 ``[usage_prior] enabled`` config (off by default). Results
                 re-scored by the prior carry ``usage_boost``.
+            include_superseded: Also return documents replaced via
+                ``supersedes`` / :meth:`supersede` (marked ``superseded_by``).
+                Default ``False`` hides them.
 
         Returns:
             Ranked ``SearchResults`` (a ``list[SearchResult]``) ordered by
@@ -487,6 +526,7 @@ class Memory:
             exact_match=exact_match,
             exact_match_case_sensitive=exact_match_case_sensitive,
             usage_prior=usage_prior,
+            include_superseded=include_superseded,
         )
 
     def mark_used(self, event_id: int, chunk_id: int | list[int]) -> int:

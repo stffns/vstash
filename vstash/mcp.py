@@ -422,6 +422,7 @@ def vstash_remember(
     project: str | None = None,
     layer: str | None = None,
     tags: str | None = None,
+    supersedes: str | list[str] | None = None,
 ) -> str:
     """Ingest text directly into vstash memory — no file needed.
 
@@ -438,9 +439,15 @@ def vstash_remember(
         project: Project tag for this document.
         layer: Layer/category for this document.
         tags: Comma-separated tags.
+        supersedes: Path, or list of paths, of documents in the same
+            collection that this text replaces -- e.g. a new decision
+            overriding an old one. Paths are what search returns in
+            ``path`` (``"text://<title>"`` for remembered text). Search
+            stops returning the replaced documents while this one exists.
 
     Returns:
-        JSON string with ingestion result (chunks created, timing, etc.).
+        JSON string with ingestion result (chunks created, timing, etc.;
+        ``superseded`` lists the paths marked).
     """
     try:
         from .ingest import ingest_text
@@ -457,12 +464,57 @@ def vstash_remember(
             project=project,
             layer=layer,
             tags=tags,
+            supersedes=supersedes or None,
         )
         return _ok(result)
 
+    except ValueError as exc:
+        return _error(str(exc))
     except Exception as exc:
         logger.exception("vstash_remember failed")
         return _error(f"Ingestion failed: {exc}")
+
+
+@mcp_server.tool()
+def vstash_supersede(
+    old_paths: str | list[str],
+    new_path: str,
+    collection: str = "default",
+    undo: bool = False,
+) -> str:
+    """Record that one stored document replaces others (or undo it).
+
+    Use when a newer memory overrides an older one -- a changed decision,
+    a corrected fact -- so search stops returning the outdated version.
+    The replaced documents stay stored; ``vstash_search`` with
+    ``include_superseded=true`` still shows them, marked ``superseded_by``.
+    Deleting the newer document brings them back automatically.
+
+    Args:
+        old_paths: Path or list of paths being replaced (as returned in a
+            search result's ``path``). With ``undo=true``, the paths to
+            restore.
+        new_path: Path of the replacing document (ignored with ``undo``).
+        collection: Collection holding the documents (default 'default').
+        undo: Clear the replacement instead of recording it.
+
+    Returns:
+        JSON with ``superseded`` / ``not_found`` (or ``restored`` on undo).
+    """
+    try:
+        store = _get_store()
+        if undo:
+            olds = [old_paths] if isinstance(old_paths, str) else list(old_paths)
+            restored = [p for p in olds if store.unsupersede(p, collection=collection)]
+            return _ok({"restored": restored})
+        return _ok(store.supersede(old_paths, new_path, collection=collection))
+    except FileNotFoundError:
+        return _error("vstash database not found. Ingest documents first with vstash_add.")
+    except ValueError as exc:
+        return _error(str(exc))
+    except Exception as exc:
+        logger.exception("vstash_supersede failed")
+        return _error(f"Supersede failed: {exc}")
 
 
 @mcp_server.tool()
@@ -641,6 +693,7 @@ def vstash_search(
     vec_weight: float | None = None,
     fts_weight: float | None = None,
     retrieval_mode: str | None = None,
+    include_superseded: bool = False,
 ) -> str:
     """Search vstash memory without LLM — returns raw chunks with scores.
 
@@ -692,6 +745,10 @@ def vstash_search(
               signal is known to be unreliable.
             When a non-hybrid mode is set, vec_weight/fts_weight are
             ignored.
+        include_superseded: Also return documents replaced by a newer one
+            (``supersedes`` / ``vstash_supersede``), marked
+            ``superseded_by``. Default false hides them -- use it to see
+            the history of a decision.
 
     Returns:
         JSON object with chunks array and relevance hint, plus an
@@ -752,6 +809,7 @@ def vstash_search(
             vec_weight=vec_weight_coerced,
             fts_weight=fts_weight_coerced,
             retrieval_mode=resolved_mode,
+            include_superseded=bool(include_superseded),
         )
 
         if not chunks:

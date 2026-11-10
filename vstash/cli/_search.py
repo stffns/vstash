@@ -295,6 +295,12 @@ def search(
         "--exact-match-case-sensitive/--no-exact-match-case-sensitive",
         help="Toggle case sensitivity of --exact-match.",
     ),
+    include_superseded: bool = typer.Option(
+        False,
+        "--include-superseded",
+        help="Also show documents replaced by a newer one (vstash remember "
+        "--supersedes), marked with what replaced them.",
+    ),
 ) -> None:
     """Semantic search without LLM (free, local)."""
     cfg, store = _get_store(warm=True, profile=_profile_from_ctx(ctx))
@@ -480,6 +486,7 @@ def search(
                     dedup_threshold=dedup_threshold,
                     exact_match=exact_match,
                     exact_match_case_sensitive=exact_match_case_sensitive,
+                    include_superseded=include_superseded,
                 )
                 if prior_weights:
                     chunks = apply_usage_prior(
@@ -567,6 +574,8 @@ def search(
             text_preview = c.text.replace("\n", " ").strip()
             if len(text_preview) > 120:
                 text_preview = text_preview[:120] + "..."
+            if c.superseded_by:
+                text_preview = f"[replaced by {c.superseded_by}] {text_preview}"
             if all_profiles and _search_tagged:
                 profile_name = _search_tagged[i - 1][0] if i <= len(_search_tagged) else ""
                 table.add_row(

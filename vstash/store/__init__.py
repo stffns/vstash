@@ -50,6 +50,7 @@ from ._common import (
     _deserialize,
     _normalize_tags,
     _serialize,
+    _superseded_active_sql,
     KNOWN_SCHEMA_VERSIONS,
     RELEVANCE_TIER_HIGH_MAX,
     RELEVANCE_TIER_MEDIUM_MAX,
@@ -927,6 +928,139 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                 self._conn.rollback()
                 raise
             return rowcount > 0
+
+    def supersede(
+        self,
+        old_paths: str | list[str],
+        new_path: str,
+        *,
+        collection: str = "default",
+    ) -> dict:
+        """Mark ``old_paths`` as replaced by ``new_path`` within ``collection``.
+
+        Search hides a superseded document (see ``include_superseded`` on
+        :meth:`search`) for as long as ``new_path`` exists in the same
+        collection: deleting the newer document brings the older one back.
+        Re-superseding a document moves it to the new replacement.
+
+        Args:
+            old_paths: Path or paths of the documents being replaced.
+            new_path: Path of the replacing document. Must exist in
+                ``collection``.
+            collection: Collection holding both documents.
+
+        Returns:
+            ``{"superseded": [...], "not_found": [...]}`` -- paths that
+            were marked, and requested paths with no document in
+            ``collection``.
+
+        Raises:
+            ValueError: ``new_path`` does not exist in ``collection``, a
+                path supersedes itself, or the link would close a cycle
+                (``new_path`` is already, directly or transitively,
+                superseded by one of ``old_paths``).
+        """
+        olds = [old_paths] if isinstance(old_paths, str) else list(old_paths)
+        olds = list(dict.fromkeys(p for p in olds if p))
+        if not olds:
+            raise ValueError("supersede needs at least one old path")
+        if new_path in olds:
+            raise ValueError(f"a document cannot supersede itself: {new_path!r}")
+        with self._write_lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                exists = self._conn.execute(
+                    "SELECT 1 FROM documents WHERE path = ? AND collection = ? LIMIT 1",
+                    [new_path, collection],
+                ).fetchone()
+                if exists is None:
+                    raise ValueError(
+                        f"replacing document {new_path!r} not found in collection {collection!r}"
+                    )
+                # Walk new_path's own replacement chain: if it reaches one of
+                # the documents it is about to replace, both would end up hidden.
+                seen: set[str] = set()
+                cur: str | None = new_path
+                while cur is not None and cur not in seen:
+                    seen.add(cur)
+                    if cur in olds and cur != new_path:
+                        raise ValueError(
+                            f"cycle: {new_path!r} is already superseded (via {cur!r}) "
+                            f"by a document it would supersede"
+                        )
+                    row = self._conn.execute(
+                        "SELECT superseded_by FROM documents "
+                        "WHERE path = ? AND collection = ? LIMIT 1",
+                        [cur, collection],
+                    ).fetchone()
+                    cur = row[0] if row is not None else None
+                now_iso = datetime.now(timezone.utc).isoformat()
+                done: list[str] = []
+                missing: list[str] = []
+                for old in olds:
+                    cur_ = self._conn.execute(
+                        "UPDATE documents SET superseded_by = ?, superseded_at = ? "
+                        "WHERE path = ? AND collection = ?",
+                        [new_path, now_iso, old, collection],
+                    )
+                    (done if cur_.rowcount > 0 else missing).append(old)
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+        if done:
+            self._bump_cache_epoch()
+        return {"superseded": done, "not_found": missing}
+
+    def unsupersede(self, path: str, *, collection: str = "default") -> bool:
+        """Clear ``path``'s replacement so search shows it again.
+
+        Returns ``True`` if the document was marked superseded.
+        """
+        with self._write_lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                cur = self._conn.execute(
+                    "UPDATE documents SET superseded_by = NULL, superseded_at = NULL "
+                    "WHERE path = ? AND collection = ? AND superseded_by IS NOT NULL",
+                    [path, collection],
+                )
+                changed = cur.rowcount > 0
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+        if changed:
+            self._bump_cache_epoch()
+        return changed
+
+    def has_active_supersedes(self) -> bool:
+        """Whether any document is currently hidden as superseded.
+
+        One indexed probe (partial index over superseded rows), so search
+        can skip the filter entirely on stores that never use it.
+        """
+        row = self._conn.execute(
+            "SELECT 1 FROM documents d WHERE d.superseded_by IS NOT NULL AND "
+            + _superseded_active_sql("d")
+            + " LIMIT 1"
+        ).fetchone()
+        return row is not None
+
+    def superseded_map(self, paths: list[str]) -> dict[tuple[str, str], str]:
+        """``(path, collection) -> superseded_by`` for active supersedes among ``paths``."""
+        out: dict[tuple[str, str], str] = {}
+        uniq = list(dict.fromkeys(paths))
+        for i in range(0, len(uniq), _SQLITE_PARAM_BATCH):
+            batch = uniq[i : i + _SQLITE_PARAM_BATCH]
+            marks = ",".join("?" * len(batch))
+            for path, coll, by in self._conn.execute(
+                f"SELECT d.path, d.collection, d.superseded_by FROM documents d "
+                f"WHERE d.path IN ({marks}) AND " + _superseded_active_sql("d"),
+                batch,
+            ).fetchall():
+                out[(path, coll)] = by
+        return out
 
     def prune_documents(
         self,

@@ -42,7 +42,8 @@ The vstash tools should appear in Claude's tool list.
 | Tool | Description |
 |------|-------------|
 | `vstash_add(path)` | Ingest a file, directory, or URL into memory |
-| `vstash_remember(text, title)` | Ingest text directly without a file |
+| `vstash_remember(text, title, supersedes?)` | Ingest text directly without a file; `supersedes` names documents it replaces |
+| `vstash_supersede(old_paths, new_path, undo?)` | Record (or undo) that one document replaces others |
 | `vstash_ask(query, ...)` | Semantic search + LLM answer with temporal filters |
 | `vstash_search(query, ...)` | Hybrid search with recency boost, temporal filters, and context expansion |
 | `vstash_get_chunk(chunk_id)` | Retrieve a single chunk by database row ID |
@@ -78,6 +79,27 @@ The relevance signal uses the best vector distance to estimate confidence:
 | > 0.98 | **low** | Results may not be relevant |
 
 This works from the first search — no usage history or warm-up required.
+
+### Replacing outdated memories (`supersedes`)
+
+When a newer memory overrides an older one (a changed decision, a corrected
+fact), record it so search stops returning the outdated version:
+
+```text
+vstash_remember(text="We moved KakesuI to jina-v5-nano", title="embedding model v2",
+                collection="kakesui", supersedes="text://embedding model v1")
+```
+
+- The old document stays stored; it is only hidden from `vstash_search`,
+  `vstash_ask` and `vstash_journal_recall` while the replacing document exists
+  **in the same collection**. Deleting the newer document brings it back.
+- `vstash_search(..., include_superseded=true)` shows the history: replaced
+  chunks come back with `superseded_by`.
+- `vstash_supersede(old_paths, new_path)` links two documents that are
+  already stored; `undo=true` restores them. Cycles (A replaces B, B replaces
+  A) are rejected.
+- Paths are what search returns in `path`; remembered text is
+  `text://<title>`.
 
 ### Per-call RRF controls *(added in v0.27.0, issue #159; `retrieval_mode` added in v0.33.0, issue #275)*
 

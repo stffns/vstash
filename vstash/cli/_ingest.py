@@ -143,6 +143,12 @@ def remember(
     chunk_overlap: int | None = typer.Option(
         None, "--chunk-overlap", help="Override chunk overlap in tokens"
     ),
+    supersedes: list[str] | None = typer.Option(
+        None,
+        "--supersedes",
+        help="Path of a document this text replaces (repeatable), e.g. "
+        "'text://old decision'. Search stops returning it.",
+    ),
 ) -> None:
     """Ingest text directly — no file needed.
 
@@ -171,16 +177,23 @@ def remember(
     meta = {"project": project, "layer": layer, "tags": tags}
 
     with store:
-        result = ingest_text(
-            text,
-            cfg,
-            store,
-            title=title,
-            collection=collection,
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-            **meta,
-        )
+        try:
+            result = ingest_text(
+                text,
+                cfg,
+                store,
+                title=title,
+                collection=collection,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+                supersedes=supersedes or None,
+                **meta,
+            )
+        except ValueError as exc:
+            # supersede validation (cycle, self-reference): the text itself
+            # was stored; only the replacement link was refused.
+            console.print(f"[red]✗ {exc}[/red]")
+            raise typer.Exit(1) from exc
 
         if result.status == "ok":
             parts = (
@@ -192,3 +205,7 @@ def remember(
             console.print(parts)
         else:
             console.print(f"[yellow]⚠ {result.status}: {result.source}[/yellow]")
+        for path in result.superseded or []:
+            console.print(f"  [dim]replaces {path}[/dim]")
+        for path in result.supersede_not_found or []:
+            console.print(f"  [yellow]⚠ --supersedes {path}: not found in {collection}[/yellow]")

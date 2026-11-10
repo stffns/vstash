@@ -679,6 +679,7 @@ def ingest_text(
     tags: str | None = None,
     chunk_size: int | None = None,
     chunk_overlap: int | None = None,
+    supersedes: str | list[str] | None = None,
 ) -> IngestResult:
     """Ingest raw text directly — no file or URL needed.
 
@@ -696,10 +697,53 @@ def ingest_text(
         project: Project identifier.
         layer: Layer/category tag.
         tags: Comma-separated tags.
+        supersedes: Path(s) of documents in the same collection that this
+            text replaces (e.g. ``"text://old decision"``). After the store
+            write they are marked superseded and search stops returning
+            them while this document exists. Paths with no document land in
+            ``IngestResult.supersede_not_found``. Applied even when the text
+            is a byte-identical re-remember (``status="skipped"``).
 
     Returns:
         IngestResult with status, chunk count, timing, etc.
     """
+    result = _ingest_text_impl(
+        text,
+        cfg,
+        store,
+        title=title,
+        collection=collection,
+        project=project,
+        layer=layer,
+        tags=tags,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+    )
+    if supersedes and result.status in ("ok", "skipped"):
+        marked = store.supersede(supersedes, result.source, collection=collection)
+        result = result.model_copy(
+            update={
+                "superseded": marked["superseded"],
+                "supersede_not_found": marked["not_found"] or None,
+            }
+        )
+    return result
+
+
+def _ingest_text_impl(
+    text: str,
+    cfg: VstashConfig,
+    store: VstashStore,
+    *,
+    title: str | None,
+    collection: str,
+    project: str | None,
+    layer: str | None,
+    tags: str | None,
+    chunk_size: int | None,
+    chunk_overlap: int | None,
+) -> IngestResult:
+    """Body of :func:`ingest_text` (everything except ``supersedes``)."""
     start_time = time.time()
 
     if title is None:

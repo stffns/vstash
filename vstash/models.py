@@ -34,6 +34,14 @@ class IngestResult(BaseModel):
     chars: int = Field(default=0, description="Total character count of source text")
     elapsed_s: float = Field(default=0.0, description="Ingestion time in seconds")
     error: str | None = Field(default=None, description="Error message if status is 'error'")
+    superseded: list[str] | None = Field(
+        default=None,
+        description="Paths this document was recorded as replacing (``supersedes=``)",
+    )
+    supersede_not_found: list[str] | None = Field(
+        default=None,
+        description="``supersedes=`` paths with no document in the collection",
+    )
 
 
 class ExplainInfo(BaseModel):
@@ -111,6 +119,14 @@ class SearchResult(BaseModel):
             "Multiplier the opt-in usage prior applied to ``score`` "
             "(1.0 = candidate untouched). ``None`` when the prior did not "
             "run for this search (off, or no similar past search)."
+        ),
+    )
+    superseded_by: str | None = Field(
+        default=None,
+        description=(
+            "Path of the newer document that replaces this one. Only set "
+            "when the search ran with ``include_superseded=True`` (by "
+            "default superseded documents are not returned at all)."
         ),
     )
 

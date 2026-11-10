@@ -51,6 +51,8 @@ class _SchemaManagerMixin:
                 layer        TEXT,
                 tags         TEXT,
                 content_hash TEXT,
+                superseded_by TEXT,
+                superseded_at TEXT,
                 char_count   INTEGER DEFAULT 0,
                 chunk_count  INTEGER DEFAULT 0,
                 added_at     TEXT NOT NULL
@@ -182,6 +184,11 @@ class _SchemaManagerMixin:
             ON documents(project);
             CREATE INDEX IF NOT EXISTS idx_documents_layer
             ON documents(layer);
+            -- Partial: only superseded rows. Keeps the per-search
+            -- "any supersedes at all?" probe O(1) on stores that never
+            -- use the feature.
+            CREATE INDEX IF NOT EXISTS idx_documents_superseded
+            ON documents(superseded_by) WHERE superseded_by IS NOT NULL;
         """)
         conn.commit()
 
@@ -399,6 +406,13 @@ class _SchemaManagerMixin:
             migrations.append("ALTER TABLE documents ADD COLUMN tags TEXT")
         if "content_hash" not in doc_columns:
             migrations.append("ALTER TABLE documents ADD COLUMN content_hash TEXT")
+        # supersedes: path of the newer document (same collection) that
+        # replaces this one, and when that was recorded. Additive, NULL for
+        # every existing row, so no schema-version bump.
+        if "superseded_by" not in doc_columns:
+            migrations.append("ALTER TABLE documents ADD COLUMN superseded_by TEXT")
+        if "superseded_at" not in doc_columns:
+            migrations.append("ALTER TABLE documents ADD COLUMN superseded_at TEXT")
 
         # miss_hint column on search_events (issue #157 part 3, 2026-04-21)
         event_columns = {

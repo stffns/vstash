@@ -253,6 +253,21 @@ def relevance_tier(distance: float) -> str:
     return "low"
 
 
+def _superseded_active_sql(alias: str) -> str:
+    """SQL predicate: document ``alias`` is replaced by a newer one that still exists.
+
+    A document is hidden from search while its ``superseded_by`` path
+    names a document in the same collection. Deleting the newer document
+    makes the predicate false again, so the older one comes back without
+    any cleanup.
+    """
+    return (
+        f"({alias}.superseded_by IS NOT NULL AND EXISTS ("
+        f"SELECT 1 FROM documents _s WHERE _s.path = {alias}.superseded_by "
+        f"AND _s.collection = {alias}.collection))"
+    )
+
+
 # Standard RRF constant — balances precision vs recall
 RRF_K = 60
 
