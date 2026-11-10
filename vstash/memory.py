@@ -301,6 +301,11 @@ class Memory:
         project: object = _UNSET,
         layer: str | None = None,
         tags: str | None = None,
+        status: str | None = None,
+        source_ref: str | None = None,
+        valid_from: str | None = None,
+        valid_until: str | None = None,
+        supersedes: str | None = None,
         chunk_size: int | None = None,
         chunk_overlap: int | None = None,
     ) -> IngestResult:
@@ -344,6 +349,11 @@ class Memory:
             project=proj,
             layer=layer,
             tags=tags,
+            status=status,
+            source_ref=source_ref,
+            valid_from=valid_from,
+            valid_until=valid_until,
+            supersedes=supersedes,
             chunk_size=chunk_size if chunk_size is not None else self._chunk_size,
             chunk_overlap=chunk_overlap if chunk_overlap is not None else self._chunk_overlap,
         )

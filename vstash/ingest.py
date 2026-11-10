@@ -667,6 +667,10 @@ def _generate_title(text: str) -> str:
     return f"{slug}-{ts}"
 
 
+CLAIM_LAYERS = frozenset({"hecho", "decision"})
+VALID_CLAIM_STATUSES = frozenset({"vigente", "sin-fuente", "superado", "refutado", "relato"})
+
+
 def ingest_text(
     text: str,
     cfg: VstashConfig,
@@ -677,6 +681,11 @@ def ingest_text(
     project: str | None = None,
     layer: str | None = None,
     tags: str | None = None,
+    status: str | None = None,
+    source_ref: str | None = None,
+    valid_from: str | None = None,
+    valid_until: str | None = None,
+    supersedes: str | None = None,
     chunk_size: int | None = None,
     chunk_overlap: int | None = None,
 ) -> IngestResult:
@@ -757,6 +766,32 @@ def ingest_text(
             fm_tags = str(fm_tags_raw)
     text = _strip_frontmatter(text)
 
+    # Claim gate (memoria confiable, 2026-11-10). A fact or a decision is
+    # knowledge only when it says where it comes from; without a source it
+    # is still stored, but as 'sin-fuente', so search can tell it apart from
+    # a sourced claim instead of presenting both as equals. A charla is
+    # narrative ('relato'): never citable as a fact.
+    if status is not None and status not in VALID_CLAIM_STATUSES:
+        raise ValueError(
+            f"status must be one of {sorted(VALID_CLAIM_STATUSES)}, got {status!r}"
+        )
+    claim_status = status
+    if fm_layer in CLAIM_LAYERS:
+        if not source_ref:
+            claim_status = "sin-fuente"
+        elif claim_status is None:
+            claim_status = "vigente"
+    elif claim_status is None and fm_layer == "charla":
+        claim_status = "relato"
+
+    superseded_id: str | None = None
+    if supersedes:
+        superseded_id = (
+            supersedes
+            if len(supersedes) == 32 and ":" not in supersedes
+            else store.doc_id_for(collection, supersedes)
+        )
+
     # Chunk
     cs = chunk_size if chunk_size is not None else cfg.chunking.size
     co = chunk_overlap if chunk_overlap is not None else cfg.chunking.overlap
@@ -785,7 +820,15 @@ def ingest_text(
         layer=fm_layer,
         tags=fm_tags,
         content_hash=content_hash,
+        status=claim_status,
+        source_ref=source_ref,
+        valid_from=valid_from,
+        valid_until=valid_until,
+        supersedes=superseded_id,
     )
+
+    if superseded_id:
+        store.supersede_claim(superseded_id, doc_id)
 
     elapsed = round(time.time() - start_time, 2)
 
@@ -797,6 +840,7 @@ def ingest_text(
         chunks=len(chunks),
         chars=char_count,
         elapsed_s=elapsed,
+        claim_status=claim_status,
     )
 
 

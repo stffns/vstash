@@ -295,6 +295,28 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         row = self._conn.execute("SELECT 1 FROM documents WHERE path = ?", [path]).fetchone()
         return row is not None
 
+    @staticmethod
+    def doc_id_for(collection: str, path: str) -> str:
+        """Return the deterministic document id for a (collection, path)."""
+        return hashlib.sha256(f"{collection}:{path}".encode()).hexdigest()[:32]
+
+    def supersede_claim(self, old_id: str, new_doc_id: str | None = None) -> int:
+        """Mark one claim superseded by another.
+
+        The old row keeps its text (nothing is deleted) and stops being
+        returned by search; the new row carries its supersedes field.
+        Returns the number of rows updated.
+        """
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._write_lock:
+            cur = self._conn.execute(
+                "UPDATE documents SET status = 'superado', valid_until = ? "
+                "WHERE id = ? AND status != 'superado'",
+                [now_iso, old_id],
+            )
+            self._conn.commit()
+        return cur.rowcount
+
     def add_document(
         self,
         path: str,
@@ -307,6 +329,12 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         layer: str | None = None,
         tags: str | None = None,
         content_hash: str | None = None,
+        status: str | None = None,
+        source_ref: str | None = None,
+        valid_from: str | None = None,
+        valid_until: str | None = None,
+        supersedes: str | None = None,
+        confidence: float | None = None,
     ) -> str:
         """Add a document and its chunks to the store.
 
@@ -356,6 +384,12 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                     layer=layer,
                     tags=tags,
                     content_hash=content_hash,
+                    status=status,
+                    source_ref=source_ref,
+                    valid_from=valid_from,
+                    valid_until=valid_until,
+                    supersedes=supersedes,
+                    confidence=confidence,
                     now_iso=datetime.now(timezone.utc).isoformat(),
                 )
 
@@ -389,7 +423,13 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         layer: str | None,
         tags: str | None,
         content_hash: str | None,
-        now_iso: str,
+        status: str | None = None,
+        source_ref: str | None = None,
+        valid_from: str | None = None,
+        valid_until: str | None = None,
+        supersedes: str | None = None,
+        confidence: float | None = None,
+        now_iso: str = "",
     ) -> tuple[str, list[int], list[tuple[int, str]]]:
         """Replace-insert one document's rows inside the caller's OPEN
         transaction.
@@ -430,8 +470,10 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
             """INSERT INTO documents
                (id, path, title, source_type, collection,
                 project, layer, tags, content_hash,
-                char_count, chunk_count, added_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                char_count, chunk_count, added_at,
+                status, source_ref, valid_from, valid_until,
+                supersedes, confidence)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 doc_id,
                 path,
@@ -445,6 +487,12 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                 sum(len(c) for c in chunks),
                 len(chunks),
                 now_iso,
+                status,
+                source_ref,
+                valid_from,
+                valid_until,
+                supersedes,
+                confidence,
             ],
         )
 

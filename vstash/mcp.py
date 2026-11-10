@@ -422,6 +422,11 @@ def vstash_remember(
     project: str | None = None,
     layer: str | None = None,
     tags: str | None = None,
+    status: str | None = None,
+    source_ref: str | None = None,
+    valid_from: str | None = None,
+    valid_until: str | None = None,
+    supersedes: str | None = None,
 ) -> str:
     """Ingest text directly into vstash memory — no file needed.
 
@@ -438,6 +443,16 @@ def vstash_remember(
         project: Project tag for this document.
         layer: Layer/category for this document.
         tags: Comma-separated tags.
+        status: One of vigente, sin-fuente, superado, refutado, relato.
+            A hecho or decision without source_ref is stored as
+            'sin-fuente' whatever this says: unsourced is not knowledge.
+        source_ref: Where the claim comes from (session#turn, file:line,
+            commit, a URL plus the day it was read). Required for a fact
+            or decision to count as 'vigente'.
+        valid_from: ISO date from which the claim holds.
+        valid_until: ISO date from which it no longer holds.
+        supersedes: Path or document id of the claim this one replaces.
+            The old claim is kept and marked 'superado'.
 
     Returns:
         JSON string with ingestion result (chunks created, timing, etc.).
@@ -457,6 +472,11 @@ def vstash_remember(
             project=project,
             layer=layer,
             tags=tags,
+            status=status,
+            source_ref=source_ref,
+            valid_from=valid_from,
+            valid_until=valid_until,
+            supersedes=supersedes,
         )
         return _ok(result)
 

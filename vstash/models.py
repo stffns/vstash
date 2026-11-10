@@ -32,6 +32,13 @@ class IngestResult(BaseModel):
     title: str | None = Field(default=None, description="Derived document title")
     chunks: int = Field(default=0, description="Number of chunks generated")
     chars: int = Field(default=0, description="Total character count of source text")
+    claim_status: str | None = Field(
+        default=None,
+        description=(
+            "Status the claim schema gave the memory: vigente, sin-fuente, "
+            "relato, superado. None for layers that are not claims."
+        ),
+    )
     elapsed_s: float = Field(default=0.0, description="Ingestion time in seconds")
     error: str | None = Field(default=None, description="Error message if status is 'error'")
 
@@ -105,6 +112,22 @@ class SearchResult(BaseModel):
     collection: str | None = Field(default=None, description="Named collection")
     tags: str | None = Field(default=None, description="Comma-separated tags from frontmatter")
     layer: str | None = Field(default=None, description="Layer/category from frontmatter")
+    status: str | None = Field(
+        default=None,
+        description=(
+            "Claim status: vigente, sin-fuente, superado, refutado, relato. "
+            "None only for rows written before the claim schema."
+        ),
+    )
+    source_ref: str | None = Field(
+        default=None,
+        description="Where the claim comes from: session#turn, file:line, commit, URL+date",
+    )
+    valid_from: str | None = Field(default=None, description="ISO date from which the claim holds")
+    valid_until: str | None = Field(
+        default=None, description="ISO date from which the claim no longer holds"
+    )
+    supersedes: str | None = Field(default=None, description="Document id this claim replaces")
     usage_boost: float | None = Field(
         default=None,
         description=(

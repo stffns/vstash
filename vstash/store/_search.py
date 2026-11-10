@@ -237,6 +237,11 @@ class _SearchEngineMixin:
                 "collection": row["collection"],
                 "tags": row["tags"],
                 "layer": row["layer"],
+                "status": row["status"],
+                "source_ref": row["source_ref"],
+                "valid_from": row["valid_from"],
+                "valid_until": row["valid_until"],
+                "supersedes": row["supersedes"],
             }
             if explain:
                 explain_rrf_vec[chunk_id] = vec_contrib
@@ -266,6 +271,11 @@ class _SearchEngineMixin:
                     "collection": row["collection"],
                     "tags": row["tags"],
                     "layer": row["layer"],
+                    "status": row["status"],
+                    "source_ref": row["source_ref"],
+                    "valid_from": row["valid_from"],
+                    "valid_until": row["valid_until"],
+                    "supersedes": row["supersedes"],
                 }
                 if explain:
                     explain_rrf_fts[chunk_id] = fts_contribution
@@ -359,6 +369,11 @@ class _SearchEngineMixin:
                 collection=r.get("collection"),
                 tags=r.get("tags"),
                 layer=r.get("layer"),
+                status=r.get("status"),
+                source_ref=r.get("source_ref"),
+                valid_from=r.get("valid_from"),
+                valid_until=r.get("valid_until"),
+                supersedes=r.get("supersedes"),
             )
             for r in ranked
         ]
@@ -674,7 +689,8 @@ class _SearchEngineMixin:
                     snap_filter = vec_clause.replace("v.rowid", "c.id") if vec_clause else ""
                     rows = self._conn.execute(
                         f"""
-                        SELECT c.id, c.text, d.title, d.path, c.seq, d.added_at, d.collection, d.tags, d.layer
+                        SELECT c.id, c.text, d.title, d.path, c.seq, d.added_at, d.collection, d.tags, d.layer,
+                               d.status, d.source_ref, d.valid_from, d.valid_until, d.supersedes
                         FROM chunks c
                         JOIN documents d ON d.id = c.doc_id
                         WHERE c.id IN ({placeholders})
@@ -695,7 +711,8 @@ class _SearchEngineMixin:
             else:
                 vec_rows = self._conn.execute(
                     f"""
-                    SELECT c.id, c.text, d.title, d.path, c.seq, v.distance, d.added_at, d.collection, d.tags, d.layer
+                    SELECT c.id, c.text, d.title, d.path, c.seq, v.distance, d.added_at, d.collection, d.tags, d.layer,
+                           d.status, d.source_ref, d.valid_from, d.valid_until, d.supersedes
                     FROM vec_chunks v
                     JOIN chunks c ON c.id = v.rowid
                     JOIN documents d ON d.id = c.doc_id
@@ -843,7 +860,8 @@ class _SearchEngineMixin:
                     fts_rows = self._conn.execute(
                         f"""
                         SELECT c.id, c.text, d.title, d.path, c.seq,
-                               rank as fts_rank, d.added_at, d.collection, d.tags, d.layer
+                               rank as fts_rank, d.added_at, d.collection, d.tags, d.layer,
+                               d.status, d.source_ref, d.valid_from, d.valid_until, d.supersedes
                         FROM fts_chunks f
                         JOIN chunks c ON c.id = f.rowid
                         JOIN documents d ON d.id = c.doc_id
@@ -1911,8 +1929,13 @@ class _SearchEngineMixin:
             filters=filters,
         )
 
-        if not conditions_d2:
-            return "", "", []
+        # Claims already replaced or refuted are history: never return them
+        # as if they still held. NULL stays allowed for rows written before
+        # the claim schema appeared, so a re-opened old DB still searches.
+        conditions_d2 = [
+            *conditions_d2,
+            "(d2.status IS NULL OR d2.status NOT IN ('superado', 'refutado'))",
+        ]
 
         where = " AND ".join(conditions_d2)
         vec_clause = f"""
@@ -1934,5 +1957,9 @@ class _SearchEngineMixin:
             added_before=added_before,
             filters=filters,
         )
+        conditions_d = [
+            *conditions_d,
+            "(d.status IS NULL OR d.status NOT IN ('superado', 'refutado'))",
+        ]
         col_clause = "AND " + " AND ".join(conditions_d)
         return vec_clause, col_clause, params
