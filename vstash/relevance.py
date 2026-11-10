@@ -75,7 +75,9 @@ def relevance_thresholds(
     )
     if not (0.0 < out.high_max <= out.medium_max <= 2.0):
         raise ValueError(
-            f"relevance thresholds must satisfy 0 < high_max <= medium_max <= 2, got {out}"
+            f"relevance thresholds must satisfy 0 < high_max <= medium_max <= 2, got {out} "
+            f"(model {model!r}); when lowering one bound below the model default "
+            "of the other, set both in [relevance]"
         )
     return out
 

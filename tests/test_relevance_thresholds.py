@@ -78,6 +78,12 @@ class TestOverride:
         with pytest.raises(ValueError, match="high_max <= medium_max"):
             _cfg(high_max=0.6)  # above BGE's medium_max 0.4802
 
+    def test_lone_medium_below_model_high_rejected_with_hint(self) -> None:
+        # MiniLM's default high_max (0.6786) would exceed a lone medium_max=0.58.
+        with pytest.raises(ValueError, match="set both"):
+            _cfg(MINILM, medium_max=0.58)
+        assert _cfg(MINILM, high_max=0.5, medium_max=0.58).relevance_thresholds() == (0.5, 0.58)
+
     @pytest.mark.parametrize("bad", [0.0, -0.1, 2.5])
     def test_out_of_range_rejected(self, bad) -> None:
         with pytest.raises(ValueError):

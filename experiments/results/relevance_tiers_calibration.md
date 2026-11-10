@@ -66,8 +66,15 @@ English-only model on a Spanish memory.
 KakesuI's correct MiniLM answers at 0.49-0.56 land in "high" with the new
 MiniLM thresholds (they were all "low" before). KakesuI's own cut at
 `best_distance` 0.58 is stricter than BGE's operating point transferred to
-MiniLM (0.72); it is a valid local choice (`[relevance] medium_max = 0.58`),
-not a sign the calibration is off.
+MiniLM (0.72); it is a valid local choice, not a sign the calibration is off.
+Set both bounds (a lone `medium_max = 0.58` is rejected at load because
+MiniLM's default `high_max` 0.6786 would exceed it):
+
+```toml
+[relevance]
+high_max = 0.50
+medium_max = 0.58
+```
 
 ## Caveats
 
