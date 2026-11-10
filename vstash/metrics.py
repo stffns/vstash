@@ -65,7 +65,13 @@ class Gauge:
 # Fixed histogram buckets in milliseconds.  Chosen to cover vstash's
 # realistic latency range (sub-ms to multi-second) with log-scale
 # spacing so mid-range resolution is fine-grained where it matters.
+# The sub-millisecond buckets matter on small stores: a warm search over
+# a few hundred chunks takes ~0.5 ms inside ``store.search``, and with
+# 1.0 as the first bound every observation landed in one bucket.
 _DEFAULT_BUCKETS_MS: tuple[float, ...] = (
+    0.1,
+    0.25,
+    0.5,
     1.0,
     2.0,
     5.0,

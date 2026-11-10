@@ -679,6 +679,7 @@ def ingest_text(
     tags: str | None = None,
     chunk_size: int | None = None,
     chunk_overlap: int | None = None,
+    quiet: bool = False,
 ) -> IngestResult:
     """Ingest raw text directly — no file or URL needed.
 
@@ -696,6 +697,9 @@ def ingest_text(
         project: Project identifier.
         layer: Layer/category tag.
         tags: Comma-separated tags.
+        quiet: Skip the Rich "Embedding" progress bar on stderr. The CLI
+            keeps it; programmatic callers (SDK, MCP, journal) pass
+            ``True`` so embedding a short note does not print a bar.
 
     Returns:
         IngestResult with status, chunk count, timing, etc.
@@ -771,7 +775,7 @@ def ingest_text(
         return IngestResult(status="empty", source=source_path)
 
     # Embed
-    embeddings = _embed_with_progress(chunks, cfg.embeddings.model)
+    embeddings = _embed_with_progress(chunks, cfg.embeddings.model, quiet=quiet)
 
     # Store
     doc_id = store.add_document(
