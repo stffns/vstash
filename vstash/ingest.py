@@ -680,6 +680,7 @@ def ingest_text(
     chunk_size: int | None = None,
     chunk_overlap: int | None = None,
     supersedes: str | list[str] | None = None,
+    quiet: bool = False,
 ) -> IngestResult:
     """Ingest raw text directly — no file or URL needed.
 
@@ -703,6 +704,9 @@ def ingest_text(
             them while this document exists. Paths with no document land in
             ``IngestResult.supersede_not_found``. Applied even when the text
             is a byte-identical re-remember (``status="skipped"``).
+        quiet: Skip the Rich "Embedding" progress bar on stderr. The CLI
+            keeps it; programmatic callers (SDK, MCP, journal) pass
+            ``True`` so embedding a short note does not print a bar.
 
     Returns:
         IngestResult with status, chunk count, timing, etc.
@@ -718,6 +722,7 @@ def ingest_text(
         tags=tags,
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
+        quiet=quiet,
     )
     if supersedes and result.status in ("ok", "skipped"):
         marked = store.supersede(supersedes, result.source, collection=collection)
@@ -742,6 +747,7 @@ def _ingest_text_impl(
     tags: str | None,
     chunk_size: int | None,
     chunk_overlap: int | None,
+    quiet: bool = False,
 ) -> IngestResult:
     """Body of :func:`ingest_text` (everything except ``supersedes``)."""
     start_time = time.time()
@@ -815,7 +821,7 @@ def _ingest_text_impl(
         return IngestResult(status="empty", source=source_path)
 
     # Embed
-    embeddings = _embed_with_progress(chunks, cfg.embeddings.model)
+    embeddings = _embed_with_progress(chunks, cfg.embeddings.model, quiet=quiet)
 
     # Store
     doc_id = store.add_document(

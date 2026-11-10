@@ -555,8 +555,14 @@ class _SearchEngineMixin:
                 with self._cache_lock:
                     if _cache_key in self._query_cache:
                         self._query_cache.move_to_end(_cache_key)
-                        cached = list(self._query_cache[_cache_key])
+                        cached_results, cached_best = self._query_cache[_cache_key]
+                        cached = list(cached_results)
                 if cached is not None:
+                    # Restore the best distance this query produced when it
+                    # was cached: without it ``last_best_distance`` (and so
+                    # ``relevance_tier`` / ``min_relevance``) would report
+                    # whatever the previous, unrelated query left behind.
+                    self.last_best_distance = cached_best
                     _result_count = len(cached)
                     registry.counter_inc("query_cache_hits_total")
                     return cached
@@ -1164,7 +1170,7 @@ class _SearchEngineMixin:
 
             if _cache_key is not None:
                 with self._cache_lock:
-                    self._query_cache[_cache_key] = list(results)
+                    self._query_cache[_cache_key] = (list(results), self.last_best_distance)
                     while len(self._query_cache) > _cache_max:
                         self._query_cache.popitem(last=False)
 

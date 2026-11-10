@@ -16,12 +16,15 @@ the window from config.
 
 from __future__ import annotations
 
+import functools
 import logging
 import math
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Literal
 
 from ..embed import embed_query
+from ..metrics import registry
 from ..models import SearchResults
 from ..validation import LimitError, validate_search_input
 
@@ -37,7 +40,38 @@ logger = logging.getLogger(__name__)
 # have to maintain a parallel list to the Literal type alias above.
 _VALID_RETRIEVAL_MODES: frozenset[str] = frozenset({"hybrid", "vec_only", "fts_only"})
 
+# Ordering of :func:`vstash.store.relevance_tier` labels for ``min_relevance``.
+_TIER_RANK: dict[str, int] = {"low": 0, "medium": 1, "high": 2}
+# Accepted ``min_relevance`` inputs. "low" is an output tier, not a gate: every
+# result clears it, so accepting it would silently disable the filter.
+_VALID_MIN_RELEVANCE: frozenset[str] = frozenset({"medium", "high"})
 
+#: End-to-end latency of :func:`search_with_embedding`: validation, query
+#: embedding, ``store.search``, the usage prior, the usage log and context
+#: expansion. ``search_latency_ms`` (recorded inside ``store.search``) only
+#: covers the retrieval pipeline, which on a small store is a fraction of
+#: what the caller waits for.
+SERVICE_SEARCH_LATENCY_METRIC = "service_search_latency_ms"
+
+
+def _timed(metric: str) -> Callable:
+    """Record the wrapped call's wall time in ``metric``, even when it raises."""
+
+    def decorate(fn: Callable) -> Callable:
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            start = time.perf_counter()
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                registry.histogram_observe(metric, (time.perf_counter() - start) * 1000.0)
+
+        return wrapper
+
+    return decorate
+
+
+@_timed(SERVICE_SEARCH_LATENCY_METRIC)
 def search_with_embedding(
     *,
     cfg: VstashConfig,
@@ -64,6 +98,7 @@ def search_with_embedding(
     log_usage: bool = True,
     usage_prior: bool | None = None,
     include_superseded: bool = False,
+    min_relevance: Literal["high", "medium"] | None = None,
 ) -> SearchResults:
     """Embed ``query`` then hybrid-search ``store`` then expand context.
 
@@ -131,6 +166,15 @@ def search_with_embedding(
         include_superseded: Also return documents another document
             replaced (``supersedes`` on remember). Default ``False`` hides
             them; with ``True`` they come back marked ``superseded_by``.
+        min_relevance: Opt-in "nothing found" gate. ``None`` (default)
+            always returns up to ``top_k`` results, however weak. With
+            ``"medium"`` or ``"high"``, the whole result list is dropped
+            (an empty list is returned) when the query's best vector
+            match falls below that :func:`vstash.store.relevance_tier`.
+            The tiers are cosine-distance thresholds calibrated on
+            BGE-small; recalibrate them for other embedding models. Not
+            applied under ``retrieval_mode="fts_only"``, which has no
+            vector distance to judge.
 
     Returns:
         ``SearchResults`` (a ``list[SearchResult]`` ranked by relevance,
@@ -155,6 +199,8 @@ def search_with_embedding(
             f"retrieval_mode must be one of "
             f"{sorted(_VALID_RETRIEVAL_MODES)} or None, got {retrieval_mode!r}"
         )
+    if min_relevance is not None and min_relevance not in _VALID_MIN_RELEVANCE:
+        raise LimitError(f"min_relevance must be 'high', 'medium' or None, got {min_relevance!r}")
 
     # Resolve the mode and drop caller weights BEFORE validation when
     # the mode is non-hybrid. The store forces (1.0, 0.0) or (0.0,
@@ -228,6 +274,13 @@ def search_with_embedding(
             beta=cfg.usage_prior.beta,
             top_k=top_k,
         )
+
+    if min_relevance is not None and mode != "fts_only" and results:
+        from ..store import relevance_tier
+
+        tier = relevance_tier(store.last_best_distance)
+        if _TIER_RANK[tier] < _TIER_RANK[min_relevance]:
+            results = []
 
     # Log the ranked list BEFORE context expansion: expansion only widens
     # each result's text, the chunk ids / ranks the caller acts on are the
