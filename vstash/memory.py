@@ -346,6 +346,7 @@ class Memory:
             tags=tags,
             chunk_size=chunk_size if chunk_size is not None else self._chunk_size,
             chunk_overlap=chunk_overlap if chunk_overlap is not None else self._chunk_overlap,
+            quiet=True,
         )
 
     def search(
@@ -369,6 +370,7 @@ class Memory:
         exact_match: str | None = None,
         exact_match_case_sensitive: bool = False,
         usage_prior: bool | None = None,
+        min_relevance: Literal["high", "medium"] | None = None,
     ) -> SearchResults:
         """Semantic search without LLM inference.
 
@@ -451,6 +453,14 @@ class Memory:
                 used (:meth:`mark_used`). ``None`` (default) follows the
                 ``[usage_prior] enabled`` config (off by default). Results
                 re-scored by the prior carry ``usage_boost``.
+            min_relevance: Opt-in "nothing found" gate. ``None`` (default)
+                always returns up to ``top_k`` results. ``"medium"`` or
+                ``"high"`` returns an empty list when the best vector match
+                falls below that relevance tier (the active model's
+                thresholds, see ``[relevance]``), so an off-topic question
+                yields nothing instead of the closest unrelated chunks. It
+                does not catch on-topic questions about things never stored.
+                Not applied with ``retrieval_mode="fts_only"``.
 
         Returns:
             Ranked ``SearchResults`` (a ``list[SearchResult]``) ordered by
@@ -487,6 +497,7 @@ class Memory:
             exact_match=exact_match,
             exact_match_case_sensitive=exact_match_case_sensitive,
             usage_prior=usage_prior,
+            min_relevance=min_relevance,
         )
 
     def mark_used(self, event_id: int, chunk_id: int | list[int]) -> int:

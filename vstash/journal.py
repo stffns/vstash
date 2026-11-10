@@ -170,6 +170,7 @@ def journal_save(
             project=project,
             layer=JOURNAL_LAYER,
             tags=final_tags,
+            quiet=True,
         )
 
         # If ingest returned "empty" (text too short for chunking),

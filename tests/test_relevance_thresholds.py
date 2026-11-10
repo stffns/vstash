@@ -151,3 +151,17 @@ class TestAdapters:
             out[model] = (res["relevance"], logged)
         assert out["BAAI/bge-small-en-v1.5"] == ("low", "low")
         assert out[MINILM] == ("high", "high")
+
+    def test_min_relevance_uses_model_thresholds(self, store) -> None:
+        from vstash.services import search_with_embedding
+
+        q = _vec(0.45)  # distance 0.55
+        with patch("vstash.services.search.embed_query", return_value=q):
+            bge = search_with_embedding(
+                cfg=_cfg(), store=store, query="x", expand_window=0, min_relevance="medium"
+            )
+            minilm = search_with_embedding(
+                cfg=_cfg(MINILM), store=store, query="x", expand_window=0, min_relevance="medium"
+            )
+        assert bge == []
+        assert len(minilm) == 1
