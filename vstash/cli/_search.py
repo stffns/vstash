@@ -450,6 +450,7 @@ def search(
                     added_before=added_before,
                     expand_window=1,
                     dedup_threshold=dedup_threshold,
+                    include_superseded=include_superseded,
                 )
                 chunks = [r for _, r in tagged]
                 _search_tagged = tagged

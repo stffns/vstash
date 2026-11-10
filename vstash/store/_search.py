@@ -41,6 +41,7 @@ from ._common import (
     _normalize_tags,
     _serialize,
     _superseded_active_sql,
+    _VEC0_MAX_K,
     RRF_K,
 )
 
@@ -623,10 +624,20 @@ class _SearchEngineMixin:
             # Hide documents replaced by a newer one (``supersede``). Only
             # added when the store has an active supersede, so stores that
             # never use the feature pay one indexed probe and nothing else.
-            # Exclusion (NOT IN over the small superseded set) rather than
-            # inclusion keeps the vec0 KNN unconstrained; the candidate pool
-            # is ~10x top_k, so the few rows dropped after KNN do not starve it.
-            _hide_superseded = not include_superseded and self.has_active_supersedes()
+            #
+            # The vector filter runs AFTER the KNN (vec0 and snapvec alike),
+            # and a superseded document is usually a near-duplicate of its
+            # replacement, so it sits at the top of exactly the queries that
+            # matter: left alone it would crowd the replacement out of the
+            # candidate pool. The KNN therefore asks for ``knn_k`` = pool +
+            # every chunk the filter could drop, and the surviving rows are
+            # cut back to ``candidate_pool`` -- downstream ranking sees what
+            # it would see if the superseded documents did not exist (up to
+            # sqlite-vec's k cap). FTS needs nothing: its predicate is in the
+            # WHERE, before the LIMIT.
+            _hidden_chunks = 0 if include_superseded else self.superseded_chunk_count()
+            _hide_superseded = _hidden_chunks > 0
+            knn_k = min(candidate_pool + _hidden_chunks, max(candidate_pool, _VEC0_MAX_K))
             if _hide_superseded:
                 vec_clause += (
                     " AND v.rowid NOT IN (SELECT c_s.id FROM chunks c_s "
@@ -683,7 +694,7 @@ class _SearchEngineMixin:
                 # assume (``[0, 2]``), even if an implementation
                 # quirk yields a value slightly outside ``[-1, 1]``.
                 snap_results = self._snap.search(
-                    np.array(query_embedding, dtype=np.float32), k=candidate_pool
+                    np.array(query_embedding, dtype=np.float32), k=knn_k
                 )
                 snap_ids = [int(r[0]) for r in snap_results]
                 if self._vector_backend == "snapvec":
@@ -729,8 +740,10 @@ class _SearchEngineMixin:
                       {vec_clause}
                     ORDER BY v.distance
                     """,
-                    [_serialize(query_embedding), candidate_pool, *filter_params],
+                    [_serialize(query_embedding), knn_k, *filter_params],
                 ).fetchall()
+            if _hide_superseded:
+                vec_rows = vec_rows[:candidate_pool]
 
             # --- Track: vector search stage ---
             # In fts_only mode the "vector_search" and "distance_cutoff"

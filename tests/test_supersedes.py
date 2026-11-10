@@ -225,3 +225,115 @@ class TestSurfaces:
             assert json.loads(vstash_supersede([OLD], "", undo=True))["restored"] == [OLD]
             err = json.loads(vstash_supersede(OLD, "text://ghost"))
             assert "error" in err
+
+
+# --------------------------------------------------------------------- #
+# Review round (#523): content edits, candidate pool, federated search  #
+# --------------------------------------------------------------------- #
+
+
+@requires_sqlite_vec
+class TestContentEditKeepsSupersede:
+    def test_reingest_old_with_new_text_stays_hidden(self, store) -> None:
+        store.supersede(OLD, NEW)
+        store.add_document(
+            path=OLD,
+            title="modelo v1",
+            chunks=["decision modelo embeddings bge small corregida"],
+            embeddings=[_vec(0.95, 2)],
+            source_type="text",
+        )
+        assert OLD not in _paths(store)
+        row = store._conn.execute(
+            "SELECT superseded_by, superseded_at FROM documents WHERE path = ?", [OLD]
+        ).fetchone()
+        assert row[0] == NEW and row[1] is not None
+
+    def test_memory_update_and_remember_keep_it_hidden(self, tmp_path: Path) -> None:
+        from vstash import Memory
+
+        def batch(texts, _model):
+            return [_vec(0.95, 2) for _ in texts]
+
+        with (
+            patch("vstash.ingest.embed_texts", side_effect=batch),
+            patch("vstash.memory.embed_texts", side_effect=batch, create=True),
+            patch("vstash.embed.embed_texts", side_effect=batch),
+            patch("vstash.services.search.embed_query", return_value=Q),
+        ):
+            mem = Memory(db=tmp_path / "e.db")
+            try:
+                mem.remember("usamos bge small en kakesu", title="v1")
+                mem.remember("usamos jina nano en kakesu", title="v2", supersedes="text://v1")
+                mem.remember("usamos bge small en kakesu (texto corregido)", title="v1")
+                assert "text://v1" not in [r.path for r in mem.search("kakesu")]
+                mem.update("text://v1", text="otra correccion de bge small en kakesu")
+                assert "text://v1" not in [r.path for r in mem.search("kakesu")]
+            finally:
+                mem.close()
+
+
+def _crowded_store(tmp_path: Path, **kw) -> VstashStore:
+    """3 superseded chunks closer to Q than the single replacement chunk."""
+    s = VstashStore(str(tmp_path / "crowd.db"), embedding_dim=DIM, **kw)
+    s.add_document(
+        path="text://old",
+        title="old",
+        chunks=["alpha uno", "alpha dos", "alpha tres"],
+        embeddings=[_vec(0.99, 2), _vec(0.985, 3), _vec(0.98, 4)],
+        source_type="text",
+    )
+    s.add_document(
+        path="text://new",
+        title="new",
+        chunks=["alpha nuevo"],
+        embeddings=[_vec(0.90, 5)],
+        source_type="text",
+    )
+    s.supersede("text://old", "text://new")
+    return s
+
+
+@requires_sqlite_vec
+class TestCandidatePoolNotStarved:
+    def test_vec0(self, tmp_path: Path) -> None:
+        s = _crowded_store(tmp_path)
+        try:
+            res = s.search(Q, "zzz", top_k=1, retrieval_mode="vec_only")
+            assert [r.path for r in res] == ["text://new"]
+        finally:
+            s.close()
+
+    def test_snapvec(self, tmp_path: Path) -> None:
+        pytest.importorskip("snapvec")
+        s = _crowded_store(tmp_path, vector_backend="snapvec", snapvec_bits=4)
+        try:
+            res = s.search(Q, "zzz", top_k=1, retrieval_mode="vec_only")
+            assert [r.path for r in res] == ["text://new"]
+        finally:
+            s.close()
+
+
+@requires_sqlite_vec
+def test_federated_search_forwards_include_superseded(tmp_path: Path, monkeypatch) -> None:
+    import vstash.profile as prof
+
+    db = tmp_path / "fed.db"
+    s = VstashStore(str(db), embedding_dim=DIM)
+    for path, text, emb in (
+        (OLD, "decision modelo embeddings bge small", _vec(0.95, 2)),
+        (NEW, "decision modelo embeddings jina nano", _vec(0.94, 3)),
+    ):
+        s.add_document(path=path, title=path, chunks=[text], embeddings=[emb], source_type="text")
+    s.supersede(OLD, NEW)
+    s.close()
+    monkeypatch.setattr(prof, "DEFAULT_DB", db)
+    monkeypatch.setattr(prof, "_find_local_db", lambda: None)
+    monkeypatch.setattr(prof, "list_profiles", lambda: [])
+
+    def run(**kw):
+        tagged = prof.federated_search(Q, "decision modelo", cfg=VstashConfig(), top_k=5, **kw)
+        return {r.path: r.superseded_by for _, r in tagged}
+
+    assert OLD not in run()
+    assert run(include_superseded=True)[OLD] == NEW

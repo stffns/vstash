@@ -244,6 +244,7 @@ def federated_search(
     added_before: str | None = None,
     expand_window: int = 0,
     dedup_threshold: float | None = None,
+    include_superseded: bool = False,
 ) -> list[tuple[str, SearchResult]]:
     """Search across all profiles and merge results with RRF.
 
@@ -273,6 +274,9 @@ def federated_search(
             result apiece. Cross-profile collapse would need embeddings
             from stores that are already closed by merge time.
             ``None`` (default) leaves ranking untouched.
+        include_superseded: Also return documents replaced by a newer one
+            in their own profile (marked ``superseded_by``). Supersede links
+            are per store: a document in one profile never hides another's.
 
     Returns:
         List of (profile_name, SearchResult) tuples sorted by merged score.
@@ -328,6 +332,7 @@ def federated_search(
                     added_after=added_after,
                     added_before=added_before,
                     dedup_threshold=dedup_threshold,
+                    include_superseded=include_superseded,
                 )
                 # Expand context per-store before closing (the only
                 # opportunity — stores are closed after this).  Note: this

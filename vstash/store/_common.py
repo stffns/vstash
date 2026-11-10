@@ -253,6 +253,10 @@ def relevance_tier(distance: float) -> str:
     return "low"
 
 
+#: sqlite-vec rejects a KNN ``k`` above this ("k value in knn query too large").
+_VEC0_MAX_K = 4096
+
+
 def _superseded_active_sql(alias: str) -> str:
     """SQL predicate: document ``alias`` is replaced by a newer one that still exists.
 

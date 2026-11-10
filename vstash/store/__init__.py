@@ -424,6 +424,14 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
 
         doc_id = hashlib.sha256(f"{collection}:{path}".encode()).hexdigest()[:32]
 
+        # A content edit re-inserts the row; carry the supersede link over so
+        # editing a replaced document does not silently bring it back (and a
+        # replacement that is itself superseded keeps its own pointer).
+        prior = self._conn.execute(
+            "SELECT superseded_by, superseded_at FROM documents WHERE id = ?", [doc_id]
+        ).fetchone()
+        superseded_by, superseded_at = (prior[0], prior[1]) if prior is not None else (None, None)
+
         # Remove existing version if re-ingesting
         self._delete_by_doc_id(doc_id)
 
@@ -431,8 +439,9 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
             """INSERT INTO documents
                (id, path, title, source_type, collection,
                 project, layer, tags, content_hash,
+                superseded_by, superseded_at,
                 char_count, chunk_count, added_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 doc_id,
                 path,
@@ -443,6 +452,8 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                 layer,
                 stored_tags,
                 content_hash,
+                superseded_by,
+                superseded_at,
                 sum(len(c) for c in chunks),
                 len(chunks),
                 now_iso,
@@ -1046,6 +1057,19 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
             + " LIMIT 1"
         ).fetchone()
         return row is not None
+
+    def superseded_chunk_count(self) -> int:
+        """Chunks belonging to currently superseded documents.
+
+        The most rows the supersede filter can drop from a KNN result, so
+        the vector search asks for that many extra candidates. Same partial
+        index as :meth:`has_active_supersedes`.
+        """
+        row = self._conn.execute(
+            "SELECT COALESCE(SUM(d.chunk_count), 0) FROM documents d "
+            "WHERE d.superseded_by IS NOT NULL AND " + _superseded_active_sql("d")
+        ).fetchone()
+        return int(row[0])
 
     def superseded_map(self, paths: list[str]) -> dict[tuple[str, str], str]:
         """``(path, collection) -> superseded_by`` for active supersedes among ``paths``."""
