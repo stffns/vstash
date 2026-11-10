@@ -49,6 +49,8 @@ MODEL_RELEVANCE_THRESHOLDS: dict[str, RelevanceThresholds] = {
     "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2": RelevanceThresholds(
         0.6786, 0.7216
     ),
+    "jinaai/jina-embeddings-v5-text-nano-retrieval": RelevanceThresholds(0.8031, 0.8572),
+    "embeddinggemma-300m": RelevanceThresholds(0.8037, 0.8491),
 }
 
 

@@ -71,13 +71,13 @@ The vstash tools should appear in Claude's tool list.
 
 The relevance signal uses the best vector distance to estimate confidence:
 
-| Distance | Tier | Meaning |
+| Cosine distance (BGE-small) | Tier | Meaning |
 |----------|------|---------|
-| ≤ 0.95 | **high** | Results are relevant |
-| 0.95–0.98 | **medium** | Results may be tangential |
-| > 0.98 | **low** | Results may not be relevant |
+| ≤ 0.4513 | **high** | Results are on-topic |
+| 0.4513–0.4802 | **medium** | Results may be tangential |
+| > 0.4802 | **low** | The query is likely off-topic for this store |
 
-This works from the first search — no usage history or warm-up required.
+Cutoffs are per embedding model and configurable (`[relevance]` in `vstash.toml`). The tier detects off-topic questions; an on-topic question about something never stored usually still reports `high`. This works from the first search — no usage history or warm-up required.
 
 ### Per-call RRF controls *(added in v0.27.0, issue #159; `retrieval_mode` added in v0.33.0, issue #275)*
 

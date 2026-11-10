@@ -136,13 +136,15 @@ MMR lambda is fixed at 0.5, balancing relevance and diversity. See [Recency Boos
 
 Every query returns results — even off-topic ones. vstash uses the cosine distance of the best vector match to estimate confidence:
 
-| Distance | Tier | Behavior |
+| Cosine distance (BGE-small) | Tier | Behavior |
 |----------|------|----------|
-| ≤ 0.95 | **high** | Full confidence — no indicator |
-| 0.95–0.98 | **medium** | Subtle `?` next to rank + "Uncertain relevance" note |
-| > 0.98 | **low** | Full warning: "Low relevance — results may not match" |
+| ≤ 0.4513 | **high** | Full confidence — no indicator |
+| 0.4513–0.4802 | **medium** | Subtle `?` next to rank + "Uncertain relevance" note |
+| > 0.4802 | **low** | Full warning: "Low relevance — results may not match" |
 
-This achieves F1 = 0.952 in distinguishing relevant from irrelevant queries — with zero class overlap and no warm-up period. It works from the very first search.
+The cutoffs are per embedding model (other models put good matches at very different distances) and can be overridden with [`[relevance]`](configuration.md#relevance).
+
+What the signal detects is **off-topic** queries. On the original hand-curated corpus it separated relevant from irrelevant queries with F1 = 0.952 (the values above are the cosine equivalents of the L2 cutoffs 0.95 / 0.98 used then). It does **not** detect a question about something the store covers but never recorded: holding out half of SciFact's queries and removing their relevant documents leaves their best distance indistinguishable from answerable ones (median 0.21 vs 0.18 with BGE), all in `high`. See `experiments/results/relevance_tiers_calibration.md`.
 
 ### Context Expansion
 
