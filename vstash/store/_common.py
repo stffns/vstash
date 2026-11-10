@@ -216,41 +216,15 @@ def _cosine_sim(
     return dot / (norm_a * norm_b)
 
 
-#: High-confidence cosine distance cutoff for ``relevance_tier``.  Value
-#: is the cosine equivalent of the legacy L2-on-unit-vec threshold 0.95
-#: (``cos_dist = L2^2 / 2 = 0.4513``), so BGE-small unit-normalized
-#: embeddings keep identical tier assignments across the v1 -> v2
-#: metric change (#272).
-RELEVANCE_TIER_HIGH_MAX = 0.4513
-
-#: Medium-confidence cosine distance cutoff for ``relevance_tier``.
-#: Cosine equivalent of the legacy L2 threshold 0.98
-#: (``0.98^2 / 2 = 0.4802``).  Anything above is classified "low".
-RELEVANCE_TIER_MEDIUM_MAX = 0.4802
-
-
-def relevance_tier(distance: float) -> str:
-    """Classify cosine distance into a relevance tier.
-
-    Thresholds were recalibrated for cosine metric in schema v2 (#272).
-    The old labels claimed "cosine distance" while sqlite-vec was
-    actually returning L2 distance, which only worked by accident on
-    unit-normalized BGE.  See the ``RELEVANCE_TIER_*`` constants above
-    for how the new cutoffs were derived.
-
-    Tiers:
-        "high"   -- distance <= ``RELEVANCE_TIER_HIGH_MAX`` (0.4513):
-            confident match.
-        "medium" -- ``RELEVANCE_TIER_HIGH_MAX`` < distance <=
-            ``RELEVANCE_TIER_MEDIUM_MAX`` (0.4802): uncertain.
-        "low"    -- distance > ``RELEVANCE_TIER_MEDIUM_MAX``: likely
-            off-topic.
-    """
-    if distance <= RELEVANCE_TIER_HIGH_MAX:
-        return "high"
-    if distance <= RELEVANCE_TIER_MEDIUM_MAX:
-        return "medium"
-    return "low"
+# Relevance tiers live in ``vstash.relevance`` (per-model thresholds); the
+# names stay importable from here and from ``vstash.store`` for back-compat.
+from ..relevance import (  # noqa: E402  (re-exports)
+    RELEVANCE_TIER_HIGH_MAX as RELEVANCE_TIER_HIGH_MAX,
+)
+from ..relevance import (  # noqa: E402
+    RELEVANCE_TIER_MEDIUM_MAX as RELEVANCE_TIER_MEDIUM_MAX,
+)
+from ..relevance import relevance_tier as relevance_tier  # noqa: E402
 
 
 # Standard RRF constant — balances precision vs recall

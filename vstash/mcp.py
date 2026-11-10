@@ -28,6 +28,7 @@ except ImportError as _exc:
         "MCP server requires the mcp package. Install it with: pip install vstash[mcp]"
     ) from _exc
 
+from .relevance import thresholds_for
 from ._store_open import open_store_for_config
 from .config import VstashConfig, load_config
 from .embed import embed_query, warmup
@@ -580,7 +581,7 @@ def vstash_ask(
             store.record_search_event(
                 query=query,
                 best_distance=best_distance,
-                relevance_tier=relevance_tier(best_distance),
+                relevance_tier=relevance_tier(best_distance, thresholds_for(cfg)),
                 result_count=len(chunks),
             )
 
@@ -759,7 +760,7 @@ def vstash_search(
 
         # Tiered relevance signal based on vector distance.
         best_distance = store.last_best_distance
-        relevance = relevance_tier(best_distance)
+        relevance = relevance_tier(best_distance, thresholds_for(cfg))
         _hints = {
             "high": "Results appear relevant to the query.",
             "medium": "Results may be tangential — consider refining your query.",

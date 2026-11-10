@@ -21,6 +21,7 @@ import math
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Literal
 
+from ..relevance import thresholds_for
 from ..embed import embed_query
 from ..models import SearchResults
 from ..validation import LimitError, validate_search_input
@@ -229,7 +230,7 @@ def search_with_embedding(
     # ones ranking produced.
     event_id: int | None = None
     if log_usage and cfg.observability.log_search_results:
-        event_id = _log_search(store, query, results, q_embedding)
+        event_id = _log_search(store, query, results, q_embedding, thresholds_for(cfg))
 
     if expand_window > 0 and results:
         results = store.expand_context(results, window=expand_window)
@@ -238,7 +239,11 @@ def search_with_embedding(
 
 
 def _log_search(
-    store: VstashStore, query: str, results: list[SearchResult], query_embedding=None
+    store: VstashStore,
+    query: str,
+    results: list[SearchResult],
+    query_embedding=None,
+    thresholds=None,
 ) -> int | None:
     """Write the usage-log event for one search; never fails the search.
 
@@ -254,7 +259,7 @@ def _log_search(
         return store.record_search_event(
             query=query,
             best_distance=best_distance,
-            relevance_tier=relevance_tier(best_distance),
+            relevance_tier=relevance_tier(best_distance, thresholds),
             result_count=len(results),
             results=results,
             query_embedding=query_embedding,
