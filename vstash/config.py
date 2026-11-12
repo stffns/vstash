@@ -91,6 +91,8 @@ class EmbeddingsConfig(BaseModel):
       - ``sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`` (384 dims, 50+ languages)
       - ``sentence-transformers/paraphrase-multilingual-mpnet-base-v2`` (768 dims, 50+ languages)
       - ``intfloat/multilingual-e5-large`` (1024 dims, 100+ languages, highest quality)
+      - ``jinaai/jina-embeddings-v5-text-nano-retrieval`` (768 dims, multilingual,
+        best measured on Spanish retrieval; CC BY-NC 4.0)
 
     **Tip**: For multilingual corpora, set
     ``model = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"``
