@@ -13,6 +13,7 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 
+from ..relevance import thresholds_for
 from .. import chat as chat_module
 from ..embed import embed_query
 from ..services import search_with_embedding
@@ -117,7 +118,7 @@ def ask(
 
         # Tiered relevance signal (skip for federated — no single best_distance)
         if not all_profiles:
-            tier = relevance_tier(store.last_best_distance)
+            tier = relevance_tier(store.last_best_distance, thresholds_for(cfg))
             _record_miss_event(
                 store=store,
                 cfg=cfg,
@@ -514,7 +515,7 @@ def search(
         tier = "high"
         if not all_profiles:
             best_distance = store.last_best_distance
-            tier = relevance_tier(best_distance)
+            tier = relevance_tier(best_distance, thresholds_for(cfg))
 
             # Telemetry: record search event for discard rate analysis,
             # attaching a miss_hint when the tier is "low" (issue #157 part 3).
@@ -604,7 +605,9 @@ def search(
                 # Vector
                 if ex.vec_rank is not None:
                     tier_label = (
-                        relevance_tier(ex.vec_distance) if ex.vec_distance is not None else "?"
+                        relevance_tier(ex.vec_distance, thresholds_for(cfg))
+                        if ex.vec_distance is not None
+                        else "?"
                     )
                     lines.append(
                         f"  Vector:  rank {ex.vec_rank + 1}, "
@@ -733,7 +736,7 @@ def chat(
                 # Tiered relevance signal (post-expand, mirroring the
                 # MCP migration pattern -- semantically identical to
                 # the old pre-expand placement).
-                tier = relevance_tier(store.last_best_distance)
+                tier = relevance_tier(store.last_best_distance, thresholds_for(cfg))
                 last_event_id = getattr(chunks, "event_id", None)
                 if last_event_id is None:
                     last_event_id = store.record_search_event(

@@ -456,10 +456,11 @@ class Memory:
             min_relevance: Opt-in "nothing found" gate. ``None`` (default)
                 always returns up to ``top_k`` results. ``"medium"`` or
                 ``"high"`` returns an empty list when the best vector match
-                falls below that relevance tier, so a question the store
-                cannot answer yields nothing instead of the closest
-                off-topic chunks. Tiers are calibrated on BGE-small; not
-                applied with ``retrieval_mode="fts_only"``.
+                falls below that relevance tier (the active model's
+                thresholds, see ``[relevance]``), so an off-topic question
+                yields nothing instead of the closest unrelated chunks. It
+                does not catch on-topic questions about things never stored.
+                Not applied with ``retrieval_mode="fts_only"``.
 
         Returns:
             Ranked ``SearchResults`` (a ``list[SearchResult]``) ordered by

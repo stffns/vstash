@@ -23,6 +23,7 @@ import time
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Literal
 
+from ..relevance import thresholds_for
 from ..embed import embed_query
 from ..metrics import registry
 from ..models import SearchResults
@@ -166,11 +167,11 @@ def search_with_embedding(
             always returns up to ``top_k`` results, however weak. With
             ``"medium"`` or ``"high"``, the whole result list is dropped
             (an empty list is returned) when the query's best vector
-            match falls below that :func:`vstash.store.relevance_tier`.
-            The tiers are cosine-distance thresholds calibrated on
-            BGE-small; recalibrate them for other embedding models. Not
-            applied under ``retrieval_mode="fts_only"``, which has no
-            vector distance to judge.
+            match falls below that relevance tier, judged with the active
+            model's thresholds (``cfg.relevance_thresholds()``). The tiers
+            detect *off-topic* queries; an on-topic question about something
+            never stored usually still passes. Not applied under
+            ``retrieval_mode="fts_only"``, which has no vector distance to judge.
 
     Returns:
         ``SearchResults`` (a ``list[SearchResult]`` ranked by relevance,
@@ -273,7 +274,7 @@ def search_with_embedding(
     if min_relevance is not None and mode != "fts_only" and results:
         from ..store import relevance_tier
 
-        tier = relevance_tier(store.last_best_distance)
+        tier = relevance_tier(store.last_best_distance, thresholds_for(cfg))
         if _TIER_RANK[tier] < _TIER_RANK[min_relevance]:
             results = []
 
@@ -282,7 +283,7 @@ def search_with_embedding(
     # ones ranking produced.
     event_id: int | None = None
     if log_usage and cfg.observability.log_search_results:
-        event_id = _log_search(store, query, results, q_embedding)
+        event_id = _log_search(store, query, results, q_embedding, thresholds_for(cfg))
 
     if expand_window > 0 and results:
         results = store.expand_context(results, window=expand_window)
@@ -291,7 +292,11 @@ def search_with_embedding(
 
 
 def _log_search(
-    store: VstashStore, query: str, results: list[SearchResult], query_embedding=None
+    store: VstashStore,
+    query: str,
+    results: list[SearchResult],
+    query_embedding=None,
+    thresholds=None,
 ) -> int | None:
     """Write the usage-log event for one search; never fails the search.
 
@@ -307,7 +312,7 @@ def _log_search(
         return store.record_search_event(
             query=query,
             best_distance=best_distance,
-            relevance_tier=relevance_tier(best_distance),
+            relevance_tier=relevance_tier(best_distance, thresholds),
             result_count=len(results),
             results=results,
             query_embedding=query_embedding,
