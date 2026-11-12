@@ -39,6 +39,13 @@ class IngestResult(BaseModel):
             "relato, superado. None for layers that are not claims."
         ),
     )
+    superseded: bool | None = Field(
+        default=None,
+        description=(
+            "When supersedes was given: True if the old claim was retired by this "
+            "write, False if it had already been retired. None otherwise."
+        ),
+    )
     elapsed_s: float = Field(default=0.0, description="Ingestion time in seconds")
     error: str | None = Field(default=None, description="Error message if status is 'error'")
 
@@ -177,6 +184,19 @@ class DocumentInfo(BaseModel):
     chunk_count: int = Field(description="Number of stored chunks")
     char_count: int = Field(description="Total character count")
     added_at: str = Field(description="ISO timestamp of ingestion")
+    id: str | None = Field(
+        default=None, description="Document id (accepted by supersedes / retire)"
+    )
+    status: str | None = Field(
+        default=None,
+        description="Claim status: vigente, sin-fuente, superado, refutado, relato. None if not a claim.",
+    )
+    source_ref: str | None = Field(default=None, description="Where the claim comes from")
+    valid_from: str | None = Field(default=None, description="ISO date from which the claim holds")
+    valid_until: str | None = Field(
+        default=None, description="ISO date from which the claim no longer holds"
+    )
+    supersedes: str | None = Field(default=None, description="Document id this claim replaces")
 
 
 class ChunkInfo(BaseModel):

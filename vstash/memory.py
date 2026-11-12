@@ -896,6 +896,37 @@ class Memory:
             report["optimize_fts"] = True
         return report
 
+    def retire(
+        self,
+        source: str,
+        *,
+        refuted: bool = False,
+        collection: object = _UNSET,
+    ) -> bool:
+        """Retire a claim without replacing it: it stops holding from now on.
+
+        The row and its text are kept (use ``remove`` to delete them) but
+        leave search. Use ``remember(..., supersedes=...)`` instead when a
+        new claim takes its place.
+
+        Args:
+            source: The claim's path (``text://<title>``) or its 32-char id.
+            refuted: Mark it ``refutado`` (it was wrong) instead of
+                ``superado`` (it stopped being true).
+            collection: Collection the path lives in; ignored for an id.
+
+        Returns:
+            True if a claim was retired; False if there is no such document
+            or it was already retired.
+        """
+        col = self._collection if collection is _UNSET else collection
+        doc_id = (
+            source
+            if len(source) == 32 and ":" not in source
+            else self._store.doc_id_for(col or "default", source)
+        )
+        return self._store.supersede_claim(doc_id, status="refutado" if refuted else "superado") > 0
+
     def remove(self, source: str | Path) -> bool:
         """Remove a document from memory.
 
@@ -1113,6 +1144,7 @@ class Memory:
         collection: object = _UNSET,
         project: object = _UNSET,
         layer: str | None = None,
+        status: str | list[str] | None = None,
     ) -> list[DocumentInfo]:
         """List ingested documents.
 
@@ -1125,14 +1157,20 @@ class Memory:
             collection: Filter by collection. Pass None for no filter.
             project: Filter by project. Pass None for no filter.
             layer: Filter by layer tag.
+            status: Only claims with this status (or any of these), e.g.
+                ``"vigente"`` or ``["vigente", "sin-fuente"]``. Listing does
+                not hide retired or expired claims the way search does.
 
         Returns:
             List of DocumentInfo ordered by ingestion date (newest first).
+            Each carries its claim fields (``id``, ``status``, ``source_ref``,
+            ``valid_from``, ``valid_until``, ``supersedes``).
         """
         return self._store.list_documents(
             collection=self._resolve_collection(collection),
             project=self._resolve_project(project),
             layer=layer,
+            status=status,
         )
 
     def stats(self) -> StoreStats:

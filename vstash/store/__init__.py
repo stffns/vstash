@@ -300,21 +300,37 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         """Return the deterministic document id for a (collection, path)."""
         return hashlib.sha256(f"{collection}:{path}".encode()).hexdigest()[:32]
 
-    def supersede_claim(self, old_id: str, new_doc_id: str | None = None) -> int:
-        """Mark one claim superseded by another.
+    def claim_exists(self, doc_id: str) -> bool:
+        """True when a document with this id is stored (whatever its status)."""
+        row = self._conn.execute("SELECT 1 FROM documents WHERE id = ?", [doc_id]).fetchone()
+        return row is not None
+
+    def supersede_claim(
+        self, old_id: str, new_doc_id: str | None = None, *, status: str = "superado"
+    ) -> int:
+        """Retire a claim: replaced by another (``superado``) or found wrong (``refutado``).
 
         The old row keeps its text (nothing is deleted) and stops being
-        returned by search; the new row carries its supersedes field.
-        Returns the number of rows updated.
+        returned by search; a replacing row carries its supersedes field.
+        ``new_doc_id`` is optional: a claim can stop holding without a
+        replacement. Returns the number of rows updated (0 when the id does
+        not exist or the claim was already retired).
         """
+        if status not in ("superado", "refutado"):
+            raise ValueError(f"status must be 'superado' or 'refutado', got {status!r}")
         now_iso = datetime.now(timezone.utc).isoformat()
         with self._write_lock:
+            # ``IS NOT`` instead of ``!=``: a row written before the claim
+            # schema has NULL status, and ``NULL != 'x'`` is never true, so
+            # such a row could never be retired.
             cur = self._conn.execute(
-                "UPDATE documents SET status = 'superado', valid_until = ? "
-                "WHERE id = ? AND status != 'superado'",
-                [now_iso, old_id],
+                "UPDATE documents SET status = ?, valid_until = ? "
+                "WHERE id = ? AND status IS NOT 'superado' AND status IS NOT 'refutado'",
+                [status, now_iso, old_id],
             )
             self._conn.commit()
+        if cur.rowcount:
+            self._bump_cache_epoch()  # a cached search may still hold the retired claim
         return cur.rowcount
 
     def add_document(
@@ -1381,6 +1397,7 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         project: str | None = None,
         layer: str | None = None,
         added_after: str | None = None,
+        status: str | list[str] | None = None,
     ) -> list[DocumentInfo]:
         """List all ingested documents.
 
@@ -1389,6 +1406,9 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
             project: If set, filter to this project only.
             layer: If set, filter to this layer only.
             added_after: If set, only return documents added after this ISO timestamp.
+            status: If set, only claims with this status (or any of these).
+                Unlike search, listing does not hide ``superado`` / ``refutado``
+                rows or expired ones: it is how their history is read.
 
         Returns:
             List of DocumentInfo ordered by ingestion date (newest first).
@@ -1401,11 +1421,16 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         if added_after:
             conditions.append("added_at >= ?")
             filter_params.append(_canonicalize_added_filter(added_after, label="added_after"))
+        if status:
+            wanted = [status] if isinstance(status, str) else list(status)
+            conditions.append(f"status IN ({', '.join('?' * len(wanted))})")
+            filter_params.extend(wanted)
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
         rows = self._conn.execute(
-            f"""SELECT path, title, source_type, collection,
+            f"""SELECT id, path, title, source_type, collection,
                        project, layer, tags,
-                       chunk_count, char_count, added_at
+                       chunk_count, char_count, added_at,
+                       status, source_ref, valid_from, valid_until, supersedes
                 FROM documents {where}
                 ORDER BY added_at DESC""",
             filter_params,

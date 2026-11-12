@@ -559,7 +559,13 @@ class _SearchEngineMixin:
                 with self._cache_lock:
                     if _cache_key in self._query_cache:
                         self._query_cache.move_to_end(_cache_key)
-                        cached = list(self._query_cache[_cache_key])
+                        # A cached list can outlive a claim's valid_until.
+                        _now = datetime.now(timezone.utc).isoformat()
+                        cached = [
+                            r
+                            for r in self._query_cache[_cache_key]
+                            if not r.valid_until or r.valid_until > _now
+                        ]
                 if cached is not None:
                     _result_count = len(cached)
                     registry.counter_inc("query_cache_hits_total")
@@ -1932,9 +1938,15 @@ class _SearchEngineMixin:
         # Claims already replaced or refuted are history: never return them
         # as if they still held. NULL stays allowed for rows written before
         # the claim schema appeared, so a re-opened old DB still searches.
+        # A claim past its valid_until no longer holds either, whatever its
+        # status says: nothing rewrites the status when the date goes by. The
+        # timestamp is generated here (never caller input), so it is inlined
+        # rather than bound, which keeps one params list valid for both clauses.
+        now_iso = datetime.now(timezone.utc).isoformat()
         conditions_d2 = [
             *conditions_d2,
             "(d2.status IS NULL OR d2.status NOT IN ('superado', 'refutado'))",
+            f"(d2.valid_until IS NULL OR d2.valid_until = '' OR d2.valid_until > '{now_iso}')",
         ]
 
         where = " AND ".join(conditions_d2)
@@ -1960,6 +1972,7 @@ class _SearchEngineMixin:
         conditions_d = [
             *conditions_d,
             "(d.status IS NULL OR d.status NOT IN ('superado', 'refutado'))",
+            f"(d.valid_until IS NULL OR d.valid_until = '' OR d.valid_until > '{now_iso}')",
         ]
         col_clause = "AND " + " AND ".join(conditions_d)
         return vec_clause, col_clause, params

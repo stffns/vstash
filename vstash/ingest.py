@@ -32,6 +32,7 @@ from typing import TypedDict
 
 from .models import IngestResult
 from .store import VstashStore
+from .store._common import _canonicalize_added_filter
 
 
 class _PreparedDoc(TypedDict):
@@ -772,9 +773,7 @@ def ingest_text(
     # a sourced claim instead of presenting both as equals. A charla is
     # narrative ('relato'): never citable as a fact.
     if status is not None and status not in VALID_CLAIM_STATUSES:
-        raise ValueError(
-            f"status must be one of {sorted(VALID_CLAIM_STATUSES)}, got {status!r}"
-        )
+        raise ValueError(f"status must be one of {sorted(VALID_CLAIM_STATUSES)}, got {status!r}")
     claim_status = status
     if fm_layer in CLAIM_LAYERS:
         if not source_ref:
@@ -791,6 +790,21 @@ def ingest_text(
             if len(supersedes) == 32 and ":" not in supersedes
             else store.doc_id_for(collection, supersedes)
         )
+        # A path hashes to an id whether or not anything is stored under it,
+        # so a typo (or a bare title without its ``text://`` prefix) used to
+        # write the new claim and leave the old one standing, with no error.
+        if not store.claim_exists(superseded_id):
+            raise ValueError(
+                f"supersedes: no document {supersedes!r} in collection {collection!r}"
+                " (pass its full path, e.g. 'text://<title>', or its 32-char id)"
+            )
+
+    # valid_from / valid_until are compared lexically against UTC timestamps,
+    # like added_at: canonicalise them the same way, and reject non-ISO input.
+    if valid_from:
+        valid_from = _canonicalize_added_filter(valid_from, label="valid_from")
+    if valid_until:
+        valid_until = _canonicalize_added_filter(valid_until, label="valid_until")
 
     # Chunk
     cs = chunk_size if chunk_size is not None else cfg.chunking.size
@@ -827,8 +841,9 @@ def ingest_text(
         supersedes=superseded_id,
     )
 
+    superseded: bool | None = None
     if superseded_id:
-        store.supersede_claim(superseded_id, doc_id)
+        superseded = store.supersede_claim(superseded_id, doc_id) > 0
 
     elapsed = round(time.time() - start_time, 2)
 
@@ -841,6 +856,7 @@ def ingest_text(
         chars=char_count,
         elapsed_s=elapsed,
         claim_status=claim_status,
+        superseded=superseded,
     )
 
 
@@ -1360,7 +1376,9 @@ def _embed_with_progress(
     """
     BATCH_SIZE = 64
 
-    if quiet:
+    # Off a terminal (a service log, a pipe) the bar is one garbage line per
+    # write: only draw it for a person watching.
+    if quiet or not console.is_terminal:
         all_embeddings: list[list[float]] = []
         for i in range(0, len(chunks), BATCH_SIZE):
             all_embeddings.extend(embed_texts(chunks[i : i + BATCH_SIZE], model_name))
