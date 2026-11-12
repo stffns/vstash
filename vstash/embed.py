@@ -252,10 +252,14 @@ KNOWN_DIMS: dict[str, int] = {
     # EmbeddingGemma (Google, ONNX via onnx-community)
     # +7.4% NDCG vs BGE-small on SciFact, 100+ languages
     "embeddinggemma-300m": 768,
+    # Jina v5 text nano, retrieval adapter (239M, multilingual, CC BY-NC 4.0).
+    # Asymmetric: queries and documents get different prefixes.
+    "jinaai/jina-embeddings-v5-text-nano-retrieval": 768,
 }
 
 # EmbeddingGemma ONNX config
 _GEMMA_ONNX_REPO = "onnx-community/embeddinggemma-300m-ONNX"
+_GEMMA_ONNX_REVISION = "5090578d9565bb06545b4552f76e6bc2c93e4a66"
 _GEMMA_MAX_TOKENS = 2048
 
 # Mapping from standard model names to MLX community variants
@@ -384,6 +388,33 @@ def _warmup_onnx(model_name: str) -> None:
 # EmbeddingGemma backend (ONNX Runtime direct)                        #
 # ------------------------------------------------------------------ #
 
+
+def _local_model_dir(repo: str, revision: str) -> str:
+    """Directory for a pinned model download (``VSTASH_MODELS_DIR`` overrides the root)."""
+    root = os.getenv("VSTASH_MODELS_DIR") or os.path.join(
+        os.path.expanduser("~"), ".vstash", "models"
+    )
+    return os.path.join(root, repo.replace("/", "--") + "@" + revision[:12])
+
+
+def _download_pinned(repo: str, revision: str, filenames: tuple[str, ...]) -> str:
+    """Download ``filenames`` of ``repo@revision`` as real files; return the directory.
+
+    ONNX exports above 2 GB keep their weights in ``model.onnx_data``.
+    onnxruntime >= 1.31 validates that external data resolves inside the
+    model's directory, and the HF cache layout (``snapshots/`` symlinks into
+    ``blobs/``) fails that check: ``hf_hub_download`` without ``local_dir``
+    yields a session error ("External data path escapes model directory").
+    ``local_dir`` materialises real files side by side.
+    """
+    from huggingface_hub import hf_hub_download
+
+    local_dir = _local_model_dir(repo, revision)
+    for filename in filenames:
+        hf_hub_download(repo, filename, revision=revision, local_dir=local_dir)
+    return local_dir
+
+
 _gemma_session: object | None = None
 _gemma_tokenizer: object | None = None
 _gemma_lock = threading.Lock()
@@ -401,14 +432,15 @@ def _init_gemma() -> tuple:
         with _gemma_lock:
             if _gemma_session is None:
                 import onnxruntime as ort
-                from huggingface_hub import hf_hub_download
                 from tokenizers import Tokenizer
 
-                model_path = hf_hub_download(_GEMMA_ONNX_REPO, "onnx/model.onnx")
-                hf_hub_download(_GEMMA_ONNX_REPO, "onnx/model.onnx_data")
-                tokenizer_path = hf_hub_download(_GEMMA_ONNX_REPO, "tokenizer.json")
-                _gemma_session = ort.InferenceSession(model_path)
-                _gemma_tokenizer = Tokenizer.from_file(tokenizer_path)
+                local_dir = _download_pinned(
+                    _GEMMA_ONNX_REPO,
+                    _GEMMA_ONNX_REVISION,
+                    ("onnx/model.onnx", "onnx/model.onnx_data", "tokenizer.json"),
+                )
+                _gemma_session = ort.InferenceSession(os.path.join(local_dir, "onnx", "model.onnx"))
+                _gemma_tokenizer = Tokenizer.from_file(os.path.join(local_dir, "tokenizer.json"))
                 _gemma_tokenizer.enable_truncation(max_length=_GEMMA_MAX_TOKENS)
     return _gemma_session, _gemma_tokenizer
 
@@ -480,6 +512,114 @@ def _query_gemma(text: str, model_name: str) -> list[float]:
 def _warmup_gemma(model_name: str) -> None:
     """Pre-load EmbeddingGemma ONNX model."""
     _embed_gemma_one("warmup")
+
+
+# ------------------------------------------------------------------ #
+# Jina v5 text backend (ONNX Runtime direct, asymmetric prompts)       #
+# ------------------------------------------------------------------ #
+#
+# jina-embeddings-v5-text-*-retrieval is asymmetric: a query is embedded
+# as "Query: <text>" and a passage as "Document: <text>" (the model's
+# sentence-transformers prompts). Dropping the prefixes, as a single
+# ``Encoder.encode`` resolver would, costs retrieval quality, which is
+# why this is a built-in backend rather than a resolver recipe.
+#
+# Loaded with onnxruntime + tokenizers (no torch, no trust_remote_code:
+# the repo's EuroBERT modelling code is only needed by the PyTorch path).
+# Files are pinned to a revision and fetched by :func:`_download_pinned`
+# (real files, not HF-cache symlinks, which onnxruntime >= 1.31 rejects
+# for external data).
+#
+# The exported graph does not honour ``attention_mask`` for padding --
+# a padded row embeds differently from the same text alone (measured
+# max abs diff ~0.5 with right or left padding) -- so batches only ever
+# group texts of identical token length, never pad.
+#
+# The fp32 export is used: on Apple Silicon CPU it beat the int8
+# ``model_quantized`` export at every length measured (8.5 vs 37 ms at
+# 33 tokens, 93 vs 120 ms at 703), with cosine >= 0.997 between them.
+
+#: model name -> pinned HF revision.
+_JINA_V5_MODELS: dict[str, str] = {
+    "jinaai/jina-embeddings-v5-text-nano-retrieval": "ac5d898c8d382b17167c33e5c8af644a3519b47d",
+}
+_JINA_V5_QUERY_PREFIX = "Query: "
+_JINA_V5_DOCUMENT_PREFIX = "Document: "
+_JINA_V5_MAX_TOKENS = 8192
+_JINA_V5_ONNX_FILE = "onnx/model.onnx"
+_JINA_V5_FILES = ("tokenizer.json", _JINA_V5_ONNX_FILE, _JINA_V5_ONNX_FILE + "_data")
+_JINA_V5_BATCH_SIZE = 16
+
+_jina_v5_cache: dict[str, tuple] = {}
+_jina_v5_lock = threading.Lock()
+
+
+def _is_jina_v5_model(model_name: str) -> bool:
+    """Check if the model name is a supported Jina v5 text model."""
+    return model_name in _JINA_V5_MODELS
+
+
+def _init_jina_v5(model_name: str) -> tuple:
+    """Lazily download (pinned revision) and load the ONNX session + tokenizer."""
+    cached = _jina_v5_cache.get(model_name)
+    if cached is not None:
+        return cached
+    with _jina_v5_lock:
+        cached = _jina_v5_cache.get(model_name)
+        if cached is not None:
+            return cached
+        import onnxruntime as ort
+        from tokenizers import Tokenizer
+
+        local_dir = _download_pinned(model_name, _JINA_V5_MODELS[model_name], _JINA_V5_FILES)
+        session = ort.InferenceSession(
+            os.path.join(local_dir, _JINA_V5_ONNX_FILE), providers=["CPUExecutionProvider"]
+        )
+        tokenizer = Tokenizer.from_file(os.path.join(local_dir, "tokenizer.json"))
+        tokenizer.enable_truncation(max_length=_JINA_V5_MAX_TOKENS)
+        tokenizer.no_padding()
+        _jina_v5_cache[model_name] = (session, tokenizer)
+        return session, tokenizer
+
+
+def _embed_jina_v5(texts: list[str], model_name: str, prefix: str) -> list[list[float]]:
+    """Embed ``texts`` with ``prefix`` prepended, batching only equal-length inputs."""
+    import numpy as np
+
+    if not texts:
+        return []
+    session, tokenizer = _init_jina_v5(model_name)
+    encodings = tokenizer.encode_batch([prefix + t for t in texts])
+
+    by_length: dict[int, list[int]] = {}
+    for idx, enc in enumerate(encodings):
+        by_length.setdefault(len(enc.ids), []).append(idx)
+
+    out: list[list[float] | None] = [None] * len(texts)
+    for indices in by_length.values():
+        for start in range(0, len(indices), _JINA_V5_BATCH_SIZE):
+            group = indices[start : start + _JINA_V5_BATCH_SIZE]
+            ids = np.array([encodings[i].ids for i in group], dtype=np.int64)
+            (embs,) = session.run(
+                ["sentence_embedding"],
+                {"input_ids": ids, "attention_mask": np.ones_like(ids)},
+            )
+            norms = np.maximum(np.linalg.norm(embs, axis=1, keepdims=True), 1e-9)
+            for i, vec in zip(group, (embs / norms).tolist(), strict=True):
+                out[i] = vec
+    return out  # type: ignore[return-value]
+
+
+def _jina_v5_batch(texts: list[str], model_name: str, _backend: BackendType) -> list[list[float]]:
+    return _embed_jina_v5(texts, model_name, _JINA_V5_DOCUMENT_PREFIX)
+
+
+def _jina_v5_query(text: str, model_name: str, _backend: BackendType) -> list[float]:
+    return _embed_jina_v5([text], model_name, _JINA_V5_QUERY_PREFIX)[0]
+
+
+def _jina_v5_warmup(model_name: str, _backend: BackendType) -> None:
+    _jina_v5_query("warmup", model_name, _backend)
 
 
 # ------------------------------------------------------------------ #
@@ -909,6 +1049,13 @@ _BUILTIN_BACKENDS: list[_BuiltinBackend] = [
         embed_batch=_gemma_batch,
         embed_query=_gemma_query,
         warmup=_gemma_warmup,
+    ),
+    _BuiltinBackend(
+        name="jina_v5",
+        matches=_is_jina_v5_model,
+        embed_batch=_jina_v5_batch,
+        embed_query=_jina_v5_query,
+        warmup=_jina_v5_warmup,
     ),
     _BuiltinBackend(
         name="hf_onnx",
