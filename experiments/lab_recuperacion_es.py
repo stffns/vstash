@@ -228,6 +228,14 @@ PESOS["fuerza-1.5-2.5"] = _fuerza("max", 1.5, 2.5)
 for _n in PESOS:
     CONFIGS[f"regla-{_n}"] = {"pesos": _n}
 # --- Experimento 3: corte por distancia (constantes) sobre la regla con tope ------------
+# Las mismas dos ideas ya dentro de vstash, como opciones de search (apagadas por defecto).
+CONFIGS["compuerta"] = {"buscar": {"lexical_gate": True}}
+CONFIGS["compuerta-corte2"] = {"buscar": {"lexical_gate": True, "distance_cutoff": 2.0}}
+CONFIGS["compuerta-suelo"] = {"buscar": {"lexical_gate": True, "min_vec_keep": 50}}
+CONFIGS["compuerta-suelo20"] = {"buscar": {"lexical_gate": True, "min_vec_keep": 20}}
+CONFIGS["suelo"] = {"buscar": {"min_vec_keep": 50}}
+CONFIGS["suelo20"] = {"buscar": {"min_vec_keep": 20}}
+CONFIGS["vec-suelo20"] = {"buscar": {"retrieval_mode": "vec_only", "min_vec_keep": 20}}
 for _c in (1.5, 2.0, 25.0):
     CONFIGS[f"fuerza-corte{_c:g}"] = {"pesos": "fuerza", "buscar": {"distance_cutoff": _c}}
 for _c in (1.3225, 1.5, 1.75, 2.0, 3.0, 25.0):

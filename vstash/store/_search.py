@@ -30,6 +30,9 @@ from ..models import (
 from ..validation import validate_search_input
 from ._common import (
     _ADAPTIVE_RRF_LONG_QUERY,
+    _LEXICAL_GATE_HIGH,
+    _LEXICAL_GATE_LOW,
+    _LEXICAL_GATE_MIN_FTS_WEIGHT,
     _DEDUP_SIM_EPS,
     _LONG_QUERY_DISTANCE_CUTOFF,
     _PipelineTracer,
@@ -74,6 +77,8 @@ class _SearchEngineMixin:
         cache_epoch: int,
         filters: dict | None = None,
         dedup_threshold: float | None = None,
+        lexical_gate: bool = False,
+        min_vec_keep: int = 0,
     ) -> int:
         """Build the search cache key from the full set of query parameters.
 
@@ -121,6 +126,8 @@ class _SearchEngineMixin:
                 # order stays significant, which only costs a cache miss.
                 None if filters is None else json.dumps(filters, sort_keys=True, default=str),
                 dedup_threshold,
+                lexical_gate,
+                min_vec_keep,
                 cache_epoch,
             )
         )
@@ -386,6 +393,8 @@ class _SearchEngineMixin:
         retrieval_mode: Literal["hybrid", "vec_only", "fts_only"] | None = None,
         exact_match: str | None = None,
         exact_match_case_sensitive: bool = False,
+        lexical_gate: bool = False,
+        min_vec_keep: int = 0,
         _tracer: _PipelineTracer | None = None,
     ) -> list[SearchResult]:
         """Hybrid search: vector (semantic) + FTS5 (keyword) combined with RRF.
@@ -436,6 +445,19 @@ class _SearchEngineMixin:
             exact_match_case_sensitive: Toggle for the above. Default
                 ``False`` does a casefold comparison which matches
                 typical retrieval-filter UX expectations.
+            lexical_gate: Opt-in (default ``False`` = published pipeline).
+                Scales the FTS weight by how strong the keyword evidence
+                for *this* query is: the BM25 score of the best FTS5 hit in
+                units of ``ln(N)``. A query whose best keyword match only
+                shares a common word or two (a vague or paraphrased query)
+                has its FTS weight lowered toward 0.1, so keyword-only
+                noise cannot outrank the vector hits; a query that matches
+                rare terms keeps the weight it had. Hybrid mode only.
+            min_vec_keep: Opt-in floor for the distance cutoff (default
+                ``0`` = no floor). The cutoff never leaves fewer than this
+                many vector candidates, however far they are from the
+                best one. Useful when the best match is unusually close
+                and the ratio cutoff would otherwise drop everything else.
             retrieval_mode: Which search branches to run (default
                 ``"hybrid"``). Three values:
 
@@ -509,6 +531,8 @@ class _SearchEngineMixin:
                 cache_epoch=self._cache_epoch,
                 filters=filters,
                 dedup_threshold=dedup_threshold,
+                lexical_gate=lexical_gate,
+                min_vec_keep=min_vec_keep,
             )
 
         # Per-search miss-analysis tracker (#108).  The tracer is owned
@@ -765,7 +789,10 @@ class _SearchEngineMixin:
                 threshold = best_distance * distance_cutoff
                 cutoff_applied = best_distance > 0
                 if cutoff_applied:
-                    vec_rows = [r for r in vec_rows if float(r["distance"]) <= threshold]
+                    kept = [r for r in vec_rows if float(r["distance"]) <= threshold]
+                    # ``vec_rows`` is sorted by distance, so the floor keeps
+                    # the closest ``min_vec_keep`` candidates.
+                    vec_rows = kept if len(kept) >= min_vec_keep else vec_rows[:min_vec_keep]
                 # Track distance cutoff verdict whenever we have a before-distance
                 # (i.e., the target was in vec_rows pre-filter)
                 if track_target is not None and target_dist_before is not None:
@@ -893,6 +920,25 @@ class _SearchEngineMixin:
                             ),
                             counterfactual="Would need a query containing words from the chunk's vocabulary",
                         )
+
+            # --- Lexical gate (opt-in) ---
+            # ``fts_rows`` is ordered by BM25 (``rank`` is negative, more
+            # negative = better), so the first row carries the strength of
+            # the best keyword match for free.
+            if lexical_gate and _mode == "hybrid" and fts_weight > _LEXICAL_GATE_MIN_FTS_WEIGHT:
+                strength = 0.0
+                if fts_rows and total_chunks > 1:
+                    strength = -float(fts_rows[0]["fts_rank"]) / math.log(total_chunks)
+                ramp = (strength - _LEXICAL_GATE_LOW) / (_LEXICAL_GATE_HIGH - _LEXICAL_GATE_LOW)
+                ramp = min(1.0, max(0.0, ramp))
+                gated = (
+                    _LEXICAL_GATE_MIN_FTS_WEIGHT
+                    + (fts_weight - _LEXICAL_GATE_MIN_FTS_WEIGHT) * ramp
+                )
+                # Hand the removed weight to the vector side so the pair
+                # keeps its sum and scores stay on the same scale.
+                vec_weight += fts_weight - gated
+                fts_weight = gated
 
             # --- Adaptive fallback: vector pool empty (#156) ---
             # If the vector pool is empty — either the initial ANN scan

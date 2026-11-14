@@ -256,6 +256,18 @@ def relevance_tier(distance: float) -> str:
 # Standard RRF constant — balances precision vs recall
 RRF_K = 60
 
+# Lexical gate (opt-in ``lexical_gate=True`` on ``search``). The strength of
+# the keyword evidence for a query is the BM25 score of its best FTS5 hit in
+# units of ``ln(N)`` -- roughly "how many rare query terms does the best
+# keyword match cover". Below ``LOW`` the FTS weight collapses to ``MIN``;
+# above ``HIGH`` it is left alone; linear in between. Chosen a priori from
+# the separation measured in experiments/LAB-recuperacion-es.md (vague
+# queries sit around 1.0, keyword-bearing ones around 2.3) and stable under
+# +-0.25 shifts of either bound.
+_LEXICAL_GATE_LOW = 1.0
+_LEXICAL_GATE_HIGH = 2.0
+_LEXICAL_GATE_MIN_FTS_WEIGHT = 0.1
+
 # FTS5 tokenizers a store may be created with. The value is interpolated
 # into DDL, so it is an allowlist rather than free text.
 #   "porter ascii"   historical default: English stemming; non-ASCII
