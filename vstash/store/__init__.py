@@ -50,6 +50,8 @@ from ._common import (
     _deserialize,
     _normalize_tags,
     _serialize,
+    RETIRED_STATUSES,
+    derive_claim_status,
     KNOWN_SCHEMA_VERSIONS,
     RELEVANCE_TIER_HIGH_MAX,
     RELEVANCE_TIER_MEDIUM_MAX,
@@ -296,6 +298,79 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         row = self._conn.execute("SELECT 1 FROM documents WHERE path = ?", [path]).fetchone()
         return row is not None
 
+    @staticmethod
+    def doc_id_for(collection: str, path: str) -> str:
+        """Return the deterministic document id for a (collection, path)."""
+        return hashlib.sha256(f"{collection}:{path}".encode()).hexdigest()[:32]
+
+    def claim_exists(self, doc_id: str) -> bool:
+        """True when a document with this id is stored (whatever its status)."""
+        row = self._conn.execute("SELECT 1 FROM documents WHERE id = ?", [doc_id]).fetchone()
+        return row is not None
+
+    def supersede_claim(
+        self, old_id: str, new_doc_id: str | None = None, *, status: str = "superado"
+    ) -> int:
+        """Retire a claim: replaced by another (``superado``) or found wrong (``refutado``).
+
+        The old row keeps its text (nothing is deleted) and stops being
+        returned by search; a replacing row carries its supersedes field.
+        ``new_doc_id`` is optional: a claim can stop holding without a
+        replacement. Returns the number of rows updated (0 when the id does
+        not exist or the claim was already retired).
+        """
+        if status not in ("superado", "refutado"):
+            raise ValueError(f"status must be 'superado' or 'refutado', got {status!r}")
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._write_lock:
+            # ``IS NOT`` instead of ``!=``: a row written before the claim
+            # schema has NULL status, and ``NULL != 'x'`` is never true, so
+            # such a row could never be retired.
+            cur = self._conn.execute(
+                "UPDATE documents SET status = ?, valid_until = ? "
+                "WHERE id = ? AND status IS NOT 'superado' AND status IS NOT 'refutado'",
+                [status, now_iso, old_id],
+            )
+            self._conn.commit()
+        if cur.rowcount:
+            self._bump_cache_epoch()  # a cached search may still hold the retired claim
+        return cur.rowcount
+
+    def claim_status(self, doc_id: str) -> str | None:
+        """Current status of a document (``None`` if absent or never set)."""
+        row = self._conn.execute("SELECT status FROM documents WHERE id = ?", [doc_id]).fetchone()
+        return row[0] if row is not None else None
+
+    def claim_fields(self, doc_id: str) -> dict | None:
+        """Stored ``status`` / ``source_ref`` / ``valid_from`` / ``valid_until`` of a document."""
+        row = self._conn.execute(
+            "SELECT status, source_ref, valid_from, valid_until FROM documents WHERE id = ?",
+            [doc_id],
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def restore_claim(self, doc_id: str) -> bool:
+        """Bring a superseded / refuted claim back into search.
+
+        The status is re-derived from the claim's layer and source exactly
+        as ``ingest_text`` would (``vigente`` / ``sin-fuente`` / ``relato``)
+        and ``valid_until`` is cleared (retiring overwrote it). Returns
+        ``False`` when the id is absent or the claim is not retired.
+        """
+        with self._write_lock:
+            row = self._conn.execute(
+                "SELECT status, layer, source_ref FROM documents WHERE id = ?", [doc_id]
+            ).fetchone()
+            if row is None or row[0] not in RETIRED_STATUSES:
+                return False
+            self._conn.execute(
+                "UPDATE documents SET status = ?, valid_until = NULL WHERE id = ?",
+                [derive_claim_status(row[1], row[2]), doc_id],
+            )
+            self._conn.commit()
+        self._bump_cache_epoch()
+        return True
+
     def add_document(
         self,
         path: str,
@@ -308,6 +383,13 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         layer: str | None = None,
         tags: str | None = None,
         content_hash: str | None = None,
+        status: str | None = None,
+        source_ref: str | None = None,
+        valid_from: str | None = None,
+        valid_until: str | None = None,
+        supersedes: str | None = None,
+        confidence: float | None = None,
+        retire_id: str | None = None,
     ) -> str:
         """Add a document and its chunks to the store.
 
@@ -326,6 +408,9 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
             content_hash: SHA-256 hex of the raw ingested text, used for
                 Tier-0 write-time dedup (``ingest_text`` sets it; file
                 ingest leaves it None for now).
+            retire_id: Id of a claim this document replaces. It is marked
+                ``superado`` in the SAME transaction as the write, so a crash
+                cannot leave both the old and the new claim live.
 
         Returns:
             The generated document ID (32-char hex hash).
@@ -357,8 +442,31 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                     layer=layer,
                     tags=tags,
                     content_hash=content_hash,
+                    status=status,
+                    source_ref=source_ref,
+                    valid_from=valid_from,
+                    valid_until=valid_until,
+                    supersedes=supersedes,
+                    confidence=confidence,
                     now_iso=datetime.now(timezone.utc).isoformat(),
                 )
+                if retire_id is not None:
+                    # Re-check inside the write lock: another writer may have
+                    # deleted the target or retired this replacement between
+                    # ingest_text's checks and here. Raising rolls back.
+                    if retire_id == doc_id:
+                        raise ValueError("supersedes: a document cannot supersede itself")
+                    if not self.claim_exists(retire_id):
+                        raise ValueError(f"supersedes: target {retire_id!r} no longer exists")
+                    if self.claim_status(doc_id) in RETIRED_STATUSES:
+                        raise ValueError(
+                            "supersedes: the replacing document is retired; restore it first"
+                        )
+                    self._conn.execute(
+                        "UPDATE documents SET status = 'superado', valid_until = ? "
+                        "WHERE id = ? AND status IS NOT 'superado' AND status IS NOT 'refutado'",
+                        [datetime.now(timezone.utc).isoformat(), retire_id],
+                    )
 
                 # Add to snapvec in-memory (persisted after successful commit)
                 if self._snap is not None:
@@ -390,7 +498,13 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         layer: str | None,
         tags: str | None,
         content_hash: str | None,
-        now_iso: str,
+        status: str | None = None,
+        source_ref: str | None = None,
+        valid_from: str | None = None,
+        valid_until: str | None = None,
+        supersedes: str | None = None,
+        confidence: float | None = None,
+        now_iso: str = "",
     ) -> tuple[str, list[int], list[tuple[int, str]]]:
         """Replace-insert one document's rows inside the caller's OPEN
         transaction.
@@ -424,6 +538,25 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
 
         doc_id = hashlib.sha256(f"{collection}:{path}".encode()).hexdigest()[:32]
 
+        # The search filter compares valid_until lexically against a UTC
+        # timestamp, so every writer (not only ingest_text) must store UTC.
+        if valid_from:
+            valid_from = _canonicalize_added_filter(valid_from, label="valid_from")
+        if valid_until:
+            valid_until = _canonicalize_added_filter(valid_until, label="valid_until")
+
+        # Retirement is sticky: a content edit re-inserts the row, and must
+        # not bring a superseded / refuted claim back (only restore_claim
+        # does). The replacement pointer is kept unless the caller sets one.
+        prior = self._conn.execute(
+            "SELECT status, valid_until, supersedes FROM documents WHERE id = ?", [doc_id]
+        ).fetchone()
+        if prior is not None:
+            if prior[0] in RETIRED_STATUSES:
+                status, valid_until = prior[0], prior[1]
+            if supersedes is None:
+                supersedes = prior[2]
+
         # Remove existing version if re-ingesting
         self._delete_by_doc_id(doc_id)
 
@@ -431,8 +564,10 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
             """INSERT INTO documents
                (id, path, title, source_type, collection,
                 project, layer, tags, content_hash,
-                char_count, chunk_count, added_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                char_count, chunk_count, added_at,
+                status, source_ref, valid_from, valid_until,
+                supersedes, confidence)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 doc_id,
                 path,
@@ -446,6 +581,12 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                 sum(len(c) for c in chunks),
                 len(chunks),
                 now_iso,
+                status,
+                source_ref,
+                valid_from,
+                valid_until,
+                supersedes,
+                confidence,
             ],
         )
 
@@ -641,7 +782,8 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                 # the write lock on the DB, so this is the authoritative
                 # matched set for the replace below.
                 existing = self._conn.execute(
-                    "SELECT title, source_type, collection, project, layer, tags "
+                    "SELECT title, source_type, collection, project, layer, tags, "
+                    "status, source_ref, valid_from, valid_until, supersedes, confidence "
                     "FROM documents WHERE path = ?"
                     + (" AND collection = ?" if collection is not None else ""),
                     [path, collection] if collection is not None else [path],
@@ -663,6 +805,14 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                         layer=row["layer"],
                         tags=tags if tags is not None else row["tags"],
                         content_hash=content_hash,
+                        # A content edit keeps the claim's provenance, state
+                        # and validity window.
+                        status=row["status"],
+                        source_ref=row["source_ref"],
+                        valid_from=row["valid_from"],
+                        valid_until=row["valid_until"],
+                        supersedes=row["supersedes"],
+                        confidence=row["confidence"],
                         now_iso=now_iso,
                     )
                     if self._defer_fts:
@@ -1334,6 +1484,7 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         project: str | None = None,
         layer: str | None = None,
         added_after: str | None = None,
+        status: str | list[str] | None = None,
     ) -> list[DocumentInfo]:
         """List all ingested documents.
 
@@ -1342,6 +1493,9 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
             project: If set, filter to this project only.
             layer: If set, filter to this layer only.
             added_after: If set, only return documents added after this ISO timestamp.
+            status: If set, only claims with this status (or any of these).
+                Unlike search, listing does not hide ``superado`` / ``refutado``
+                rows or expired ones: it is how their history is read.
 
         Returns:
             List of DocumentInfo ordered by ingestion date (newest first).
@@ -1354,11 +1508,16 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         if added_after:
             conditions.append("added_at >= ?")
             filter_params.append(_canonicalize_added_filter(added_after, label="added_after"))
+        if status:
+            wanted = [status] if isinstance(status, str) else list(status)
+            conditions.append(f"status IN ({', '.join('?' * len(wanted))})")
+            filter_params.extend(wanted)
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
         rows = self._conn.execute(
-            f"""SELECT path, title, source_type, collection,
+            f"""SELECT id, path, title, source_type, collection,
                        project, layer, tags,
-                       chunk_count, char_count, added_at
+                       chunk_count, char_count, added_at,
+                       status, source_ref, valid_from, valid_until, supersedes
                 FROM documents {where}
                 ORDER BY added_at DESC""",
             filter_params,

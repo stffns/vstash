@@ -74,6 +74,7 @@ class _SearchEngineMixin:
         cache_epoch: int,
         filters: dict | None = None,
         dedup_threshold: float | None = None,
+        include_retired: bool = False,
     ) -> int:
         """Build the search cache key from the full set of query parameters.
 
@@ -121,6 +122,7 @@ class _SearchEngineMixin:
                 # order stays significant, which only costs a cache miss.
                 None if filters is None else json.dumps(filters, sort_keys=True, default=str),
                 dedup_threshold,
+                include_retired,
                 cache_epoch,
             )
         )
@@ -237,6 +239,11 @@ class _SearchEngineMixin:
                 "collection": row["collection"],
                 "tags": row["tags"],
                 "layer": row["layer"],
+                "status": row["status"],
+                "source_ref": row["source_ref"],
+                "valid_from": row["valid_from"],
+                "valid_until": row["valid_until"],
+                "supersedes": row["supersedes"],
             }
             if explain:
                 explain_rrf_vec[chunk_id] = vec_contrib
@@ -266,6 +273,11 @@ class _SearchEngineMixin:
                     "collection": row["collection"],
                     "tags": row["tags"],
                     "layer": row["layer"],
+                    "status": row["status"],
+                    "source_ref": row["source_ref"],
+                    "valid_from": row["valid_from"],
+                    "valid_until": row["valid_until"],
+                    "supersedes": row["supersedes"],
                 }
                 if explain:
                     explain_rrf_fts[chunk_id] = fts_contribution
@@ -359,6 +371,11 @@ class _SearchEngineMixin:
                 collection=r.get("collection"),
                 tags=r.get("tags"),
                 layer=r.get("layer"),
+                status=r.get("status"),
+                source_ref=r.get("source_ref"),
+                valid_from=r.get("valid_from"),
+                valid_until=r.get("valid_until"),
+                supersedes=r.get("supersedes"),
             )
             for r in ranked
         ]
@@ -386,6 +403,7 @@ class _SearchEngineMixin:
         retrieval_mode: Literal["hybrid", "vec_only", "fts_only"] | None = None,
         exact_match: str | None = None,
         exact_match_case_sensitive: bool = False,
+        include_retired: bool = False,
         _tracer: _PipelineTracer | None = None,
     ) -> list[SearchResult]:
         """Hybrid search: vector (semantic) + FTS5 (keyword) combined with RRF.
@@ -509,6 +527,7 @@ class _SearchEngineMixin:
                 cache_epoch=self._cache_epoch,
                 filters=filters,
                 dedup_threshold=dedup_threshold,
+                include_retired=include_retired,
             )
 
         # Per-search miss-analysis tracker (#108).  The tracer is owned
@@ -545,7 +564,17 @@ class _SearchEngineMixin:
                     if _cache_key in self._query_cache:
                         self._query_cache.move_to_end(_cache_key)
                         cached_results, cached_best = self._query_cache[_cache_key]
-                        cached = list(cached_results)
+                        # A cached list can outlive a claim's valid_until.
+                        # Dropping the expired rows would leave empty slots a
+                        # live runner-up should fill (and keep the expired
+                        # winner's distance), so treat it as a miss instead.
+                        _now = datetime.now(timezone.utc).isoformat()
+                        if not include_retired and any(
+                            r.valid_until and r.valid_until <= _now for r in cached_results
+                        ):
+                            del self._query_cache[_cache_key]
+                        else:
+                            cached = list(cached_results)
                 if cached is not None:
                     # Restore the best distance this query produced when it
                     # was cached: without it ``last_best_distance`` (and so
@@ -615,6 +644,7 @@ class _SearchEngineMixin:
                 added_after=added_after,
                 added_before=added_before,
                 filters=filters,
+                include_retired=include_retired,
             )
 
             # --- Vector search ---
@@ -663,45 +693,14 @@ class _SearchEngineMixin:
                 # ``last_best_distance`` and ``relevance_tier`` both
                 # assume (``[0, 2]``), even if an implementation
                 # quirk yields a value slightly outside ``[-1, 1]``.
-                snap_results = self._snap.search(
-                    np.array(query_embedding, dtype=np.float32), k=candidate_pool
+                vec_rows = self._snap_candidates(
+                    query_embedding, candidate_pool, vec_clause, filter_params
                 )
-                snap_ids = [int(r[0]) for r in snap_results]
-                if self._vector_backend == "snapvec":
-                    snap_dists = {
-                        int(r[0]): min(2.0, max(0.0, 1.0 - float(r[1]))) for r in snap_results
-                    }
-                else:
-                    snap_dists = {int(r[0]): min(2.0, max(0.0, float(r[1]))) for r in snap_results}
-
-                if snap_ids:
-                    placeholders = ",".join("?" * len(snap_ids))
-                    # Build filter clause adapted for snapvec (no v.rowid)
-                    snap_filter = vec_clause.replace("v.rowid", "c.id") if vec_clause else ""
-                    rows = self._conn.execute(
-                        f"""
-                        SELECT c.id, c.text, d.title, d.path, c.seq, d.added_at, d.collection, d.tags, d.layer
-                        FROM chunks c
-                        JOIN documents d ON d.id = c.doc_id
-                        WHERE c.id IN ({placeholders})
-                          {snap_filter}
-                        """,
-                        [*snap_ids, *filter_params],
-                    ).fetchall()
-                    # Build dict for fast lookup, attach distance, preserve snap order
-                    row_by_id = {r["id"]: dict(r) for r in rows}
-                    vec_rows = []
-                    for sid in snap_ids:
-                        if sid in row_by_id:
-                            entry = row_by_id[sid]
-                            entry["distance"] = snap_dists.get(sid, 2.0)
-                            vec_rows.append(entry)
-                else:
-                    vec_rows = []
             else:
                 vec_rows = self._conn.execute(
                     f"""
-                    SELECT c.id, c.text, d.title, d.path, c.seq, v.distance, d.added_at, d.collection, d.tags, d.layer
+                    SELECT c.id, c.text, d.title, d.path, c.seq, v.distance, d.added_at, d.collection, d.tags, d.layer,
+                           d.status, d.source_ref, d.valid_from, d.valid_until, d.supersedes
                     FROM vec_chunks v
                     JOIN chunks c ON c.id = v.rowid
                     JOIN documents d ON d.id = c.doc_id
@@ -849,7 +848,8 @@ class _SearchEngineMixin:
                     fts_rows = self._conn.execute(
                         f"""
                         SELECT c.id, c.text, d.title, d.path, c.seq,
-                               rank as fts_rank, d.added_at, d.collection, d.tags, d.layer
+                               rank as fts_rank, d.added_at, d.collection, d.tags, d.layer,
+                               d.status, d.source_ref, d.valid_from, d.valid_until, d.supersedes
                         FROM fts_chunks f
                         JOIN chunks c ON c.id = f.rowid
                         JOIN documents d ON d.id = c.doc_id
@@ -1880,6 +1880,70 @@ class _SearchEngineMixin:
                 params.extend(tree_params)
         return conditions, params
 
+    def _snap_candidates(
+        self,
+        query_embedding,
+        candidate_pool: int,
+        vec_clause: str,
+        filter_params: list,
+    ) -> list[dict]:
+        """Top ``candidate_pool`` snapvec rows that pass the metadata filter.
+
+        Snapvec filters AFTER its own KNN, so rows the filter drops (retired
+        claims, which are usually near-duplicates of their replacement and
+        sit at the top of exactly the queries that matter) would otherwise
+        empty the pool. Ask for ``candidate_pool`` first and double ``k``
+        only while too few rows survive, up to ``max(16 x pool, pool + 1024)``,
+        so a large retired history costs a bounded amount per query instead
+        of the whole index. ID lookups are batched under SQLite's variable limit and the
+        KNN order is preserved.
+
+        The two snapvec backends disagree on their return semantics and
+        this reconciles them to the cosine-distance contract (#289): flat
+        ``snapvec`` returns similarity in ``[-1, 1]`` (needs ``1 - sim``),
+        ``snapvec-ivfpq`` already returns ``1 - sim``. Both are clamped to
+        ``[0, 2]``.
+        """
+        q = np.array(query_embedding, dtype=np.float32)
+        snap_filter = vec_clause.replace("v.rowid", "c.id") if vec_clause else ""
+        total = len(self._snap)
+        # Bounded: a live match ranked below more than ~1000 hidden chunks is
+        # given up rather than scanning the whole index on every query.
+        k_max = min(total, max(candidate_pool * 16, candidate_pool + 1024))
+        k = min(candidate_pool, k_max)
+        while True:
+            snap_results = self._snap.search(q, k=k)
+            snap_ids = [int(r[0]) for r in snap_results]
+            if self._vector_backend == "snapvec":
+                dists = {int(r[0]): min(2.0, max(0.0, 1.0 - float(r[1]))) for r in snap_results}
+            else:
+                dists = {int(r[0]): min(2.0, max(0.0, float(r[1]))) for r in snap_results}
+            row_by_id: dict = {}
+            for i in range(0, len(snap_ids), _SQLITE_PARAM_BATCH):
+                batch = snap_ids[i : i + _SQLITE_PARAM_BATCH]
+                marks = ",".join("?" * len(batch))
+                for r in self._conn.execute(
+                    f"""
+                    SELECT c.id, c.text, d.title, d.path, c.seq, d.added_at, d.collection, d.tags, d.layer,
+                           d.status, d.source_ref, d.valid_from, d.valid_until, d.supersedes
+                    FROM chunks c
+                    JOIN documents d ON d.id = c.doc_id
+                    WHERE c.id IN ({marks})
+                      {snap_filter}
+                    """,
+                    [*batch, *filter_params],
+                ).fetchall():
+                    row_by_id[r["id"]] = dict(r)
+            rows = []
+            for sid in snap_ids:
+                if sid in row_by_id:
+                    entry = row_by_id[sid]
+                    entry["distance"] = dists.get(sid, 2.0)
+                    rows.append(entry)
+            if len(rows) >= candidate_pool or k >= k_max or not snap_ids:
+                return rows[:candidate_pool]
+            k = min(k * 2, k_max)
+
     @staticmethod
     def _build_doc_filter(
         *,
@@ -1890,6 +1954,7 @@ class _SearchEngineMixin:
         added_after: str | None = None,
         added_before: str | None = None,
         filters: dict | None = None,
+        include_retired: bool = False,
     ) -> tuple[str, str, list[str]]:
         """Build SQL filter clauses for document metadata.
 
@@ -1917,6 +1982,21 @@ class _SearchEngineMixin:
             filters=filters,
         )
 
+        # Claims already replaced or refuted are history: never return them
+        # as if they still held. NULL stays allowed for rows written before
+        # the claim schema appeared, so a re-opened old DB still searches.
+        # A claim past its valid_until no longer holds either, whatever its
+        # status says: nothing rewrites the status when the date goes by. The
+        # timestamp is generated here (never caller input), so it is inlined
+        # rather than bound, which keeps one params list valid for both clauses.
+        # ``include_retired`` skips both conditions (history view).
+        now_iso = datetime.now(timezone.utc).isoformat()
+        if not include_retired:
+            conditions_d2 = [
+                *conditions_d2,
+                "(d2.status IS NULL OR d2.status NOT IN ('superado', 'refutado'))",
+                f"(d2.valid_until IS NULL OR d2.valid_until = '' OR d2.valid_until > '{now_iso}')",
+            ]
         if not conditions_d2:
             return "", "", []
 
@@ -1940,5 +2020,11 @@ class _SearchEngineMixin:
             added_before=added_before,
             filters=filters,
         )
+        if not include_retired:
+            conditions_d = [
+                *conditions_d,
+                "(d.status IS NULL OR d.status NOT IN ('superado', 'refutado'))",
+                f"(d.valid_until IS NULL OR d.valid_until = '' OR d.valid_until > '{now_iso}')",
+            ]
         col_clause = "AND " + " AND ".join(conditions_d)
         return vec_clause, col_clause, params

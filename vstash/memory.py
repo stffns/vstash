@@ -301,6 +301,11 @@ class Memory:
         project: object = _UNSET,
         layer: str | None = None,
         tags: str | None = None,
+        status: str | None = None,
+        source_ref: str | None = None,
+        valid_from: str | None = None,
+        valid_until: str | None = None,
+        supersedes: str | None = None,
         chunk_size: int | None = None,
         chunk_overlap: int | None = None,
     ) -> IngestResult:
@@ -344,6 +349,11 @@ class Memory:
             project=proj,
             layer=layer,
             tags=tags,
+            status=status,
+            source_ref=source_ref,
+            valid_from=valid_from,
+            valid_until=valid_until,
+            supersedes=supersedes,
             chunk_size=chunk_size if chunk_size is not None else self._chunk_size,
             chunk_overlap=chunk_overlap if chunk_overlap is not None else self._chunk_overlap,
             quiet=True,
@@ -371,6 +381,7 @@ class Memory:
         exact_match_case_sensitive: bool = False,
         usage_prior: bool | None = None,
         min_relevance: Literal["high", "medium"] | None = None,
+        include_retired: bool = False,
     ) -> SearchResults:
         """Semantic search without LLM inference.
 
@@ -461,6 +472,9 @@ class Memory:
                 off-topic chunks. Tiers are calibrated on BGE-small; not
                 applied with ``retrieval_mode="fts_only"``.
 
+            include_retired: Also return superseded / refuted / expired
+                claims (their ``status`` says which). Default ``False``.
+
         Returns:
             Ranked ``SearchResults`` (a ``list[SearchResult]``) ordered by
             relevance. Its ``event_id`` identifies this search in the usage
@@ -497,6 +511,7 @@ class Memory:
             exact_match_case_sensitive=exact_match_case_sensitive,
             usage_prior=usage_prior,
             min_relevance=min_relevance,
+            include_retired=include_retired,
         )
 
     def mark_used(self, event_id: int, chunk_id: int | list[int]) -> int:
@@ -896,6 +911,59 @@ class Memory:
             report["optimize_fts"] = True
         return report
 
+    def retire(
+        self,
+        source: str,
+        *,
+        refuted: bool = False,
+        collection: object = _UNSET,
+    ) -> bool:
+        """Retire a claim without replacing it: it stops holding from now on.
+
+        The row and its text are kept (use ``remove`` to delete them) but
+        leave search. Use ``remember(..., supersedes=...)`` instead when a
+        new claim takes its place.
+
+        Args:
+            source: The claim's path (``text://<title>``) or its 32-char id.
+            refuted: Mark it ``refutado`` (it was wrong) instead of
+                ``superado`` (it stopped being true).
+            collection: Collection the path lives in; ignored for an id.
+
+        Returns:
+            True if a claim was retired; False if there is no such document
+            or it was already retired.
+        """
+        col = self._collection if collection is _UNSET else collection
+        doc_id = (
+            source
+            if len(source) == 32 and ":" not in source
+            else self._store.doc_id_for(col or "default", source)
+        )
+        return self._store.supersede_claim(doc_id, status="refutado" if refuted else "superado") > 0
+
+    def restore(self, source: str, *, collection: object = _UNSET) -> bool:
+        """Undo :meth:`retire` or a ``supersedes``: the claim is searchable again.
+
+        Its status is re-derived from its layer and source (``vigente`` /
+        ``sin-fuente`` / ``relato``) and ``valid_until`` is cleared. Deleting
+        the replacing claim does NOT restore the old one by itself.
+
+        Args:
+            source: The claim's path (``text://<title>``) or its 32-char id.
+            collection: Collection the path lives in; ignored for an id.
+
+        Returns:
+            True if a retired claim was restored.
+        """
+        col = self._collection if collection is _UNSET else collection
+        doc_id = (
+            source
+            if len(source) == 32 and ":" not in source
+            else self._store.doc_id_for(col or "default", source)
+        )
+        return self._store.restore_claim(doc_id)
+
     def remove(self, source: str | Path) -> bool:
         """Remove a document from memory.
 
@@ -1113,6 +1181,7 @@ class Memory:
         collection: object = _UNSET,
         project: object = _UNSET,
         layer: str | None = None,
+        status: str | list[str] | None = None,
     ) -> list[DocumentInfo]:
         """List ingested documents.
 
@@ -1125,14 +1194,20 @@ class Memory:
             collection: Filter by collection. Pass None for no filter.
             project: Filter by project. Pass None for no filter.
             layer: Filter by layer tag.
+            status: Only claims with this status (or any of these), e.g.
+                ``"vigente"`` or ``["vigente", "sin-fuente"]``. Listing does
+                not hide retired or expired claims the way search does.
 
         Returns:
             List of DocumentInfo ordered by ingestion date (newest first).
+            Each carries its claim fields (``id``, ``status``, ``source_ref``,
+            ``valid_from``, ``valid_until``, ``supersedes``).
         """
         return self._store.list_documents(
             collection=self._resolve_collection(collection),
             project=self._resolve_project(project),
             layer=layer,
+            status=status,
         )
 
     def stats(self) -> StoreStats:

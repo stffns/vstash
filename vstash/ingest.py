@@ -32,6 +32,7 @@ from typing import TypedDict
 
 from .models import IngestResult
 from .store import VstashStore
+from .store._common import _canonicalize_added_filter
 
 
 class _PreparedDoc(TypedDict):
@@ -667,6 +668,73 @@ def _generate_title(text: str) -> str:
     return f"{slug}-{ts}"
 
 
+from .store._common import (  # noqa: E402  (shared with restore_claim)
+    CLAIM_LAYERS as CLAIM_LAYERS,
+)
+from .store._common import RETIRED_STATUSES, derive_claim_status  # noqa: E402
+from .store._common import VALID_CLAIM_STATUSES as VALID_CLAIM_STATUSES  # noqa: E402
+
+
+def _claim_fields_change(stored: dict | None, **requested: str | None) -> bool:
+    """Whether a re-remember asks for claim metadata the stored row lacks.
+
+    The Tier-0 dedup skips identical text; it must not also swallow a new
+    source, status or validity window sent with that text. ``None`` means
+    "not specified" and never forces a rewrite.
+    """
+    if not isinstance(stored, dict):
+        return False
+    for key, value in requested.items():
+        if value is None:
+            continue
+        if key in ("valid_from", "valid_until") and value:
+            value = _canonicalize_added_filter(value, label=key)
+        if stored.get(key) != value:
+            return True
+    return False
+
+
+def _resolve_supersedes(
+    store: VstashStore, collection: str, source_path: str, supersedes: str | None
+) -> tuple[str | None, bool | None]:
+    """Validate a ``supersedes=`` target; return ``(target_id, target_was_live)``.
+
+    Runs before any write (and before the Tier-0 dedup short-circuit), so a
+    bad target never leaves a half-done write behind.
+
+    Raises:
+        ValueError: unknown target, the document itself, or a new document
+            that is itself retired (restore it first).
+    """
+    if not supersedes:
+        return None, None
+    target = (
+        supersedes
+        if len(supersedes) == 32 and ":" not in supersedes
+        else store.doc_id_for(collection, supersedes)
+    )
+    # A path hashes to an id whether or not anything is stored under it,
+    # so a typo (or a bare title without its ``text://`` prefix) used to
+    # write the new claim and leave the old one standing, with no error.
+    if not store.claim_exists(target):
+        raise ValueError(
+            f"supersedes: no document {supersedes!r} in collection {collection!r}"
+            " (pass its full path, e.g. 'text://<title>', or its 32-char id)"
+        )
+    # A claim cannot replace itself (it would retire what it just wrote), and
+    # a retired claim cannot replace anything -- e.g. A re-remembered
+    # superseding B after B replaced A would leave both retired.
+    new_id = store.doc_id_for(collection, source_path)
+    if target == new_id:
+        raise ValueError(f"supersedes: {supersedes!r} is this document itself")
+    if store.claim_status(new_id) in RETIRED_STATUSES:
+        raise ValueError(
+            f"supersedes: {source_path!r} is itself retired "
+            f"({store.claim_status(new_id)}); restore it first"
+        )
+    return target, store.claim_status(target) not in RETIRED_STATUSES
+
+
 def ingest_text(
     text: str,
     cfg: VstashConfig,
@@ -677,6 +745,11 @@ def ingest_text(
     project: str | None = None,
     layer: str | None = None,
     tags: str | None = None,
+    status: str | None = None,
+    source_ref: str | None = None,
+    valid_from: str | None = None,
+    valid_until: str | None = None,
+    supersedes: str | None = None,
     chunk_size: int | None = None,
     chunk_overlap: int | None = None,
     quiet: bool = False,
@@ -724,18 +797,39 @@ def ingest_text(
     # copy short-circuits: changed text replaces as before, a legacy
     # row without a stored hash is never treated as identical, and a
     # partial copy falls through so the re-ingest heals it.
+    superseded_id, target_live = _resolve_supersedes(store, collection, source_path, supersedes)
+    # Status already stored under this path: a retired claim stays retired
+    # on re-ingest (sticky), so that is what the caller must be told.
+    prior_status = store.claim_status(store.doc_id_for(collection, source_path))
+    if prior_status not in VALID_CLAIM_STATUSES:
+        prior_status = None
+
     content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
     existing_hash = store.get_document_content_hash(source_path, collection=collection)
     if (
         existing_hash == content_hash
         and store.doc_completeness(source_path, collection=collection) == "complete"
+        and not _claim_fields_change(
+            store.claim_fields(store.doc_id_for(collection, source_path)),
+            status=status,
+            source_ref=source_ref,
+            valid_from=valid_from,
+            valid_until=valid_until,
+        )
     ):
+        # Nothing to re-embed, but a supersedes= on an identical re-remember
+        # must still retire its target.
+        existing_id = store.doc_id_for(collection, source_path)
+        if superseded_id:
+            store.supersede_claim(superseded_id, existing_id)
         return IngestResult(
             status="skipped",
             source=source_path,
             title=title,
             chars=char_count,
             elapsed_s=round(time.time() - start_time, 2),
+            claim_status=prior_status,
+            superseded=target_live if superseded_id else None,
         )
 
     # Extract frontmatter if present
@@ -760,6 +854,22 @@ def ingest_text(
         elif not isinstance(fm_tags_raw, (dict,)):
             fm_tags = str(fm_tags_raw)
     text = _strip_frontmatter(text)
+
+    # Claim gate (memoria confiable, 2026-11-10). A fact or a decision is
+    # knowledge only when it says where it comes from; without a source it
+    # is still stored, but as 'sin-fuente', so search can tell it apart from
+    # a sourced claim instead of presenting both as equals. A charla is
+    # narrative ('relato'): never citable as a fact.
+    if status is not None and status not in VALID_CLAIM_STATUSES:
+        raise ValueError(f"status must be one of {sorted(VALID_CLAIM_STATUSES)}, got {status!r}")
+    claim_status = derive_claim_status(fm_layer, source_ref, status)
+
+    # valid_from / valid_until are compared lexically against UTC timestamps,
+    # like added_at: canonicalise them the same way, and reject non-ISO input.
+    if valid_from:
+        valid_from = _canonicalize_added_filter(valid_from, label="valid_from")
+    if valid_until:
+        valid_until = _canonicalize_added_filter(valid_until, label="valid_until")
 
     # Chunk
     cs = chunk_size if chunk_size is not None else cfg.chunking.size
@@ -789,7 +899,17 @@ def ingest_text(
         layer=fm_layer,
         tags=fm_tags,
         content_hash=content_hash,
+        status=claim_status,
+        source_ref=source_ref,
+        valid_from=valid_from,
+        valid_until=valid_until,
+        supersedes=superseded_id,
+        retire_id=superseded_id,
     )
+
+    # The old claim was retired inside the write's own transaction; it
+    # counts as superseded by THIS write only if it was still live before.
+    superseded: bool | None = target_live if superseded_id else None
 
     elapsed = round(time.time() - start_time, 2)
 
@@ -801,6 +921,10 @@ def ingest_text(
         chunks=len(chunks),
         chars=char_count,
         elapsed_s=elapsed,
+        # The stored status, not the derived one: a re-ingest of a retired
+        # claim keeps it retired (sticky), and the caller must see that.
+        claim_status=prior_status if prior_status in RETIRED_STATUSES else claim_status,
+        superseded=superseded,
     )
 
 
@@ -1320,7 +1444,9 @@ def _embed_with_progress(
     """
     BATCH_SIZE = 64
 
-    if quiet:
+    # Off a terminal (a service log, a pipe) the bar is one garbage line per
+    # write: only draw it for a person watching.
+    if quiet or not console.is_terminal:
         all_embeddings: list[list[float]] = []
         for i in range(0, len(chunks), BATCH_SIZE):
             all_embeddings.extend(embed_texts(chunks[i : i + BATCH_SIZE], model_name))
