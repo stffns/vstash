@@ -401,7 +401,7 @@ class _SearchEngineMixin:
         added_before: str | None = None,
         tags: str | list[str] | None = None,
         filters: dict | None = None,
-        mmr_lambda: float = 0.5,
+        mmr_lambda: float | None = 0.5,
         dedup_threshold: float | None = None,
         retrieval_mode: Literal["hybrid", "vec_only", "fts_only"] | None = None,
         exact_match: str | None = None,
@@ -435,6 +435,16 @@ class _SearchEngineMixin:
             collection: If set, restrict search to documents in this collection.
             project: If set, restrict search to documents with this project tag.
             layer: If set, restrict search to documents with this layer tag.
+            mmr_lambda: Intra-document diversity (default ``0.5``). A chunk
+                is penalised by its similarity to chunks of the *same
+                document* already selected, so near-identical siblings do
+                not fill the list. Note the two ends: ``1.0`` is **not**
+                "no dedup" -- it is the strictest setting, a hard cap of
+                one chunk per document. Pass ``None`` to switch the
+                intra-document dedup off entirely and let every chunk
+                compete on score; that is what a caller wants when a
+                reranker (or its own context builder) sits behind the
+                search and should see all candidate chunks, similar or not.
             dedup_threshold: Opt-in cross-document near-duplicate collapse.
                 ``None`` (default) leaves the pipeline untouched. When set,
                 a chunk is dropped if its cosine similarity to an already
@@ -1139,7 +1149,13 @@ class _SearchEngineMixin:
             # tracing, run it untruncated so the two can be told apart: the
             # greedy selection is prefix-stable, so the first ``top_k`` picks
             # are exactly what the truncated call returns.
-            if track_target is not None:
+            if mmr_lambda is None:
+                # Caller opted out of intra-document dedup altogether: every
+                # chunk competes on score, siblings included. Only the cut
+                # to ``top_k`` remains (applied below when tracing).
+                if track_target is None:
+                    ranked = ranked[:top_k]
+            elif track_target is not None:
                 ranked = self._mmr_dedup(
                     ranked, max(top_k, len(ranked)), mmr_lambda=mmr_lambda, _explain=explain
                 )
@@ -1175,8 +1191,9 @@ class _SearchEngineMixin:
                             f"Current mmr_lambda={mmr_lambda:.2f}."
                         ),
                         counterfactual=(
-                            f"Try a higher mmr_lambda (>{mmr_lambda:.2f}) for less "
-                            "aggressive dedup, or mmr_lambda=1.0 to disable MMR entirely."
+                            f"Try a higher mmr_lambda (>{mmr_lambda:.2f}, below 1.0) for a "
+                            "weaker penalty, or mmr_lambda=None to switch intra-document "
+                            "dedup off (1.0 is a hard one-chunk-per-document cap)."
                         ),
                     )
                 elif pre_mmr_rank_of_target is not None and target_final_rank is None:
@@ -1191,8 +1208,9 @@ class _SearchEngineMixin:
                             f"Current mmr_lambda={mmr_lambda:.2f}."
                         ),
                         counterfactual=(
-                            f"Try a higher mmr_lambda (>{mmr_lambda:.2f}) for less "
-                            "aggressive dedup, or mmr_lambda=1.0 to disable MMR entirely."
+                            f"Try a higher mmr_lambda (>{mmr_lambda:.2f}, below 1.0) for a "
+                            "weaker penalty, or mmr_lambda=None to switch intra-document "
+                            "dedup off (1.0 is a hard one-chunk-per-document cap)."
                         ),
                     )
                 elif target_final_rank is not None:

@@ -441,6 +441,20 @@ CONFIGS["R50"] = {
 }
 CONFIGS["R1"] = {"fabrica": True, "buscar": {"distance_cutoff": 2.0, "lexical_gate": True}}
 CONFIGS["R50-100"] = {**CONFIGS["R50"], "top_k": 100}
+# Experimento 10: mecanismos de después de la fusión.
+for _l in (0.3, 0.7, 0.9, 0.99, 1.0, None):
+    _e = "sin" if _l is None else f"{_l:g}"
+    CONFIGS[f"defecto/mmr-{_e}"] = {"buscar": {"mmr_lambda": _l}}
+    CONFIGS[f"R50/mmr-{_e}"] = {
+        **CONFIGS["R50"],
+        "buscar": {**CONFIGS["R50"]["buscar"], "mmr_lambda": _l},
+    }
+for _d in (0.98, 0.95, 0.92, 0.9, 0.85, 0.8):
+    CONFIGS[f"defecto/dedup-{_d:g}"] = {"buscar": {"dedup_threshold": _d}}
+    CONFIGS[f"R50/dedup-{_d:g}"] = {
+        **CONFIGS["R50"],
+        "buscar": {**CONFIGS["R50"]["buscar"], "dedup_threshold": _d},
+    }
 # Experimento 9: la misma R50 sobre otros índices de palabras.
 _U61 = {"fts_tokenizer": "porter unicode61 remove_diacritics 2"}
 CONFIGS["R50@trigramas"] = {
@@ -520,6 +534,8 @@ class Banco:
     buenas: list[dict[int, int]]  # por consulta: índice de documento -> ganancia
     grupos: np.ndarray  # racimo de cada consulta para el remuestreo
     persistir = False
+    documento: list | None = None  # si no es None: a qué documento va cada texto (trozos)
+    vectores_de: str | None = None  # banco cuyos vectores guardados se reutilizan
 
 
 def _notas(nombre: str, archivo: str) -> Banco:
@@ -622,6 +638,26 @@ def _oido(nombre: str, origen: Callable[[], Banco]) -> Banco:
     return b
 
 
+def _por_documento(nombre: str, origen: Callable[[], Banco]) -> Banco:
+    """El mismo banco con cada asunto como UN documento de ocho trozos: la nota buena es un
+    trozo y sus siete hermanas, muy parecidas, están en el mismo documento."""
+    b = origen()
+    b.vectores_de, b.nombre = b.nombre, nombre
+    b.documento = [int(g) for g in b.grupos]
+    return b
+
+
+def _miracl_doc() -> Banco:
+    """MIRACL con los pasajes agrupados por artículo de Wikipedia (el id es «artículo#n»):
+    91.583 documentos, 20.772 con más de un trozo. Control público con trozos de verdad."""
+    b = _miracl()
+    corpus = json.loads((ROTTEN_LAB / "comparar" / "miracl" / "corpus.json").read_text())
+    b.documento = [d["id"].split("#")[0] for d in corpus]
+    b.vectores_de = "miracl"
+    b.nombre = "miracl-doc"
+    return b
+
+
 def _miracl() -> Banco:
     aqui = ROTTEN_LAB / "comparar" / "miracl"
     corpus = json.loads((aqui / "corpus.json").read_text())
@@ -669,6 +705,13 @@ BANCOS: dict[str, Callable[[], Banco]] = {
     "oido-siempre": lambda: _oido("oido-siempre", BANCOS["siempre"]),
     "oido-nombrada": lambda: _oido("oido-nombrada", BANCOS["final-nombrada"]),
     "oido-media": lambda: _oido("oido-media", BANCOS["final-media"]),
+    "siempre-doc": lambda: _por_documento("siempre-doc", BANCOS["siempre"]),
+    "vagas-doc": lambda: _por_documento("vagas-doc", BANCOS["vagas"]),
+    **{
+        f"final-{c}-doc": (lambda c=c: _por_documento(f"final-{c}-doc", BANCOS[f"final-{c}"]))
+        for c in ("nombrada", "media", "vaga")
+    },
+    "miracl-doc": _miracl_doc,
     "miracl": _miracl,
     "scifact": lambda: _beir("scifact"),
     # Segundo control en inglés: consultas de dos o tres palabras, donde la compuerta
@@ -687,7 +730,7 @@ def _vectores(b: Banco, que: str) -> np.ndarray:
     CACHE.mkdir(parents=True, exist_ok=True)
     textos = b.docs if que == "docs" else b.consultas
     huella = hashlib.sha1(("\x00".join(textos) + b.modelo).encode()).hexdigest()[:10]
-    ruta = CACHE / f"vec_{b.nombre}_{que}_{huella}.npy"
+    ruta = CACHE / f"vec_{b.vectores_de or b.nombre}_{que}_{huella}.npy"
     if ruta.exists():
         return np.load(ruta, mmap_mode="r")
     empieza = time.perf_counter()
@@ -716,10 +759,24 @@ def indice(b: Banco, almacen_kw: dict, texto: str | None = None) -> VstashStore:
     clave = hashlib.sha1(
         json.dumps([almacen_kw, texto if de_doc else None], sort_keys=True).encode()
     ).hexdigest()[:8]
+    if b.documento is None:
+        lotes = [[j] for j in range(len(b.docs))]
+    else:  # varios trozos por documento, en el orden en que vienen
+        por_doc: dict = {}
+        for j, d in enumerate(b.documento):
+            por_doc.setdefault(d, []).append(j)
+        lotes = list(por_doc.values())
+    # (documento, posición del trozo) -> texto original; el documento se llama como su
+    # primer trozo.
+    mapa = {(trozos[0], n): j for trozos in lotes for n, j in enumerate(trozos)}
     if b.persistir:
         ruta = CACHE / f"idx_{b.nombre}_{clave}.db"
         if ruta.exists():
-            return VstashStore(str(ruta), embedding_dim=get_embedding_dim(b.modelo), **almacen_kw)
+            almacen = VstashStore(
+                str(ruta), embedding_dim=get_embedding_dim(b.modelo), **almacen_kw
+            )
+            almacen._lab_mapa = mapa
+            return almacen
     else:
         carpeta = tempfile.TemporaryDirectory()
         _carpetas.append(carpeta)
@@ -730,17 +787,18 @@ def indice(b: Banco, almacen_kw: dict, texto: str | None = None) -> VstashStore:
         resto.unlink()
     almacen = VstashStore(str(parcial), embedding_dim=v.shape[1], **almacen_kw)
     empieza = time.perf_counter()
-    for i in range(0, len(b.docs), 5000):
+    textos = [de_doc(t) if de_doc else t for t in b.docs]
+    for i in range(0, len(lotes), 5000):
         almacen.add_documents_batch(
             [
                 {
-                    "path": f"/doc/{j}",
+                    "path": f"/doc/{trozos[0]}",
                     "title": "",
-                    "chunks": [de_doc(b.docs[j]) if de_doc else b.docs[j]],
-                    "embeddings": [v[j].tolist()],
+                    "chunks": [textos[j] for j in trozos],
+                    "embeddings": [v[j].tolist() for j in trozos],
                     "source_type": "text",
                 }
-                for j in range(i, min(i + 5000, len(b.docs)))
+                for trozos in lotes[i : i + 5000]
             ]
         )
     if b.persistir:
@@ -748,6 +806,7 @@ def indice(b: Banco, almacen_kw: dict, texto: str | None = None) -> VstashStore:
         parcial.rename(ruta)
         almacen = VstashStore(str(ruta), embedding_dim=v.shape[1], **almacen_kw)
         print(f"  {b.nombre}: índice {clave} montado en {time.perf_counter() - empieza:.0f} s")
+    almacen._lab_mapa = mapa
     return almacen
 
 
@@ -781,7 +840,8 @@ def buscar(almacen: VstashStore, cfg: dict, vector: list[float], consulta: str, 
     if "plan" in cfg:
         rutas = PLANES[cfg["plan"]](almacen, vector, consulta, k, **kw)
     else:
-        rutas = [r.path for r in almacen.search(vector, consulta, top_k=k, **kw)]
+        dados = almacen.search(vector, consulta, top_k=k, **kw)
+        return [almacen._lab_mapa[(int(r.path.rsplit("/", 1)[1]), r.chunk)] for r in dados]
     return [int(p.rsplit("/", 1)[1]) for p in rutas]
 
 
@@ -871,6 +931,22 @@ COLUMNAS: dict[str, list[tuple[str, Callable]]] = {
         f"oido-{c}": [("primera", _en(1)), ("en 5", _en(5)), ("en 20", _en(20)), ("en 50", _en(50))]
         for c in ("siempre", "nombrada", "media")
     },
+    **{
+        b: [("primera", _en(1)), ("en 5", _en(5)), ("en 20", _en(20)), ("en 50", _en(50))]
+        for b in (
+            "siempre-doc",
+            "vagas-doc",
+            "final-nombrada-doc",
+            "final-media-doc",
+            "final-vaga-doc",
+        )
+    },
+    "miracl-doc": [
+        ("primera", _en(1)),
+        ("en 3", _en(3)),
+        ("en 20", _en(20)),
+        ("NDCG@10", lambda r: r["ndcg"]),
+    ],
     "miracl": [
         ("primera", _en(1)),
         ("en 3", _en(3)),

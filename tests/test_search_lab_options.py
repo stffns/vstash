@@ -373,3 +373,61 @@ class TestAdaptersForwardLabOptions:
             assert seen["drop_stopwords"] is False
             assert seen["min_vec_keep"] == 0
             assert "distance_cutoff" not in seen  # store default untouched
+
+
+# ------------------------------------------------------------------ #
+# mmr_lambda=None: no intra-document dedup                             #
+# ------------------------------------------------------------------ #
+
+
+class TestNoIntraDocumentDedup:
+    @pytest.fixture
+    def sibling_store(self, tmp_db_path: str):
+        """One document of four near-identical chunks plus two other documents."""
+        store = _store(tmp_db_path, cache=CacheConfig(query_cache_size=8))
+        store.add_document(
+            path="/asunto",
+            title="asunto",
+            chunks=[f"acta numero{i}" for i in range(4)],
+            embeddings=[_unit(0.01 * i) for i in range(4)],
+        )
+        _add(store, "/otro1", "otra cosa", _unit(0.3))
+        _add(store, "/otro2", "otra mas", _unit(0.4))
+        yield store
+        store.close()
+
+    KW = {"top_k": 4, "retrieval_mode": "vec_only", "distance_cutoff": 500.0}
+
+    def test_one_is_a_hard_cap_not_off(self, sibling_store: VstashStore) -> None:
+        """``mmr_lambda=1.0`` keeps a single chunk per document."""
+        hits = sibling_store.search(_unit(0.0), "zzz", mmr_lambda=1.0, **self.KW)
+        assert [h.path for h in hits] == ["/asunto", "/otro1", "/otro2"]
+
+    def test_none_lets_every_sibling_compete_on_score(self, sibling_store: VstashStore) -> None:
+        hits = sibling_store.search(_unit(0.0), "zzz", mmr_lambda=None, **self.KW)
+        assert [(h.path, h.chunk) for h in hits] == [("/asunto", i) for i in range(4)]
+
+    def test_default_pushes_siblings_out(self, sibling_store: VstashStore) -> None:
+        """The behaviour the option exists to opt out of: with the default
+        ``0.5`` the fourth-closest chunk loses its place to another document."""
+        hits = sibling_store.search(_unit(0.0), "zzz", **self.KW)
+        assert ("/asunto", 3) not in {(h.path, h.chunk) for h in hits}
+        assert "/otro1" in {h.path for h in hits}
+
+    def test_none_does_not_share_a_cache_slot(self, sibling_store: VstashStore) -> None:
+        a = sibling_store.search(_unit(0.0), "zzz", **self.KW)
+        b = sibling_store.search(_unit(0.0), "zzz", mmr_lambda=None, **self.KW)
+        assert [h.chunk_id for h in a] != [h.chunk_id for h in b]
+
+    def test_miss_analysis_without_dedup_never_blames_mmr(self, sibling_store: VstashStore) -> None:
+        last = sibling_store._conn.execute(
+            "SELECT id FROM chunks WHERE text = 'acta numero3'"
+        ).fetchone()[0]
+        kw = {"query_embedding": _unit(0.0), "query_text": "zzz", "expected_chunk_id": last}
+        opts = {"retrieval_mode": "vec_only", "distance_cutoff": 500.0}
+        blamed = sibling_store.miss_analysis(top_k=3, search_options=opts, **kw)
+        assert blamed.dropped_at == "mmr_dedup"
+        free = sibling_store.miss_analysis(
+            top_k=3, search_options={**opts, "mmr_lambda": None}, **kw
+        )
+        assert free.dropped_at == "top_k_cutoff"

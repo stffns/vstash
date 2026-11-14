@@ -362,7 +362,7 @@ class Memory:
         added_before: str | None = None,
         tags: str | list[str] | None = None,
         filters: dict | None = None,
-        mmr_lambda: float = 0.5,
+        mmr_lambda: float | None = 0.5,
         dedup_threshold: float | None = None,
         vec_weight: float | None = None,
         fts_weight: float | None = None,

@@ -87,7 +87,7 @@ def search_with_embedding(
     added_before: str | None = None,
     tags: str | list[str] | None = None,
     filters: dict | None = None,
-    mmr_lambda: float = 0.5,
+    mmr_lambda: float | None = 0.5,
     dedup_threshold: float | None = None,
     vec_weight: float | None = None,
     fts_weight: float | None = None,
@@ -132,7 +132,8 @@ def search_with_embedding(
             (``"alpha,beta"``) or a list (``["alpha", "beta"]``).
             Comma-anchored LIKE match so ``alpha`` does not false-match
             ``alphabet``.
-        mmr_lambda: MMR diversity coefficient (0.0 to 1.0).
+        mmr_lambda: MMR diversity coefficient (0.0 to 1.0). ``1.0`` is a hard
+            one-chunk-per-document cap; ``None`` disables intra-document dedup.
         dedup_threshold: Opt-in cross-document near-duplicate collapse.
             ``None`` (default) leaves ranking untouched. When set, a chunk
             is dropped if its cosine similarity to an already kept,
