@@ -70,7 +70,8 @@ class TestStickyRetirement:
     def test_reingest_with_new_text_stays_retired(self, store, cfg) -> None:
         _remember(store, cfg, "We use bge small.", "v1")
         _remember(store, cfg, "We moved to jina nano.", "v2", supersedes="text://v1")
-        _remember(store, cfg, "We use bge small (corrected text).", "v1")
+        res = _remember(store, cfg, "We use bge small (corrected text).", "v1")
+        assert res.claim_status == "superado"  # what is stored, not what was derived
         assert "text://v1" not in _paths(store)
         row = store._conn.execute(
             "SELECT status FROM documents WHERE path = 'text://v1'"
@@ -113,6 +114,23 @@ class TestStickyRetirement:
                 assert "text://v1" not in [r.path for r in mem.search("memo")]
             finally:
                 mem.close()
+
+
+@requires_sqlite_vec
+def test_identical_reremember_still_supersedes(store, cfg) -> None:
+    _remember(store, cfg, "We use bge small.", "v1")
+    _remember(store, cfg, "We moved to jina nano.", "v2")
+    res = _remember(store, cfg, "We moved to jina nano.", "v2", supersedes="text://v1")
+    assert res.status == "skipped"
+    assert res.superseded is True
+    assert "text://v1" not in _paths(store)
+
+
+@requires_sqlite_vec
+def test_identical_reremember_validates_target(store, cfg) -> None:
+    _remember(store, cfg, "We moved to jina nano.", "v2")
+    with pytest.raises(ValueError, match="no document"):
+        _remember(store, cfg, "We moved to jina nano.", "v2", supersedes="text://nope")
 
 
 @requires_sqlite_vec
