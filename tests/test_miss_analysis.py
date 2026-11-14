@@ -453,3 +453,20 @@ class TestBelowTopKIsNotMmr:
             top_k=2,
         )
         assert analysis.dropped_at == "mmr_dedup"
+
+
+class TestSearchOptions:
+    def test_trace_follows_the_options_the_caller_searches_with(self, sample_store: VstashStore):
+        """The default pipeline drops the far note at the distance cutoff; the
+        same query with a relaxed cutoff does not, and the trace must say so."""
+        dim = sample_store.embedding_dim
+        _add_doc(sample_store, "/cerca.md", "alfa", _unit(dim, 0.1))
+        _add_doc(sample_store, "/lejos.md", "beta", _unit(dim, 0.9))
+        kw = {"query_embedding": _unit(dim, 0.0), "query_text": "zzz", "expected_path": "/lejos.md"}
+
+        default = sample_store.miss_analysis(**kw)
+        assert default.dropped_at == "distance_cutoff"
+
+        relaxed = sample_store.miss_analysis(**kw, search_options={"distance_cutoff": 500.0})
+        assert relaxed.appeared_in_results is True
+        assert relaxed.dropped_at is None

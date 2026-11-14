@@ -1280,6 +1280,7 @@ class _SearchEngineMixin:
         collection: str | None = None,
         project: str | None = None,
         layer: str | None = None,
+        search_options: dict | None = None,
     ) -> MissAnalysis:
         """Diagnose why an expected document did not appear in search results.
 
@@ -1298,6 +1299,10 @@ class _SearchEngineMixin:
                 a chunk id from a previous search.
             top_k: Number of results to evaluate (same as ``search()``).
             collection/project/layer: Same metadata filters as ``search()``.
+            search_options: Extra keyword arguments forwarded to ``search()``
+                (``distance_cutoff``, ``adaptive_rrf``, ``lexical_gate``,
+                ``retrieval_mode``...), so the trace describes the call the
+                caller actually makes instead of the default pipeline.
 
         Returns:
             ``MissAnalysis`` with stage verdicts, actual top-k, and
@@ -1432,6 +1437,7 @@ class _SearchEngineMixin:
             project=project,
             layer=layer,
             _tracer=tracer,
+            **(search_options or {}),
         )
 
         # Determine if the expected doc appeared in results
