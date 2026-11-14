@@ -360,8 +360,13 @@ class TestAdaptersForwardLabOptions:
                 drop_stopwords=True,
                 min_vec_keep=3,
                 distance_cutoff=2.0,
+                mmr_lambda=None,
+                vec_weight=0.6,
+                fts_weight=0.4,
             )
             assert hits
+            assert seen["mmr_lambda"] is None
+            assert (seen["vec_weight"], seen["fts_weight"]) == (0.6, 0.4)
             assert seen["lexical_gate"] is True
             assert seen["drop_stopwords"] is True
             assert seen["min_vec_keep"] == 3

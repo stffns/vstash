@@ -182,7 +182,10 @@ def _anadido(clase: str) -> dict[str, str]:
             if not ruta.exists():
                 continue
             notas = [f["nota"] for f in json.loads((ROTTEN_LAB / archivo).read_text())]
-            for nota, dado in zip(notas, json.loads(ruta.read_text())):
+            dados = json.loads(ruta.read_text())
+            if len(dados) != len(notas):  # pasada a medias: no vale
+                continue
+            for nota, dado in zip(notas, dados):
                 if clase == "terminos":
                     extra = dado
                 elif clase == "asunto":
@@ -823,7 +826,10 @@ def buscar(almacen: VstashStore, cfg: dict, vector: list[float], consulta: str, 
         "cobertura", (0.4, 0.6)
     )
     _motor._LEXICAL_GATE_MIN_FTS_WEIGHT = cfg.get("suelo_palabras", _SUELO_PALABRAS)
-    _motor._LEXICAL_GATE_CLOSED_FTS_WEIGHT = cfg.get("cerrada", _CERRADA)
+    # Las configuraciones históricas (compuerta gradual) cerraban a 0,1; las de todo o nada
+    # y las de fábrica cierran a 0, que es lo que queda en vstash.
+    de_hoy = cfg.get("fabrica") or "fuerza" in cfg
+    _motor._LEXICAL_GATE_CLOSED_FTS_WEIGHT = cfg.get("cerrada", _CERRADA if de_hoy else 0.1)
     _motor._LEXICAL_GATE_LOW, _motor._LEXICAL_GATE_HIGH = cfg.get("fuerza", (1.0, 2.0))
     if cfg.get("fabrica"):  # la compuerta tal como queda en vstash, sin parchear nada
         (
