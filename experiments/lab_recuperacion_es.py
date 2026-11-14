@@ -136,12 +136,42 @@ def _quitar_vacias(t: str) -> str:
     return " ".join(quedan) if quedan else t
 
 
+_FON = [
+    (r"h", ""), (r"v", "b"), (r"w", "u"), (r"z", "s"), (r"c(?=[ei])", "s"), (r"qu", "k"),
+    (r"c", "k"), (r"ll", "y"), (r"g(?=[ei])", "j"), (r"x", "s"), (r"ñ", "ni"), (r"ph", "f"),
+    (r"(.)\1+", r"\1"),
+]  # fmt: skip
+
+
+def _clave_fonetica(palabra: str) -> str:
+    """Clave «tal como suena» en español: letras que suenan igual se igualan, la h y las
+    letras dobles desaparecen y se pierde la consonante final débil (r, s, d, z)."""
+    import re
+
+    w = _sin_acentos(palabra.lower())
+    for patron, cambio in _FON:
+        w = re.sub(patron, cambio, w)
+    return w[:-1] if len(w) > 3 and w[-1] in "rsdz" else w
+
+
+def _fonetica(t: str) -> str:
+    return " ".join(_clave_fonetica(w) for w in _palabras(t))
+
+
+def _fonetica_mas(t: str) -> str:
+    """El texto tal cual y, detrás, sus claves fonéticas con un prefijo que las separa del
+    vocabulario normal: una coincidencia exacta sigue contando y la fonética se suma."""
+    return t + " " + " ".join("fx" + _clave_fonetica(w) for w in _palabras(t) if len(w) > 3)
+
+
 # nombre -> (transformación del texto indexado o None, transformación de la consulta).
 # Los vectores salen siempre del texto original: solo cambia lo que ve FTS5.
 TEXTOS: dict[str, tuple[Callable | None, Callable]] = {
     "snowball": (_raices, _raices),
     "vacias": (None, _quitar_vacias),
     "snowball+vacias": (_raices, lambda t: _raices(_quitar_vacias(t))),
+    "fonetica": (_fonetica, _fonetica),
+    "fonetica+": (_fonetica_mas, _fonetica_mas),
 }
 
 
@@ -365,6 +395,28 @@ CONFIGS["R50"] = {
 }
 CONFIGS["R1"] = {"fabrica": True, "buscar": {"distance_cutoff": 2.0, "lexical_gate": True}}
 CONFIGS["R50-100"] = {**CONFIGS["R50"], "top_k": 100}
+# Experimento 9: la misma R50 sobre otros índices de palabras.
+_U61 = {"fts_tokenizer": "porter unicode61 remove_diacritics 2"}
+CONFIGS["R50@trigramas"] = {
+    **CONFIGS["R50"],
+    "almacen": {"fts_tokenizer": TOKENIZADORES["trigram"]},
+}
+CONFIGS["R50@fonetica"] = {**CONFIGS["R50"], "almacen": _U61, "texto": "fonetica"}
+CONFIGS["R50@fonetica+"] = {**CONFIGS["R50"], "almacen": _U61, "texto": "fonetica+"}
+CONFIGS["fts@trigramas"] = {
+    "almacen": {"fts_tokenizer": TOKENIZADORES["trigram"]},
+    "buscar": {"retrieval_mode": "fts_only"},
+}
+CONFIGS["fts@fonetica"] = {
+    "almacen": _U61,
+    "texto": "fonetica",
+    "buscar": {"retrieval_mode": "fts_only"},
+}
+CONFIGS["fts@fonetica+"] = {
+    "almacen": _U61,
+    "texto": "fonetica+",
+    "buscar": {"retrieval_mode": "fts_only"},
+}
 CONFIGS["bin"] = _binaria(1.0, 0.4)
 CONFIGS["bin+sw"] = _binaria(1.0, 0.4, drop_stopwords=True)
 CONFIGS["bin+sw/sin-adapt"] = _binaria(1.0, 0.4, drop_stopwords=True, adaptive_rrf=False)
@@ -445,6 +497,81 @@ def _final(clase: str) -> Banco:
     return b
 
 
+# --- Experimento 9: lo mal oído -------------------------------------------------------
+# Errores de transcripción verosímiles en los nombres propios: se cambia la letra, no el
+# sonido (b/v, s/z/c, ll/y, h, g/j, qu/k), o se pierde la consonante final («Ferrer» →
+# «Ferré»), que es lo que hace un reconocedor de voz con un apellido que no conoce.
+_OIDO = [
+    (r"v", "b"), (r"b", "v"), (r"z", "s"), (r"c(?=[eiéí])", "s"), (r"s(?=[eiéí])", "c"),
+    (r"ll", "y"), (r"y(?=[aeiouáéíóú])", "ll"), (r"^h", ""), (r"(?<=[aeiou])h", ""),
+    (r"g(?=[eiéí])", "j"), (r"j(?=[eiéí])", "g"), (r"rr", "r"), (r"x", "s"), (r"cc", "c"),
+    (r"qu(?=[eiéí])", "k"), (r"c(?=[aouáóú])", "k"), (r"k", "c"), (r"ñ", "ni"),
+    (r"([aeiou])r$", "FINAL"), (r"([aeiou])[sdz]$", "FINAL"), (r"ph", "f"), (r"th", "t"),
+    (r"w", "gu"), (r"sch", "s"), (r"(?<=[aeiou])s(?=[bcdfgklmnpqrt])", ""),
+]  # fmt: skip
+_TILDE = dict(zip("aeiou", "áéíóú"))
+_SIN_TILDE = {v: k for k, v in _TILDE.items()}
+
+
+def _mal_oido(nombre: str, rng) -> str:
+    """Una variante «tal como suena» de un nombre propio (o el mismo si no hay regla)."""
+    import re
+
+    base = nombre.lower()
+    variantes = []
+    for patron, cambio in _OIDO:
+        m = re.search(patron, base)
+        if not m:
+            continue
+        if cambio == "FINAL":
+            nueva = base[: m.start()] + _TILDE[m.group(1)]
+        else:
+            nueva = base[: m.start()] + cambio + base[m.end() :]
+        variantes.append(nueva)
+    sin = "".join(_SIN_TILDE.get(c, c) for c in base)
+    if sin != base:
+        variantes.append(sin)
+    variantes = [v for v in dict.fromkeys(variantes) if v != base and len(v) > 2]
+    if not variantes:
+        return nombre
+    elegida = variantes[int(rng.integers(len(variantes)))]
+    return elegida.capitalize() if nombre[0].isupper() else elegida
+
+
+def _nombres(consulta: str, nota: str) -> list[str]:
+    """Nombres propios de la consulta: palabras con mayúscula que no abren la frase y que
+    en la nota también van con mayúscula (o no aparecen)."""
+    import re
+
+    palabras = re.findall(r"[^\W\d_]{4,}", consulta)
+    primeras = {m.group(1) for m in re.finditer(r"(?:^|[.?!¿¡]\s*)([^\W\d_]+)", consulta)}
+    return [
+        w
+        for w in palabras
+        if w[0].isupper() and not w.isupper() and w not in primeras and w.lower() not in nota
+    ]
+
+
+def _oido(nombre: str, origen: Callable[[], Banco]) -> Banco:
+    """El banco de origen con los nombres propios de cada consulta mal transcritos. Las
+    consultas sin ningún nombre que cambiar se quedan fuera (se mide solo donde hay error)."""
+    import re
+
+    b = origen()
+    rng = np.random.default_rng(7)
+    consultas, buenas, grupos = [], [], []
+    for i, q in enumerate(b.consultas):
+        nueva = q
+        for w in dict.fromkeys(_nombres(q, b.docs[i])):
+            nueva = re.sub(rf"\b{re.escape(w)}\b", _mal_oido(w, rng), nueva)
+        if nueva != q:
+            consultas.append(nueva)
+            buenas.append(b.buenas[i])
+            grupos.append(b.grupos[i])
+    b.nombre, b.consultas, b.buenas, b.grupos = nombre, consultas, buenas, np.array(grupos)
+    return b
+
+
 def _miracl() -> Banco:
     aqui = ROTTEN_LAB / "comparar" / "miracl"
     corpus = json.loads((aqui / "corpus.json").read_text())
@@ -489,6 +616,9 @@ BANCOS: dict[str, Callable[[], Banco]] = {
     "final-nombrada": lambda: _final("nombrada"),
     "final-media": lambda: _final("media"),
     "final-vaga": lambda: _final("vaga"),
+    "oido-siempre": lambda: _oido("oido-siempre", BANCOS["siempre"]),
+    "oido-nombrada": lambda: _oido("oido-nombrada", BANCOS["final-nombrada"]),
+    "oido-media": lambda: _oido("oido-media", BANCOS["final-media"]),
     "miracl": _miracl,
     "scifact": lambda: _beir("scifact"),
     # Segundo control en inglés: consultas de dos o tres palabras, donde la compuerta
@@ -686,6 +816,10 @@ COLUMNAS: dict[str, list[tuple[str, Callable]]] = {
             ("entra", _en(10**6)),
         ]
         for c in ("nombrada", "media", "vaga")
+    },
+    **{
+        f"oido-{c}": [("primera", _en(1)), ("en 5", _en(5)), ("en 20", _en(20)), ("en 50", _en(50))]
+        for c in ("siempre", "nombrada", "media")
     },
     "miracl": [
         ("primera", _en(1)),
