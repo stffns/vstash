@@ -9,11 +9,13 @@
 ```python
 # rama pelops/lab-recuperacion-es-ef71b8; lexical_gate es nueva y está apagada por defecto
 almacen.search(
-    vector_de_la_consulta, texto_de_la_consulta, top_k=50,
-    adaptive_rrf=False,     # pesos fijos 0,6 vectores / 0,4 palabras
-    distance_cutoff=2.0,    # sin corte por distancia a efectos prácticos
-    lexical_gate=True,      # las palabras dejan de votar si no tienen ninguna evidencia
-    mmr_lambda=None,        # sin deduplicación dentro del documento: eso, después de reordenar
+    vector_de_la_consulta,
+    texto_de_la_consulta,
+    top_k=50,
+    adaptive_rrf=False,  # pesos fijos 0,6 vectores / 0,4 palabras
+    distance_cutoff=2.0,  # sin corte por distancia a efectos prácticos
+    lexical_gate=True,  # las palabras dejan de votar si no tienen ninguna evidencia
+    mmr_lambda=None,  # sin deduplicación dentro del documento: eso, después de reordenar
 )
 # por el SDK: Memory.search(consulta, top_k=50, vec_weight=0.6, fts_weight=0.4,
 #                           distance_cutoff=2.0, lexical_gate=True, mmr_lambda=None)
@@ -173,6 +175,10 @@ Se cuenta por separado quién la tenía. Orden `pisoton` del banco.
   (1–3 %) y va en los dos sentidos.
 - **R50 lo baja a la quinta parte**: 133 → 36 en las vagas a K = 50, 135 → 31 en las vagas
   del examen, 9 → 0 en las nombradas del examen y 12 → 4 en SciFact.
+- **En MIRACL el pisotón va por el otro lado**: por defecto se pierden 34 preguntas que las
+  palabras tenían entre las 20 (y otras 34 de los vectores), porque allí la regla adaptativa
+  deja a las palabras con 0,11 de peso. `R1` conserva esa regla y sigue pisando a las
+  palabras (46 a K = 20); `R50`, con pesos fijos, baja el total de 63 a 27.
 - **No llega a cero, ni puede**: con K plazas no caben las K de cada lado. Lo que sí se
   puede pedir es que el híbrido no sea peor que su mejor lado, y eso R50 lo cumple en todos
   los bancos menos uno: en las vagas se queda 1,5 puntos por debajo de buscar solo por
