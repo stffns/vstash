@@ -3,30 +3,42 @@
 Used only by ``search(drop_stopwords=True)``: the words are removed from the
 FTS5 MATCH expression and from the adaptive-RRF IDF average. Nothing is
 removed from the index, so the option needs no reindex and can be turned on
-and off per call. Spanish and English only, grammatical words only -- the
-lists are deliberately short so that no content word is ever dropped.
-Entries are lowercase with accents folded; compare via ``is_stopword``.
+and off per call.
+
+Spanish and English only, and deliberately short: articles, prepositions,
+conjunctions, pronouns, question words and the auxiliary forms of
+ser / estar / haber / be / have / do. Words that double as content words are
+left out on purpose ("estado", "era", "nada", "will", "may", "can", "who"),
+and accents are significant: "te" is dropped, "té" is not; "el" and "él" are
+both listed because both are grammatical. Matching is case-insensitive.
 """
 
 from __future__ import annotations
 
-import unicodedata
-
 _SPANISH = """
-a al algo algunas algunos ante antes como con contra cual cuales cuando cuanta cuantas
-cuanto cuantos cuyo de del desde donde durante e el ella ellas ellos en entre era erais
-eran eras eres es esa esas ese eso esos esta estaba estado estamos estan estar estas este
-esto estos estoy fue fueron fui ha habia han has hasta hay la las le les lo los mas me mi
-mis mucho muy nada ni no nos nosotros o os otra otras otro otros para pero poco por porque
-que quien quienes se sea ser si sido sin sobre sois somos son soy su sus tambien te tenia
-tiene tienen todo todos tu tus un una uno unos vosotros y ya yo
+a al ante bajo con contra de del desde durante en entre hacia hasta para por segun según
+sin sobre tras
+el la los las lo un una unos unas
+y e o u ni que pero sino porque pues aunque si como cuando donde mientras
+yo tu tú el él ella ello ellos ellas nosotros nosotras vosotros vosotras usted ustedes
+me te se nos os le les mi mis tus su sus
+este esta estos estas ese esa esos esas eso esto aquel aquella aquellos aquellas
+qué quien quién quienes quiénes cual cuál cuales cuáles cuándo dónde cómo cuanto cuánto
+cuanta cuánta cuantos cuántos cuantas cuántas cuyo cuya cuyos cuyas
+es son soy eres somos sois fue fueron ser sido siendo
+está están estoy estamos estaba estaban estar
+ha han he has hay había habían haber
+no sí también tambien más mas muy ya
 """
 
 _ENGLISH = """
-a about after also an and are as at be been before between but by can could did do does
-during for from had has have he her his how i in into is it its may me might my not of on
-or our over she should than that the their them then there these they this those to under
-was we were what when where which who whom why will with would you your
+a an the of in on at by for from to with without into onto over under between about
+and or but nor if than then that this these those there
+i you he she it we they me him her us them my your his its our their
+what which whom whose when where why how
+is are was were be been being am
+has have had do does did
+not also
 """
 
 STOPWORDS: frozenset[str] = frozenset((_SPANISH + _ENGLISH).split())
@@ -34,14 +46,9 @@ STOPWORDS: frozenset[str] = frozenset((_SPANISH + _ENGLISH).split())
 _PUNCTUATION = "¿?¡!.,;:()[]{}\"'«»“”‘’…"
 
 
-def _fold(word: str) -> str:
-    """Lowercase, strip surrounding punctuation and remove diacritics."""
-    decomposed = unicodedata.normalize("NFD", word.strip(_PUNCTUATION).lower())
-    return "".join(c for c in decomposed if unicodedata.category(c) != "Mn")
-
-
 def is_stopword(word: str) -> bool:
-    return _fold(word) in STOPWORDS
+    """True for a listed function word, ignoring case and surrounding punctuation."""
+    return word.strip(_PUNCTUATION).lower() in STOPWORDS
 
 
 def drop_stopwords(words: list[str]) -> list[str]:

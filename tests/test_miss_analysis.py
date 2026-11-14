@@ -470,3 +470,18 @@ class TestSearchOptions:
         relaxed = sample_store.miss_analysis(**kw, search_options={"distance_cutoff": 500.0})
         assert relaxed.appeared_in_results is True
         assert relaxed.dropped_at is None
+
+    def test_floor_kept_chunk_is_not_described_as_within_threshold(self, sample_store: VstashStore):
+        dim = sample_store.embedding_dim
+        _add_doc(sample_store, "/cerca.md", "alfa", _unit(dim, 0.1))
+        _add_doc(sample_store, "/lejos.md", "beta", _unit(dim, 0.9))
+        analysis = sample_store.miss_analysis(
+            query_embedding=_unit(dim, 0.0),
+            query_text="zzz",
+            expected_path="/lejos.md",
+            search_options={"min_vec_keep": 2},
+        )
+        verdict = {v.stage: v for v in analysis.stage_verdicts}["distance_cutoff"]
+        assert verdict.passed is True
+        assert "min_vec_keep=2" in verdict.detail
+        assert "≤ threshold" not in verdict.detail

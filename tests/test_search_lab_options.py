@@ -273,7 +273,7 @@ class TestMinVecKeep:
 
 
 class TestDropStopwords:
-    def test_helpers_fold_case_accents_and_punctuation(self) -> None:
+    def test_helpers_ignore_case_and_punctuation(self) -> None:
         from vstash.store._stopwords import drop_stopwords, is_stopword
 
         assert is_stopword("¿Qué") and is_stopword("The") and is_stopword("más,")
@@ -284,6 +284,16 @@ class TestDropStopwords:
         ]
         # A query with nothing but function words is left as it is.
         assert drop_stopwords(["de", "la"]) == ["de", "la"]
+
+    @pytest.mark.parametrize(
+        "word", ["té", "sé", "Estado", "era", "nada", "sobres", "who", "will", "may", "can"]
+    )
+    def test_words_that_double_as_content_are_kept(self, word: str) -> None:
+        """Accents are significant ("te" is dropped, "té" is not) and words
+        that are also nouns or names ("Estado Islámico", "WHO") are not listed."""
+        from vstash.store._stopwords import is_stopword
+
+        assert not is_stopword(word)
 
     def test_stopwords_leave_the_keyword_query_only(self, tmp_db_path: str) -> None:
         store = _store(tmp_db_path)

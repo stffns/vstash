@@ -838,6 +838,19 @@ class _SearchEngineMixin:
                                 f"{target_dist_before * 100:.1f} to pass."
                             ),
                         )
+                    elif target_in_after and target_dist_before > threshold:
+                        # Past the ratio threshold, but inside the floor.
+                        _tracer.record(
+                            "distance_cutoff",
+                            passed=True,
+                            score=target_dist_before,
+                            detail=(
+                                f"Distance {target_dist_before:.4f} > threshold "
+                                f"{threshold:.4f} (best={best_distance:.4f} × "
+                                f"cutoff={distance_cutoff:.2f}), kept by "
+                                f"min_vec_keep={min_vec_keep}"
+                            ),
+                        )
                     elif target_in_after:
                         _tracer.record(
                             "distance_cutoff",

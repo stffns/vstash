@@ -47,6 +47,7 @@ from vstash.store import VstashStore  # noqa: E402
 
 ROTTEN_LAB = Path(os.environ.get("LAB_ES_DATOS", "/Users/jaysonsteffens/code/rotten/memoria/lab"))
 CACHE = AQUI / "data" / "lab_es"
+BASE = "defecto"  # contra quién se comparan las demás; se cambia con --base
 MINILM = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 BGE = "BAAI/bge-small-en-v1.5"
 
@@ -245,6 +246,14 @@ CONFIGS["rec+porter-u61"] = {**CONFIGS["tok-porter-u61"], "buscar": _REC}
 CONFIGS["rec+porter-u61+vacias"] = {**CONFIGS["tok-porter-u61+vacias"], "buscar": _REC}
 CONFIGS["rec+snowball"] = {**CONFIGS["u61+snowball"], "buscar": _REC}
 CONFIGS["rec+snowball+vacias"] = {**CONFIGS["u61+snowball+vacias"], "buscar": _REC}
+# Control: la configuración por defecto medida otra vez con el código final de la rama.
+CONFIGS["defecto2"] = {}
+# Sensibilidad de los límites de cobertura de la compuerta (se parchean las constantes).
+for _lo, _hi in ((0.3, 0.5), (0.5, 0.7), (0.4, 0.8)):
+    CONFIGS[f"rec+sw/cob-{_lo}-{_hi}"] = {
+        "cobertura": (_lo, _hi),
+        "buscar": {"lexical_gate": True, "distance_cutoff": 2.0, "drop_stopwords": True},
+    }
 # La versión de dentro de vstash de «vacias»: search(drop_stopwords=True).
 CONFIGS["sw"] = {"buscar": {"drop_stopwords": True}}
 CONFIGS["rec+sw"] = {"buscar": {**_REC, "drop_stopwords": True}}
@@ -462,6 +471,11 @@ def indice(b: Banco, almacen_kw: dict, texto: str | None = None) -> VstashStore:
 
 def buscar(almacen: VstashStore, cfg: dict, vector: list[float], consulta: str, k: int):
     kw = cfg.get("buscar", {})
+    import vstash.store._search as _motor
+
+    _motor._LEXICAL_GATE_COVERAGE_LOW, _motor._LEXICAL_GATE_COVERAGE_HIGH = cfg.get(
+        "cobertura", (0.4, 0.6)
+    )
     if "texto" in cfg:
         consulta = TEXTOS[cfg["texto"]][1](consulta)
     if "pesos" in cfg:
@@ -571,12 +585,12 @@ def _celdas(banco: str, config: str) -> list[str] | None:
     if not ruta.exists():
         return None
     r = np.load(ruta)
-    base = np.load(_salida(banco, "defecto")) if _salida(banco, "defecto").exists() else None
+    base = np.load(_salida(banco, BASE)) if _salida(banco, BASE).exists() else None
     celdas = []
     for _, f in COLUMNAS[banco]:
         v = f(r)
         texto = f"{v.mean() * 100:.1f}"
-        if base is not None and config != "defecto":
+        if base is not None and config != BASE:
             dif = v - f(base)
             lo, hi = _intervalo(dif, r["grupos"])
             marca = "" if lo <= 0 <= hi else " *"
@@ -632,10 +646,13 @@ def resumen(configs: list[str]) -> None:
             if not _salida(banco, c).exists():
                 celdas.append("—")
                 continue
-            r, base = np.load(_salida(banco, c)), np.load(_salida(banco, "defecto"))
+            if not _salida(banco, BASE).exists():
+                celdas.append("—")
+                continue
+            r, base = np.load(_salida(banco, c)), np.load(_salida(banco, BASE))
             v = f(r)
             texto = f"{v.mean() * 100:.1f}"
-            if c != "defecto":
+            if c != BASE:
                 dif = v - f(base)
                 lo, hi = _intervalo(dif, r["grupos"])
                 texto += f" ({dif.mean() * 100:+.1f}{'' if lo <= 0 <= hi else ' *'})"
@@ -669,7 +686,11 @@ if __name__ == "__main__":
     p.add_argument("--bancos", nargs="*", default=["siempre", "vagas"])
     p.add_argument("--configs", nargs="*", default=None)
     p.add_argument("--md", action="store_true")
+    p.add_argument(
+        "--base", default="defecto", help="configuración de referencia de las diferencias"
+    )
     a = p.parse_args()
+    BASE = a.base
     import fnmatch
 
     # Cada nombre puede ser un patrón: --configs 'tok-*' 'vacias*'
