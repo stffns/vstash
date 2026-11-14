@@ -57,6 +57,7 @@ _FABRICA = (
     _c._LEXICAL_GATE_COVERAGE_LOW,
     _c._LEXICAL_GATE_COVERAGE_HIGH,
 )
+COLUMNAS_RESUMEN = ""  # "", "examen" u "oido": qué bancos salen en «resumen»
 TOP_K = 0  # 0 = lo propio de cada banco; --top-k lo fuerza y marca el archivo con @K
 MINILM = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 BGE = "BAAI/bge-small-en-v1.5"
@@ -164,12 +165,57 @@ def _fonetica_mas(t: str) -> str:
     return t + " " + " ".join("fx" + _clave_fonetica(w) for w in _palabras(t) if len(w) > 3)
 
 
+# --- Experimentos 7 y 8: texto añadido al guardar por un modelo local --------------------
+_ENRIQUECIDO: dict[str, dict[str, str]] = {}
+
+
+def _anadido(clase: str) -> dict[str, str]:
+    """nota -> texto extra que escribió el modelo (experiments/lab_es_enriquecer.py)."""
+    if clase not in _ENRIQUECIDO:
+        tabla: dict[str, str] = {}
+        for conjunto, archivo in (("viejas", "notas.json"), ("final", "final/notas.json")):
+            ruta = (
+                CACHE
+                / "enriquecido"
+                / f"{'terminos' if clase == 'terminos' else 'campos'}_{conjunto}.json"
+            )
+            if not ruta.exists():
+                continue
+            notas = [f["nota"] for f in json.loads((ROTTEN_LAB / archivo).read_text())]
+            for nota, dado in zip(notas, json.loads(ruta.read_text())):
+                if clase == "terminos":
+                    extra = dado
+                elif clase == "asunto":
+                    extra = str(dado.get("asunto") or "")
+                else:  # nombres, fechas y cantidades, repetidos para que pesen más
+                    piezas = [
+                        str(x)
+                        for k in ("personas", "organizaciones_y_proyectos", "fechas", "cantidades")
+                        for x in (dado.get(k) or [])
+                    ]
+                    extra = " ".join(piezas * 2)
+                tabla[nota] = extra
+        _ENRIQUECIDO[clase] = tabla
+    return _ENRIQUECIDO[clase]
+
+
+def _con(*clases: str) -> Callable:
+    return lambda t: " \n".join([t, *(_anadido(c).get(t, "") for c in clases)])
+
+
+_igual = lambda t: t  # noqa: E731
+
 # nombre -> (transformación del texto indexado o None, transformación de la consulta).
 # Los vectores salen siempre del texto original: solo cambia lo que ve FTS5.
 TEXTOS: dict[str, tuple[Callable | None, Callable]] = {
     "snowball": (_raices, _raices),
     "vacias": (None, _quitar_vacias),
     "snowball+vacias": (_raices, lambda t: _raices(_quitar_vacias(t))),
+    "terminos": (_con("terminos"), _igual),
+    "campos": (_con("campos"), _igual),
+    "asunto": (_con("asunto"), _igual),
+    "campos+asunto": (_con("campos", "asunto"), _igual),
+    "terminos+campos": (_con("terminos", "campos"), _igual),
     "fonetica": (_fonetica, _fonetica),
     "fonetica+": (_fonetica_mas, _fonetica_mas),
 }
@@ -403,6 +449,10 @@ CONFIGS["R50@trigramas"] = {
 }
 CONFIGS["R50@fonetica"] = {**CONFIGS["R50"], "almacen": _U61, "texto": "fonetica"}
 CONFIGS["R50@fonetica+"] = {**CONFIGS["R50"], "almacen": _U61, "texto": "fonetica+"}
+for _t in ("terminos", "campos", "asunto", "campos+asunto", "terminos+campos"):
+    CONFIGS[f"R50@{_t}"] = {**CONFIGS["R50"], "texto": _t}
+    CONFIGS[f"R1@{_t}"] = {**CONFIGS["R1"], "texto": _t}
+    CONFIGS[f"fts@{_t}"] = {"texto": _t, "buscar": {"retrieval_mode": "fts_only"}}
 CONFIGS["fts@trigramas"] = {
     "almacen": {"fts_tokenizer": TOKENIZADORES["trigram"]},
     "buscar": {"retrieval_mode": "fts_only"},
@@ -899,14 +949,29 @@ RESUMEN: list[tuple[str, str, Callable]] = [
 ]
 
 
+# El examen (840 notas nuevas de rotten): aquí no se eligió ningún parámetro.
+EXAMEN: list[tuple[str, str, Callable]] = [
+    (f"final-{c}", f"{c} {t}", f)
+    for c in ("nombrada", "media", "vaga")
+    for t, f in (("1ª", _en(1)), ("en 20", _en(20)), ("en 50", _en(50)))
+]
+# Consultas con los nombres mal transcritos (experimento 9).
+OIDO: list[tuple[str, str, Callable]] = [
+    (f"oido-{c}", f"{c} {t}", f)
+    for c in ("siempre", "nombrada", "media")
+    for t, f in (("1ª", _en(1)), ("en 20", _en(20)), ("en 50", _en(50)))
+]
+
+
 def resumen(configs: list[str]) -> None:
     """Una fila por configuración: valor, diferencia con «defecto» y * si el intervalo del
     95 % de esa diferencia no contiene el cero. «—» = no medido."""
-    print("| Configuración | " + " | ".join(t for _, t, _ in RESUMEN) + " |")
-    print("|---|" + "---|" * len(RESUMEN))
+    columnas = {"examen": EXAMEN, "oido": OIDO}.get(COLUMNAS_RESUMEN, RESUMEN)
+    print("| Configuración | " + " | ".join(t for _, t, _ in columnas) + " |")
+    print("|---|" + "---|" * len(columnas))
     for c in configs:
         celdas = []
-        for banco, _, f in RESUMEN:
+        for banco, _, f in columnas:
             if not _salida(banco, c).exists():
                 celdas.append("—")
                 continue
@@ -991,10 +1056,12 @@ if __name__ == "__main__":
         "--base", default="defecto", help="configuración de referencia de las diferencias"
     )
     p.add_argument("--top-k", type=int, default=0, help="forzar cuántos se piden (archivo @K)")
+    p.add_argument("--columnas", default="", choices=["", "examen", "oido"])
     p.add_argument("--lados", nargs=2, default=["vec-corte25", "fts"], metavar=("VEC", "PAL"))
     a = p.parse_args()
     BASE = a.base
     TOP_K = a.top_k
+    COLUMNAS_RESUMEN = a.columnas
     import fnmatch
 
     # Cada nombre puede ser un patrón: --configs 'tok-*' 'vacias*'

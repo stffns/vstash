@@ -66,7 +66,7 @@ trabajo, comprobado con `vstash.__file__`), y MIRACL sale igual que en rotten (3
 |---|---|---|---|---|---|---|---|---|---|
 | `defecto` | 72,8 | 95,0 | 5,6 | 36,5 | 59,3 | 38,1 | 81,9 | 72,5 | 35,9 |
 | `vec` | 55,6 (-17,2 *) | 89,2 (-5,8 *) | 16,0 (+10,4 *) | 52,2 (+15,7 *) | 62,5 (+3,2 *) | 32,9 (-5,2 *) | 69,0 (-13,0 *) | 69,6 (-2,9 *) | 30,7 (-5,2 *) |
-| `fts` | 70,6 (-2,2) | 91,2 (-3,8 *) | 2,2 (-3,3 *) | 9,2 (-27,4 *) | 15,7 (-43,6 *) | — | — | 68,3 (-4,2 *) | 31,4 (-4,5 *) |
+| `fts` | 70,6 (-2,2) | 91,2 (-3,8 *) | 2,2 (-3,3 *) | 9,2 (-27,4 *) | 15,7 (-43,6 *) | 21,0 (-17,1 *) | 69,4 (-12,5 *) | 68,3 (-4,2 *) | 31,4 (-4,5 *) |
 | `sin-adapt` | 71,8 (-1,0) | 95,0 (+0,0) | 7,1 (+1,5 *) | 51,7 (+15,1 *) | 65,0 (+5,7 *) | 40,7 (+2,6) | 82,6 (+0,6 *) | 72,4 (-0,1) | 35,2 (-0,7 *) |
 | `corte2` | 73,2 (+0,4) | 95,6 (+0,6) | 4,2 (-1,4 *) | 34,9 (-1,7) | 60,7 (+1,4) | 37,8 (-0,3) | 84,6 (+2,6 *) | 73,3 (+0,8 *) | 36,2 (+0,3) |
 | `vec-corte2` | 55,6 (-17,2 *) | 91,2 (-3,8 *) | 16,0 (+10,4 *) | 56,8 (+20,3 *) | 74,4 (+15,1 *) | 32,9 (-5,2 *) | 81,5 (-0,5) | 71,9 (-0,6) | 33,6 (-2,3 *) |
@@ -87,6 +87,149 @@ trabajo, comprobado con `vstash.__file__`), y MIRACL sale igual que en rotten (3
   consultas vagas. Y aflojar el corte mejora SciFact (+0,8, de +0,3 a +1,4) y MIRACL
   (entre 20 +2,6). Los dos valores por defecto están costando recuerdo fuera de las notas
   inventadas.
+
+## 0. Que el híbrido no se pise a sí mismo (prioridad)
+
+Encargo añadido por Jay a mitad del lab: tratar como problema central que la mezcla de
+vectores y palabras saque de la lista notas que uno de los dos lados tenía bien puestas.
+Detrás irá un reordenador, así que la primera etapa ya no necesita acertar el primer puesto:
+necesita que la buena esté entre las 50.
+
+### La cifra: el pisotón
+
+Una consulta está **pisada** a K si la nota buena estaba entre las K primeras de un lado
+solo (vectores sin corte por distancia, o solo palabras) y no está entre las K del híbrido.
+Se cuenta por separado quién la tenía. Orden `pisoton` del banco.
+
+<!-- PISOTON -->
+| Banco (consultas) | K | por defecto: pisadas (vectores + palabras) | R1 | R50 | la buena en K: defecto → R1 → R50 | mejor lado solo |
+|---|---|---|---|---|---|---|
+| siempre (720) | 20 | 20 (9 + 11) | 15 (11 + 4) | 9 (4 + 5) | 95,0 → 95,8 → 96,5 | 91,2 |
+| siempre (720) | 50 | 7 (3 + 4) | 5 (2 + 3) | 7 (1 + 6) | 97,6 → 97,9 → 97,8 | 95,1 |
+| vagas (720) | 20 | 175 (169 + 6) | 93 (83 + 10) | 42 (32 + 10) | 36,5 → 47,4 → 54,6 | 56,8 |
+| vagas (720) | 50 | 133 (127 + 8) | 67 (55 + 12) | 36 (22 + 14) | 59,3 → 68,8 → 72,9 | 74,4 |
+| final-nombrada (840) | 20 | 19 (11 + 9) | 16 (13 + 3) | 12 (4 + 8) | 96,3 → 97,0 → 97,6 | 92,5 |
+| final-nombrada (840) | 50 | 9 (7 + 2) | 4 (4 + 0) | 0 (0 + 0) | 98,5 → 99,0 → 99,5 | 96,3 |
+| final-media (840) | 20 | 38 (13 + 25) | 19 (6 + 13) | 21 (5 + 16) | 93,8 → 96,1 → 95,8 | 91,5 |
+| final-media (840) | 50 | 7 (4 + 3) | 4 (3 + 1) | 3 (0 + 3) | 98,1 → 98,6 → 98,7 | 95,2 |
+| final-vaga (840) | 20 | 197 (190 + 7) | 117 (105 + 12) | 55 (39 + 16) | 35,6 → 45,1 → 52,7 | 53,5 |
+| final-vaga (840) | 50 | 135 (131 + 8) | 76 (65 + 11) | 31 (19 + 12) | 59,4 → 66,4 → 71,8 | 70,7 |
+| miracl | — | (sin medir) |
+| scifact (300) | 20 | 15 (5 + 11) | 11 (0 + 11) | 8 (3 + 5) | 89,0 → 90,3 → 91,3 | 88,0 |
+| scifact (300) | 50 | 12 (7 + 5) | 9 (2 + 7) | 4 (2 + 2) | 93,0 → 94,0 → 96,0 | 93,0 |
+| nfcorpus (323) | 20 | 11 (7 + 5) | 8 (5 + 4) | 11 (6 + 5) | 76,8 → 77,7 → 76,8 | 76,2 |
+| nfcorpus (323) | 50 | 7 (4 + 3) | 4 (1 + 3) | 5 (3 + 2) | 81,4 → 82,7 → 82,0 | 80,5 |
+<!-- /PISOTON -->
+
+- **Con los valores por defecto el híbrido se pisa en casi una de cada cuatro consultas
+  vagas** (175 de 720 a K = 20; 197 de 840 en el examen), y casi siempre es la nota que los
+  vectores tenían bien. En las consultas con palabras de la nota el pisotón es pequeño
+  (1–3 %) y va en los dos sentidos.
+- **R50 lo baja a la quinta parte**: 133 → 36 en las vagas a K = 50, 135 → 31 en las vagas
+  del examen, 9 → 0 en las nombradas del examen y 12 → 4 en SciFact.
+- **No llega a cero, ni puede**: con K plazas no caben las K de cada lado. Lo que sí se
+  puede pedir es que el híbrido no sea peor que su mejor lado, y eso R50 lo cumple en todos
+  los bancos menos uno: en las vagas se queda 1,5 puntos por debajo de buscar solo por
+  vectores a K = 50 (72,9 % frente a 74,4 %; en el examen, 71,8 % frente a 70,7 %, por
+  encima). Por defecto se quedaba 15 por debajo.
+- Lo que queda pisado en las vagas (22 por vectores a K = 50) son consultas en las que la
+  compuerta no cierra: el mejor acierto por palabras casa lo bastante para parecer evidencia
+  y no lo es.
+
+### De dónde sale el pisotón: tres causas, tres arreglos
+
+| Causa | Qué pasa | Arreglo | Efecto en las vagas (pisadas por vectores, K = 50) |
+|---|---|---|---|
+| El corte por distancia | tira candidatos de vectores (193 notas buenas a K = 20) y su hueco lo llenan las palabras | `distance_cutoff=2.0` | junto con el siguiente |
+| Los pesos adaptativos | dan a las palabras más peso que a los vectores en el 76 % de las consultas vagas: una nota que solo casa por palabras adelanta a una que solo casa por vectores en el mismo puesto | `adaptive_rrf=False` (0,6 / 0,4 fijos) | 127 → 46 |
+| La suma de RRF premia estar en las dos listas | una nota mediocre que es la 1.ª por palabras y la 6.ª por vectores adelanta a la mejor por vectores, aunque sus palabras no valgan nada | `lexical_gate=True`: sin evidencia léxica, las palabras no votan | 46 → 22 |
+
+### Fusiones probadas
+
+Todas se ajustaron con las 720 notas viejas. El examen son las 840 nuevas de rotten.
+
+**1. Plazas reservadas** (los n primeros de cada lado entran siempre; si alguno no estaba,
+sustituye por la cola a los peor puestos que no están reservados). Probado por fuera con
+tres búsquedas (`rec+sw+reservaN`, `defecto+reservaN`) y por dentro de `search`
+(`reserve_vec` / `reserve_keyword`, con un mínimo de fuerza BM25 para las de palabras).
+**Negativo.**
+- Sobre la configuración por defecto ayudan (vagas entre 50: 59,3 % → 66,4 % con 25 + 25),
+  pero menos que arreglar la causa (72,9 %).
+- Sobre una fusión ya arreglada no aportan nada o restan: reservar 10 plazas a las palabras
+  cuesta 1,4 puntos en las vagas (de −2,5 a −0,4), porque mete justo el ruido que la
+  compuerta acaba de quitar; reservar a los vectores no cambia nada (ya estaban dentro).
+- Reservar solo a las palabras «fuertes» (BM25 ≥ 1,5 ln N) no cambió **ni una consulta**: las
+  coincidencias fuertes ya estaban siempre entre las 50. Las que se pierden son las flojas,
+  que son indistinguibles del ruido. Se retiró el código.
+
+**2. Intercalar** (uno de vectores, uno de palabras, sin puntos). **Negativo**: garantiza K/2
+de cada lado y por eso mismo regala media lista a las palabras cuando no valen: vagas entre
+50 69,0 % (R50: 72,9 %), con 61 pisadas.
+
+**3. El peso de las palabras según lo fuerte que es la coincidencia de verdad**, no según lo
+raros que son los términos. Es la compuerta léxica del experimento 2, en dos versiones:
+- *Gradual* (la primera recomendada): baja el peso de las palabras poco a poco según la
+  fuerza y la cobertura. Ordena mejor las vagas, pero **en el examen pisa por el otro lado**:
+  con consultas medias «entre 50» baja de 98,1 % a 96,8 % (−1,3; intervalo sin el cero), 18
+  notas que las palabras tenían. En las notas viejas la misma pérdida ya asomaba sin llegar a
+  distinguirse del ruido (−0,6, de −1,2 a 0,0). **Retirada.**
+- *De todo o nada* (la que queda): las palabras conservan su peso salvo que su mejor acierto
+  no case ni una palabra rara (fuerza < 1,0) ni una parte apreciable de la consulta
+  (cobertura < 0,4); entonces su peso es **0**, no 0,1. «Si no hay coincidencia, no resta; si
+  la hay, cuenta entera.» No pierde «entre 50» en ningún conjunto del examen.
+
+**4. Que la compuerta cerrada sea 0 y no 0,1.** Con 0,1 una nota que es la primera por
+palabras y la sexta por vectores todavía adelanta a la mejor por vectores
+(0,9/65 + 0,1/60 > 0,9/60). Pasar a 0 sube la primera de las vagas de 8,9 % a 14,0 % sin
+mover nada más (buscar solo por vectores: 16,0 %).
+
+**5. Quitar las palabras vacías**: ver 1c. En el examen cuesta recuerdo profundo (menos
+candidatos por palabras para rellenar la cola), así que sale de la recomendación.
+
+### ¿La mejor fusión para «primera» es la misma que para «entre 50»?
+
+**No.** Mismas piezas (corte 2,0 y compuerta), distinto reparto de pesos:
+
+<!-- T: defecto R1 R50 sin-adapt-corte2 rec+sw vec-corte25 -->
+| Configuración | siempre 1ª | siempre en 20 | vagas 1ª | vagas en 20 | vagas en 50 | MIRACL 1ª | MIRACL en 20 | SciFact NDCG@10 | NFCorpus NDCG@10 |
+|---|---|---|---|---|---|---|---|---|---|
+| `defecto` | 72,8 | 95,0 | 5,6 | 36,5 | 59,3 | 38,1 | 81,9 | 72,5 | 35,9 |
+| `R1` | 73,1 (+0,3) | 95,8 (+0,8) | 11,7 (+6,1 *) | 47,4 (+10,8 *) | 68,8 (+9,4 *) | 37,8 (-0,3) | 84,6 (+2,6 *) | 73,3 (+0,8 *) | 36,2 (+0,3) |
+| `R50` | 71,8 (-1,0) | 96,5 (+1,5 *) | 11,9 (+6,4 *) | 54,6 (+18,1 *) | 72,9 (+13,6 *) | 40,6 (+2,5) | 89,2 (+7,3 *) | 73,2 (+0,7) | 35,4 (-0,5) |
+| `sin-adapt-corte2` | 71,9 (-0,8) | 96,4 (+1,4 *) | 5,3 (-0,3) | 51,5 (+15,0 *) | 71,1 (+11,8 *) | 40,6 (+2,5) | 89,2 (+7,3 *) | 73,2 (+0,7) | 35,4 (-0,5) |
+| `rec+sw` | 74,6 (+1,8) | 96,4 (+1,4 *) | 14,0 (+8,5 *) | 56,0 (+19,4 *) | 74,0 (+14,7 *) | 39,8 (+1,7) | 87,8 (+5,9 *) | 73,1 (+0,6) | 36,1 (+0,2) |
+| `vec-corte25` | 55,6 (-17,2 *) | 91,2 (-3,8 *) | 16,0 (+10,4 *) | 56,8 (+20,3 *) | 74,4 (+15,1 *) | — | — | 72,0 (-0,5) | 33,7 (-2,2 *) |
+<!-- /T -->
+
+<!-- T: --columnas=examen defecto R1 R50 sin-adapt-corte2 rec+sw vec-corte25 -->
+| Configuración | nombrada 1ª | nombrada en 20 | nombrada en 50 | media 1ª | media en 20 | media en 50 | vaga 1ª | vaga en 20 | vaga en 50 |
+|---|---|---|---|---|---|---|---|---|---|
+| `defecto` | 76,5 | 96,3 | 98,5 | 69,2 | 93,8 | 98,1 | 7,3 | 35,6 | 59,4 |
+| `R1` | 76,1 (-0,5) | 97,0 (+0,7) | 99,0 (+0,6 *) | 69,0 (-0,1) | 96,1 (+2,3 *) | 98,6 (+0,5) | 9,6 (+2,4 *) | 45,1 (+9,5 *) | 66,4 (+7,0 *) |
+| `R50` | 74,2 (-2,4 *) | 97,6 (+1,3 *) | 99,5 (+1,1 *) | 68,3 (-0,8) | 95,8 (+2,0 *) | 98,7 (+0,6) | 9,4 (+2,1) | 52,7 (+17,1 *) | 71,8 (+12,4 *) |
+| `sin-adapt-corte2` | 74,3 (-2,3 *) | 97,5 (+1,2 *) | 99,5 (+1,1 *) | 69,0 (-0,1) | 96,1 (+2,3 *) | 98,7 (+0,6) | 6,5 (-0,7) | 49,3 (+13,7 *) | 71,2 (+11,8 *) |
+| `rec+sw` | 75,0 (-1,5) | 97,4 (+1,1) | 98,7 (+0,2) | 68,2 (-1,0) | 94,6 (+0,8) | 96,8 (-1,3 *) | 11,0 (+3,7 *) | 53,2 (+17,6 *) | 71,5 (+12,1 *) |
+| `vec-corte25` | 58,1 (-18,5 *) | 92,5 (-3,8 *) | 96,3 (-2,1 *) | 49,5 (-19,6 *) | 88,1 (-5,7 *) | 93,6 (-4,5 *) | 13,1 (+5,8 *) | 53,5 (+17,9 *) | 70,7 (+11,3 *) |
+<!-- /T -->
+
+- **`R50` (pesos fijos 0,6 / 0,4) es la mejor para que la buena entre**: en el examen, entre
+  50: 99,5 % · 98,7 % · 71,8 % (por defecto 98,5 · 98,1 · 59,4), y en MIRACL entre 20 sube de
+  81,9 % a 89,2 %. A cambio pierde el primer puesto en las consultas nombradas (−2,4, de −3,8
+  a −1,1) y, en inglés, NFCorpus pierde «alguna buena entre 10» (−3,1, de −5,6 a −0,9), aunque
+  no NDCG@10 (−0,5, de −1,3 a +0,2). Con un reordenador detrás lo primero no importa.
+- **`R1` (pesos adaptativos) es la mejor para ir sola**: no pierde en ninguna medida de
+  ningún banco (el peor intervalo es la primera de las nombradas, −0,5, de −1,7 a +0,6), pero
+  recupera la mitad en las vagas (examen entre 50: 66,4 % frente a 71,8 %).
+- Ninguna de las dos pone primera la buena en las vagas más del 12 %; solo vectores, 13–16 %.
+  Ese puesto es del reordenador.
+- `sin-adapt-corte2` es `R50` sin compuerta, lo que se puede hacer con vstash 0.39.0: mismo
+  «entre 50», pero la primera de las vagas se queda en 5–6 % en vez de 9–12 %.
+
+**Aviso sobre el examen.** La compuerta gradual se eligió con las notas viejas y el examen la
+tumbó; la de todo o nada se eligió entonces entre candidatas que en las notas viejas
+empataban (siempre entre 50: 97,8 % las dos; vagas: 74,0 % y 72,9 %), mirando el examen. Para
+esa decisión el examen ya no es limpio. Lo que sí es limpio: MIRACL, donde R50 y R1 se midieron
+una sola vez y al final, y el propio hecho de que la gradual falló.
 
 ## 1. Tokenizador del índice de palabras, raíces en español y palabras vacías
 
@@ -118,7 +261,7 @@ ancha, que plegaba acentos, daba las mismas cifras (±0,3) en los cuatro bancos 
 | `tok-porter-u61` | 72,1 (-0,7) | 94,6 (-0,4) | 5,6 (+0,0) | 36,8 (+0,3) | 60,0 (+0,7 *) | 39,0 (+0,9) | 83,3 (+1,4 *) | 72,5 (+0,0) | 35,8 (-0,1) |
 | `tok-u61` | 72,4 (-0,4) | 95,3 (+0,3) | 5,3 (-0,3) | 35,1 (-1,4) | 58,8 (-0,6) | — | — | 72,2 (-0,3) | 35,1 (-0,8 *) |
 | `tok-trigram` | 67,9 (-4,9 *) | 92,8 (-2,2 *) | 10,6 (+5,0 *) | 53,9 (+17,4 *) | 65,4 (+6,1 *) | — | — | 71,1 (-1,4 *) | 34,2 (-1,7 *) |
-| `fts` | 70,6 (-2,2) | 91,2 (-3,8 *) | 2,2 (-3,3 *) | 9,2 (-27,4 *) | 15,7 (-43,6 *) | — | — | 68,3 (-4,2 *) | 31,4 (-4,5 *) |
+| `fts` | 70,6 (-2,2) | 91,2 (-3,8 *) | 2,2 (-3,3 *) | 9,2 (-27,4 *) | 15,7 (-43,6 *) | 21,0 (-17,1 *) | 69,4 (-12,5 *) | 68,3 (-4,2 *) | 31,4 (-4,5 *) |
 | `tok-porter-u61/fts` | 68,6 (-4,2 *) | 91,0 (-4,0 *) | 2,5 (-3,1 *) | 9,9 (-26,7 *) | 16,1 (-43,2 *) | — | — | 68,4 (-4,1 *) | — |
 | `tok-u61/fts` | 68,8 (-4,0 *) | 91,0 (-4,0 *) | 2,2 (-3,3 *) | 8,9 (-27,6 *) | 15,4 (-43,9 *) | — | — | 65,5 (-7,0 *) | — |
 | `tok-trigram/fts` | 62,8 (-10,0 *) | 86,8 (-8,2 *) | 3,1 (-2,5 *) | 9,0 (-27,5 *) | 16,0 (-43,3 *) | — | — | 60,9 (-11,6 *) | — |
@@ -146,10 +289,10 @@ ancha, que plegaba acentos, daba las mismas cifras (±0,3) en los cuatro bancos 
 <!-- T: u61+snowball u61+snowball/fts rec+snowball rec+snowball+vacias -->
 | Configuración | siempre 1ª | siempre en 20 | vagas 1ª | vagas en 20 | vagas en 50 | MIRACL 1ª | MIRACL en 20 | SciFact NDCG@10 | NFCorpus NDCG@10 |
 |---|---|---|---|---|---|---|---|---|---|
-| `u61+snowball` | 73,3 (+0,6) | 95,4 (+0,4) | 8,2 (+2,6 *) | 40,8 (+4,3 *) | 61,5 (+2,2 *) | — | — | 72,1 (-0,4) | 35,2 (-0,7 *) |
+| `u61+snowball` | 73,3 (+0,6) | 95,4 (+0,4) | 8,2 (+2,6 *) | 40,8 (+4,3 *) | 61,5 (+2,2 *) | 38,6 (+0,5) | 84,0 (+2,0 *) | 72,1 (-0,4) | 35,2 (-0,7 *) |
 | `u61+snowball/fts` | 74,3 (+1,5) | 94,0 (-1,0) | 4,3 (-1,2) | 14,6 (-21,9 *) | 22,9 (-36,4 *) | — | — | 67,5 (-5,0 *) | — |
-| `rec+snowball` | 73,8 (+1,0) | 96,1 (+1,1) | 10,0 (+4,4 *) | 57,5 (+21,0 *) | 74,4 (+15,1 *) | — | — | 72,4 (-0,1) | 35,7 (-0,2) |
-| `rec+snowball+vacias` | 77,4 (+4,6 *) | 96,1 (+1,1) | 10,0 (+4,4 *) | 56,1 (+19,6 *) | 73,8 (+14,4 *) | — | — | 71,5 (-1,0) | 35,6 (-0,3) |
+| `rec+snowball` | 73,8 (+1,0) | 96,1 (+1,1) | 10,0 (+4,4 *) | 57,5 (+21,0 *) | 74,4 (+15,1 *) | 38,7 (+0,6) | 84,0 (+2,0) | 72,4 (-0,1) | 35,7 (-0,2) |
+| `rec+snowball+vacias` | 77,4 (+4,6 *) | 96,1 (+1,1) | 10,0 (+4,4 *) | 56,1 (+19,6 *) | 73,8 (+14,4 *) | 40,0 (+1,9) | 85,6 (+3,7 *) | 71,5 (-1,0) | 35,6 (-0,3) |
 <!-- /T -->
 
 <!-- SNOWBALL -->
@@ -159,10 +302,10 @@ ancha, que plegaba acentos, daba las mismas cifras (±0,3) en los cuatro bancos 
 <!-- T: sw vacias/fts compuerta-corte2 rec+sw -->
 | Configuración | siempre 1ª | siempre en 20 | vagas 1ª | vagas en 20 | vagas en 50 | MIRACL 1ª | MIRACL en 20 | SciFact NDCG@10 | NFCorpus NDCG@10 |
 |---|---|---|---|---|---|---|---|---|---|
-| `sw` | 74,4 (+1,7) | 95,0 (+0,0) | 3,8 (-1,8 *) | 35,1 (-1,4) | 59,6 (+0,3) | 40,6 (+2,5 *) | 84,6 (+2,6 *) | 72,7 (+0,2) | 35,9 (+0,0) |
+| `sw` | 74,4 (+1,7) | 95,3 (+0,3) | 3,9 (-1,7 *) | 36,0 (-0,6) | 59,6 (+0,3) | 40,6 (+2,5 *) | 84,6 (+2,6 *) | 72,6 (+0,1) | 35,9 (+0,0) |
 | `vacias/fts` | 69,4 (-3,3) | 91,1 (-3,9 *) | 1,8 (-3,8 *) | 6,1 (-30,4 *) | 7,1 (-52,2 *) | — | — | 68,1 (-4,4 *) | — |
-| `compuerta-corte2` | 73,9 (+1,1) | 96,1 (+1,1) | 9,0 (+3,5 *) | 56,4 (+19,9 *) | 74,2 (+14,9 *) | 38,0 (-0,2) | 84,4 (+2,5 *) | 73,1 (+0,6) | 36,3 (+0,4) |
-| `rec+sw` | 74,9 (+2,1 *) | 96,2 (+1,2) | 9,2 (+3,6 *) | 55,3 (+18,8 *) | 74,0 (+14,7 *) | 39,8 (+1,7) | 87,8 (+5,9 *) | 73,1 (+0,6) | 36,1 (+0,2) |
+| `compuerta-corte2` | 73,6 (+0,8) | 96,1 (+1,1) | 13,1 (+7,5 *) | 56,8 (+20,3 *) | 74,0 (+14,7 *) | 38,0 (-0,2) | 84,4 (+2,5 *) | 73,1 (+0,6) | 36,3 (+0,4) |
+| `rec+sw` | 74,6 (+1,8) | 96,4 (+1,4 *) | 14,0 (+8,5 *) | 56,0 (+19,4 *) | 74,0 (+14,7 *) | 39,8 (+1,7) | 87,8 (+5,9 *) | 73,1 (+0,6) | 36,1 (+0,2) |
 <!-- /T -->
 
 - **Sola, con los pesos de hoy: mixto.** Mejora MIRACL (primera +2,5, de +0,6 a +4,3) y no
@@ -237,9 +380,9 @@ la de vstash al decimal, como control):
 | `regla-fuera` | 72,2 (-0,6) | 94,6 (-0,4) | 6,4 (+0,8) | 45,7 (+9,2 *) | 63,1 (+3,8 *) | — | — | 72,2 (-0,3) | 35,9 (-0,0) |
 | `regla-cero` | 67,9 (-4,9 *) | 93,6 (-1,4 *) | 9,0 (+3,5 *) | 51,7 (+15,1 *) | 64,9 (+5,6 *) | — | — | 72,2 (-0,3) | 35,9 (+0,0) |
 | `regla-max-cob` | 71,9 (-0,8) | 95,1 (+0,1) | 7,2 (+1,7 *) | 50,1 (+13,6 *) | 64,3 (+5,0 *) | — | — | 72,5 (-0,0) | 35,9 (+0,0) |
-| `regla-tope-0.45` | 72,1 (-0,7) | 95,3 (+0,3) | 7,1 (+1,5 *) | 50,6 (+14,0 *) | 63,5 (+4,2 *) | — | — | 72,5 (+0,0) | 35,3 (-0,6 *) |
+| `regla-tope-0.45` | 72,1 (-0,7) | 95,3 (+0,3) | 7,1 (+1,5 *) | 50,6 (+14,0 *) | 63,5 (+4,2 *) | 38,1 (+0,0) | 81,9 (+0,0) | 72,5 (+0,0) | 35,3 (-0,6 *) |
 | `regla-tope-0.4` | 71,7 (-1,1) | 95,0 (+0,0) | 7,1 (+1,5 *) | 51,5 (+15,0 *) | 64,9 (+5,6 *) | — | — | 72,5 (+0,0) | 35,3 (-0,6 *) |
-| `compuerta` | 73,3 (+0,6) | 94,9 (-0,1) | 10,7 (+5,1 *) | 52,8 (+16,2 *) | 65,7 (+6,4 *) | 38,1 (+0,0) | 81,9 (+0,0) | 72,3 (-0,2) | 36,0 (+0,1) |
+| `compuerta` | 73,2 (+0,4) | 94,9 (-0,1) | 13,6 (+8,1 *) | 53,1 (+16,5 *) | 65,7 (+6,4 *) | 38,1 (+0,0) | 81,9 (+0,0) | 72,3 (-0,2) | 36,0 (+0,1) |
 <!-- /T -->
 
 - **Pesos fijos: no hay un valor bueno.** Las vagas quieren 0,1 para las palabras; las de
@@ -320,7 +463,7 @@ candidatos por palabras.
 | `vec` | 55,6 (-17,2 *) | 89,2 (-5,8 *) | 16,0 (+10,4 *) | 52,2 (+15,7 *) | 62,5 (+3,2 *) | 32,9 (-5,2 *) | 69,0 (-13,0 *) | 69,6 (-2,9 *) | 30,7 (-5,2 *) |
 | `vec-corte1.5` | 55,6 (-17,2 *) | 91,1 (-3,9 *) | 16,0 (+10,4 *) | 55,8 (+19,3 *) | 71,7 (+12,4 *) | — | — | 71,1 (-1,4) | — |
 | `vec-corte2` | 55,6 (-17,2 *) | 91,2 (-3,8 *) | 16,0 (+10,4 *) | 56,8 (+20,3 *) | 74,4 (+15,1 *) | 32,9 (-5,2 *) | 81,5 (-0,5) | 71,9 (-0,6) | 33,6 (-2,3 *) |
-| `vec-corte25` | 55,6 (-17,2 *) | 91,2 (-3,8 *) | 16,0 (+10,4 *) | 56,8 (+20,3 *) | 74,4 (+15,1 *) | — | — | 72,0 (-0,5) | — |
+| `vec-corte25` | 55,6 (-17,2 *) | 91,2 (-3,8 *) | 16,0 (+10,4 *) | 56,8 (+20,3 *) | 74,4 (+15,1 *) | — | — | 72,0 (-0,5) | 33,7 (-2,2 *) |
 <!-- /T -->
 
 - **Aflojar el corte sube el recuerdo en todos los bancos**: «entre 50» en las vagas, «entre
@@ -348,7 +491,7 @@ menos de N candidatos por vectores).
 | `suelo` | 73,2 (+0,4) | 95,1 (+0,1) | 4,3 (-1,2 *) | 37,2 (+0,7) | 64,9 (+5,6 *) | — | — | 73,4 (+0,9 *) | 36,2 (+0,3) |
 | `compuerta-suelo20` | 73,6 (+0,8) | 94,9 (-0,1) | 9,0 (+3,5 *) | 56,4 (+19,9 *) | 68,6 (+9,3 *) | — | — | 73,0 (+0,5) | 36,4 (+0,5 *) |
 | `compuerta-suelo` | 73,9 (+1,1) | 95,4 (+0,4) | 9,0 (+3,5 *) | 56,5 (+20,0 *) | 74,3 (+15,0 *) | — | — | 73,1 (+0,6) | 36,3 (+0,4) |
-| `compuerta-corte2` | 73,9 (+1,1) | 96,1 (+1,1) | 9,0 (+3,5 *) | 56,4 (+19,9 *) | 74,2 (+14,9 *) | 38,0 (-0,2) | 84,4 (+2,5 *) | 73,1 (+0,6) | 36,3 (+0,4) |
+| `compuerta-corte2` | 73,6 (+0,8) | 96,1 (+1,1) | 13,1 (+7,5 *) | 56,8 (+20,3 *) | 74,0 (+14,7 *) | 38,0 (-0,2) | 84,4 (+2,5 *) | 73,1 (+0,6) | 36,3 (+0,4) |
 <!-- /T -->
 
 - Funciona, pero **no mejora al corte flojo de toda la vida**: `compuerta-suelo` (suelo de
