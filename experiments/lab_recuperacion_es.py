@@ -8,6 +8,7 @@ Cuatro bancos, una tabla por banco y por configuración de búsqueda:
   miracl   MIRACL-es (mteb/MIRACLRetrievalHardNegatives): 648 preguntas reales con relevancia
            juzgada por personas sobre 146.750 pasajes de Wikipedia, indexados «título. texto».
   scifact  SciFact de BEIR en inglés con bge-small (línea base documentada NDCG@10 = 0,7263).
+  nfcorpus NFCorpus de BEIR, segundo control en inglés (consultas muy cortas).
 
 Las notas y MIRACL se leen del laboratorio de rotten (solo lectura); el modelo del índice es
 el mismo que allí. Los vectores se guardan en experiments/data/lab_es/ para no recalcularlos,
@@ -338,19 +339,19 @@ def _miracl() -> Banco:
     return b
 
 
-def _scifact() -> Banco:
+def _beir(nombre: str) -> Banco:
     from experiments.beir_benchmark import download_beir, load_beir
 
     anterior = os.getcwd()
     os.chdir(AQUI.parent)  # beir_benchmark usa una ruta relativa para su caché
     try:
-        corpus, consultas, qrels = load_beir(download_beir("scifact"))
+        corpus, consultas, qrels = load_beir(download_beir(nombre))
     finally:
         os.chdir(anterior)
     ids = list(corpus)
     donde = {d: i for i, d in enumerate(ids)}
     b = Banco()
-    b.nombre, b.modelo, b.top_k = "scifact", BGE, 10
+    b.nombre, b.modelo, b.top_k = nombre, BGE, 10
     b.docs = [(corpus[d].get("title", "") + "\n" + corpus[d].get("text", "")).strip() for d in ids]
     b.consultas = [consultas[q] for q in qrels]
     b.buenas = [{donde[d]: s for d, s in qrels[q].items() if d in donde} for q in qrels]
@@ -362,7 +363,10 @@ BANCOS: dict[str, Callable[[], Banco]] = {
     "siempre": lambda: _notas("siempre", "notas.json"),
     "vagas": lambda: _notas("vagas", "notas_vagas.json"),
     "miracl": _miracl,
-    "scifact": _scifact,
+    "scifact": lambda: _beir("scifact"),
+    # Segundo control en inglés: consultas de dos o tres palabras, donde la compuerta
+    # léxica actúa más que en SciFact.
+    "nfcorpus": lambda: _beir("nfcorpus"),
 }
 
 
@@ -535,6 +539,7 @@ COLUMNAS: dict[str, list[tuple[str, Callable]]] = {
         ("NDCG@10", lambda r: r["ndcg"]),
     ],
     "scifact": [("NDCG@10", lambda r: r["ndcg"]), ("primera", _en(1)), ("en 10", _en(10))],
+    "nfcorpus": [("NDCG@10", lambda r: r["ndcg"]), ("primera", _en(1)), ("en 10", _en(10))],
 }
 
 

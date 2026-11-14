@@ -187,6 +187,20 @@ class TestLexicalGate:
         assert on == pytest.approx(off)
         assert off > 0.3
 
+    def test_short_query_matched_in_full_keeps_the_weight(self, gate_store: VstashStore) -> None:
+        """One rare word is little evidence in absolute terms, but it is the
+        whole query: coverage keeps the gate open (the NFCorpus-style case)."""
+        off = _fts_weight(gate_store, "zafiro")
+        on = _fts_weight(gate_store, "zafiro", lexical_gate=True)
+        assert on == pytest.approx(off)
+        assert off > 0.3
+
+    def test_long_query_matching_one_common_word_is_gated(self, gate_store: VstashStore) -> None:
+        # Six terms asked, the best hit matches only the ubiquitous one.
+        query = "informe cobalto niquel wolframio estroncio paladio"
+        assert _fts_weight(gate_store, query) > 0.3
+        assert _fts_weight(gate_store, query, lexical_gate=True) == pytest.approx(0.1)
+
     def test_weights_keep_their_sum(self, gate_store: VstashStore) -> None:
         hits = gate_store.search(_unit(0.0), "informe", top_k=5, explain=True, lexical_gate=True)
         info = hits[0].explain

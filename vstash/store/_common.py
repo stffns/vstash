@@ -256,16 +256,26 @@ def relevance_tier(distance: float) -> str:
 # Standard RRF constant — balances precision vs recall
 RRF_K = 60
 
-# Lexical gate (opt-in ``lexical_gate=True`` on ``search``). The strength of
-# the keyword evidence for a query is the BM25 score of its best FTS5 hit in
-# units of ``ln(N)`` -- roughly "how many rare query terms does the best
-# keyword match cover". Below ``LOW`` the FTS weight collapses to ``MIN``;
-# above ``HIGH`` it is left alone; linear in between. Chosen a priori from
-# the separation measured in experiments/LAB-recuperacion-es.md (vague
-# queries sit around 1.0, keyword-bearing ones around 2.3) and stable under
-# +-0.25 shifts of either bound.
+# Lexical gate (opt-in ``lexical_gate=True`` on ``search``). Two readings of
+# how much keyword evidence the best FTS5 hit carries for this query, both
+# taken from its BM25 score:
+#
+#   strength  = bm25 / ln(N)            "how many rare terms does it match"
+#   coverage  = bm25 / sum(idf(query))  "what share of the query does it match"
+#
+# The evidence is weak only when BOTH are low -- a long vague query whose
+# best match shares one or two common words. A one-word query that matches
+# its word exactly has low strength but full coverage and is left alone; a
+# long query that matches several names has low coverage but high strength
+# and is left alone too. Each reading is a linear ramp between its bounds;
+# the larger ramp scales the FTS weight between ``MIN`` and its normal value.
+# Bounds were set from the Spanish notes in experiments/LAB-recuperacion-es.md
+# (vague queries: strength ~1.0, coverage p90 0.36; keyword-bearing queries:
+# strength ~2.3) and are stable under +-0.25 shifts of the strength bounds.
 _LEXICAL_GATE_LOW = 1.0
 _LEXICAL_GATE_HIGH = 2.0
+_LEXICAL_GATE_COVERAGE_LOW = 0.4
+_LEXICAL_GATE_COVERAGE_HIGH = 0.6
 _LEXICAL_GATE_MIN_FTS_WEIGHT = 0.1
 
 # FTS5 tokenizers a store may be created with. The value is interpolated

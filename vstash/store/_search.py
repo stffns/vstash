@@ -31,6 +31,8 @@ from ..validation import validate_search_input
 from ._stopwords import drop_stopwords as _drop_stopwords
 from ._common import (
     _ADAPTIVE_RRF_LONG_QUERY,
+    _LEXICAL_GATE_COVERAGE_HIGH,
+    _LEXICAL_GATE_COVERAGE_LOW,
     _LEXICAL_GATE_HIGH,
     _LEXICAL_GATE_LOW,
     _LEXICAL_GATE_MIN_FTS_WEIGHT,
@@ -451,12 +453,14 @@ class _SearchEngineMixin:
                 typical retrieval-filter UX expectations.
             lexical_gate: Opt-in (default ``False`` = published pipeline).
                 Scales the FTS weight by how strong the keyword evidence
-                for *this* query is: the BM25 score of the best FTS5 hit in
-                units of ``ln(N)``. A query whose best keyword match only
-                shares a common word or two (a vague or paraphrased query)
-                has its FTS weight lowered toward 0.1, so keyword-only
-                noise cannot outrank the vector hits; a query that matches
-                rare terms keeps the weight it had. Hybrid mode only.
+                for *this* query is, read off the BM25 score of the best
+                FTS5 hit: how many rare terms it matches and what share of
+                the query it covers. A query whose best keyword match only
+                shares a common word or two out of several (a vague or
+                paraphrased query) has its FTS weight lowered toward 0.1,
+                so keyword-only noise cannot outrank the vector hits; a
+                query that matches rare terms, or a short query matched
+                in full, keeps the weight it had. Hybrid mode only.
             drop_stopwords: Opt-in (default ``False``). Remove Spanish and
                 English function words ("de", "la", "the", "of"...) from the
                 keyword side of the query: they are left out of the FTS5
@@ -946,11 +950,21 @@ class _SearchEngineMixin:
             # negative = better), so the first row carries the strength of
             # the best keyword match for free.
             if lexical_gate and _mode == "hybrid" and fts_weight > _LEXICAL_GATE_MIN_FTS_WEIGHT:
-                strength = 0.0
+                ramp = 0.0
                 if fts_rows and total_chunks > 1:
-                    strength = -float(fts_rows[0]["fts_rank"]) / math.log(total_chunks)
-                ramp = (strength - _LEXICAL_GATE_LOW) / (_LEXICAL_GATE_HIGH - _LEXICAL_GATE_LOW)
-                ramp = min(1.0, max(0.0, ramp))
+                    best_bm25 = -float(fts_rows[0]["fts_rank"])
+                    max_idf = math.log(total_chunks)
+                    strength = best_bm25 / max_idf
+                    idf_dict, _ = self._build_idf_cache()
+                    terms = self._stem_terms([w for w in words if len(w) > 1])
+                    asked = sum(idf_dict.get(t, max_idf) for t in terms)
+                    coverage = min(1.0, best_bm25 / asked) if asked > 0 else 0.0
+                    ramp = max(
+                        (strength - _LEXICAL_GATE_LOW) / (_LEXICAL_GATE_HIGH - _LEXICAL_GATE_LOW),
+                        (coverage - _LEXICAL_GATE_COVERAGE_LOW)
+                        / (_LEXICAL_GATE_COVERAGE_HIGH - _LEXICAL_GATE_COVERAGE_LOW),
+                    )
+                    ramp = min(1.0, max(0.0, ramp))
                 gated = (
                     _LEXICAL_GATE_MIN_FTS_WEIGHT
                     + (fts_weight - _LEXICAL_GATE_MIN_FTS_WEIGHT) * ramp
