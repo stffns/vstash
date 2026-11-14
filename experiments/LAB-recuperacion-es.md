@@ -2,7 +2,7 @@
 
 14 de noviembre de 2026 · rama `pelops/lab-recuperacion-es-ef71b8` · vstash 0.39.0 (develop, `bb6d5bc`)
 
-## Configuración recomendada (actualizada 14-nov 20:55: fusión que no se pisa)
+## Configuración recomendada
 
 **Primera etapa para un reordenador** (lo que importa es que la buena entre entre las 50):
 
@@ -32,7 +32,44 @@ recomendación (ver «El híbrido no se pisa»). Con vstash 0.39.0 sin esta rama
 `adaptive_rrf=False, distance_cutoff=2.0`, que es `R50` sin la compuerta (pierde el primer
 puesto de las consultas vagas: 5,3 % frente a 11,9 %).
 
-<!-- RESUMEN-FINAL -->
+<!-- T: defecto R1 R50 sin-adapt-corte2 -->
+| Configuración | siempre 1ª | siempre en 20 | vagas 1ª | vagas en 20 | vagas en 50 | MIRACL 1ª | MIRACL en 20 | SciFact NDCG@10 | NFCorpus NDCG@10 |
+|---|---|---|---|---|---|---|---|---|---|
+| `defecto` | 72,8 | 95,0 | 5,6 | 36,5 | 59,3 | 38,1 | 81,9 | 72,5 | 35,9 |
+| `R1` | 73,1 (+0,3) | 95,8 (+0,8) | 11,7 (+6,1 *) | 47,4 (+10,8 *) | 68,8 (+9,4 *) | 37,8 (-0,3) | 84,6 (+2,6 *) | 73,3 (+0,8 *) | 36,2 (+0,3) |
+| `R50` | 71,8 (-1,0) | 96,5 (+1,5 *) | 11,9 (+6,4 *) | 54,6 (+18,1 *) | 72,9 (+13,6 *) | 40,6 (+2,5) | 89,2 (+7,3 *) | 73,2 (+0,7) | 35,4 (-0,5) |
+| `sin-adapt-corte2` | 71,9 (-0,8) | 96,4 (+1,4 *) | 5,3 (-0,3) | 51,5 (+15,0 *) | 71,1 (+11,8 *) | 40,6 (+2,5) | 89,2 (+7,3 *) | 73,2 (+0,7) | 35,4 (-0,5) |
+<!-- /T -->
+
+El examen (840 notas nuevas de rotten; primera · entre 20 · entre 50 por tipo de consulta):
+
+<!-- T: --columnas=examen defecto R1 R50 sin-adapt-corte2 -->
+| Configuración | nombrada 1ª | nombrada en 20 | nombrada en 50 | media 1ª | media en 20 | media en 50 | vaga 1ª | vaga en 20 | vaga en 50 |
+|---|---|---|---|---|---|---|---|---|---|
+| `defecto` | 76,5 | 96,3 | 98,5 | 69,2 | 93,8 | 98,1 | 7,3 | 35,6 | 59,4 |
+| `R1` | 76,1 (-0,5) | 97,0 (+0,7) | 99,0 (+0,6 *) | 69,0 (-0,1) | 96,1 (+2,3 *) | 98,6 (+0,5) | 9,6 (+2,4 *) | 45,1 (+9,5 *) | 66,4 (+7,0 *) |
+| `R50` | 74,2 (-2,4 *) | 97,6 (+1,3 *) | 99,5 (+1,1 *) | 68,3 (-0,8) | 95,8 (+2,0 *) | 98,7 (+0,6) | 9,4 (+2,1) | 52,7 (+17,1 *) | 71,8 (+12,4 *) |
+| `sin-adapt-corte2` | 74,3 (-2,3 *) | 97,5 (+1,2 *) | 99,5 (+1,1 *) | 69,0 (-0,1) | 96,1 (+2,3 *) | 98,7 (+0,6) | 6,5 (-0,7) | 49,3 (+13,7 *) | 71,2 (+11,8 *) |
+<!-- /T -->
+
+Entre paréntesis, la diferencia con la configuración por defecto; el asterisco, que su
+intervalo del 95 % (remuestreo emparejado) no contiene el cero. `sin-adapt-corte2` es lo que
+se puede pedir a vstash 0.39.0 sin esta rama.
+
+**Lo que más mueve, por orden** (examen, consultas vagas, «entre 50»): arreglar la fusión
+59,4 % → 71,8 %; añadir al guardar términos escritos por un modelo local, → 78,1 %
+(experimento 7, prototipo). Con documentos de varios trozos, no deduplicar antes del
+reordenador vale otros 2 a 9 puntos (experimento 10). Con nombres mal oídos, una clave
+fonética recupera 3 puntos de «entre 50» (experimento 9, prototipo).
+
+**Tiempo de `search`** (sin vectorizar la consulta; el menor de cinco vueltas con la
+máquina libre): notas viejas 2,25 ms por defecto · 2,41 `R1` · 2,19 `R50`; SciFact 7,97 ·
+8,47 · 8,83. Las opciones nuevas no cuestan. En MIRACL (146.750 pasajes; una pasada, con la
+máquina compartida): 177–205 ms por defecto y 176 ms `R50`. Con documentos de varios
+trozos, quitar la MMR ahorra tiempo: 5,20 → 2,12 ms pidiendo 50. No hay que reindexar nada.
+
+**Lo que no arregla ninguna configuración**: con consultas vagas la buena entra en la lista
+pero es la primera solo el 9–15 % de las veces. Ese puesto es del reordenador.
 
 ## Cómo se midió
 
@@ -122,7 +159,8 @@ Se cuenta por separado quién la tenía. Orden `pisoton` del banco.
 | final-media (840) | 50 | 7 (4 + 3) | 4 (3 + 1) | 3 (0 + 3) | 98,1 → 98,6 → 98,7 | 95,2 |
 | final-vaga (840) | 20 | 197 (190 + 7) | 117 (105 + 12) | 55 (39 + 16) | 35,6 → 45,1 → 52,7 | 53,5 |
 | final-vaga (840) | 50 | 135 (131 + 8) | 76 (65 + 11) | 31 (19 + 12) | 59,4 → 66,4 → 71,8 | 70,7 |
-| miracl | — | (sin medir) |
+| miracl (648) | 20 | 63 (34 + 34) | 48 (3 + 46) | 27 (4 + 24) | 81,9 → 84,7 → 89,2 | 82,3 |
+| miracl (648) | 50 | 40 (27 + 16) | 41 (2 + 39) | 15 (4 + 11) | 90,7 → 90,6 → 94,9 | 88,6 |
 | scifact (300) | 20 | 15 (5 + 11) | 11 (0 + 11) | 8 (3 + 5) | 89,0 → 90,3 → 91,3 | 88,0 |
 | scifact (300) | 50 | 12 (7 + 5) | 9 (2 + 7) | 4 (2 + 2) | 93,0 → 94,0 → 96,0 | 93,0 |
 | nfcorpus (323) | 20 | 11 (7 + 5) | 8 (5 + 4) | 11 (6 + 5) | 76,8 → 77,7 → 76,8 | 76,2 |
@@ -205,7 +243,7 @@ candidatos por palabras para rellenar la cola), así que sale de la recomendaci�
 | `R1` | 73,1 (+0,3) | 95,8 (+0,8) | 11,7 (+6,1 *) | 47,4 (+10,8 *) | 68,8 (+9,4 *) | 37,8 (-0,3) | 84,6 (+2,6 *) | 73,3 (+0,8 *) | 36,2 (+0,3) |
 | `R50` | 71,8 (-1,0) | 96,5 (+1,5 *) | 11,9 (+6,4 *) | 54,6 (+18,1 *) | 72,9 (+13,6 *) | 40,6 (+2,5) | 89,2 (+7,3 *) | 73,2 (+0,7) | 35,4 (-0,5) |
 | `sin-adapt-corte2` | 71,9 (-0,8) | 96,4 (+1,4 *) | 5,3 (-0,3) | 51,5 (+15,0 *) | 71,1 (+11,8 *) | 40,6 (+2,5) | 89,2 (+7,3 *) | 73,2 (+0,7) | 35,4 (-0,5) |
-| `rec+sw` | 74,6 (+1,8) | 96,4 (+1,4 *) | 14,0 (+8,5 *) | 56,0 (+19,4 *) | 74,0 (+14,7 *) | 39,8 (+1,7) | 87,8 (+5,9 *) | 73,1 (+0,6) | 36,1 (+0,2) |
+| `rec+sw` | 74,6 (+1,8) | 96,4 (+1,4 *) | 14,0 (+8,5 *) | 56,0 (+19,4 *) | 74,0 (+14,7 *) | 39,7 (+1,5) | 87,8 (+5,9 *) | 73,1 (+0,6) | 36,1 (+0,2) |
 | `vec-corte25` | 55,6 (-17,2 *) | 91,2 (-3,8 *) | 16,0 (+10,4 *) | 56,8 (+20,3 *) | 74,4 (+15,1 *) | — | — | 72,0 (-0,5) | 33,7 (-2,2 *) |
 <!-- /T -->
 
@@ -328,7 +366,7 @@ ancha, que plegaba acentos, daba las mismas cifras (±0,3) en los cuatro bancos 
 | `sw` | 74,4 (+1,7) | 95,3 (+0,3) | 3,9 (-1,7 *) | 36,0 (-0,6) | 59,6 (+0,3) | 40,1 (+2,0 *) | 84,6 (+2,6 *) | 72,6 (+0,1) | 35,9 (+0,0) |
 | `vacias/fts` | 69,4 (-3,3) | 91,1 (-3,9 *) | 1,8 (-3,8 *) | 6,1 (-30,4 *) | 7,1 (-52,2 *) | — | — | 68,1 (-4,4 *) | — |
 | `compuerta-corte2` | 73,6 (+0,8) | 96,1 (+1,1) | 13,1 (+7,5 *) | 56,8 (+20,3 *) | 74,0 (+14,7 *) | 38,0 (-0,2) | 84,4 (+2,5 *) | 73,1 (+0,6) | 36,3 (+0,4) |
-| `rec+sw` | 74,6 (+1,8) | 96,4 (+1,4 *) | 14,0 (+8,5 *) | 56,0 (+19,4 *) | 74,0 (+14,7 *) | 39,8 (+1,7) | 87,8 (+5,9 *) | 73,1 (+0,6) | 36,1 (+0,2) |
+| `rec+sw` | 74,6 (+1,8) | 96,4 (+1,4 *) | 14,0 (+8,5 *) | 56,0 (+19,4 *) | 74,0 (+14,7 *) | 39,7 (+1,5) | 87,8 (+5,9 *) | 73,1 (+0,6) | 36,1 (+0,2) |
 <!-- /T -->
 
 - **Sola, con los pesos de hoy: mixto.** Mejora MIRACL (primera +2,5, de +0,6 a +4,3) y no
@@ -339,7 +377,8 @@ ancha, que plegaba acentos, daba las mismas cifras (±0,3) en los cuatro bancos 
   primera 73,9 → 74,9; MIRACL primera 38,0 → 39,8 y entre 20 84,4 → 87,8; vagas igual
   (56,4 → 55,3 entre 20, dentro del ruido); inglés igual.
 - **Regalo:** la búsqueda por palabras deja de recorrer las listas enormes de «de», «la»,
-  «the»; el tiempo de `search` baja a menos de la mitad (ver costes).
+  «the»: en MIRACL el tiempo de `search` baja a la mitad (177 → 86 ms) y en las notas y
+  SciFact, un 25 % (2,25 → 1,71 ms; 7,97 → 5,84 ms).
 - **En el examen, negativo para «entre 50»** (medido después, apartado 0): con la misma
   fusión, quitar las palabras vacías baja «entre 50» de 99,0 % a 98,0 % en las consultas
   nombradas y de 98,6 % a 97,9 % en las medias. Menos términos en la consulta son menos
@@ -707,7 +746,48 @@ contra la misma fusión sin términos.
   modelo inventa un término engañoso, esa nota casará con consultas que no le tocan: no se
   midió cuánto ruido mete en consultas de asuntos ausentes (`ausentes.json` de rotten).
 
-<!-- EXP8 -->
+## 8. Campos extraídos al guardar (NuExtract)
+
+**Idea.** Que un extractor saque de cada nota nombres, fechas, cantidades y asunto, y que
+una coincidencia en esos campos pese más.
+
+**Qué se hizo.** `numind/NuExtract3-mlx-4bits` (2,8 GB, en local con `mlx-vlm`) con una
+ficha fija: `personas`, `organizaciones_y_proyectos`, `fechas`, `cantidades` (literales) y
+`asunto` (una frase). Extrae bien: 720 notas, ninguna ficha ilegible, 1,2 personas, 1,3
+organizaciones, 1,0 fechas y 1,3 cantidades por nota. Ejemplo:
+
+> `{"personas": ["Elena Castaño"], "organizaciones_y_proyectos": ["Proyecto Lumen"],
+> "fechas": ["14 de marzo de 2025"], "cantidades": ["5 a 2"], "asunto": "Aprobación de
+> sustitución de MongoDB por PostgreSQL 16 para el registro de auditoría en el Proyecto Lumen."}`
+
+Para que pesen más sin tocar el esquema, los campos literales se añadieron dos veces al
+texto indexado por palabras (`campos`), y el asunto una vez (`asunto`). Fusión `R50`, notas
+viejas (ajuste); diferencias contra `R50` sin campos.
+
+| Índice de palabras | De siempre: primera · entre 20 · entre 50 | Vagas: primera · entre 5 · entre 50 |
+|---|---|---|
+| nota (hoy) | 71,8 · 96,5 · 97,8 | 11,9 · 27,5 · 72,9 |
+| + nombres, fechas y cantidades | 72,5 (+0,7) · 96,5 · 97,8 | **6,8 (−5,1 \*)** · 21,9 (−5,6 \*) · 71,8 |
+| + asunto | 73,2 (+1,4) · 96,8 · 98,2 | 8,5 (−3,5 \*) · 22,1 (−5,4 \*) · 73,1 |
+| + los dos | 73,1 (+1,2) · 96,9 · 98,2 | 7,2 (−4,7 \*) · 19,7 (−7,8 \*) · 73,2 |
+| + términos del experimento 7 | 74,7 (+2,9 \*) · 97,4 · 98,6 | 14,3 (+2,4 \*) · 34,3 (+6,8 \*) · 79,0 |
+
+- **Negativo.** Con consultas que nombran, los nombres, fechas y cantidades ya estaban en la
+  nota y ya casaban: repetirlos no cambia nada medible (+0,7 en primera, dentro del ruido;
+  solo por palabras, 69,6 % frente a 70,6 %). Con consultas vagas **empeora los primeros
+  puestos** (primera de 11,9 % a 6,8 %): el texto repetido infla el BM25 de cualquier
+  coincidencia, la compuerta deja de cerrar y vuelve el pisotón.
+- El asunto, que es lo único que añade palabras nuevas, ayuda un poco a las de siempre y
+  tampoco arregla las vagas: es una frase que resume con las mismas palabras de la nota. Los
+  términos del experimento 7, pensados para la consulta y no para resumir, hacen lo que el
+  asunto no hace.
+- **Coste al guardar: 0,95 s por nota**, más del doble que el experimento 7.
+- **Lo que no se probó**, y por eso el «negativo» es de esta forma de usarlos y no de la idea:
+  un índice con los campos en columnas propias y pesos por columna (FTS5 lo permite, pero es
+  un cambio de esquema); usar los campos para filtrar («notas donde aparece Elena») en vez
+  de para puntuar; y el examen (se paró la extracción de las 840 notas nuevas al ver el
+  resultado en las de ajuste). Para filtrar por persona o fecha la extracción sí sirve tal
+  como sale; para ordenar, no.
 
 
 
@@ -817,7 +897,13 @@ trozo por documento.
 | examen, medias | 68,3 · 87,9 · 95,8 · 98,7 | 68,3 · 83,1 · 89,4 · 94,6 | · 85,4 · 93,8 · 98,0 | · 87,1 · 95,5 · 98,8 | · 82,7 · 87,7 · 88,5 |
 | examen, vagas | 9,4 · 25,4 · 52,7 · 71,8 | 9,4 · 25,0 · 46,5 · 62,4 | · 25,0 · 49,8 · 68,8 | · 25,4 · 52,3 · 71,0 | · 25,0 · 46,5 · 56,9 |
 
-<!-- MIRACL-DOC -->
+**Control público, MIRACL por artículos** (pidiendo 20, `R50`): sin deduplicar, primera
+40,6 % · alguna buena entre 3 63,7 % · entre 20 89,2 % · NDCG@10 39,0. Con `mmr_lambda=0.5`:
+40,6 · 60,6 · **83,8** · **32,7** (entre 20 −5,4, de −7,6 a −3,4; NDCG@10 −6,3, de −7,4 a
+−5,3). Con `0.9`: entre 20 igual y NDCG@10 −1,3. Con `1.0`: 83,3 y 32,5. Con la configuración
+por defecto de vstash, MIRACL por artículos da 79,2 % entre 20, frente a 81,9 % con un
+pasaje por documento. Aquí el efecto es doble: MIRACL tiene a menudo varios pasajes buenos
+del mismo artículo, y la MMR quita justo esos.
 
 Cuántas veces el trozo bueno estaba dentro de `top_k` antes de la MMR y fuera después
 (`R50`, `mmr_lambda=0.5`):
@@ -909,17 +995,26 @@ Lo que no se midió es su caso de uso real (el mismo contenido repetido en mucho
    en inglés. Sobre una fusión ya arreglada no se distingue (87,5 % frente a 87,8 %). Buen
    candidato a valor por defecto para índices nuevos en una versión mayor, por corrección
    más que por cifras («¿Quién» deja de ser `¿quién`).
-8. `drop_stopwords` — más rápida (menos de la mitad de tiempo) y mejor en MIRACL, pero cuesta
-   recuerdo profundo en el examen. Solo para buscar sin reordenador.
-9. `min_vec_keep` — funciona pero no mejora a `distance_cutoff=2.0`. Se puede quitar.
+8. `drop_stopwords` — más rápida (la mitad de tiempo en un índice grande) y mejor en MIRACL,
+   pero cuesta recuerdo profundo en el examen. Solo para buscar sin reordenador.
+9. `mmr_lambda=None` — apaga la deduplicación dentro del documento, que antes no se podía
+   apagar. Para quien tenga un reordenador detrás. Y la corrección del consejo del trazado
+   (`1.0` no desactiva nada).
+10. `min_vec_keep` — funciona pero no mejora a `distance_cutoff=2.0`. Se puede quitar.
 
 **Merece una rama propia (prototipos del banco, no están en vstash):**
-<!-- CIERRE-NUEVOS -->
+- **Términos escritos por un modelo al guardar** (experimento 7): lo más prometedor del lab
+  para las consultas vagas. Pide un campo propio en el índice de palabras (que se busque y no
+  se devuelva) y un gancho al guardar; el modelo es de quien llama.
+- **Clave fonética para español** (experimento 9): segundo índice de palabras, por idioma.
+  Antes de construirlo, medir con transcripciones reales.
 
 **No llevar:**
 - El modo «a fondo» por unión, las plazas reservadas y el intercalado: redundantes o peores
   que arreglar la fusión.
 - La compuerta gradual: pisa por el lado de las palabras.
+- Campos de NuExtract repetidos en el texto (experimento 8): no ayudan a ordenar y estropean
+  las vagas. La extracción en sí es buena; su sitio es filtrar, no puntuar.
 - Trigramas y `unicode61` sin raíces: pierden en inglés y no ganan en español, tampoco con
   nombres mal oídos.
 - Topes o pesos adaptativos retocados: cada variante pierde en algún banco.
@@ -940,26 +1035,34 @@ PyTorch, sin ONNX, así que no entra por FastEmbed ni por la vía ONNX de vstash
 
 ## Lo que quedó sin verificar
 
-- **Inglés:** solo SciFact y NFCorpus. FiQA, SciDocs y ArguAna no se pasaron (ArguAna usa la
-  rama de consultas largas, que estas opciones no tocan, pero no se midió). Tampoco los
-  modelos afinados v2/v3.
-- **Consultas reales de Jay:** las vagas son un extremo artificial y las de siempre el otro;
-  MIRACL son preguntas a Wikipedia. No hay consultas reales medidas.
-- **Un trozo por documento** en todos los bancos: no se midió la interacción de la compuerta
-  con MMR ni con documentos de muchos trozos.
-- **Otros backends de vectores** (snapvec, IVFPQ): no probados; `min_vec_keep` y la
-  compuerta no dependen de ellos, pero no hay medida.
-- `rebuild_fts` tiene tests de corrección pero no se midió su tiempo ni se probó sobre una
-  base grande real. Los trigramas no se midieron en MIRACL.
-- La compuerta se ajustó con las notas y se corrigió mirando NFCorpus; su control limpio es
-  MIRACL, donde casi no actúa (5 % de las consultas). Falta un banco de consultas vagas que
-  no sea el inventado.
-- Los intervalos son de remuestreo sobre las consultas de cada banco; no hay repetición con
-  otras semillas de datos ni corrección por haber mirado muchas configuraciones.
+- **Inglés:** solo SciFact y NFCorpus. FiQA, SciDocs y ArguAna no se pasaron, ni los modelos
+  afinados v2/v3. `R50` pierde «alguna buena entre 10» en NFCorpus; `R1` no pierde.
+- **El examen ya no es del todo limpio**: la compuerta de todo o nada se eligió mirándolo
+  (apartado 0). MIRACL sí lo es para `R1` y `R50`. Convendría un tercer conjunto.
+- **Consultas reales de Jay y transcripciones reales**: todo son consultas escritas por un
+  modelo; los nombres mal oídos salen de reglas.
+- **Experimentos 7 a 9 son prototipos del banco**, no código de vstash: el texto extra se
+  metió en el trozo. El 7 y el 9 no se midieron en MIRACL ni en inglés; el 8 no se pasó por
+  el examen ni se probó con columnas con peso.
+- **Asuntos ausentes** (`ausentes.json` de rotten): no se midió si alguna opción hace que la
+  búsqueda traiga más ruido cuando no hay nada que traer. La compuerta cerrada devuelve el
+  orden de los vectores, que nunca es vacío.
+- **MMR**: medida con trozos que son notas hermanas y con MIRACL por artículos; no con
+  documentos largos troceados por vstash (trozos de 1.024 con solape), que es el caso real.
+- **Otros backends de vectores** (snapvec, IVFPQ), `recency_boost`, `min_relevance` y
+  `usage_prior`: no medidos.
+- `rebuild_fts` tiene tests de corrección pero no se midió su tiempo en una base grande.
+- La sensibilidad de los umbrales de la compuerta (fuerza 1,0; cobertura 0,4) se midió con la
+  versión gradual; con la de todo o nada solo se probaron 1,0 · 1,25 · 1,5 de fuerza en las
+  notas viejas (1,5 ya daña las de siempre: entre 5 −3,5).
+- Los intervalos son de remuestreo sobre las consultas de cada banco, sin corrección por
+  haber mirado muchas configuraciones (más de cien).
 
 ## Coste del laboratorio
 
-Todo en local, sin LLM ni API. Lo más caro fue vectorizar MIRACL una vez (146.750 pasajes,
-unos 19 minutos de reloj con nueve núcleos ocupados, 3,3 GB de memoria en el pico) y cada pasada de MIRACL
-(648 consultas, 1–3 minutos). Los vectores y los índices quedan en
-`experiments/data/lab_es/` (ignorado por git, ~1,5 GB; se puede borrar).
+Todo en local, sin API. Lo más caro: vectorizar MIRACL una vez (146.750 pasajes, unos 19
+minutos de reloj con nueve núcleos, 3,3 GB de memoria en el pico) y cada pasada de MIRACL
+(648 consultas, 1–3 minutos). Los dos modelos de los experimentos 7 y 8 se cargaron de uno
+en uno: gemma-4-e2b (3,3 GB) 11 minutos para 1.560 notas; NuExtract (2,8 GB) 11 minutos
+para 720. Vectores, índices, resultados por consulta y textos enriquecidos quedan en
+`experiments/data/lab_es/` (ignorado por git, ~2 GB; se puede borrar).
