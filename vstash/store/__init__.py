@@ -187,7 +187,8 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         # --- Query result cache (opt-in LRU) ---
         self._cache_config: CacheConfig = cache or CacheConfig()
         self._cache_epoch: int = 0
-        self._query_cache: OrderedDict[int, list[SearchResult]] = OrderedDict()
+        # Value: (results, last_best_distance) so a hit restores the tier signal.
+        self._query_cache: OrderedDict[int, tuple[list[SearchResult], float]] = OrderedDict()
         self._cache_lock = threading.Lock()
 
         # --- SnapVec backend (optional) ---

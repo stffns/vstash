@@ -293,6 +293,10 @@ class TestRegressionsAgainstOldDispatch:
         ("model_name", "expected_name"),
         [
             ("google/embeddinggemma-300m", "gemma"),
+            ("jinaai/jina-embeddings-v5-text-nano-retrieval", "jina_v5"),
+            # Only pinned v5 names take the jina_v5 path; older Jina models
+            # that FastEmbed ships stay on the default backend.
+            ("jinaai/jina-embeddings-v2-base-es", "default"),
             # bge models go through the default (onnx/mlx) backend,
             # not hf_onnx -- the hf_onnx heuristic is reserved for the
             # short-lived HF ONNX adapter we shipped in v0.32.
