@@ -16,6 +16,7 @@ y cada medida deja el resultado consulta a consulta para poder comparar empareja
 
     python experiments/lab_recuperacion_es.py medir --bancos siempre vagas --configs defecto vec
     python experiments/lab_recuperacion_es.py tabla [--bancos ...] [--configs ...] [--md]
+    python experiments/lab_recuperacion_es.py resumen --configs defecto 'rec+sw'
     python experiments/lab_recuperacion_es.py tiempos --bancos siempre --configs defecto a-fondo
 
 Los intervalos son de remuestreo emparejado contra la configuración «defecto» (5.000
@@ -606,6 +607,43 @@ def tabla(bancos: list[str], configs: list[str], md: bool) -> None:
             print(f"| {c} | " + " | ".join(celdas) + " |" if md else linea(banco, c))
 
 
+# Medidas principales de cada banco, para la tabla de una fila por configuración.
+RESUMEN: list[tuple[str, str, Callable]] = [
+    ("siempre", "siempre 1ª", _en(1)),
+    ("siempre", "siempre en 20", _en(20)),
+    ("vagas", "vagas 1ª", _en(1)),
+    ("vagas", "vagas en 20", _en(20)),
+    ("vagas", "vagas en 50", _en(50)),
+    ("miracl", "MIRACL 1ª", _en(1)),
+    ("miracl", "MIRACL en 20", _en(20)),
+    ("scifact", "SciFact NDCG@10", lambda r: r["ndcg"]),
+    ("nfcorpus", "NFCorpus NDCG@10", lambda r: r["ndcg"]),
+]
+
+
+def resumen(configs: list[str]) -> None:
+    """Una fila por configuración: valor, diferencia con «defecto» y * si el intervalo del
+    95 % de esa diferencia no contiene el cero. «—» = no medido."""
+    print("| Configuración | " + " | ".join(t for _, t, _ in RESUMEN) + " |")
+    print("|---|" + "---|" * len(RESUMEN))
+    for c in configs:
+        celdas = []
+        for banco, _, f in RESUMEN:
+            if not _salida(banco, c).exists():
+                celdas.append("—")
+                continue
+            r, base = np.load(_salida(banco, c)), np.load(_salida(banco, "defecto"))
+            v = f(r)
+            texto = f"{v.mean() * 100:.1f}"
+            if c != "defecto":
+                dif = v - f(base)
+                lo, hi = _intervalo(dif, r["grupos"])
+                texto += f" ({dif.mean() * 100:+.1f}{'' if lo <= 0 <= hi else ' *'})"
+            celdas.append(texto.replace(".", ","))
+        if any(x != "—" for x in celdas):
+            print(f"| `{c}` | " + " | ".join(celdas) + " |")
+
+
 def tiempos(bancos: list[str], configs: list[str], vueltas: int = 5) -> None:
     """Milisegundos por búsqueda (sin vectorizar la consulta): el menor de varias vueltas."""
     for nombre in bancos:
@@ -627,7 +665,7 @@ def tiempos(bancos: list[str], configs: list[str], vueltas: int = 5) -> None:
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("orden", choices=["medir", "tabla", "tiempos"])
+    p.add_argument("orden", choices=["medir", "tabla", "resumen", "tiempos"])
     p.add_argument("--bancos", nargs="*", default=["siempre", "vagas"])
     p.add_argument("--configs", nargs="*", default=None)
     p.add_argument("--md", action="store_true")
@@ -638,6 +676,8 @@ if __name__ == "__main__":
     cfgs = [c for patron in (a.configs or ["*"]) for c in CONFIGS if fnmatch.fnmatch(c, patron)]
     if a.orden == "medir":
         medir(a.bancos, cfgs)
+    elif a.orden == "resumen":
+        resumen(cfgs)
     elif a.orden == "tiempos":
         tiempos(a.bancos, cfgs)
     else:

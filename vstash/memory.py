@@ -416,6 +416,15 @@ class Memory:
                 try ``0.95`` when one answer is mirrored across many
                 documents (audit logs, re-ingested revisions) and floods
                 every result slot.
+            distance_cutoff: Override the store's distance cutoff for this
+                call (default ``None`` = the store default, 1.3225).
+            lexical_gate: Opt-in. Lower the keyword weight when the best
+                keyword match for this query is weak (vague or paraphrased
+                queries). See ``VstashStore.search``.
+            drop_stopwords: Opt-in. Leave Spanish / English function words
+                out of the keyword side of the query.
+            min_vec_keep: Opt-in. The distance cutoff never leaves fewer
+                than this many vector candidates.
             vec_weight: Pin the RRF vector weight for this single call,
                 overriding adaptive RRF. Valid range ``[0.0, 1.0]``.
                 Pass ``None`` (default) to keep adaptive per-query
