@@ -126,7 +126,11 @@ vacías de la consulta limpia la parte de palabras.
 **Cambios.** `VstashStore(fts_tokenizer=...)` con una lista cerrada de cuatro valores (va
 dentro del DDL, así que no es texto libre). Raíces: Snowball en Python aplicado en el banco
 al texto indexado y a la consulta (prototipo; ver «coste»). Palabras vacías:
-`search(drop_stopwords=True)`, lista corta de español e inglés, solo gramaticales.
+`search(drop_stopwords=True)`, lista corta de español e inglés: artículos, preposiciones,
+conjunciones, pronombres, interrogativos y formas auxiliares de ser/estar/haber. Se dejaron
+fuera a propósito las que también son palabras de contenido («estado», «era», «nada»,
+«will», «may», «who») y los acentos cuentan («te» se quita, «té» no). Una primera lista más
+ancha, que plegaba acentos, daba las mismas cifras (±0,3) en los cuatro bancos ligeros.
 
 ### 1a. Tokenizador
 
@@ -223,7 +227,7 @@ cuenta como rarísimo (IDF máxima).
 |---|---|---|---|---|---|
 | Peso medio que reciben las palabras | 0,49 | 0,53 | 0,16 | 0,35 | 0,11 (mediana) |
 | Consultas con más peso para palabras que para vectores | 52 % | 76 % | 1 % | 35 % | ~0 % |
-| Términos de la consulta que no existen en el índice | 24 % | 31 % | 2 % | — | 0,2 % |
+| Términos de la consulta que no existen en el índice | 24 % | 31 % | 2 % | 7 % | 0,2 % |
 
 1. En un índice pequeño casi todo es «raro»: el 76 % de las consultas vagas recibe más peso
    para las palabras que para los vectores, empujado además por ese 31 % de términos que no
@@ -293,9 +297,13 @@ y el que le hubiera dado la regla de siempre, y lo que se quita va a los vectore
   entera. Por eso se añadió la cobertura. Dicho claro: NFCorpus se usó para descubrir ese
   fallo, así que para esta regla ya no es un control limpio; sí lo es MIRACL, que se midió
   después y no participó en ningún ajuste.
-- Los límites de la fuerza se fijaron a ojo sobre las notas y aguantan desplazarlos ±0,25 o
-  ±0,5 (`regla-fuerza-*` en el banco: vagas entre 20 de 51,9 % a 53,1 %, siempre primera de
-  72,2 % a 73,3 %).
+- Sensibilidad. Los límites de la fuerza se fijaron a ojo sobre las notas; desplazarlos
+  (1,25–1,75; 1,0–1,5; 1,5–2,5, medido con el prototipo de solo fuerza `regla-fuerza-*`) deja
+  las vagas entre 20 de 51,9 % a 53,1 % y la primera de las de siempre de 72,2 % a 73,3 %.
+  Los de la cobertura (0,4–0,6) se pusieron entre el p90 de las vagas (0,36) y el p10 de
+  NFCorpus (0,52), es decir, **después de ver NFCorpus**; con 0,3–0,5, 0,5–0,7 y 0,4–0,8 la
+  configuración recomendada no cambia más de 0,6 puntos en ninguno de los cuatro bancos
+  ligeros (NFCorpus 36,0–36,1; vagas entre 20 54,7–55,3). En MIRACL no se repitió.
 - Cuánto actúa: en el 99 % de las vagas (cierra del todo en el 53 %; peso medio de las
   palabras de 0,53 a 0,15), en el 40 % de las de siempre pero poco (0,49 → 0,41), en el 12 %
   de NFCorpus, el 7 % de SciFact y el 5 % de MIRACL.
@@ -500,8 +508,9 @@ rechazando valores desconocidos.
    NFCorpus) y por los modelos publicados v2/v3.
 5. `drop_stopwords` — positivo junto con la compuerta y más rápido; sola empeora las
    consultas vagas, así que no debe activarse suelta.
-6. `distance_cutoff=2.0` — ya existía. Mejora el recuerdo en los cinco bancos; sola empeora
-   los primeros puestos de las consultas vagas, así que también va con la compuerta. El
+6. `distance_cutoff=2.0` — ya existía. Sola mejora el recuerdo en MIRACL y en SciFact y no
+   mueve las consultas de siempre ni NFCorpus, pero empeora los primeros puestos de las
+   consultas vagas (primera 5,6 → 4,2), así que va con la compuerta. El
    valor por defecto (1,3225) cuesta 0,8 puntos de NDCG@10 en SciFact; merece revisarse con
    el BEIR completo, pero cambiarlo mueve los números publicados.
 7. `fts_tokenizer="porter unicode61 remove_diacritics 2"` y `rebuild_fts` — ganancia
@@ -542,6 +551,6 @@ rechazando valores desconocidos.
 ## Coste del laboratorio
 
 Todo en local, sin LLM ni API. Lo más caro fue vectorizar MIRACL una vez (146.750 pasajes,
-unos 19 minutos de CPU a nueve núcleos, 3,3 GB de memoria en el pico) y cada pasada de MIRACL
+unos 19 minutos de reloj con nueve núcleos ocupados, 3,3 GB de memoria en el pico) y cada pasada de MIRACL
 (648 consultas, 1–3 minutos). Los vectores y los índices quedan en
 `experiments/data/lab_es/` (ignorado por git, ~1,5 GB; se puede borrar).
