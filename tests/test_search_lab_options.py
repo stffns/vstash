@@ -251,3 +251,49 @@ class TestMinVecKeep:
             assert [r.path for r in floored] == [r.path for r in base]
         finally:
             store.close()
+
+
+# ------------------------------------------------------------------ #
+# drop_stopwords                                                       #
+# ------------------------------------------------------------------ #
+
+
+class TestDropStopwords:
+    def test_helpers_fold_case_accents_and_punctuation(self) -> None:
+        from vstash.store._stopwords import drop_stopwords, is_stopword
+
+        assert is_stopword("¿Qué") and is_stopword("The") and is_stopword("más,")
+        assert not is_stopword("reunión")
+        assert drop_stopwords(["¿Quién", "abogó", "por", "las", "garantías?"]) == [
+            "abogó",
+            "garantías?",
+        ]
+        # A query with nothing but function words is left as it is.
+        assert drop_stopwords(["de", "la"]) == ["de", "la"]
+
+    def test_stopwords_leave_the_keyword_query_only(self, tmp_db_path: str) -> None:
+        store = _store(tmp_db_path)
+        try:
+            _add(store, "/a", "acta de la reunion", _unit(0.0))
+            _add(store, "/b", "el coste de la obra", _unit(0.3))
+            kw = {"top_k": 5, "retrieval_mode": "fts_only", "explain": True}
+            plain = store.search(_unit(0.0), "la reunion de", **kw)
+            assert {h.path for h in plain} == {"/a", "/b"}  # "/b" matches only "de", "la"
+            assert plain[0].explain.fts_terms == ["la", "reunion", "de"]
+            dropped = store.search(_unit(0.0), "la reunion de", drop_stopwords=True, **kw)
+            assert [h.path for h in dropped] == ["/a"]
+            assert dropped[0].explain.fts_terms == ["reunion"]
+        finally:
+            store.close()
+
+    def test_default_is_off_and_part_of_the_cache_key(self, tmp_db_path: str) -> None:
+        store = _store(tmp_db_path, cache=CacheConfig(query_cache_size=8))
+        try:
+            _add(store, "/a", "acta de la reunion", _unit(0.0))
+            _add(store, "/b", "el coste de la obra", _unit(0.3))
+            kw = {"top_k": 5, "retrieval_mode": "fts_only"}
+            assert len(store.search(_unit(0.0), "la reunion de", **kw)) == 2
+            assert len(store.search(_unit(0.0), "la reunion de", drop_stopwords=True, **kw)) == 1
+            assert len(store.search(_unit(0.0), "la reunion de", **kw)) == 2
+        finally:
+            store.close()

@@ -236,6 +236,20 @@ CONFIGS["compuerta-suelo20"] = {"buscar": {"lexical_gate": True, "min_vec_keep":
 CONFIGS["suelo"] = {"buscar": {"min_vec_keep": 50}}
 CONFIGS["suelo20"] = {"buscar": {"min_vec_keep": 20}}
 CONFIGS["vec-suelo20"] = {"buscar": {"retrieval_mode": "vec_only", "min_vec_keep": 20}}
+# Combinaciones de la candidata (compuerta + corte 2,0) con las piezas del experimento 1.
+_REC = {"lexical_gate": True, "distance_cutoff": 2.0}
+CONFIGS["rec+vacias"] = {"texto": "vacias", "buscar": _REC}
+CONFIGS["rec+porter-u61"] = {**CONFIGS["tok-porter-u61"], "buscar": _REC}
+CONFIGS["rec+porter-u61+vacias"] = {**CONFIGS["tok-porter-u61+vacias"], "buscar": _REC}
+CONFIGS["rec+snowball"] = {**CONFIGS["u61+snowball"], "buscar": _REC}
+CONFIGS["rec+snowball+vacias"] = {**CONFIGS["u61+snowball+vacias"], "buscar": _REC}
+# La versión de dentro de vstash de «vacias»: search(drop_stopwords=True).
+CONFIGS["sw"] = {"buscar": {"drop_stopwords": True}}
+CONFIGS["rec+sw"] = {"buscar": {**_REC, "drop_stopwords": True}}
+CONFIGS["rec+sw+porter-u61"] = {
+    **CONFIGS["tok-porter-u61"],
+    "buscar": {**_REC, "drop_stopwords": True},
+}
 for _c in (1.5, 2.0, 25.0):
     CONFIGS[f"fuerza-corte{_c:g}"] = {"pesos": "fuerza", "buscar": {"distance_cutoff": _c}}
 for _c in (1.3225, 1.5, 1.75, 2.0, 3.0, 25.0):

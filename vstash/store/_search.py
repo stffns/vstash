@@ -28,6 +28,7 @@ from ..models import (
     StageVerdict,
 )
 from ..validation import validate_search_input
+from ._stopwords import drop_stopwords as _drop_stopwords
 from ._common import (
     _ADAPTIVE_RRF_LONG_QUERY,
     _LEXICAL_GATE_HIGH,
@@ -79,6 +80,7 @@ class _SearchEngineMixin:
         dedup_threshold: float | None = None,
         lexical_gate: bool = False,
         min_vec_keep: int = 0,
+        drop_stopwords: bool = False,
     ) -> int:
         """Build the search cache key from the full set of query parameters.
 
@@ -128,6 +130,7 @@ class _SearchEngineMixin:
                 dedup_threshold,
                 lexical_gate,
                 min_vec_keep,
+                drop_stopwords,
                 cache_epoch,
             )
         )
@@ -395,6 +398,7 @@ class _SearchEngineMixin:
         exact_match_case_sensitive: bool = False,
         lexical_gate: bool = False,
         min_vec_keep: int = 0,
+        drop_stopwords: bool = False,
         _tracer: _PipelineTracer | None = None,
     ) -> list[SearchResult]:
         """Hybrid search: vector (semantic) + FTS5 (keyword) combined with RRF.
@@ -453,6 +457,13 @@ class _SearchEngineMixin:
                 has its FTS weight lowered toward 0.1, so keyword-only
                 noise cannot outrank the vector hits; a query that matches
                 rare terms keeps the weight it had. Hybrid mode only.
+            drop_stopwords: Opt-in (default ``False``). Remove Spanish and
+                English function words ("de", "la", "the", "of"...) from the
+                keyword side of the query: they are left out of the FTS5
+                MATCH expression and of the IDF average that drives adaptive
+                RRF. The vector side still sees the full query, and nothing
+                changes in the index. Queries over 50 words are left alone
+                so the long-query rule keeps its meaning.
             min_vec_keep: Opt-in floor for the distance cutoff (default
                 ``0`` = no floor). The cutoff never leaves fewer than this
                 many vector candidates, however far they are from the
@@ -533,6 +544,7 @@ class _SearchEngineMixin:
                 dedup_threshold=dedup_threshold,
                 lexical_gate=lexical_gate,
                 min_vec_keep=min_vec_keep,
+                drop_stopwords=drop_stopwords,
             )
 
         # Per-search miss-analysis tracker (#108).  The tracer is owned
@@ -617,11 +629,19 @@ class _SearchEngineMixin:
                     distance_cutoff = _LONG_QUERY_DISTANCE_CUTOFF
                 adaptive_rrf = False
 
+            # Keyword-side view of the query. Identical to ``query_text``
+            # unless the caller opted into stopword removal.
+            keyword_text = query_text
+            if drop_stopwords:
+                raw_words = query_text.split()
+                if len(raw_words) <= _ADAPTIVE_RRF_LONG_QUERY:
+                    keyword_text = " ".join(_drop_stopwords(raw_words))
+
             # Adaptive RRF: compute weights from query characteristics (IDF + length)
             # Skip if caller provided explicit weights
             if adaptive_rrf and vec_weight is None and fts_weight is None:
                 vec_weight, fts_weight, distance_cutoff = self._compute_adaptive_rrf_params(
-                    query_text, default_cutoff=distance_cutoff
+                    keyword_text, default_cutoff=distance_cutoff
                 )
             vec_weight, fts_weight = self._resolve_rrf_weights(vec_weight, fts_weight)
 
@@ -855,8 +875,8 @@ class _SearchEngineMixin:
                     _explain_vec[int(row["id"])] = (rank, float(row["distance"]))
 
             # --- FTS5 search ---
-            words = query_text.split()
-            safe_query, quoted_words = self._build_fts_match_query(query_text, words)
+            words = keyword_text.split()
+            safe_query, quoted_words = self._build_fts_match_query(keyword_text, words)
             if _vec_only:
                 # #275: caller asked to bypass keyword search entirely.
                 # Produce no FTS rows; downstream RRF scoring uses
