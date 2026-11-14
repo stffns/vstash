@@ -31,6 +31,7 @@ from ..validation import validate_search_input
 from ._stopwords import drop_stopwords as _drop_stopwords
 from ._common import (
     _ADAPTIVE_RRF_LONG_QUERY,
+    _LEXICAL_GATE_CLOSED_FTS_WEIGHT,
     _LEXICAL_GATE_COVERAGE_HIGH,
     _LEXICAL_GATE_COVERAGE_LOW,
     _LEXICAL_GATE_HIGH,
@@ -50,6 +51,13 @@ from ._common import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _gate_ramp(value: float, low: float, high: float) -> float:
+    """0 below ``low``, 1 from ``high`` up, linear in between; a step when they coincide."""
+    if high <= low:
+        return 1.0 if value >= low else 0.0
+    return min(1.0, max(0.0, (value - low) / (high - low)))
 
 
 class _SearchEngineMixin:
@@ -452,15 +460,17 @@ class _SearchEngineMixin:
                 ``False`` does a casefold comparison which matches
                 typical retrieval-filter UX expectations.
             lexical_gate: Opt-in (default ``False`` = published pipeline).
-                Scales the FTS weight by how strong the keyword evidence
-                for *this* query is, read off the BM25 score of the best
-                FTS5 hit: how many rare terms it matches and what share of
-                the query it covers. A query whose best keyword match only
-                shares a common word or two out of several (a vague or
-                paraphrased query) has its FTS weight lowered toward 0.1,
-                so keyword-only noise cannot outrank the vector hits; a
-                query that matches rare terms, or a short query matched
-                in full, keeps the weight it had. Hybrid mode only.
+                Stops the keyword side from voting when it has no real
+                evidence for *this* query. The evidence is read off the BM25
+                score of the best FTS5 hit: how many rare terms it matches
+                (``bm25 / ln N``) and what share of the query it covers
+                (``bm25 / sum of the query terms' IDF``). When both are low
+                -- a vague or paraphrased query whose best keyword match
+                shares a common word or two out of several -- the FTS
+                weight drops to 0 and the ranking is the vector ranking,
+                with keyword-only hits appended after it. Any query that
+                matches rare terms, and any short query matched in full,
+                keeps exactly the weights it had. Hybrid mode only.
             drop_stopwords: Opt-in (default ``False``). Remove Spanish and
                 English function words ("de", "la", "the", "of"...) from the
                 keyword side of the query: they are left out of the FTS5
@@ -973,15 +983,21 @@ class _SearchEngineMixin:
                     asked = sum(idf_dict.get(t, max_idf) for t in terms)
                     coverage = min(1.0, best_bm25 / asked) if asked > 0 else 0.0
                     ramp = max(
-                        (strength - _LEXICAL_GATE_LOW) / (_LEXICAL_GATE_HIGH - _LEXICAL_GATE_LOW),
-                        (coverage - _LEXICAL_GATE_COVERAGE_LOW)
-                        / (_LEXICAL_GATE_COVERAGE_HIGH - _LEXICAL_GATE_COVERAGE_LOW),
+                        _gate_ramp(strength, _LEXICAL_GATE_LOW, _LEXICAL_GATE_HIGH),
+                        _gate_ramp(
+                            coverage, _LEXICAL_GATE_COVERAGE_LOW, _LEXICAL_GATE_COVERAGE_HIGH
+                        ),
                     )
-                    ramp = min(1.0, max(0.0, ramp))
                 gated = (
                     _LEXICAL_GATE_MIN_FTS_WEIGHT
                     + (fts_weight - _LEXICAL_GATE_MIN_FTS_WEIGHT) * ramp
                 )
+                if ramp == 0.0:
+                    # No keyword evidence at all by either reading: the
+                    # keyword side stops voting instead of keeping a token
+                    # weight that still lets a both-lists hit leapfrog the
+                    # top vector hits.
+                    gated = min(gated, _LEXICAL_GATE_CLOSED_FTS_WEIGHT)
                 # Hand the removed weight to the vector side so the pair
                 # keeps its sum and scores stay on the same scale.
                 vec_weight += fts_weight - gated

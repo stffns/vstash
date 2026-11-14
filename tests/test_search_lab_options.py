@@ -175,10 +175,11 @@ def _fts_weight(store: VstashStore, query: str, **kw) -> float:
 class TestLexicalGate:
     def test_weak_keyword_evidence_lowers_fts_weight(self, gate_store: VstashStore) -> None:
         # "informe" is in every note: the best BM25 hit carries ~no evidence.
-        off = _fts_weight(gate_store, "informe")
-        on = _fts_weight(gate_store, "informe", lexical_gate=True)
-        assert on == pytest.approx(0.1)
-        assert off >= on
+        # Explicit weights, so the gate has something to take away.
+        kw = {"vec_weight": 0.5, "fts_weight": 0.5}
+        assert _fts_weight(gate_store, "informe", **kw) == pytest.approx(0.5)
+        # No evidence by either reading: the keyword side stops voting.
+        assert _fts_weight(gate_store, "informe", lexical_gate=True, **kw) == pytest.approx(0.0)
 
     def test_strong_keyword_evidence_keeps_the_weight(self, gate_store: VstashStore) -> None:
         query = "zafiro quetzal obsidiana malaquita turquesa"
@@ -199,7 +200,16 @@ class TestLexicalGate:
         # Six terms asked, the best hit matches only the ubiquitous one.
         query = "informe cobalto niquel wolframio estroncio paladio"
         assert _fts_weight(gate_store, query) > 0.3
-        assert _fts_weight(gate_store, query, lexical_gate=True) == pytest.approx(0.1)
+        assert _fts_weight(gate_store, query, lexical_gate=True) == pytest.approx(0.0)
+
+    def test_closed_gate_ranks_exactly_like_the_vector_side(self, gate_store: VstashStore) -> None:
+        """With the gate closed a note that is first by keywords cannot
+        leapfrog the best vector hit: the head of the list is the vector order."""
+        query = "informe cobalto niquel wolframio estroncio paladio"
+        kw = {"top_k": 10, "distance_cutoff": 25.0}
+        gated = gate_store.search(_unit(0.0), query, lexical_gate=True, **kw)
+        vec = gate_store.search(_unit(0.0), query, retrieval_mode="vec_only", **kw)
+        assert [r.path for r in gated] == [r.path for r in vec]
 
     def test_weights_keep_their_sum(self, gate_store: VstashStore) -> None:
         hits = gate_store.search(_unit(0.0), "informe", top_k=5, explain=True, lexical_gate=True)

@@ -48,6 +48,16 @@ from vstash.store import VstashStore  # noqa: E402
 ROTTEN_LAB = Path(os.environ.get("LAB_ES_DATOS", "/Users/jaysonsteffens/code/rotten/memoria/lab"))
 CACHE = AQUI / "data" / "lab_es"
 BASE = "defecto"  # contra quién se comparan las demás; se cambia con --base
+_SUELO_PALABRAS = __import__("vstash.store._common", fromlist=["x"])._LEXICAL_GATE_MIN_FTS_WEIGHT
+_CERRADA = __import__("vstash.store._common", fromlist=["x"])._LEXICAL_GATE_CLOSED_FTS_WEIGHT
+_c = __import__("vstash.store._common", fromlist=["x"])
+_FABRICA = (
+    _c._LEXICAL_GATE_LOW,
+    _c._LEXICAL_GATE_HIGH,
+    _c._LEXICAL_GATE_COVERAGE_LOW,
+    _c._LEXICAL_GATE_COVERAGE_HIGH,
+)
+TOP_K = 0  # 0 = lo propio de cada banco; --top-k lo fuerza y marca el archivo con @K
 MINILM = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 BGE = "BAAI/bge-small-en-v1.5"
 
@@ -290,7 +300,88 @@ def _ids_union(almacen, vector, consulta, top_k, **kw):
     return list(vistos)
 
 
-PLANES: dict[str, Callable] = {"union": _ids_union}
+_VEC = {"retrieval_mode": "vec_only", "distance_cutoff": 25.0}
+_PAL = {"retrieval_mode": "fts_only", "drop_stopwords": True}
+
+
+def _reserva(n: int) -> Callable:
+    """Plazas reservadas, hecho por fuera con tres búsquedas (prototipo): la lista del
+    híbrido, pero los n primeros por vectores y los n primeros por palabras entran siempre;
+    si alguno no estaba, sustituye por la cola a los peor puestos que no están reservados."""
+
+    def plan(almacen, vector, consulta, top_k, **kw):
+        hib = [r.path for r in almacen.search(vector, consulta, top_k=top_k, **kw)]
+        vec = [r.path for r in almacen.search(vector, consulta, top_k=n, **_VEC)]
+        pal = [r.path for r in almacen.search(vector, consulta, top_k=n, **_PAL)]
+        reservadas = dict.fromkeys([*vec, *pal])
+        faltan = [p for p in reservadas if p not in set(hib)]
+        sobran = max(0, len(hib) + len(faltan) - top_k)
+        if not faltan or not sobran:
+            return hib + faltan
+        prescindibles = [p for p in hib if p not in reservadas]
+        fuera = set(prescindibles[len(prescindibles) - sobran :])
+        return [p for p in hib if p not in fuera] + faltan
+
+    return plan
+
+
+def _intercalar(almacen, vector, consulta, top_k, **kw):
+    """Sin fusión por puntos: uno de vectores, uno de palabras, sin repetir."""
+    vec = [r.path for r in almacen.search(vector, consulta, top_k=top_k, **_VEC)]
+    pal = [r.path for r in almacen.search(vector, consulta, top_k=top_k, **_PAL)]
+    vistos: dict[str, None] = {}
+    for i in range(top_k):
+        for lista in (vec, pal):
+            if i < len(lista):
+                vistos.setdefault(lista[i])
+    return list(vistos)[:top_k]
+
+
+PLANES: dict[str, Callable] = {"union": _ids_union, "intercalar": _intercalar}
+_RECSW = {"lexical_gate": True, "distance_cutoff": 2.0, "drop_stopwords": True}
+CONFIGS["pal-sw"] = {"buscar": _PAL}
+
+
+# Compuerta que cierra del todo (peso mínimo de las palabras 0 en vez de 0,1) o a medias.
+# Las plazas reservadas también se probaron dentro de vstash (reserve_vec / reserve_keyword,
+# con un mínimo de fuerza BM25 para las de palabras). No cambiaron nada sobre la compuerta y
+# se retiraron del código; el prototipo de arriba (`reserva-N`) basta para repetir la medida.
+# Compuerta de todo o nada: las palabras conservan su peso salvo que no haya ninguna
+# evidencia (fuerza < f y cobertura < c), y entonces dejan de votar.
+def _binaria(f: float, c: float, **kw) -> dict:
+    return {
+        "fuerza": (f, f + 1e-9),
+        "cobertura": (c, c + 1e-9),
+        "buscar": {"lexical_gate": True, "distance_cutoff": 2.0, **kw},
+    }
+
+
+# Las dos recomendadas, con la compuerta de fábrica (todo o nada):
+#   R50  primera etapa para un reordenador: lo que importa es que la buena entre.
+#   R1   búsqueda sola: lo que importa es el orden.
+CONFIGS["R50"] = {
+    "fabrica": True,
+    "buscar": {"adaptive_rrf": False, "distance_cutoff": 2.0, "lexical_gate": True},
+}
+CONFIGS["R1"] = {"fabrica": True, "buscar": {"distance_cutoff": 2.0, "lexical_gate": True}}
+CONFIGS["R50-100"] = {**CONFIGS["R50"], "top_k": 100}
+CONFIGS["bin"] = _binaria(1.0, 0.4)
+CONFIGS["bin+sw"] = _binaria(1.0, 0.4, drop_stopwords=True)
+CONFIGS["bin+sw/sin-adapt"] = _binaria(1.0, 0.4, drop_stopwords=True, adaptive_rrf=False)
+CONFIGS["bin/sin-adapt"] = _binaria(1.0, 0.4, adaptive_rrf=False)
+CONFIGS["bin1.25+sw/sin-adapt"] = _binaria(1.25, 0.4, drop_stopwords=True, adaptive_rrf=False)
+CONFIGS["bin1.5+sw/sin-adapt"] = _binaria(1.5, 0.4, drop_stopwords=True, adaptive_rrf=False)
+CONFIGS["bin1.25+sw"] = _binaria(1.25, 0.4, drop_stopwords=True)
+CONFIGS["bin1.5+sw"] = _binaria(1.5, 0.4, drop_stopwords=True)
+CONFIGS["rec+sw/cierra"] = {"cerrada": 0.0, "buscar": _RECSW}
+CONFIGS["rec+sw/cierra0.02"] = {"cerrada": 0.02, "buscar": _RECSW}
+for _m in (0.0, 0.05):
+    CONFIGS[f"rec+sw/min{_m:g}"] = {"suelo_palabras": _m, "buscar": _RECSW}
+CONFIGS["intercalar"] = {"plan": "intercalar"}
+for _n in (5, 10, 15, 25):
+    PLANES[f"reserva-{_n}"] = _reserva(_n)
+    CONFIGS[f"rec+sw+reserva{_n}"] = {"plan": f"reserva-{_n}", "buscar": _RECSW}
+    CONFIGS[f"defecto+reserva{_n}"] = {"plan": f"reserva-{_n}"}
 
 # --- Experimento 4: búsqueda «a fondo» (unión de híbrido y solo vectores) ---------------
 # «top_k» en la configuración cambia cuántos se piden; la unión pide top_k a cada pata.
@@ -341,6 +432,19 @@ def _notas(nombre: str, archivo: str) -> Banco:
     return b
 
 
+def _final(clase: str) -> Banco:
+    """Las 840 notas nuevas de rotten (el examen: aquí no se elige ningún parámetro)."""
+    filas = json.loads((ROTTEN_LAB / "final" / "notas.json").read_text())
+    b = Banco()
+    b.nombre, b.modelo, b.top_k = f"final-{clase}", MINILM, 50
+    b.docs = [f["nota"] for f in filas]
+    b.consultas = [f[clase] for f in filas]
+    b.buenas = [{i: 1} for i in range(len(filas))]
+    asuntos: dict[str, int] = {}
+    b.grupos = np.array([asuntos.setdefault(f["asunto"], len(asuntos)) for f in filas])
+    return b
+
+
 def _miracl() -> Banco:
     aqui = ROTTEN_LAB / "comparar" / "miracl"
     corpus = json.loads((aqui / "corpus.json").read_text())
@@ -382,6 +486,9 @@ def _beir(nombre: str) -> Banco:
 BANCOS: dict[str, Callable[[], Banco]] = {
     "siempre": lambda: _notas("siempre", "notas.json"),
     "vagas": lambda: _notas("vagas", "notas_vagas.json"),
+    "final-nombrada": lambda: _final("nombrada"),
+    "final-media": lambda: _final("media"),
+    "final-vaga": lambda: _final("vaga"),
     "miracl": _miracl,
     "scifact": lambda: _beir("scifact"),
     # Segundo control en inglés: consultas de dos o tres palabras, donde la compuerta
@@ -476,6 +583,16 @@ def buscar(almacen: VstashStore, cfg: dict, vector: list[float], consulta: str, 
     _motor._LEXICAL_GATE_COVERAGE_LOW, _motor._LEXICAL_GATE_COVERAGE_HIGH = cfg.get(
         "cobertura", (0.4, 0.6)
     )
+    _motor._LEXICAL_GATE_MIN_FTS_WEIGHT = cfg.get("suelo_palabras", _SUELO_PALABRAS)
+    _motor._LEXICAL_GATE_CLOSED_FTS_WEIGHT = cfg.get("cerrada", _CERRADA)
+    _motor._LEXICAL_GATE_LOW, _motor._LEXICAL_GATE_HIGH = cfg.get("fuerza", (1.0, 2.0))
+    if cfg.get("fabrica"):  # la compuerta tal como queda en vstash, sin parchear nada
+        (
+            _motor._LEXICAL_GATE_LOW,
+            _motor._LEXICAL_GATE_HIGH,
+            _motor._LEXICAL_GATE_COVERAGE_LOW,
+            _motor._LEXICAL_GATE_COVERAGE_HIGH,
+        ) = _FABRICA
     if "texto" in cfg:
         consulta = TEXTOS[cfg["texto"]][1](consulta)
     if "pesos" in cfg:
@@ -495,7 +612,8 @@ def _ndcg10(dados: list[int], buenas: dict[int, int]) -> float:
 
 
 def _salida(banco: str, config: str) -> Path:
-    return CACHE / "resultados" / f"{banco}__{config.replace('/', '_')}.npz"
+    sufijo = f"@{TOP_K}" if TOP_K else ""
+    return CACHE / "resultados" / f"{banco}__{config.replace('/', '_')}{sufijo}.npz"
 
 
 def medir(bancos: list[str], configs: list[str]) -> None:
@@ -512,12 +630,13 @@ def medir(bancos: list[str], configs: list[str]) -> None:
             almacen.search(vq[0].tolist(), b.consultas[0], top_k=b.top_k)  # calentar
             for c in lista:
                 puesto, n, ndcg, ms = [], [], [], []
+                k = TOP_K or CONFIGS[c].get("top_k", b.top_k)
+                ids = np.full((len(b.consultas), 2 * k), -1)
                 for i, consulta in enumerate(b.consultas):
                     vector = vq[i].tolist()
                     empieza = time.perf_counter()
-                    dados = buscar(
-                        almacen, CONFIGS[c], vector, consulta, CONFIGS[c].get("top_k", b.top_k)
-                    )
+                    dados = buscar(almacen, CONFIGS[c], vector, consulta, k)
+                    ids[i, : len(dados)] = dados[: 2 * k]
                     ms.append((time.perf_counter() - empieza) * 1e3)
                     puesto.append(next((k + 1 for k, d in enumerate(dados) if d in b.buenas[i]), 0))
                     n.append(len(dados))
@@ -531,6 +650,7 @@ def medir(bancos: list[str], configs: list[str]) -> None:
                     ndcg=np.array(ndcg),
                     ms=np.array(ms),
                     grupos=b.grupos,
+                    ids=ids,
                 )
                 print(linea(nombre, c), flush=True)
             almacen.close()
@@ -557,6 +677,16 @@ COLUMNAS: dict[str, list[tuple[str, Callable]]] = {
         ("en 50", _en(50)),
         ("entra", _en(10**6)),
     ],
+    **{
+        f"final-{c}": [
+            ("primera", _en(1)),
+            ("en 5", _en(5)),
+            ("en 20", _en(20)),
+            ("en 50", _en(50)),
+            ("entra", _en(10**6)),
+        ]
+        for c in ("nombrada", "media", "vaga")
+    },
     "miracl": [
         ("primera", _en(1)),
         ("en 3", _en(3)),
@@ -661,6 +791,43 @@ def resumen(configs: list[str]) -> None:
             print(f"| `{c}` | " + " | ".join(celdas) + " |")
 
 
+def pisoton(bancos: list[str], configs: list[str], lado_vec: str, lado_pal: str) -> None:
+    """El híbrido pisándose: consultas en las que la buena estaba entre las K primeras de
+    un lado (solo vectores sin corte, o solo palabras) y NO está entre las K del híbrido."""
+    for banco in bancos:
+        print(f"\n### {banco}\n")
+        print(
+            "| Configuración | K | la buena en K | pisada: vectores la tenían |"
+            " pisada: palabras la tenían | pisada: algún lado | rescatada: ningún lado |"
+        )
+        print("|---|---|---|---|---|---|---|")
+        lados = {}
+        for nombre, c in (("vec", lado_vec), ("pal", lado_pal)):
+            if _salida(banco, c).exists():
+                lados[nombre] = np.load(_salida(banco, c))["puesto"]
+        if len(lados) < 2:
+            print(f"(faltan los lados {lado_vec} / {lado_pal} en {banco})")
+            continue
+        for c in configs:
+            if not _salida(banco, c).exists():
+                continue
+            h = np.load(_salida(banco, c))["puesto"]
+            for k in (1, 5, 20, 50):
+                hv, hp, hh = (
+                    (lados["vec"] > 0) & (lados["vec"] <= k),
+                    (lados["pal"] > 0) & (lados["pal"] <= k),
+                    (h > 0) & (h <= k),
+                )
+                celdas = [
+                    f"{hh.mean():.1%}",
+                    f"{(hv & ~hh).sum()} ({(hv & ~hh).mean():.1%})",
+                    f"{(hp & ~hh).sum()} ({(hp & ~hh).mean():.1%})",
+                    f"{((hv | hp) & ~hh).sum()} ({((hv | hp) & ~hh).mean():.1%})",
+                    f"{(hh & ~hv & ~hp).sum()}",
+                ]
+                print(f"| `{c}` | {k} | " + " | ".join(celdas).replace(".", ",") + " |")
+
+
 def tiempos(bancos: list[str], configs: list[str], vueltas: int = 5) -> None:
     """Milisegundos por búsqueda (sin vectorizar la consulta): el menor de varias vueltas."""
     for nombre in bancos:
@@ -682,15 +849,18 @@ def tiempos(bancos: list[str], configs: list[str], vueltas: int = 5) -> None:
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("orden", choices=["medir", "tabla", "resumen", "tiempos"])
+    p.add_argument("orden", choices=["medir", "tabla", "resumen", "tiempos", "pisoton"])
     p.add_argument("--bancos", nargs="*", default=["siempre", "vagas"])
     p.add_argument("--configs", nargs="*", default=None)
     p.add_argument("--md", action="store_true")
     p.add_argument(
         "--base", default="defecto", help="configuración de referencia de las diferencias"
     )
+    p.add_argument("--top-k", type=int, default=0, help="forzar cuántos se piden (archivo @K)")
+    p.add_argument("--lados", nargs=2, default=["vec-corte25", "fts"], metavar=("VEC", "PAL"))
     a = p.parse_args()
     BASE = a.base
+    TOP_K = a.top_k
     import fnmatch
 
     # Cada nombre puede ser un patrón: --configs 'tok-*' 'vacias*'
@@ -699,6 +869,8 @@ if __name__ == "__main__":
         medir(a.bancos, cfgs)
     elif a.orden == "resumen":
         resumen(cfgs)
+    elif a.orden == "pisoton":
+        pisoton(a.bancos, cfgs, a.lados[0], a.lados[1])
     elif a.orden == "tiempos":
         tiempos(a.bancos, cfgs)
     else:
