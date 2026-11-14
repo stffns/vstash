@@ -675,6 +675,25 @@ from .store._common import RETIRED_STATUSES, derive_claim_status  # noqa: E402
 from .store._common import VALID_CLAIM_STATUSES as VALID_CLAIM_STATUSES  # noqa: E402
 
 
+def _claim_fields_change(stored: dict | None, **requested: str | None) -> bool:
+    """Whether a re-remember asks for claim metadata the stored row lacks.
+
+    The Tier-0 dedup skips identical text; it must not also swallow a new
+    source, status or validity window sent with that text. ``None`` means
+    "not specified" and never forces a rewrite.
+    """
+    if not isinstance(stored, dict):
+        return False
+    for key, value in requested.items():
+        if value is None:
+            continue
+        if key in ("valid_from", "valid_until") and value:
+            value = _canonicalize_added_filter(value, label=key)
+        if stored.get(key) != value:
+            return True
+    return False
+
+
 def _resolve_supersedes(
     store: VstashStore, collection: str, source_path: str, supersedes: str | None
 ) -> tuple[str | None, bool | None]:
@@ -790,6 +809,13 @@ def ingest_text(
     if (
         existing_hash == content_hash
         and store.doc_completeness(source_path, collection=collection) == "complete"
+        and not _claim_fields_change(
+            store.claim_fields(store.doc_id_for(collection, source_path)),
+            status=status,
+            source_ref=source_ref,
+            valid_from=valid_from,
+            valid_until=valid_until,
+        )
     ):
         # Nothing to re-embed, but a supersedes= on an identical re-remember
         # must still retire its target.

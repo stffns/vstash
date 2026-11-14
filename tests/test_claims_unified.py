@@ -281,3 +281,160 @@ def test_mcp_retire_restore_and_include_retired(store, cfg) -> None:
 
         assert json.loads(vstash_retire("text://v1", restore=True)) == {"restored": True}
         assert "text://v1" in [c["path"] for c in json.loads(vstash_search("memo"))["chunks"]]
+
+
+# --------------------------------------------------------------------- #
+# Review round on #525                                                   #
+# --------------------------------------------------------------------- #
+
+
+@requires_sqlite_vec
+def test_identical_text_with_new_source_is_applied(store, cfg) -> None:
+    res = _remember(store, cfg, "We use bge small.", "v1", source_ref=None)
+    assert res.claim_status == "sin-fuente"
+    res = _remember(store, cfg, "We use bge small.", "v1", source_ref="charla 3")
+    assert res.status == "ok"  # not swallowed by the content-hash dedup
+    assert res.claim_status == "vigente"
+
+
+@requires_sqlite_vec
+def test_retire_id_is_revalidated_inside_the_transaction(store, cfg) -> None:
+    _remember(store, cfg, "We use bge small.", "v1")
+    with pytest.raises(ValueError, match="no longer exists"):
+        store.add_document(
+            path="text://v2",
+            title="v2",
+            chunks=[f"replacement {WORD}"],
+            embeddings=[_unit(0.9, 3)],
+            source_type="text",
+            retire_id="0" * 32,
+        )
+    assert not store.claim_exists(store.doc_id_for("default", "text://v2"))  # rolled back
+
+
+@requires_sqlite_vec
+def test_memory_update_keeps_provenance_and_validity(tmp_path: Path) -> None:
+    from vstash import Memory
+
+    emb = lambda t, *a, **k: [_unit(0.95, 2) for _ in t]  # noqa: E731
+    with (
+        patch("vstash.ingest._embed_with_progress", side_effect=lambda c, m, **k: emb(c)),
+        patch("vstash.embed.embed_texts", side_effect=emb),
+        patch("vstash.memory.embed_texts", side_effect=emb, create=True),
+    ):
+        mem = Memory(db=tmp_path / "p.db")
+        try:
+            pad = " This sentence pads the claim past the minimum chunk size. memo"
+            mem.remember(
+                "Trip on the 17th." + pad,
+                title="trip",
+                layer="hecho",
+                source_ref="charla 1",
+                valid_until="2099-01-01T00:00:00+00:00",
+            )
+            mem.update("text://trip", text="Trip on the 18th." + pad)
+            row = mem._store.claim_fields(mem._store.doc_id_for("default", "text://trip"))
+            assert row["source_ref"] == "charla 1"
+            assert row["status"] == "vigente"
+            assert row["valid_until"].startswith("2099-01-01")
+        finally:
+            mem.close()
+
+
+@requires_sqlite_vec
+def test_store_write_canonicalises_valid_until_to_utc(store) -> None:
+    store.add_document(
+        path="text://tz",
+        title="tz",
+        chunks=[f"timezone claim {WORD}"],
+        embeddings=[_unit(0.9, 3)],
+        source_type="text",
+        valid_until="2026-11-13T23:30:00-05:00",
+    )
+    row = store.claim_fields(store.doc_id_for("default", "text://tz"))
+    assert row["valid_until"] == "2026-11-14T04:30:00+00:00"
+
+
+@requires_sqlite_vec
+def test_expired_cached_winner_is_refilled(store) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    future = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+    store.add_document(
+        path="text://win",
+        title="win",
+        chunks=[f"winner {WORD}"],
+        embeddings=[_unit(0.99, 2)],
+        source_type="text",
+        valid_until=future,
+    )
+    store.add_document(
+        path="text://run",
+        title="run",
+        chunks=[f"runner {WORD}"],
+        embeddings=[_unit(0.95, 3)],
+        source_type="text",
+    )
+    first = [r.path for r in store.search(Q, WORD, top_k=1, retrieval_mode="vec_only")]
+    assert first == ["text://win"]  # now cached under the top_k=1 key
+    # Two days pass without any write (no cache-epoch bump): the cached
+    # winner is now expired and its slot must go to the live runner-up.
+    later = datetime.now(timezone.utc) + timedelta(days=2)
+
+    class _Later(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return later
+
+    with patch("vstash.store._search.datetime", _Later):
+        got = [r.path for r in store.search(Q, WORD, top_k=1, retrieval_mode="vec_only")]
+    assert got == ["text://run"]
+
+
+@requires_sqlite_vec
+def test_snapvec_large_retired_history(tmp_path: Path) -> None:
+    pytest.importorskip("snapvec")
+    s = VstashStore(
+        str(tmp_path / "big.db"), embedding_dim=DIM, vector_backend="snapvec", snapvec_bits=4
+    )
+    try:
+        rng = np.random.default_rng(0)
+        docs = []
+        for i in range(1500):  # more retired chunks than SQLite's variable limit
+            v = rng.normal(0, 1, DIM)  # a large, scattered retired history
+            docs.append(
+                {
+                    "path": f"text://old{i}",
+                    "title": f"old{i}",
+                    "chunks": [f"old {i} {WORD}"],
+                    "embeddings": [(v / np.linalg.norm(v)).tolist()],
+                    "source_type": "text",
+                }
+            )
+        s.add_documents_batch(docs)
+        s._conn.execute("UPDATE documents SET status = 'superado' WHERE path LIKE 'text://old%'")
+        s._bump_cache_epoch()
+        s.add_document(
+            path="text://live",
+            title="live",
+            chunks=[f"live {WORD}"],
+            embeddings=[_unit(0.9, 5)],
+            source_type="text",
+        )
+        assert [r.path for r in s.search(Q, "zzz", top_k=1, retrieval_mode="vec_only")] == [
+            "text://live"
+        ]
+        # The retired history costs a bounded amount: k never reaches the
+        # 1500+ chunks the old pool + hidden-count rule asked for.
+        ks: list[int] = []
+        real = s._snap.search
+
+        def spy(q, k):
+            ks.append(k)
+            return real(q, k=k)
+
+        s._snap.search = spy
+        s.search(_unit(0.9, 5), "zzz", top_k=1, retrieval_mode="vec_only")  # the live doc
+        assert max(ks) <= 1034  # max(10 * 16, 10 + 1024)
+    finally:
+        s.close()

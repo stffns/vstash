@@ -565,12 +565,16 @@ class _SearchEngineMixin:
                         self._query_cache.move_to_end(_cache_key)
                         cached_results, cached_best = self._query_cache[_cache_key]
                         # A cached list can outlive a claim's valid_until.
+                        # Dropping the expired rows would leave empty slots a
+                        # live runner-up should fill (and keep the expired
+                        # winner's distance), so treat it as a miss instead.
                         _now = datetime.now(timezone.utc).isoformat()
-                        cached = [
-                            r
-                            for r in cached_results
-                            if include_retired or not r.valid_until or r.valid_until > _now
-                        ]
+                        if not include_retired and any(
+                            r.valid_until and r.valid_until <= _now for r in cached_results
+                        ):
+                            del self._query_cache[_cache_key]
+                        else:
+                            cached = list(cached_results)
                 if cached is not None:
                     # Restore the best distance this query produced when it
                     # was cached: without it ``last_best_distance`` (and so
@@ -689,46 +693,9 @@ class _SearchEngineMixin:
                 # ``last_best_distance`` and ``relevance_tier`` both
                 # assume (``[0, 2]``), even if an implementation
                 # quirk yields a value slightly outside ``[-1, 1]``.
-                snap_results = self._snap.search(
-                    np.array(query_embedding, dtype=np.float32),
-                    k=candidate_pool + (0 if include_retired else self._hidden_claim_chunks()),
+                vec_rows = self._snap_candidates(
+                    query_embedding, candidate_pool, vec_clause, filter_params
                 )
-                snap_ids = [int(r[0]) for r in snap_results]
-                if self._vector_backend == "snapvec":
-                    snap_dists = {
-                        int(r[0]): min(2.0, max(0.0, 1.0 - float(r[1]))) for r in snap_results
-                    }
-                else:
-                    snap_dists = {int(r[0]): min(2.0, max(0.0, float(r[1]))) for r in snap_results}
-
-                if snap_ids:
-                    placeholders = ",".join("?" * len(snap_ids))
-                    # Build filter clause adapted for snapvec (no v.rowid)
-                    snap_filter = vec_clause.replace("v.rowid", "c.id") if vec_clause else ""
-                    rows = self._conn.execute(
-                        f"""
-                        SELECT c.id, c.text, d.title, d.path, c.seq, d.added_at, d.collection, d.tags, d.layer,
-                               d.status, d.source_ref, d.valid_from, d.valid_until, d.supersedes
-                        FROM chunks c
-                        JOIN documents d ON d.id = c.doc_id
-                        WHERE c.id IN ({placeholders})
-                          {snap_filter}
-                        """,
-                        [*snap_ids, *filter_params],
-                    ).fetchall()
-                    # Build dict for fast lookup, attach distance, preserve snap order
-                    row_by_id = {r["id"]: dict(r) for r in rows}
-                    vec_rows = []
-                    for sid in snap_ids:
-                        if sid in row_by_id:
-                            entry = row_by_id[sid]
-                            entry["distance"] = snap_dists.get(sid, 2.0)
-                            vec_rows.append(entry)
-                    # The KNN asked for extra rows to cover retired claims the
-                    # SQL filter drops; keep the pool the pipeline expects.
-                    vec_rows = vec_rows[:candidate_pool]
-                else:
-                    vec_rows = []
             else:
                 vec_rows = self._conn.execute(
                     f"""
@@ -1913,22 +1880,69 @@ class _SearchEngineMixin:
                 params.extend(tree_params)
         return conditions, params
 
-    def _hidden_claim_chunks(self) -> int:
-        """Chunks the claim filter will drop: retired or past ``valid_until``.
+    def _snap_candidates(
+        self,
+        query_embedding,
+        candidate_pool: int,
+        vec_clause: str,
+        filter_params: list,
+    ) -> list[dict]:
+        """Top ``candidate_pool`` snapvec rows that pass the metadata filter.
 
-        Snapvec filters AFTER its own KNN, so retired claims (usually
-        near-duplicates of their replacement, so at the top of exactly the
-        queries that matter) would otherwise fill the candidate pool. vec0
-        applies the same filter as a pre-filter and does not need this.
+        Snapvec filters AFTER its own KNN, so rows the filter drops (retired
+        claims, which are usually near-duplicates of their replacement and
+        sit at the top of exactly the queries that matter) would otherwise
+        empty the pool. Ask for ``candidate_pool`` first and double ``k``
+        only while too few rows survive, up to ``max(16 x pool, pool + 1024)``,
+        so a large retired history costs a bounded amount per query instead
+        of the whole index. ID lookups are batched under SQLite's variable limit and the
+        KNN order is preserved.
+
+        The two snapvec backends disagree on their return semantics and
+        this reconciles them to the cosine-distance contract (#289): flat
+        ``snapvec`` returns similarity in ``[-1, 1]`` (needs ``1 - sim``),
+        ``snapvec-ivfpq`` already returns ``1 - sim``. Both are clamped to
+        ``[0, 2]``.
         """
-        now_iso = datetime.now(timezone.utc).isoformat()
-        row = self._conn.execute(
-            "SELECT COALESCE(SUM(chunk_count), 0) FROM documents "
-            "WHERE status IN ('superado', 'refutado') "
-            "OR (valid_until IS NOT NULL AND valid_until != '' AND valid_until <= ?)",
-            [now_iso],
-        ).fetchone()
-        return int(row[0])
+        q = np.array(query_embedding, dtype=np.float32)
+        snap_filter = vec_clause.replace("v.rowid", "c.id") if vec_clause else ""
+        total = len(self._snap)
+        # Bounded: a live match ranked below more than ~1000 hidden chunks is
+        # given up rather than scanning the whole index on every query.
+        k_max = min(total, max(candidate_pool * 16, candidate_pool + 1024))
+        k = min(candidate_pool, k_max)
+        while True:
+            snap_results = self._snap.search(q, k=k)
+            snap_ids = [int(r[0]) for r in snap_results]
+            if self._vector_backend == "snapvec":
+                dists = {int(r[0]): min(2.0, max(0.0, 1.0 - float(r[1]))) for r in snap_results}
+            else:
+                dists = {int(r[0]): min(2.0, max(0.0, float(r[1]))) for r in snap_results}
+            row_by_id: dict = {}
+            for i in range(0, len(snap_ids), _SQLITE_PARAM_BATCH):
+                batch = snap_ids[i : i + _SQLITE_PARAM_BATCH]
+                marks = ",".join("?" * len(batch))
+                for r in self._conn.execute(
+                    f"""
+                    SELECT c.id, c.text, d.title, d.path, c.seq, d.added_at, d.collection, d.tags, d.layer,
+                           d.status, d.source_ref, d.valid_from, d.valid_until, d.supersedes
+                    FROM chunks c
+                    JOIN documents d ON d.id = c.doc_id
+                    WHERE c.id IN ({marks})
+                      {snap_filter}
+                    """,
+                    [*batch, *filter_params],
+                ).fetchall():
+                    row_by_id[r["id"]] = dict(r)
+            rows = []
+            for sid in snap_ids:
+                if sid in row_by_id:
+                    entry = row_by_id[sid]
+                    entry["distance"] = dists.get(sid, 2.0)
+                    rows.append(entry)
+            if len(rows) >= candidate_pool or k >= k_max or not snap_ids:
+                return rows[:candidate_pool]
+            k = min(k * 2, k_max)
 
     @staticmethod
     def _build_doc_filter(

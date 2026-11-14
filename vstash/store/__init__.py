@@ -341,6 +341,14 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         row = self._conn.execute("SELECT status FROM documents WHERE id = ?", [doc_id]).fetchone()
         return row[0] if row is not None else None
 
+    def claim_fields(self, doc_id: str) -> dict | None:
+        """Stored ``status`` / ``source_ref`` / ``valid_from`` / ``valid_until`` of a document."""
+        row = self._conn.execute(
+            "SELECT status, source_ref, valid_from, valid_until FROM documents WHERE id = ?",
+            [doc_id],
+        ).fetchone()
+        return dict(row) if row is not None else None
+
     def restore_claim(self, doc_id: str) -> bool:
         """Bring a superseded / refuted claim back into search.
 
@@ -443,6 +451,17 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                     now_iso=datetime.now(timezone.utc).isoformat(),
                 )
                 if retire_id is not None:
+                    # Re-check inside the write lock: another writer may have
+                    # deleted the target or retired this replacement between
+                    # ingest_text's checks and here. Raising rolls back.
+                    if retire_id == doc_id:
+                        raise ValueError("supersedes: a document cannot supersede itself")
+                    if not self.claim_exists(retire_id):
+                        raise ValueError(f"supersedes: target {retire_id!r} no longer exists")
+                    if self.claim_status(doc_id) in RETIRED_STATUSES:
+                        raise ValueError(
+                            "supersedes: the replacing document is retired; restore it first"
+                        )
                     self._conn.execute(
                         "UPDATE documents SET status = 'superado', valid_until = ? "
                         "WHERE id = ? AND status IS NOT 'superado' AND status IS NOT 'refutado'",
@@ -518,6 +537,13 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         stored_tags = ",".join(_normalize_tags(tags)) if tags else None
 
         doc_id = hashlib.sha256(f"{collection}:{path}".encode()).hexdigest()[:32]
+
+        # The search filter compares valid_until lexically against a UTC
+        # timestamp, so every writer (not only ingest_text) must store UTC.
+        if valid_from:
+            valid_from = _canonicalize_added_filter(valid_from, label="valid_from")
+        if valid_until:
+            valid_until = _canonicalize_added_filter(valid_until, label="valid_until")
 
         # Retirement is sticky: a content edit re-inserts the row, and must
         # not bring a superseded / refuted claim back (only restore_claim
@@ -756,7 +782,8 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                 # the write lock on the DB, so this is the authoritative
                 # matched set for the replace below.
                 existing = self._conn.execute(
-                    "SELECT title, source_type, collection, project, layer, tags "
+                    "SELECT title, source_type, collection, project, layer, tags, "
+                    "status, source_ref, valid_from, valid_until, supersedes, confidence "
                     "FROM documents WHERE path = ?"
                     + (" AND collection = ?" if collection is not None else ""),
                     [path, collection] if collection is not None else [path],
@@ -778,6 +805,14 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                         layer=row["layer"],
                         tags=tags if tags is not None else row["tags"],
                         content_hash=content_hash,
+                        # A content edit keeps the claim's provenance, state
+                        # and validity window.
+                        status=row["status"],
+                        source_ref=row["source_ref"],
+                        valid_from=row["valid_from"],
+                        valid_until=row["valid_until"],
+                        supersedes=row["supersedes"],
+                        confidence=row["confidence"],
                         now_iso=now_iso,
                     )
                     if self._defer_fts:
