@@ -369,6 +369,10 @@ class Memory:
         retrieval_mode: Literal["hybrid", "vec_only", "fts_only"] | None = None,
         exact_match: str | None = None,
         exact_match_case_sensitive: bool = False,
+        distance_cutoff: float | None = None,
+        lexical_gate: bool = False,
+        drop_stopwords: bool = False,
+        min_vec_keep: int = 0,
         usage_prior: bool | None = None,
         min_relevance: Literal["high", "medium"] | None = None,
     ) -> SearchResults:
@@ -495,6 +499,10 @@ class Memory:
             retrieval_mode=_mode,
             exact_match=exact_match,
             exact_match_case_sensitive=exact_match_case_sensitive,
+            distance_cutoff=distance_cutoff,
+            lexical_gate=lexical_gate,
+            drop_stopwords=drop_stopwords,
+            min_vec_keep=min_vec_keep,
             usage_prior=usage_prior,
             min_relevance=min_relevance,
         )

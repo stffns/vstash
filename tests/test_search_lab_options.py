@@ -311,3 +311,45 @@ class TestDropStopwords:
             assert len(store.search(_unit(0.0), "la reunion de", **kw)) == 2
         finally:
             store.close()
+
+
+# ------------------------------------------------------------------ #
+# Adapters: services layer and SDK forward the options                  #
+# ------------------------------------------------------------------ #
+
+
+class TestAdaptersForwardLabOptions:
+    def test_memory_search_forwards_to_the_store(self, tmp_path, monkeypatch) -> None:
+        from vstash import Memory
+
+        (tmp_path / "a.md").write_text("# Acta\n\nLa reunion de arquitectura fue el martes.")
+        with Memory(db=tmp_path / "mem.db") as mem:
+            mem.add(tmp_path / "a.md")
+            seen: dict = {}
+            real = mem._store.search
+
+            def spy(*args, **kwargs):
+                seen.update(kwargs)
+                return real(*args, **kwargs)
+
+            monkeypatch.setattr(mem._store, "search", spy)
+            hits = mem.search(
+                "la reunion de arquitectura",
+                top_k=3,
+                lexical_gate=True,
+                drop_stopwords=True,
+                min_vec_keep=3,
+                distance_cutoff=2.0,
+            )
+            assert hits
+            assert seen["lexical_gate"] is True
+            assert seen["drop_stopwords"] is True
+            assert seen["min_vec_keep"] == 3
+            assert seen["distance_cutoff"] == 2.0
+
+            seen.clear()
+            mem.search("la reunion de arquitectura", top_k=3)
+            assert seen["lexical_gate"] is False
+            assert seen["drop_stopwords"] is False
+            assert seen["min_vec_keep"] == 0
+            assert "distance_cutoff" not in seen  # store default untouched
