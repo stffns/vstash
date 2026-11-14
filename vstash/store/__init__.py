@@ -139,14 +139,19 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         observability: ObservabilityConfig | None = None,
         limits: LimitsConfig | None = None,
         cache: CacheConfig | None = None,
-        fts_tokenizer: str = DEFAULT_FTS_TOKENIZER,
+        fts_tokenizer: str | None = None,
     ) -> None:
-        if fts_tokenizer not in FTS_TOKENIZERS:
+        if fts_tokenizer is not None and fts_tokenizer not in FTS_TOKENIZERS:
             raise ValueError(
                 f"fts_tokenizer must be one of {sorted(FTS_TOKENIZERS)}; got {fts_tokenizer!r}"
             )
-        # Set before ``_connect()``: the DDL and ``_stem_terms`` both read it.
-        self._fts_tokenizer = fts_tokenizer
+        # Set before ``_connect()``: the DDL reads it when the index does not
+        # exist yet. On an existing database ``_adopt_fts_tokenizer`` then
+        # replaces it with the tokenizer the index was really built with, so
+        # ``_stem_terms`` always agrees with the index. ``None`` means "the
+        # index's own tokenizer, or the default for a new database".
+        self._fts_tokenizer_requested = fts_tokenizer
+        self._fts_tokenizer = fts_tokenizer or DEFAULT_FTS_TOKENIZER
         self.db_path = Path(db_path).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.embedding_dim = embedding_dim

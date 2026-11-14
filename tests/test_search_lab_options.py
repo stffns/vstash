@@ -82,6 +82,72 @@ class TestFtsTokenizer:
             store.close()
 
 
+class TestFtsTokenizerOnExistingIndex:
+    U61 = "porter unicode61 remove_diacritics 2"
+
+    def test_reopen_adopts_the_tokenizer_the_index_was_built_with(self, tmp_db_path: str) -> None:
+        store = _store(tmp_db_path, fts_tokenizer=self.U61)
+        _add(store, "/a", "La reunión con Ángel", _unit(0.0))
+        store.close()
+        # No argument: an existing index keeps its own tokenizer.
+        store = _store(tmp_db_path)
+        try:
+            assert store._fts_tokenizer == self.U61
+            assert store._stem_terms(["¿Reunión"]) == ["reunion"]
+        finally:
+            store.close()
+
+    def test_mismatched_request_keeps_the_index_and_warns(
+        self, tmp_db_path: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        store = _store(tmp_db_path)  # historical "porter ascii"
+        _add(store, "/a", "La reunión con Ángel", _unit(0.0))
+        store.close()
+        with caplog.at_level("WARNING"):
+            store = _store(tmp_db_path, fts_tokenizer=self.U61)
+        try:
+            assert "rebuild_fts" in caplog.text
+            assert store._fts_tokenizer == "porter ascii"
+            assert store._stem_terms(["¿Quién"]) == ["¿quién"]  # still agrees with the index
+        finally:
+            store.close()
+
+    def test_rebuild_fts_switches_without_touching_vectors(self, tmp_db_path: str) -> None:
+        store = _store(tmp_db_path, cache=CacheConfig(query_cache_size=8))
+        try:
+            _add(store, "/a", "La reunión con Ángel fue el martes", _unit(0.0))
+            _add(store, "/b", "Presupuesto de la obra", _unit(1.0))
+            kw = {"top_k": 5, "retrieval_mode": "fts_only"}
+            assert store.search(_unit(0.5), "¿Reunion?", **kw) == []
+            vectors = store._conn.execute("SELECT COUNT(*) FROM vec_chunks").fetchone()[0]
+
+            store.rebuild_fts(self.U61)
+
+            # Same call as before the rebuild: the query cache must not answer it.
+            assert [h.path for h in store.search(_unit(0.5), "¿Reunion?", **kw)] == ["/a"]
+            assert store._stem_terms(["¿Quién"]) == ["quien"]
+            assert store._conn.execute("SELECT COUNT(*) FROM vec_chunks").fetchone()[0] == vectors
+            # Deletes still keep the rebuilt index in sync (trigger survives).
+            store.delete_document("/a")
+            assert store.search(_unit(0.5), "reunion", **kw) == []
+            assert [c.passed for c in store.integrity_check()] == [True] * 5
+        finally:
+            store.close()
+        reopened = _store(tmp_db_path)
+        try:
+            assert reopened._fts_tokenizer == self.U61
+        finally:
+            reopened.close()
+
+    def test_rebuild_fts_rejects_unknown_tokenizer(self, tmp_db_path: str) -> None:
+        store = _store(tmp_db_path)
+        try:
+            with pytest.raises(ValueError, match="tokenizer"):
+                store.rebuild_fts("klingon")
+        finally:
+            store.close()
+
+
 # ------------------------------------------------------------------ #
 # lexical_gate                                                         #
 # ------------------------------------------------------------------ #

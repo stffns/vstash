@@ -262,6 +262,21 @@ def _ids_union(almacen, vector, consulta, top_k, **kw):
 
 PLANES: dict[str, Callable] = {"union": _ids_union}
 
+# --- Experimento 4: búsqueda «a fondo» (unión de híbrido y solo vectores) ---------------
+# «top_k» en la configuración cambia cuántos se piden; la unión pide top_k a cada pata.
+CONFIGS["union"] = {"plan": "union"}
+CONFIGS["union-compuerta"] = {"plan": "union", "buscar": {"lexical_gate": True}}
+CONFIGS["defecto-100"] = {"top_k": 100}
+CONFIGS["corte2-100"] = {"top_k": 100, "buscar": {"distance_cutoff": 2.0}}
+CONFIGS["compuerta-corte2-100"] = {
+    "top_k": 100,
+    "buscar": {"lexical_gate": True, "distance_cutoff": 2.0},
+}
+CONFIGS["vec-corte2-100"] = {
+    "top_k": 100,
+    "buscar": {"retrieval_mode": "vec_only", "distance_cutoff": 2.0},
+}
+
 
 # ------------------------------------------------------------------ #
 # Bancos                                                               #
@@ -457,7 +472,9 @@ def medir(bancos: list[str], configs: list[str]) -> None:
                 for i, consulta in enumerate(b.consultas):
                     vector = vq[i].tolist()
                     empieza = time.perf_counter()
-                    dados = buscar(almacen, CONFIGS[c], vector, consulta, b.top_k)
+                    dados = buscar(
+                        almacen, CONFIGS[c], vector, consulta, CONFIGS[c].get("top_k", b.top_k)
+                    )
                     ms.append((time.perf_counter() - empieza) * 1e3)
                     puesto.append(next((k + 1 for k, d in enumerate(dados) if d in b.buenas[i]), 0))
                     n.append(len(dados))
@@ -483,8 +500,20 @@ def medir(bancos: list[str], configs: list[str]) -> None:
 # Columnas por banco: (título, función sobre el resultado guardado -> valor por consulta)
 _en = lambda k: lambda r: ((r["puesto"] > 0) & (r["puesto"] <= k)).astype(float)  # noqa: E731
 COLUMNAS: dict[str, list[tuple[str, Callable]]] = {
-    "siempre": [("primera", _en(1)), ("en 5", _en(5)), ("en 20", _en(20)), ("en 50", _en(50))],
-    "vagas": [("primera", _en(1)), ("en 5", _en(5)), ("en 20", _en(20)), ("en 50", _en(50))],
+    "siempre": [
+        ("primera", _en(1)),
+        ("en 5", _en(5)),
+        ("en 20", _en(20)),
+        ("en 50", _en(50)),
+        ("entra", _en(10**6)),
+    ],
+    "vagas": [
+        ("primera", _en(1)),
+        ("en 5", _en(5)),
+        ("en 20", _en(20)),
+        ("en 50", _en(50)),
+        ("entra", _en(10**6)),
+    ],
     "miracl": [
         ("primera", _en(1)),
         ("en 3", _en(3)),
@@ -559,7 +588,8 @@ def tiempos(bancos: list[str], configs: list[str], vueltas: int = 5) -> None:
             for _ in range(vueltas):
                 empieza = time.perf_counter()
                 for i in range(cuantas):
-                    buscar(almacen, CONFIGS[c], vq[i].tolist(), b.consultas[i], b.top_k)
+                    k = CONFIGS[c].get("top_k", b.top_k)
+                    buscar(almacen, CONFIGS[c], vq[i].tolist(), b.consultas[i], k)
                 mejores.append((time.perf_counter() - empieza) / cuantas * 1e3)
             print(f"  [{nombre}] {c:24} {min(mejores):.2f} ms por búsqueda (menor de {vueltas})")
             almacen.close()
