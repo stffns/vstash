@@ -251,6 +251,11 @@ CONFIGS["rec+sw+porter-u61"] = {
     **CONFIGS["tok-porter-u61"],
     "buscar": {**_REC, "drop_stopwords": True},
 }
+CONFIGS["rec+sw/sin-adapt"] = {"buscar": {**_REC, "drop_stopwords": True, "adaptive_rrf": False}}
+CONFIGS["sw-corte2"] = {"buscar": {"distance_cutoff": 2.0, "drop_stopwords": True}}
+CONFIGS["sw-corte2/sin-adapt"] = {
+    "buscar": {"distance_cutoff": 2.0, "drop_stopwords": True, "adaptive_rrf": False}
+}
 for _c in (1.5, 2.0, 25.0):
     CONFIGS[f"fuerza-corte{_c:g}"] = {"pesos": "fuerza", "buscar": {"distance_cutoff": _c}}
 for _c in (1.3225, 1.5, 1.75, 2.0, 3.0, 25.0):
@@ -285,6 +290,11 @@ CONFIGS["defecto-100"] = {"top_k": 100}
 CONFIGS["corte2-100"] = {"top_k": 100, "buscar": {"distance_cutoff": 2.0}}
 CONFIGS["compuerta-corte2-100"] = {
     "top_k": 100,
+    "buscar": {"lexical_gate": True, "distance_cutoff": 2.0},
+}
+CONFIGS["defecto-40"] = {"top_k": 40}
+CONFIGS["compuerta-corte2-40"] = {
+    "top_k": 40,
     "buscar": {"lexical_gate": True, "distance_cutoff": 2.0},
 }
 CONFIGS["vec-corte2-100"] = {
@@ -537,6 +547,7 @@ COLUMNAS: dict[str, list[tuple[str, Callable]]] = {
         ("en 3", _en(3)),
         ("en 20", _en(20)),
         ("NDCG@10", lambda r: r["ndcg"]),
+        ("entra", _en(10**6)),
     ],
     "scifact": [("NDCG@10", lambda r: r["ndcg"]), ("primera", _en(1)), ("en 10", _en(10))],
     "nfcorpus": [("NDCG@10", lambda r: r["ndcg"]), ("primera", _en(1)), ("en 10", _en(10))],

@@ -2,6 +2,39 @@
 
 14 de noviembre de 2026 · rama `pelops/lab-recuperacion-es-ef71b8` · vstash 0.39.0 (develop, `bb6d5bc`)
 
+## Configuración recomendada (provisional, 14-nov 20:20; quedan experimentos por cerrar)
+
+**No pierde en ninguno de los cinco bancos** y es la que debe usar la prueba unificada:
+
+```python
+# rama pelops/lab-recuperacion-es-ef71b8 (las tres opciones son nuevas y están apagadas por defecto)
+almacen.search(
+    vector_de_la_consulta, texto_de_la_consulta, top_k=K,
+    lexical_gate=True,      # baja el peso de las palabras cuando la evidencia léxica es floja
+    distance_cutoff=2.0,    # corte por distancia más flojo que el 1,3225 por defecto
+    drop_stopwords=True,    # «de», «la», «the»… fuera de la parte de palabras
+)
+```
+
+Si hay que usar vstash 0.39.0 tal cual, sin esta rama: `search(..., adaptive_rrf=False,
+distance_cutoff=2.0)`. Recoge casi toda la ganancia en las vagas y en MIRACL, pero pierde
+algo en NFCorpus (alguna buena entre 10: −3,1 puntos, intervalo sin el cero) y no mejora la
+primera en las consultas de siempre.
+
+| Banco (medida) | Por defecto | Recomendada | Sin tocar código |
+|---|---|---|---|
+| siempre: primera · entre 20 | 72,8 · 95,0 | **74,9** (+2,1; +0,1 a +4,2 *) · 96,2 (+1,2; 0,0 a +2,5) | 71,9 (−0,8; −2,1 a +0,4) · 96,4 (+1,4 *) |
+| vagas: primera · entre 20 · entre 50 | 5,6 · 36,5 · 59,3 | 9,2 (+3,6 *) · **55,3** (+18,8; +14,9 a +22,6 *) · 74,0 (+14,7 *) | 5,3 · 51,5 (+15,0 *) · 71,1 (+11,8 *) |
+| MIRACL-es: primera · entre 20 | 38,1 · 81,9 | 39,8 (+1,7; −0,8 a +4,2) · **87,8** (+5,9; +3,4 a +8,5 *) | 40,6 (+2,5; −0,9 a +5,7) · 89,2 (+7,3 *) |
+| SciFact: NDCG@10 | 72,5 | 73,1 (+0,6; −0,3 a +1,6) | 73,2 (+0,7; −0,9 a +2,3) |
+| NFCorpus: NDCG@10 | 35,9 | 36,1 (+0,2; −0,3 a +0,7) | 35,4 (−0,5; −1,3 a +0,2) |
+| ms por búsqueda (notas · SciFact · MIRACL) | 2,8 · 8,1 · 205 | 1,2 · 5,0 · 88 | 2,9 · 8,2 · 193 |
+
+Avisos: (1) `lexical_gate`, `drop_stopwords` y `min_vec_keep` solo existen en
+`VstashStore.search` de esta rama. (2) Con consultas vagas la buena sigue sin ser la primera
+más que el 9 %: lo que mejora es que entra en la lista; el orden fino sigue siendo trabajo del
+reordenador. (3) No hace falta reindexar nada: las tres opciones son de consulta.
+
 <!-- RECOMENDACION -->
 
 ## Cómo se midió
