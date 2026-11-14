@@ -300,7 +300,7 @@ COLUMNAS: dict[str, list[tuple[str, Callable]]] = {
         ("en 3", _en(3)),
         ("en 20", _en(20)),
         ("NDCG@10", lambda r: r["ndcg"]),
-    ],  # fmt: skip
+    ],
     "scifact": [("NDCG@10", lambda r: r["ndcg"]), ("primera", _en(1)), ("en 10", _en(10))],
 }
 
