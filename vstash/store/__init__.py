@@ -50,6 +50,8 @@ from ._common import (
     _deserialize,
     _normalize_tags,
     _serialize,
+    RETIRED_STATUSES,
+    derive_claim_status,
     KNOWN_SCHEMA_VERSIONS,
     RELEVANCE_TIER_HIGH_MAX,
     RELEVANCE_TIER_MEDIUM_MAX,
@@ -334,6 +336,33 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
             self._bump_cache_epoch()  # a cached search may still hold the retired claim
         return cur.rowcount
 
+    def claim_status(self, doc_id: str) -> str | None:
+        """Current status of a document (``None`` if absent or never set)."""
+        row = self._conn.execute("SELECT status FROM documents WHERE id = ?", [doc_id]).fetchone()
+        return row[0] if row is not None else None
+
+    def restore_claim(self, doc_id: str) -> bool:
+        """Bring a superseded / refuted claim back into search.
+
+        The status is re-derived from the claim's layer and source exactly
+        as ``ingest_text`` would (``vigente`` / ``sin-fuente`` / ``relato``)
+        and ``valid_until`` is cleared (retiring overwrote it). Returns
+        ``False`` when the id is absent or the claim is not retired.
+        """
+        with self._write_lock:
+            row = self._conn.execute(
+                "SELECT status, layer, source_ref FROM documents WHERE id = ?", [doc_id]
+            ).fetchone()
+            if row is None or row[0] not in RETIRED_STATUSES:
+                return False
+            self._conn.execute(
+                "UPDATE documents SET status = ?, valid_until = NULL WHERE id = ?",
+                [derive_claim_status(row[1], row[2]), doc_id],
+            )
+            self._conn.commit()
+        self._bump_cache_epoch()
+        return True
+
     def add_document(
         self,
         path: str,
@@ -352,6 +381,7 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         valid_until: str | None = None,
         supersedes: str | None = None,
         confidence: float | None = None,
+        retire_id: str | None = None,
     ) -> str:
         """Add a document and its chunks to the store.
 
@@ -370,6 +400,9 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
             content_hash: SHA-256 hex of the raw ingested text, used for
                 Tier-0 write-time dedup (``ingest_text`` sets it; file
                 ingest leaves it None for now).
+            retire_id: Id of a claim this document replaces. It is marked
+                ``superado`` in the SAME transaction as the write, so a crash
+                cannot leave both the old and the new claim live.
 
         Returns:
             The generated document ID (32-char hex hash).
@@ -409,6 +442,12 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                     confidence=confidence,
                     now_iso=datetime.now(timezone.utc).isoformat(),
                 )
+                if retire_id is not None:
+                    self._conn.execute(
+                        "UPDATE documents SET status = 'superado', valid_until = ? "
+                        "WHERE id = ? AND status IS NOT 'superado' AND status IS NOT 'refutado'",
+                        [datetime.now(timezone.utc).isoformat(), retire_id],
+                    )
 
                 # Add to snapvec in-memory (persisted after successful commit)
                 if self._snap is not None:
@@ -479,6 +518,18 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         stored_tags = ",".join(_normalize_tags(tags)) if tags else None
 
         doc_id = hashlib.sha256(f"{collection}:{path}".encode()).hexdigest()[:32]
+
+        # Retirement is sticky: a content edit re-inserts the row, and must
+        # not bring a superseded / refuted claim back (only restore_claim
+        # does). The replacement pointer is kept unless the caller sets one.
+        prior = self._conn.execute(
+            "SELECT status, valid_until, supersedes FROM documents WHERE id = ?", [doc_id]
+        ).fetchone()
+        if prior is not None:
+            if prior[0] in RETIRED_STATUSES:
+                status, valid_until = prior[0], prior[1]
+            if supersedes is None:
+                supersedes = prior[2]
 
         # Remove existing version if re-ingesting
         self._delete_by_doc_id(doc_id)

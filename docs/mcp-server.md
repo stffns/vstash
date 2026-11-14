@@ -42,7 +42,8 @@ The vstash tools should appear in Claude's tool list.
 | Tool | Description |
 |------|-------------|
 | `vstash_add(path)` | Ingest a file, directory, or URL into memory |
-| `vstash_remember(text, title)` | Ingest text directly without a file |
+| `vstash_remember(text, title, layer?, source_ref?, supersedes?, valid_until?)` | Ingest text directly without a file; claims (`hecho` / `decision`) carry a status and source, `supersedes` retires the claim it replaces |
+| `vstash_retire(source, refuted?, restore?)` | Retire a claim with no replacement (`superado` / `refutado`) or restore a retired one |
 | `vstash_ask(query, ...)` | Semantic search + LLM answer with temporal filters |
 | `vstash_search(query, ...)` | Hybrid search with recency boost, temporal filters, and context expansion |
 | `vstash_get_chunk(chunk_id)` | Retrieve a single chunk by database row ID |
@@ -57,6 +58,10 @@ The vstash tools should appear in Claude's tool list.
 | `vstash_journal_recall(query)` | Search journal entries semantically |
 | `vstash_journal_log()` | List recent journal entries chronologically |
 | `vstash_journal_prune(older_than)` | Remove old journal entries |
+
+### Claims: status, replacement and history
+
+A `hecho` / `decision` stored without `source_ref` is `sin-fuente`; with one it is `vigente`; a `charla` is `relato`. `supersedes="text://<old title>"` (path or 32-char id) retires the old claim as `superado`, in the same write. `vstash_search` hides `superado`, `refutado` and claims past `valid_until`; `include_retired=true` shows them with their `status`. Editing a retired claim's text does not bring it back; `vstash_retire(source, restore=true)` does. A claim cannot supersede itself, and a retired claim cannot supersede anything until it is restored.
 
 ### Search Response Fields
 

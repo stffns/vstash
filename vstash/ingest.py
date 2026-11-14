@@ -668,8 +668,11 @@ def _generate_title(text: str) -> str:
     return f"{slug}-{ts}"
 
 
-CLAIM_LAYERS = frozenset({"hecho", "decision"})
-VALID_CLAIM_STATUSES = frozenset({"vigente", "sin-fuente", "superado", "refutado", "relato"})
+from .store._common import (  # noqa: E402  (shared with restore_claim)
+    CLAIM_LAYERS as CLAIM_LAYERS,
+)
+from .store._common import RETIRED_STATUSES, derive_claim_status  # noqa: E402
+from .store._common import VALID_CLAIM_STATUSES as VALID_CLAIM_STATUSES  # noqa: E402
 
 
 def ingest_text(
@@ -778,16 +781,10 @@ def ingest_text(
     # narrative ('relato'): never citable as a fact.
     if status is not None and status not in VALID_CLAIM_STATUSES:
         raise ValueError(f"status must be one of {sorted(VALID_CLAIM_STATUSES)}, got {status!r}")
-    claim_status = status
-    if fm_layer in CLAIM_LAYERS:
-        if not source_ref:
-            claim_status = "sin-fuente"
-        elif claim_status is None:
-            claim_status = "vigente"
-    elif claim_status is None and fm_layer == "charla":
-        claim_status = "relato"
+    claim_status = derive_claim_status(fm_layer, source_ref, status)
 
     superseded_id: str | None = None
+    target_live: bool | None = None
     if supersedes:
         superseded_id = (
             supersedes
@@ -802,6 +799,19 @@ def ingest_text(
                 f"supersedes: no document {supersedes!r} in collection {collection!r}"
                 " (pass its full path, e.g. 'text://<title>', or its 32-char id)"
             )
+        # Checked before any write: a claim cannot replace itself (it would
+        # retire what it just wrote), and a retired claim cannot replace
+        # anything -- e.g. A re-remembered superseding B after B replaced A
+        # would leave both retired.
+        new_id = store.doc_id_for(collection, source_path)
+        if superseded_id == new_id:
+            raise ValueError(f"supersedes: {supersedes!r} is this document itself")
+        if store.claim_status(new_id) in RETIRED_STATUSES:
+            raise ValueError(
+                f"supersedes: {source_path!r} is itself retired "
+                f"({store.claim_status(new_id)}); restore it first"
+            )
+        target_live = store.claim_status(superseded_id) not in RETIRED_STATUSES
 
     # valid_from / valid_until are compared lexically against UTC timestamps,
     # like added_at: canonicalise them the same way, and reject non-ISO input.
@@ -843,11 +853,12 @@ def ingest_text(
         valid_from=valid_from,
         valid_until=valid_until,
         supersedes=superseded_id,
+        retire_id=superseded_id,
     )
 
-    superseded: bool | None = None
-    if superseded_id:
-        superseded = store.supersede_claim(superseded_id, doc_id) > 0
+    # The old claim was retired inside the write's own transaction; it
+    # counts as superseded by THIS write only if it was still live before.
+    superseded: bool | None = target_live if superseded_id else None
 
     elapsed = round(time.time() - start_time, 2)
 

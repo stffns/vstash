@@ -481,9 +481,57 @@ def vstash_remember(
         )
         return _ok(result)
 
+    except ValueError as exc:
+        # Claim validation (unknown / self / retired supersedes target, bad
+        # status or date): a caller mistake, not a server failure.
+        return _error(str(exc))
     except Exception as exc:
         logger.exception("vstash_remember failed")
         return _error(f"Ingestion failed: {exc}")
+
+
+@mcp_server.tool()
+def vstash_retire(
+    source: str,
+    refuted: bool = False,
+    restore: bool = False,
+    collection: str = "default",
+) -> str:
+    """Retire a stored claim without replacing it, or bring one back.
+
+    Use when a fact or decision stops holding and nothing replaces it
+    (to replace it, use ``vstash_remember(..., supersedes=...)``). The text
+    is kept; it only leaves search. ``vstash_search(include_retired=true)``
+    still shows it with its ``status``.
+
+    Args:
+        source: The claim's path (as search returns it in ``path``, e.g.
+            ``text://<title>``) or its 32-char id.
+        refuted: Mark it ``refutado`` (it was wrong) instead of ``superado``
+            (it stopped being true).
+        restore: Undo a retire or a supersede: the claim is searchable again
+            with its status re-derived from its layer and source.
+        collection: Collection the path lives in (ignored for an id).
+
+    Returns:
+        JSON ``{"retired": bool}`` or ``{"restored": bool}``.
+    """
+    try:
+        store = _get_store()
+        doc_id = (
+            source
+            if len(source) == 32 and ":" not in source
+            else store.doc_id_for(collection, source)
+        )
+        if restore:
+            return _ok({"restored": store.restore_claim(doc_id)})
+        status = "refutado" if refuted else "superado"
+        return _ok({"retired": store.supersede_claim(doc_id, status=status) > 0})
+    except FileNotFoundError:
+        return _error("vstash database not found. Ingest documents first with vstash_add.")
+    except Exception as exc:
+        logger.exception("vstash_retire failed")
+        return _error(f"Retire failed: {exc}")
 
 
 @mcp_server.tool()
@@ -663,6 +711,7 @@ def vstash_search(
     fts_weight: float | None = None,
     retrieval_mode: str | None = None,
     min_relevance: str | None = None,
+    include_retired: bool = False,
 ) -> str:
     """Search vstash memory without LLM — returns raw chunks with scores.
 
@@ -720,6 +769,9 @@ def vstash_search(
             ``best_relevance`` / ``best_distance`` it saw, instead of the
             closest off-topic chunks. None (default) always returns up to
             top_k chunks. Not applied with retrieval_mode="fts_only".
+        include_retired: Also return claims that were superseded, refuted
+            or expired (each chunk carries its ``status``). Default false
+            hides them -- use it to see how a decision changed.
 
     Returns:
         JSON object with chunks array and relevance hint, plus an
@@ -781,6 +833,7 @@ def vstash_search(
             fts_weight=fts_weight_coerced,
             retrieval_mode=resolved_mode,
             min_relevance=min_relevance or None,
+            include_retired=bool(include_retired),
         )
 
         if not chunks:

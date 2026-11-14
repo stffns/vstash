@@ -381,6 +381,7 @@ class Memory:
         exact_match_case_sensitive: bool = False,
         usage_prior: bool | None = None,
         min_relevance: Literal["high", "medium"] | None = None,
+        include_retired: bool = False,
     ) -> SearchResults:
         """Semantic search without LLM inference.
 
@@ -471,6 +472,9 @@ class Memory:
                 off-topic chunks. Tiers are calibrated on BGE-small; not
                 applied with ``retrieval_mode="fts_only"``.
 
+            include_retired: Also return superseded / refuted / expired
+                claims (their ``status`` says which). Default ``False``.
+
         Returns:
             Ranked ``SearchResults`` (a ``list[SearchResult]``) ordered by
             relevance. Its ``event_id`` identifies this search in the usage
@@ -507,6 +511,7 @@ class Memory:
             exact_match_case_sensitive=exact_match_case_sensitive,
             usage_prior=usage_prior,
             min_relevance=min_relevance,
+            include_retired=include_retired,
         )
 
     def mark_used(self, event_id: int, chunk_id: int | list[int]) -> int:
@@ -936,6 +941,28 @@ class Memory:
             else self._store.doc_id_for(col or "default", source)
         )
         return self._store.supersede_claim(doc_id, status="refutado" if refuted else "superado") > 0
+
+    def restore(self, source: str, *, collection: object = _UNSET) -> bool:
+        """Undo :meth:`retire` or a ``supersedes``: the claim is searchable again.
+
+        Its status is re-derived from its layer and source (``vigente`` /
+        ``sin-fuente`` / ``relato``) and ``valid_until`` is cleared. Deleting
+        the replacing claim does NOT restore the old one by itself.
+
+        Args:
+            source: The claim's path (``text://<title>``) or its 32-char id.
+            collection: Collection the path lives in; ignored for an id.
+
+        Returns:
+            True if a retired claim was restored.
+        """
+        col = self._collection if collection is _UNSET else collection
+        doc_id = (
+            source
+            if len(source) == 32 and ":" not in source
+            else self._store.doc_id_for(col or "default", source)
+        )
+        return self._store.restore_claim(doc_id)
 
     def remove(self, source: str | Path) -> bool:
         """Remove a document from memory.

@@ -74,6 +74,7 @@ class _SearchEngineMixin:
         cache_epoch: int,
         filters: dict | None = None,
         dedup_threshold: float | None = None,
+        include_retired: bool = False,
     ) -> int:
         """Build the search cache key from the full set of query parameters.
 
@@ -121,6 +122,7 @@ class _SearchEngineMixin:
                 # order stays significant, which only costs a cache miss.
                 None if filters is None else json.dumps(filters, sort_keys=True, default=str),
                 dedup_threshold,
+                include_retired,
                 cache_epoch,
             )
         )
@@ -401,6 +403,7 @@ class _SearchEngineMixin:
         retrieval_mode: Literal["hybrid", "vec_only", "fts_only"] | None = None,
         exact_match: str | None = None,
         exact_match_case_sensitive: bool = False,
+        include_retired: bool = False,
         _tracer: _PipelineTracer | None = None,
     ) -> list[SearchResult]:
         """Hybrid search: vector (semantic) + FTS5 (keyword) combined with RRF.
@@ -524,6 +527,7 @@ class _SearchEngineMixin:
                 cache_epoch=self._cache_epoch,
                 filters=filters,
                 dedup_threshold=dedup_threshold,
+                include_retired=include_retired,
             )
 
         # Per-search miss-analysis tracker (#108).  The tracer is owned
@@ -563,7 +567,9 @@ class _SearchEngineMixin:
                         # A cached list can outlive a claim's valid_until.
                         _now = datetime.now(timezone.utc).isoformat()
                         cached = [
-                            r for r in cached_results if not r.valid_until or r.valid_until > _now
+                            r
+                            for r in cached_results
+                            if include_retired or not r.valid_until or r.valid_until > _now
                         ]
                 if cached is not None:
                     # Restore the best distance this query produced when it
@@ -634,6 +640,7 @@ class _SearchEngineMixin:
                 added_after=added_after,
                 added_before=added_before,
                 filters=filters,
+                include_retired=include_retired,
             )
 
             # --- Vector search ---
@@ -683,7 +690,8 @@ class _SearchEngineMixin:
                 # assume (``[0, 2]``), even if an implementation
                 # quirk yields a value slightly outside ``[-1, 1]``.
                 snap_results = self._snap.search(
-                    np.array(query_embedding, dtype=np.float32), k=candidate_pool
+                    np.array(query_embedding, dtype=np.float32),
+                    k=candidate_pool + (0 if include_retired else self._hidden_claim_chunks()),
                 )
                 snap_ids = [int(r[0]) for r in snap_results]
                 if self._vector_backend == "snapvec":
@@ -716,6 +724,9 @@ class _SearchEngineMixin:
                             entry = row_by_id[sid]
                             entry["distance"] = snap_dists.get(sid, 2.0)
                             vec_rows.append(entry)
+                    # The KNN asked for extra rows to cover retired claims the
+                    # SQL filter drops; keep the pool the pipeline expects.
+                    vec_rows = vec_rows[:candidate_pool]
                 else:
                     vec_rows = []
             else:
@@ -1902,6 +1913,23 @@ class _SearchEngineMixin:
                 params.extend(tree_params)
         return conditions, params
 
+    def _hidden_claim_chunks(self) -> int:
+        """Chunks the claim filter will drop: retired or past ``valid_until``.
+
+        Snapvec filters AFTER its own KNN, so retired claims (usually
+        near-duplicates of their replacement, so at the top of exactly the
+        queries that matter) would otherwise fill the candidate pool. vec0
+        applies the same filter as a pre-filter and does not need this.
+        """
+        now_iso = datetime.now(timezone.utc).isoformat()
+        row = self._conn.execute(
+            "SELECT COALESCE(SUM(chunk_count), 0) FROM documents "
+            "WHERE status IN ('superado', 'refutado') "
+            "OR (valid_until IS NOT NULL AND valid_until != '' AND valid_until <= ?)",
+            [now_iso],
+        ).fetchone()
+        return int(row[0])
+
     @staticmethod
     def _build_doc_filter(
         *,
@@ -1912,6 +1940,7 @@ class _SearchEngineMixin:
         added_after: str | None = None,
         added_before: str | None = None,
         filters: dict | None = None,
+        include_retired: bool = False,
     ) -> tuple[str, str, list[str]]:
         """Build SQL filter clauses for document metadata.
 
@@ -1946,12 +1975,16 @@ class _SearchEngineMixin:
         # status says: nothing rewrites the status when the date goes by. The
         # timestamp is generated here (never caller input), so it is inlined
         # rather than bound, which keeps one params list valid for both clauses.
+        # ``include_retired`` skips both conditions (history view).
         now_iso = datetime.now(timezone.utc).isoformat()
-        conditions_d2 = [
-            *conditions_d2,
-            "(d2.status IS NULL OR d2.status NOT IN ('superado', 'refutado'))",
-            f"(d2.valid_until IS NULL OR d2.valid_until = '' OR d2.valid_until > '{now_iso}')",
-        ]
+        if not include_retired:
+            conditions_d2 = [
+                *conditions_d2,
+                "(d2.status IS NULL OR d2.status NOT IN ('superado', 'refutado'))",
+                f"(d2.valid_until IS NULL OR d2.valid_until = '' OR d2.valid_until > '{now_iso}')",
+            ]
+        if not conditions_d2:
+            return "", "", []
 
         where = " AND ".join(conditions_d2)
         vec_clause = f"""
@@ -1973,10 +2006,11 @@ class _SearchEngineMixin:
             added_before=added_before,
             filters=filters,
         )
-        conditions_d = [
-            *conditions_d,
-            "(d.status IS NULL OR d.status NOT IN ('superado', 'refutado'))",
-            f"(d.valid_until IS NULL OR d.valid_until = '' OR d.valid_until > '{now_iso}')",
-        ]
+        if not include_retired:
+            conditions_d = [
+                *conditions_d,
+                "(d.status IS NULL OR d.status NOT IN ('superado', 'refutado'))",
+                f"(d.valid_until IS NULL OR d.valid_until = '' OR d.valid_until > '{now_iso}')",
+            ]
         col_clause = "AND " + " AND ".join(conditions_d)
         return vec_clause, col_clause, params

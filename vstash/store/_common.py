@@ -253,6 +253,32 @@ def relevance_tier(distance: float) -> str:
     return "low"
 
 
+#: Claim layers: a fact or a decision is knowledge only with a source.
+CLAIM_LAYERS = frozenset({"hecho", "decision"})
+#: Every status a claim can carry.
+VALID_CLAIM_STATUSES = frozenset({"vigente", "sin-fuente", "superado", "refutado", "relato"})
+#: Statuses that take a claim out of search (``include_retired`` shows them).
+RETIRED_STATUSES = ("superado", "refutado")
+
+
+def derive_claim_status(
+    layer: str | None, source_ref: str | None, status: str | None = None
+) -> str | None:
+    """Status a claim gets from its layer and source (shared by ingest and restore).
+
+    A ``hecho`` / ``decision`` without a source is ``sin-fuente``; with one it
+    is ``vigente`` unless ``status`` says otherwise; a ``charla`` is ``relato``.
+    Any other layer keeps ``status`` (possibly ``None``).
+    """
+    if layer in CLAIM_LAYERS:
+        if not source_ref:
+            return "sin-fuente"
+        return status or "vigente"
+    if status is None and layer == "charla":
+        return "relato"
+    return status
+
+
 # Standard RRF constant — balances precision vs recall
 RRF_K = 60
 
