@@ -40,6 +40,8 @@ from ..models import (
 )
 
 from ._common import (
+    DEFAULT_FTS_TOKENIZER,
+    FTS_TOKENIZERS,
     _ADAPTIVE_RRF_LONG_QUERY,
     _HAS_SNAPVEC,
     _LONG_QUERY_DISTANCE_CUTOFF,
@@ -137,7 +139,14 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         observability: ObservabilityConfig | None = None,
         limits: LimitsConfig | None = None,
         cache: CacheConfig | None = None,
+        fts_tokenizer: str = DEFAULT_FTS_TOKENIZER,
     ) -> None:
+        if fts_tokenizer not in FTS_TOKENIZERS:
+            raise ValueError(
+                f"fts_tokenizer must be one of {sorted(FTS_TOKENIZERS)}; got {fts_tokenizer!r}"
+            )
+        # Set before ``_connect()``: the DDL and ``_stem_terms`` both read it.
+        self._fts_tokenizer = fts_tokenizer
         self.db_path = Path(db_path).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.embedding_dim = embedding_dim
@@ -1519,7 +1528,9 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
             conn = self._stem_conns.get(tid)
             if conn is None:
                 conn = sqlite3.connect(":memory:", check_same_thread=False)
-                conn.execute('CREATE VIRTUAL TABLE _stem USING fts5(x, tokenize="porter ascii")')
+                conn.execute(
+                    f"CREATE VIRTUAL TABLE _stem USING fts5(x, tokenize='{self._fts_tokenizer}')"
+                )
                 conn.execute("CREATE VIRTUAL TABLE _stem_v USING fts5vocab(_stem, row)")
                 self._stem_conns[tid] = conn
         # Use the connection outside the lock — each thread only ever

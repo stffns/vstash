@@ -256,6 +256,28 @@ def relevance_tier(distance: float) -> str:
 # Standard RRF constant — balances precision vs recall
 RRF_K = 60
 
+# FTS5 tokenizers a store may be created with. The value is interpolated
+# into DDL, so it is an allowlist rather than free text.
+#   "porter ascii"   historical default: English stemming; non-ASCII
+#                    characters are token characters and are not case-folded
+#                    ("¿Quién" indexes as the single token "¿quién").
+#   "porter unicode61 remove_diacritics 2"
+#                    English stemming over Unicode-aware tokenisation with
+#                    case and accent folding.
+#   "unicode61 remove_diacritics 2"
+#                    Unicode tokenisation with folding, no stemming.
+#   "trigram remove_diacritics 1"
+#                    language-agnostic substring matching.
+DEFAULT_FTS_TOKENIZER = "porter ascii"
+FTS_TOKENIZERS = frozenset(
+    {
+        "porter ascii",
+        "porter unicode61 remove_diacritics 2",
+        "unicode61 remove_diacritics 2",
+        "trigram remove_diacritics 1",
+    }
+)
+
 # Adaptive RRF: query length threshold above which FTS weight is reduced.
 # ArguAna (194 avg words) showed -38.4% vs dense; queries >50 words are
 # typically semantic paraphrases where keywords add noise.

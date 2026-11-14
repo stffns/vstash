@@ -65,6 +65,178 @@ CONFIGS: dict[str, dict] = {
 }
 
 
+# --- Experimento 1: tokenizador FTS, raíces y palabras vacías ---------------------------
+TOKENIZADORES = {
+    "porter-u61": "porter unicode61 remove_diacritics 2",
+    "u61": "unicode61 remove_diacritics 2",
+    "trigram": "trigram remove_diacritics 1",
+}
+for _n, _t in TOKENIZADORES.items():
+    CONFIGS[f"tok-{_n}"] = {"almacen": {"fts_tokenizer": _t}}
+CONFIGS["u61+snowball"] = {"almacen": {"fts_tokenizer": TOKENIZADORES["u61"]}, "texto": "snowball"}
+CONFIGS["vacias"] = {"texto": "vacias"}
+CONFIGS["tok-porter-u61+vacias"] = {**CONFIGS["tok-porter-u61"], "texto": "vacias"}
+CONFIGS["tok-u61+vacias"] = {**CONFIGS["tok-u61"], "texto": "vacias"}
+CONFIGS["u61+snowball+vacias"] = {**CONFIGS["u61+snowball"], "texto": "snowball+vacias"}
+for _n in [c for c in CONFIGS if c.startswith(("tok-", "u61+", "vacias"))]:
+    for _sufijo, _kw in (("sin-adapt", {"adaptive_rrf": False}), ("fts", {"retrieval_mode": "fts_only"})):  # fmt: skip
+        CONFIGS[f"{_n}/{_sufijo}"] = {**CONFIGS[_n], "buscar": _kw}
+
+# Palabras vacías: las listas de Snowball (español e inglés), recortadas a lo gramatical.
+VACIAS = set(
+    """a al algo algunas algunos ante antes como con contra cual cuando de del desde donde
+    durante e el ella ellas ellos en entre era erais eran eras eres es esa esas ese eso esos
+    esta estaba estado estamos estan estar estas este esto estos estoy fue fueron fui ha
+    habia han has hasta hay la las le les lo los mas me mi mis mucho muy nada ni no nos
+    nosotros o os otra otras otro otros para pero poco por porque que quien quienes se sea
+    ser si sido sin sobre sois somos son soy su sus tambien te tenia tiene tienen todo todos
+    tu tus un una uno unos vosotros y ya yo cuales cuanto cuanta cuantos cuantas cuyo
+    the of and to in is was were be been are for on with as by at from that this which or
+    an it its not but has have had do does did what who whom when where why how than then
+    there their they them these those can could should would will may might we our you your
+    he she his her i my me into about over under between after before during also""".split()  # noqa: SIM905
+)
+
+
+def _sin_acentos(t: str) -> str:
+    import unicodedata
+
+    return "".join(c for c in unicodedata.normalize("NFD", t) if unicodedata.category(c) != "Mn")
+
+
+def _palabras(t: str) -> list[str]:
+    import re
+
+    return re.findall(r"\w+", t.lower())
+
+
+def _raices(t: str) -> str:
+    import snowballstemmer
+
+    if "es" not in _raices.__dict__:
+        _raices.__dict__["es"] = snowballstemmer.stemmer("spanish")
+    return " ".join(_raices.__dict__["es"].stemWords(_palabras(t)))
+
+
+def _quitar_vacias(t: str) -> str:
+    quedan = [w for w in _palabras(t) if _sin_acentos(w) not in VACIAS]
+    return " ".join(quedan) if quedan else t
+
+
+# nombre -> (transformación del texto indexado o None, transformación de la consulta).
+# Los vectores salen siempre del texto original: solo cambia lo que ve FTS5.
+TEXTOS: dict[str, tuple[Callable | None, Callable]] = {
+    "snowball": (_raices, _raices),
+    "vacias": (None, _quitar_vacias),
+    "snowball+vacias": (_raices, lambda t: _raices(_quitar_vacias(t))),
+}
+
+
+# --- Experimento 2: reglas de pesos de la fusión (prototipos fuera de vstash) -----------
+def _regla(ausentes: str, cobertura: bool = False, vacias: bool = False) -> Callable:
+    """La regla de vstash (sigmoide de la IDF media) cambiando qué se hace con los términos
+    de la consulta que no están en el vocabulario del índice: «max» = como hoy, cuentan
+    como rarísimos; «fuera» = no cuentan; «cero» = cuentan como IDF 0. Con «cobertura» el
+    tramo variable del peso se multiplica por la fracción de términos presentes."""
+
+    def pesos(almacen: VstashStore, consulta: str) -> tuple[float, float]:
+        idf, n = almacen._build_idf_cache()
+        palabras = [w for w in consulta.split() if len(w) > 1]
+        if vacias:
+            palabras = [w for w in palabras if _sin_acentos(w.lower()).strip("¿?¡!.,;:") not in VACIAS]  # fmt: skip
+        terminos = almacen._stem_terms(palabras) if palabras else []
+        if n < 2 or not terminos:
+            return 0.6, 0.4
+        presentes = [idf[t] for t in terminos if t in idf]
+        n_aus = len(terminos) - len(presentes)
+        if ausentes == "max":
+            valores = presentes + [math.log(n)] * n_aus
+        elif ausentes == "cero":
+            valores = presentes + [0.0] * n_aus
+        else:
+            valores = presentes
+        if not valores:
+            return 0.9, 0.1
+        media = sum(valores) / len(valores)
+        senal = 1.0 / (1.0 + math.exp(-2.0 * (media - math.log(n) / 2)))
+        if cobertura:
+            senal *= len(presentes) / len(terminos)
+        fts = 0.1 + senal * 0.5
+        return round(1.0 - fts, 3), round(fts, 3)
+
+    return pesos
+
+
+PESOS: dict[str, Callable] = {
+    "max": _regla("max"),  # control: debe dar lo mismo que «defecto»
+    "fuera": _regla("fuera"),
+    "cero": _regla("cero"),
+    "fuera-cob": _regla("fuera", cobertura=True),
+    "max-cob": _regla("max", cobertura=True),
+    "fuera-vacias": _regla("fuera", vacias=True),
+    "fuera-cob-vacias": _regla("fuera", cobertura=True, vacias=True),
+}
+
+
+def _tope(maximo: float, base: str = "max") -> Callable:
+    """La regla base, sin dejar que las palabras pesen más que «maximo»."""
+
+    def pesos(almacen: VstashStore, consulta: str) -> tuple[float, float]:
+        fts = min(PESOS[base](almacen, consulta)[1], maximo)
+        return round(1.0 - fts, 3), fts
+
+    return pesos
+
+
+for _m in (0.5, 0.45, 0.4, 0.3):
+    PESOS[f"tope-{_m}"] = _tope(_m)
+PESOS["tope-0.45-cob"] = _tope(0.45, "max-cob")
+
+
+def fuerza_lexica(almacen: VstashStore, consulta: str) -> float:
+    """BM25 del mejor acierto por palabras, en unidades de ln N: cuántas «palabras raras»
+    de la consulta casa, más o menos, la nota que mejor casa."""
+    n = almacen._build_idf_cache()[1]
+    casar, _ = almacen._build_fts_match_query(consulta)
+    try:
+        fila = almacen._conn.execute(
+            "SELECT rank FROM fts_chunks WHERE fts_chunks MATCH ? ORDER BY rank LIMIT 1", [casar]
+        ).fetchone()
+    except Exception:
+        fila = None
+    return -float(fila[0]) / math.log(n) if fila and n > 1 else 0.0
+
+
+def _fuerza(base: str, bajo: float, alto: float) -> Callable:
+    """El peso de las palabras de la regla base, reducido hacia 0,1 cuando el mejor acierto
+    por palabras es flojo (rampa lineal entre «bajo» y «alto»)."""
+
+    def pesos(almacen: VstashStore, consulta: str) -> tuple[float, float]:
+        fts = PESOS[base](almacen, consulta)[1]
+        rampa = min(1.0, max(0.0, (fuerza_lexica(almacen, consulta) - bajo) / (alto - bajo)))
+        fts = round(0.1 + (fts - 0.1) * rampa, 3)
+        return round(1.0 - fts, 3), fts
+
+    return pesos
+
+
+PESOS["fuerza"] = _fuerza("max", 1.0, 2.0)
+PESOS["fuerza-tope"] = _fuerza("tope-0.45", 1.0, 2.0)
+PESOS["fuerza-1.25-1.75"] = _fuerza("max", 1.25, 1.75)
+PESOS["fuerza-1-1.5"] = _fuerza("max", 1.0, 1.5)
+PESOS["fuerza-1.5-2.5"] = _fuerza("max", 1.5, 2.5)
+for _n in PESOS:
+    CONFIGS[f"regla-{_n}"] = {"pesos": _n}
+# --- Experimento 3: corte por distancia (constantes) sobre la regla con tope ------------
+for _c in (1.5, 2.0, 25.0):
+    CONFIGS[f"fuerza-corte{_c:g}"] = {"pesos": "fuerza", "buscar": {"distance_cutoff": _c}}
+for _c in (1.3225, 1.5, 1.75, 2.0, 3.0, 25.0):
+    CONFIGS[f"tope45-corte{_c:g}"] = {"pesos": "tope-0.45", "buscar": {"distance_cutoff": _c}}
+    CONFIGS[f"vec-corte{_c:g}"] = {"buscar": {"retrieval_mode": "vec_only", "distance_cutoff": _c}}
+for _f in (0.1, 0.2, 0.3, 0.5):
+    CONFIGS[f"fijo-{_f}"] = {"buscar": {"vec_weight": 1 - _f, "fts_weight": _f}}
+
+
 def _ids_union(almacen, vector, consulta, top_k, **kw):
     """Híbrido y solo vectores (corte 2,0), intercalados y sin repetir: dos búsquedas."""
     a = almacen.search(vector, consulta, top_k=top_k, **kw)
@@ -190,9 +362,12 @@ def _vectores(b: Banco, que: str) -> np.ndarray:
 _carpetas: list[tempfile.TemporaryDirectory] = []
 
 
-def indice(b: Banco, almacen_kw: dict) -> VstashStore:
+def indice(b: Banco, almacen_kw: dict, texto: str | None = None) -> VstashStore:
     """Índice de prueba: temporal, o guardado en la caché del lab para el corpus grande."""
-    clave = hashlib.sha1(json.dumps(almacen_kw, sort_keys=True).encode()).hexdigest()[:8]
+    de_doc = TEXTOS[texto][0] if texto else None
+    clave = hashlib.sha1(
+        json.dumps([almacen_kw, texto if de_doc else None], sort_keys=True).encode()
+    ).hexdigest()[:8]
     if b.persistir:
         ruta = CACHE / f"idx_{b.nombre}_{clave}.db"
         if ruta.exists():
@@ -213,7 +388,7 @@ def indice(b: Banco, almacen_kw: dict) -> VstashStore:
                 {
                     "path": f"/doc/{j}",
                     "title": "",
-                    "chunks": [b.docs[j]],
+                    "chunks": [de_doc(b.docs[j]) if de_doc else b.docs[j]],
                     "embeddings": [v[j].tolist()],
                     "source_type": "text",
                 }
@@ -235,6 +410,11 @@ def indice(b: Banco, almacen_kw: dict) -> VstashStore:
 
 def buscar(almacen: VstashStore, cfg: dict, vector: list[float], consulta: str, k: int):
     kw = cfg.get("buscar", {})
+    if "texto" in cfg:
+        consulta = TEXTOS[cfg["texto"]][1](consulta)
+    if "pesos" in cfg:
+        vw, fw = PESOS[cfg["pesos"]](almacen, consulta)
+        kw = {**kw, "vec_weight": vw, "fts_weight": fw}
     if "plan" in cfg:
         rutas = PLANES[cfg["plan"]](almacen, vector, consulta, k, **kw)
     else:
@@ -249,7 +429,7 @@ def _ndcg10(dados: list[int], buenas: dict[int, int]) -> float:
 
 
 def _salida(banco: str, config: str) -> Path:
-    return CACHE / "resultados" / f"{banco}__{config}.npz"
+    return CACHE / "resultados" / f"{banco}__{config.replace('/', '_')}.npz"
 
 
 def medir(bancos: list[str], configs: list[str]) -> None:
@@ -258,9 +438,11 @@ def medir(bancos: list[str], configs: list[str]) -> None:
         vq = _vectores(b, "consultas")
         por_indice: dict[str, list[str]] = {}
         for c in configs:
-            por_indice.setdefault(json.dumps(CONFIGS[c].get("almacen", {}), sort_keys=True), []).append(c)  # fmt: skip
+            t = CONFIGS[c].get("texto")
+            clave = [CONFIGS[c].get("almacen", {}), t if t and TEXTOS[t][0] else None]
+            por_indice.setdefault(json.dumps(clave, sort_keys=True), []).append(c)
         for kw_json, lista in por_indice.items():
-            almacen = indice(b, json.loads(kw_json))
+            almacen = indice(b, *json.loads(kw_json))
             almacen.search(vq[0].tolist(), b.consultas[0], top_k=b.top_k)  # calentar
             for c in lista:
                 puesto, n, ndcg, ms = [], [], [], []
@@ -363,7 +545,7 @@ def tiempos(bancos: list[str], configs: list[str], vueltas: int = 5) -> None:
         b = BANCOS[nombre]()
         vq = _vectores(b, "consultas")
         for c in configs:
-            almacen = indice(b, CONFIGS[c].get("almacen", {}))
+            almacen = indice(b, CONFIGS[c].get("almacen", {}), CONFIGS[c].get("texto"))
             cuantas = min(len(b.consultas), 200)
             mejores = []
             for _ in range(vueltas):
@@ -382,7 +564,10 @@ if __name__ == "__main__":
     p.add_argument("--configs", nargs="*", default=None)
     p.add_argument("--md", action="store_true")
     a = p.parse_args()
-    cfgs = a.configs or list(CONFIGS)
+    import fnmatch
+
+    # Cada nombre puede ser un patrón: --configs 'tok-*' 'vacias*'
+    cfgs = [c for patron in (a.configs or ["*"]) for c in CONFIGS if fnmatch.fnmatch(c, patron)]
     if a.orden == "medir":
         medir(a.bancos, cfgs)
     elif a.orden == "tiempos":

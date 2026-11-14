@@ -75,7 +75,7 @@ class _SchemaManagerMixin:
             -- Full-text search index (FTS5)
             -- content= makes it a content table — no duplicate text stored
             CREATE VIRTUAL TABLE IF NOT EXISTS fts_chunks
-            USING fts5(text, content=chunks, content_rowid=id, tokenize='porter ascii');
+            USING fts5(text, content=chunks, content_rowid=id, tokenize='{self._fts_tokenizer}');
 
             -- FTS5 vocabulary table for IDF computation (adaptive RRF weights)
             CREATE VIRTUAL TABLE IF NOT EXISTS fts_chunks_vocab
