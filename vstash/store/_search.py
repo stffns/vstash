@@ -1025,7 +1025,17 @@ class _SearchEngineMixin:
             # same document only when they are semantically diverse (e.g. different
             # chapters of a book).  Chunks from different documents compete purely
             # on score — no cross-document penalty.
-            ranked = self._mmr_dedup(ranked, top_k, mmr_lambda=mmr_lambda, _explain=explain)
+            #
+            # ``_mmr_dedup`` both dedups and truncates to ``top_k``. When
+            # tracing, run it untruncated so the two can be told apart: the
+            # greedy selection is prefix-stable, so the first ``top_k`` picks
+            # are exactly what the truncated call returns.
+            if track_target is not None:
+                ranked = self._mmr_dedup(
+                    ranked, max(top_k, len(ranked)), mmr_lambda=mmr_lambda, _explain=explain
+                )
+            else:
+                ranked = self._mmr_dedup(ranked, top_k, mmr_lambda=mmr_lambda, _explain=explain)
 
             # --- Track: MMR + top_k cutoff ---
             if track_target is not None:
@@ -1034,8 +1044,33 @@ class _SearchEngineMixin:
                     if int(r["id"]) == track_target:
                         target_final_rank = i
                         break
-                # MMR verdict
-                if pre_mmr_rank_of_target is not None and target_final_rank is None:
+                ranked = ranked[:top_k]
+                # MMR verdict. Dedup is to blame only when it removed the
+                # chunk outright, or when its sibling penalty pushed a chunk
+                # that was inside top_k before MMR to outside it. A chunk that
+                # was already below top_k before MMR is a plain top_k miss.
+                mmr_demoted = (
+                    pre_mmr_rank_of_target is not None
+                    and target_final_rank is not None
+                    and pre_mmr_rank_of_target < top_k <= target_final_rank
+                )
+                if mmr_demoted:
+                    _tracer.record(
+                        "mmr_dedup",
+                        passed=False,
+                        rank=target_final_rank,
+                        detail=(
+                            f"Was rank {pre_mmr_rank_of_target + 1} pre-MMR (inside "
+                            f"top_k={top_k}) but the intra-document MMR penalty demoted it "
+                            f"to rank {target_final_rank + 1}. "
+                            f"Current mmr_lambda={mmr_lambda:.2f}."
+                        ),
+                        counterfactual=(
+                            f"Try a higher mmr_lambda (>{mmr_lambda:.2f}) for less "
+                            "aggressive dedup, or mmr_lambda=1.0 to disable MMR entirely."
+                        ),
+                    )
+                elif pre_mmr_rank_of_target is not None and target_final_rank is None:
                     _tracer.record(
                         "mmr_dedup",
                         passed=False,
@@ -1059,7 +1094,7 @@ class _SearchEngineMixin:
                         detail=f"Survived MMR dedup at rank {target_final_rank + 1}",
                     )
                 # top_k cutoff verdict
-                if target_final_rank is not None:
+                if target_final_rank is not None and not mmr_demoted:
                     if target_final_rank < top_k:
                         _tracer.record(
                             "top_k_cutoff",

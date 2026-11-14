@@ -373,3 +373,83 @@ class TestAdaptiveFallbackStage:
         assert "adaptive_fallback" in allowed
         # Sanity: it sits among the other genuine pipeline stages.
         assert {"vector_search", "rrf_fusion", "mmr_dedup"} <= allowed
+
+
+# ------------------------------------------------------------------ #
+# Regression: below-top_k is not an MMR elimination                     #
+# ------------------------------------------------------------------ #
+
+
+def _unit(dim: int, angle: float) -> list[float]:
+    """A unit vector in the plane of the first two axes, ``angle`` radians from axis 0."""
+    import math
+
+    v = [0.0] * dim
+    v[0], v[1] = math.cos(angle), math.sin(angle)
+    return v
+
+
+class TestBelowTopKIsNotMmr:
+    def test_single_chunk_docs_report_top_k_cutoff(self, sample_store: VstashStore):
+        """With one chunk per document the intra-document MMR dedup cannot
+        remove anything. A chunk that merely ranks below ``top_k`` used to be
+        reported as ``mmr_dedup`` because ``_mmr_dedup`` also truncates."""
+        dim = sample_store.embedding_dim
+        for i in range(6):
+            _add_doc(sample_store, f"/n{i}.md", f"nota numero {i}", _unit(dim, 0.02 * i))
+
+        analysis = sample_store.miss_analysis(
+            query_embedding=_unit(dim, 0.0),
+            query_text="zzz",
+            expected_path="/n5.md",
+            top_k=2,
+        )
+        by_stage = {v.stage: v for v in analysis.stage_verdicts}
+        assert analysis.appeared_in_results is False
+        assert analysis.dropped_at == "top_k_cutoff"
+        assert by_stage["mmr_dedup"].passed is True
+        assert by_stage["top_k_cutoff"].passed is False
+        assert by_stage["top_k_cutoff"].rank == 5
+        assert "top_k ≥ 6" in (by_stage["top_k_cutoff"].counterfactual or "")
+        assert not any("MMR" in s for s in analysis.suggestions)
+
+    def test_tracing_returns_the_same_top_k_as_search(self, sample_store: VstashStore):
+        """Running the dedup untruncated while tracing must not change the results."""
+        dim = sample_store.embedding_dim
+        for i in range(4):
+            sample_store.add_document(
+                path=f"/m{i}.md",
+                title=f"m{i}",
+                chunks=[f"uno {i}", f"dos {i}", f"tres {i}"],
+                embeddings=[_unit(dim, 0.05 * i + 0.01 * j) for j in range(3)],
+            )
+        query = _unit(dim, 0.0)
+        expected = [r.chunk_id for r in sample_store.search(query, "zzz", top_k=3)]
+        analysis = sample_store.miss_analysis(
+            query_embedding=query, query_text="zzz", expected_path="/m3.md", top_k=3
+        )
+        assert [r.chunk_id for r in analysis.actual_top_k] == expected
+        assert len(expected) == 3
+
+    def test_sibling_penalty_still_reports_mmr(self, sample_store: VstashStore):
+        """A chunk that was inside top_k before MMR and is pushed out by the
+        same-document penalty is a genuine MMR drop."""
+        dim = sample_store.embedding_dim
+        sample_store.add_document(
+            path="/doble.md",
+            title="doble",
+            chunks=["primero", "segundo"],
+            embeddings=[_unit(dim, 0.0), _unit(dim, 0.001)],
+        )
+        _add_doc(sample_store, "/otro.md", "otro", _unit(dim, 0.2))
+        second_id = sample_store._conn.execute(
+            "SELECT id FROM chunks WHERE text = 'segundo'"
+        ).fetchone()[0]
+
+        analysis = sample_store.miss_analysis(
+            query_embedding=_unit(dim, 0.0),
+            query_text="zzz",
+            expected_chunk_id=second_id,
+            top_k=2,
+        )
+        assert analysis.dropped_at == "mmr_dedup"
