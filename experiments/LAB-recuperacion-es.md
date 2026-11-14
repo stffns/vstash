@@ -2,53 +2,31 @@
 
 14 de noviembre de 2026 · rama `pelops/lab-recuperacion-es-ef71b8` · vstash 0.39.0 (develop, `bb6d5bc`)
 
-## Configuración recomendada
+## Configuración recomendada (actualizada 14-nov 20:55: fusión que no se pisa)
 
-**No pierde en ninguno de los cinco bancos.** Es la que debe usar la prueba unificada:
+**Primera etapa para un reordenador** (lo que importa es que la buena entre entre las 50):
 
 ```python
-# rama pelops/lab-recuperacion-es-ef71b8; las tres opciones son nuevas y están apagadas por defecto
+# rama pelops/lab-recuperacion-es-ef71b8; lexical_gate es nueva y está apagada por defecto
 almacen.search(
-    vector_de_la_consulta, texto_de_la_consulta, top_k=K,
-    lexical_gate=True,      # baja el peso de las palabras cuando la evidencia léxica es floja
-    distance_cutoff=2.0,    # corte por distancia más flojo que el 1,3225 por defecto
-    drop_stopwords=True,    # «de», «la», «the»… fuera de la parte de palabras
+    vector_de_la_consulta, texto_de_la_consulta, top_k=50,
+    adaptive_rrf=False,     # pesos fijos 0,6 vectores / 0,4 palabras
+    distance_cutoff=2.0,    # sin corte por distancia a efectos prácticos
+    lexical_gate=True,      # las palabras dejan de votar si no tienen ninguna evidencia
 )
-# lo mismo por el SDK: Memory.search(consulta, top_k=K, lexical_gate=True,
-#                                    distance_cutoff=2.0, drop_stopwords=True)
+# por el SDK: Memory.search(consulta, top_k=50, vec_weight=0.6, fts_weight=0.4,
+#                           distance_cutoff=2.0, lexical_gate=True)
 ```
 
-Con vstash 0.39.0 tal cual, sin esta rama: `search(..., adaptive_rrf=False,
-distance_cutoff=2.0)`. Recoge casi toda la ganancia en las vagas y en MIRACL, pero no mejora
-la primera en las consultas de siempre y en NFCorpus pierde «alguna buena entre 10»
-(−3,1 puntos, de −5,6 a −0,9).
+**Búsqueda sola, sin reordenador** (lo que importa es el orden; no pierde en ningún banco):
+la misma llamada sin `adaptive_rrf=False`.
 
-<!-- T: defecto rec+sw sin-adapt-corte2 -->
-| Configuración | siempre 1ª | siempre en 20 | vagas 1ª | vagas en 20 | vagas en 50 | MIRACL 1ª | MIRACL en 20 | SciFact NDCG@10 | NFCorpus NDCG@10 |
-|---|---|---|---|---|---|---|---|---|---|
-| `defecto` | 72,8 | 95,0 | 5,6 | 36,5 | 59,3 | 38,1 | 81,9 | 72,5 | 35,9 |
-| `rec+sw` | 74,9 (+2,1 *) | 96,2 (+1,2) | 9,2 (+3,6 *) | 55,3 (+18,8 *) | 74,0 (+14,7 *) | 39,8 (+1,7) | 87,8 (+5,9 *) | 73,1 (+0,6) | 36,1 (+0,2) |
-| `sin-adapt-corte2` | 71,9 (-0,8) | 96,4 (+1,4 *) | 5,3 (-0,3) | 51,5 (+15,0 *) | 71,1 (+11,8 *) | 40,6 (+2,5) | 89,2 (+7,3 *) | 73,2 (+0,7) | 35,4 (-0,5) |
-<!-- /T -->
+Las dos se llaman `R50` y `R1` en el banco. `drop_stopwords` ya **no** va en la
+recomendación (ver «El híbrido no se pisa»). Con vstash 0.39.0 sin esta rama:
+`adaptive_rrf=False, distance_cutoff=2.0`, que es `R50` sin la compuerta (pierde el primer
+puesto de las consultas vagas: 5,3 % frente a 11,9 %).
 
-`rec+sw` es la recomendada; `sin-adapt-corte2`, la alternativa sin tocar código. Entre
-paréntesis, la diferencia con la configuración por defecto; el asterisco, que su intervalo
-del 95 % no contiene el cero. Intervalos completos de la recomendada: siempre primera +2,1
-(de +0,1 a +4,2); vagas entre 20 +18,8 (de +14,9 a +22,6); MIRACL primera +1,7 (de −0,8 a
-+4,2) y entre 20 +5,9 (de +3,4 a +8,5); SciFact +0,6 (de −0,3 a +1,6); NFCorpus +0,2 (de
-−0,3 a +0,7).
-
-- **Tiempo de `search`** (sin vectorizar la consulta): <!-- TIEMPOS -->
-- **No hay que reindexar**: las tres opciones actúan sobre la consulta.
-- **Lo que no arregla**: con consultas vagas la buena entra en la lista (entre 50: de 59,3 %
-  a 74,0 %), pero solo es la primera el 9,2 % de las veces. Buscar solo por vectores la pone
-  primera el 16,0 %, a costa de hundir las consultas de siempre (55,6 %). Ninguna
-  configuración gana en «primera» a los dos tipos de consulta a la vez; el orden fino sigue
-  siendo trabajo del reordenador.
-- **Opcional, aparte**: reconstruir el índice de palabras con el tokenizador
-  `porter unicode61 remove_diacritics 2` (`almacen.rebuild_fts(...)`, sin recalcular
-  vectores). En MIRACL sube «entre 20» +1,4 (de +0,3 a +2,5) y en inglés da exactamente lo
-  mismo; en las notas no se nota. Ver el experimento 1.
+<!-- RESUMEN-FINAL -->
 
 ## Cómo se midió
 
