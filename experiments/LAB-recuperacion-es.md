@@ -13,13 +13,19 @@ almacen.search(
     adaptive_rrf=False,     # pesos fijos 0,6 vectores / 0,4 palabras
     distance_cutoff=2.0,    # sin corte por distancia a efectos prácticos
     lexical_gate=True,      # las palabras dejan de votar si no tienen ninguna evidencia
+    mmr_lambda=None,        # sin deduplicación dentro del documento: eso, después de reordenar
 )
 # por el SDK: Memory.search(consulta, top_k=50, vec_weight=0.6, fts_weight=0.4,
-#                           distance_cutoff=2.0, lexical_gate=True)
+#                           distance_cutoff=2.0, lexical_gate=True, mmr_lambda=None)
 ```
 
 **Búsqueda sola, sin reordenador** (lo que importa es el orden; no pierde en ningún banco):
-la misma llamada sin `adaptive_rrf=False`.
+la misma llamada sin `adaptive_rrf=False` y sin `mmr_lambda=None` (si la lista va directa al
+modelo, la diversidad dentro del documento sí conviene).
+
+`mmr_lambda=None` solo cambia algo cuando un documento tiene varios trozos (apartado 10): ahí
+la deduplicación por defecto cuesta de 2 a 9 puntos de «entre 50». Con un trozo por nota,
+como en la memoria de rotten hoy, da exactamente lo mismo.
 
 Las dos se llaman `R50` y `R1` en el banco. `drop_stopwords` ya **no** va en la
 recomendación (ver «El híbrido no se pisa»). Con vstash 0.39.0 sin esta rama:
@@ -646,7 +652,64 @@ todas las órdenes y subórdenes (31) construyen su `--help` con el typer instal
 CLI pasa `click_type` cuando typer no lo acepta, y que las tres opciones de elección siguen
 rechazando valores desconocidos.
 
-<!-- EXP78 -->
+## 7. Palabras decididas por un modelo al guardar
+
+**Idea.** Al guardar una nota, un modelo escribe términos por los que alguien la buscaría,
+incluidos términos que la nota no contiene; se indexan como palabras. Al consultar no hay
+ningún modelo.
+
+**Qué se usó y por qué no `BAAI/bge-m3`.** La salida dispersa de bge-m3 da un peso a cada
+palabra **que ya está en el texto**: no añade términos nuevos, que es justo lo que hace
+falta con consultas vagas, y FTS5 no sabe usar pesos por término. Además su cabeza dispersa
+(`sparse_linear.pt`) no está descargada en el equipo. Los modelos dispersos que sí expanden
+y no necesitan modelo en la consulta (por ejemplo la familia «doc-only» de OpenSearch,
+multilingüe) habría que descargarlos; no se hizo sin permiso de Jay. En su lugar se probó lo
+mismo con un modelo de chat pequeño que ya estaba en el equipo,
+`mlx-community/gemma-4-e2b-it-4bit` (3,3 GB, sin modo de razonamiento), con una petición fija:
+doce palabras o expresiones cortas con las que alguien buscaría la nota sin recordar nombres
+ni cifras (`experiments/lab_es_enriquecer.py terminos`). Ejemplo:
+
+> Nota: «El 14 de marzo de 2025 el comité de arquitectura de Proyecto Lumen aprobó sustituir
+> MongoDB por PostgreSQL 16 para el registro de auditoría…»
+> Términos: «Sustitución de base de datos, cambio de sistema, decisión técnica, votación
+> minoritaria, consenso logrado, cambio de tecnología, aprobación del comité…»
+> Consulta vaga de esa nota: «reunión técnica cambio motor consistente».
+
+De media añade 16 palabras por nota, el 79 % nuevas. En el 40 % de las consultas vagas hay
+alguna palabra de la consulta que **solo** aportan los términos.
+
+**Medida.** Mismo índice y misma fusión; lo único que cambia es que el texto indexado por
+palabras es «nota + términos» (los vectores siguen saliendo de la nota sola). Diferencias
+contra la misma fusión sin términos.
+
+| Conjunto | Fusión | Sin términos: primera · entre 20 · entre 50 | Con términos | Diferencia entre 50 |
+|---|---|---|---|---|
+| vagas viejas (ajuste) | R50 | 11,9 · 54,6 · 72,9 | 14,3 · 62,5 · 79,0 | +6,1 (de +4,0 a +8,2) |
+| **examen, vagas** | R50 | 9,4 · 52,7 · 71,8 | **15,5 · 61,2 · 78,1** | **+6,3 (de +4,3 a +8,5)** |
+| examen, medias | R50 | 68,3 · 95,8 · 98,7 | 70,7 · 96,0 · 98,8 | +0,1 (de 0,0 a +0,4) |
+| examen, nombradas | R50 | 74,2 · 97,6 · 99,5 | 77,1 · 97,6 · 99,2 | −0,4 (de −1,0 a +0,1) |
+| de siempre (ajuste) | R50 | 71,8 · 96,5 · 97,8 | 74,7 · 97,4 · 98,6 | +0,8 (de +0,3 a +1,5) |
+| examen, vagas | solo palabras | 3,7 · 11,4 · 18,0 | 11,1 · 39,2 · 51,4 | +33,4 |
+| examen, vagas | R1 | 9,6 · 45,1 · 66,4 | 15,5 · 56,0 · 73,6 | +7,2 |
+
+- **Positivo, y es lo que más mueve las consultas vagas de todo el laboratorio después de
+  arreglar la fusión.** En el examen: entre 50 +6,3, entre 20 +8,5 y primera +6,1 (todos los
+  intervalos sin el cero). Buscando solo por palabras, las vagas pasan de 18 % a 51 % entre
+  50: el lado de las palabras deja de ser ciego a la paráfrasis.
+- **No estropea las consultas con nombres**: la primera incluso sube (+3,0 en nombradas,
+  +2,4 en medias, intervalos sin el cero) y «entre 50» no cambia.
+- **Coste al guardar: 0,41 s por nota** (1.560 notas en unos 11 minutos, un modelo de 3,3 GB
+  cargado). En consulta, cero: el índice de palabras crece unas 16 palabras por nota.
+- **Límites.** (1) Un solo modelo y una sola petición, sin ajustar; no se probó uno más
+  pequeño ni uno disperso de verdad. (2) Los términos se añadieron al texto del trozo en el
+  banco; en vstash tendrían que ir a un campo propio del índice de palabras para no
+  aparecer en el texto que se devuelve. (3) No se midió en MIRACL ni en inglés. (4) Si el
+  modelo inventa un término engañoso, esa nota casará con consultas que no le tocan: no se
+  midió cuánto ruido mete en consultas de asuntos ausentes (`ausentes.json` de rotten).
+
+<!-- EXP8 -->
+
+
 
 ## 9. Tolerar lo mal oído
 
@@ -725,6 +788,103 @@ no salvan: MiniLM tampoco reconoce «Bela».
   externo), y `exact_match` y los fragmentos resaltados seguirían leyendo el texto original.
 - Coste: una pasada de expresiones regulares por palabra al guardar y al consultar (no se
   cronometró; es del orden de Snowball, 0,2–0,4 ms por nota).
+
+## 10. Los mecanismos de después de la fusión: deduplicación, reserva de candidatos y demás
+
+Encargo añadido por Jay. En todos los bancos anteriores cada nota es un documento de un solo
+trozo, así que la deduplicación dentro del documento (MMR) **no había podido actuar**: no
+estaba medida. Se hizo antes que los experimentos 7 y 8 porque no necesita ningún modelo.
+
+### a) Un banco donde la deduplicación actúa
+
+Las mismas notas, pero cada asunto es **un documento de ocho trozos**: la nota buena es un
+trozo y sus siete hermanas, muy parecidas, están en el mismo documento. 90 documentos con
+las notas viejas (ajuste) y 105 con las del examen. Mismo contenido, mismos vectores, mismas
+consultas: lo único que cambia respecto a las tablas de siempre es que la MMR ahora tiene
+hermanos que penalizar. Control público: MIRACL con los pasajes agrupados por artículo de
+Wikipedia (91.583 documentos; 20.772 con más de un trozo).
+
+### b) Qué cuesta `mmr_lambda`
+
+Fusión `R50`. Diferencias contra no deduplicar, que da exactamente lo mismo que indexar un
+trozo por documento.
+
+| Conjunto | Sin deduplicar: 1ª · en 5 · en 20 · en 50 | `mmr_lambda=0.5` (por defecto) | `0.7` | `0.9` | `1.0` |
+|---|---|---|---|---|---|
+| de siempre (ajuste) | 71,8 · 90,6 · 96,5 · 97,8 | 71,8 · 87,4 · 93,2 · 95,7 | · 88,9 · 95,0 · 97,2 | · 89,9 · 96,2 · 97,8 | · 87,2 · 91,0 · 91,4 |
+| vagas (ajuste) | 11,9 · 27,5 · 54,6 · 72,9 | 11,9 · 26,1 · 48,9 · 64,7 | · 26,0 · 51,8 · 69,7 | · 26,7 · 54,0 · 72,5 | · 26,1 · 48,3 · 59,6 |
+| examen, nombradas | 74,2 · 92,1 · 97,6 · 99,5 | 74,2 · 89,9 · 94,3 · 97,3 | · 90,7 · 96,8 · 98,9 | · 92,1 · 97,6 · 99,2 | · 89,6 · 93,0 · 93,5 |
+| examen, medias | 68,3 · 87,9 · 95,8 · 98,7 | 68,3 · 83,1 · 89,4 · 94,6 | · 85,4 · 93,8 · 98,0 | · 87,1 · 95,5 · 98,8 | · 82,7 · 87,7 · 88,5 |
+| examen, vagas | 9,4 · 25,4 · 52,7 · 71,8 | 9,4 · 25,0 · 46,5 · 62,4 | · 25,0 · 49,8 · 68,8 | · 25,4 · 52,3 · 71,0 | · 25,0 · 46,5 · 56,9 |
+
+<!-- MIRACL-DOC -->
+
+Cuántas veces el trozo bueno estaba dentro de `top_k` antes de la MMR y fuera después
+(`R50`, `mmr_lambda=0.5`):
+
+| Conjunto | K = 5 | K = 20 | K = 50 |
+|---|---|---|---|
+| de siempre (720) | 25 (3,5 %) | 26 (3,6 %) | 16 (2,2 %) |
+| vagas (720) | 18 (2,5 %) | 66 (9,2 %) | 87 (12,1 %) |
+| examen, nombradas (840) | 22 (2,6 %) | 32 (3,8 %) | 19 (2,3 %) |
+| examen, medias (840) | 41 (4,9 %) | 62 (7,4 %) | 35 (4,2 %) |
+| examen, vagas (840) | 14 (1,7 %) | 79 (9,4 %) | 101 (12,0 %) |
+
+- **La MMR por defecto cuesta recuerdo, y bastante, cuando los trozos de un documento se
+  parecen**: en el examen, «entre 50» baja 2,3 puntos con consultas nombradas, 4,0 con las
+  medias y 9,4 con las vagas (todos los intervalos sin el cero); «entre 20», 3,3 · 6,4 · 6,2.
+  Es un pisotón del mismo tamaño que el de la fusión, y estaba sin medir.
+- **El primer puesto no se toca nunca**: el primero elegido es siempre el de mejor nota.
+- **`mmr_lambda=1.0` no apaga nada: es lo más agresivo.** Deja un solo trozo por documento
+  (deduplicación dura). Es la peor columna de la tabla (examen, medias, entre 50: 88,5 %). El
+  propio trazado de vstash recomendaba «`mmr_lambda=1.0` para desactivar la MMR»: estaba mal
+  y se ha corregido.
+- **Con 0,5 la MMR ya es casi una deduplicación dura**: de 20 resultados salen 19,7
+  documentos distintos (sin MMR, 15,2; con 1,0, 20,0). Con hermanos tan parecidos la
+  penalización se come casi siempre al segundo trozo.
+- **No había forma de desactivarla.** Se añade `mmr_lambda=None`: sin deduplicación dentro
+  del documento, cada trozo compite por su nota. Con tests; el valor por defecto no cambia.
+- `0.9` es un punto medio razonable: pierde menos de un punto y aún reparte algo (16,4
+  documentos distintos de 20).
+
+### c) ¿Para qué es la lista?
+
+- **Si detrás va un reordenador: `mmr_lambda=None`.** El reordenador necesita ver el trozo
+  bueno aunque se parezca a otro que ya está; la diversidad, si hace falta, la pone quien
+  monta el contexto después de reordenar. Es lo que recupera los 4 a 9 puntos de «entre 50».
+- **Si la lista va directa al modelo**, la diversidad sí importa (cinco trozos casi iguales
+  del mismo documento son un mal contexto), y ahí el valor por defecto hace lo que promete:
+  5,0 documentos distintos entre los 5 primeros frente a 4,2 sin MMR. El precio es que el
+  trozo bueno sale de los cinco primeros en el 2–5 % de las consultas.
+- **Conclusión: la MMR está en el sitio equivocado para un sistema con reordenador** (va
+  antes, y debería ir después) y bien para uno sin él. No es un valor por defecto que haya
+  que cambiar: es una opción que depende del uso, y faltaba el valor que la apaga.
+- En la memoria de rotten cada nota es hoy un documento de un trozo: ahí nada de esto actúa.
+  Actuará en cuanto se indexen documentos largos.
+
+### d) `dedup_threshold` (casi duplicados entre documentos)
+
+Medido en su caso natural, un documento por nota, con `R50` y umbrales de 0,98 a 0,80:
+**inocuo hasta 0,85** (ni una consulta cambia en las notas viejas ni en el examen) y a 0,80
+empieza a tirar alguna buena (−0,1 a −0,2 puntos). Las notas hermanas de un mismo asunto se
+parecen, pero no tanto: no llegan al 0,95 recomendado. Puede usarse sin miedo a ese valor.
+Lo que no se midió es su caso de uso real (el mismo contenido repetido en muchos documentos).
+
+### e) El resto de mecanismos que tocan el orden o recortan la lista
+
+| Mecanismo | ¿Puede costar resultados? | Medido |
+|---|---|---|
+| **Reserva de candidatos** (`candidate_pool`, depende de `top_k`) y la puerta que deja fuera los aciertos solo por palabras más allá del puesto 2·`top_k` | **Sí, con los valores por defecto**: pedir menos resultados da peores resultados. Vagas, «entre 5»: 12,9 % pidiendo 5 frente a 17,1 % pidiendo 50 y cortando (examen: 14,6 % frente a 18,0 %); la primera baja de 5,6 % a 4,7 %. | Con `R50` desaparece (27,6 % frente a 27,5 %): el efecto venía de combinarse con el corte por distancia y los pesos, no de la reserva en sí. |
+| Corte por distancia | Sí: experimento 3. | sí |
+| Pesos adaptativos | Sí: experimento 2 y apartado 0. | sí |
+| MMR dentro del documento | Sí, con documentos de varios trozos: este apartado. | sí |
+| `dedup_threshold` | No a 0,95; sí por debajo de 0,85. Apagado por defecto. | sí |
+| Impulso por recencia (`recency_boost`) | Apagado por defecto (0,0). Encendido multiplica la nota por la edad y reordena: puede hundir una nota buena y vieja. | no (en los bancos todas las notas tienen la misma fecha) |
+| Expansión de contexto (`expand_context`) | No toca el orden ni recorta: añade texto vecino al resultado ya elegido. Inocua para el recuerdo; alarga lo que lee el modelo. | no hace falta |
+| `min_relevance` (#521) | Apagado por defecto. Encendido devuelve lista vacía si el mejor vector cae por debajo de un umbral calibrado para bge-small; con otro modelo (MiniLM, mDenseOn) esos umbrales no valen y puede callar de más. | no |
+| `usage_prior` | Apagado por defecto; reordena por uso pasado. | no |
+| Regla de consultas largas (> 50 palabras) | Solo con pesos adaptativos; ninguna consulta de estos bancos llega. | no |
+| `exact_match` | Filtro posterior: solo si se pide. | no |
 
 ## Qué llevar a vstash
 
