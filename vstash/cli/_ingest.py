@@ -143,6 +143,17 @@ def remember(
     chunk_overlap: int | None = typer.Option(
         None, "--chunk-overlap", help="Override chunk overlap in tokens"
     ),
+    source_ref: str | None = typer.Option(
+        None,
+        "--source",
+        help="Where this claim comes from (a fact/decision without one is 'sin-fuente')",
+    ),
+    supersedes: str | None = typer.Option(
+        None,
+        "--supersedes",
+        help="Path or id of a claim this text replaces, e.g. 'text://old decision'. "
+        "The old one leaves search (restore it with Memory.restore / vstash_retire).",
+    ),
 ) -> None:
     """Ingest text directly — no file needed.
 
@@ -171,16 +182,24 @@ def remember(
     meta = {"project": project, "layer": layer, "tags": tags}
 
     with store:
-        result = ingest_text(
-            text,
-            cfg,
-            store,
-            title=title,
-            collection=collection,
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-            **meta,
-        )
+        try:
+            result = ingest_text(
+                text,
+                cfg,
+                store,
+                title=title,
+                collection=collection,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+                source_ref=source_ref,
+                supersedes=supersedes,
+                **meta,
+            )
+        except ValueError as exc:
+            # Claim validation (unknown / self / retired --supersedes target):
+            # checked before any write, so nothing was stored.
+            console.print(f"[red]✗ {exc}[/red]")
+            raise typer.Exit(1) from exc
 
         if result.status == "ok":
             parts = (
@@ -192,3 +211,5 @@ def remember(
             console.print(parts)
         else:
             console.print(f"[yellow]⚠ {result.status}: {result.source}[/yellow]")
+        if result.superseded:
+            console.print(f"  [dim]replaces {supersedes}[/dim]")

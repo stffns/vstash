@@ -99,6 +99,7 @@ def search_with_embedding(
     log_usage: bool = True,
     usage_prior: bool | None = None,
     min_relevance: Literal["high", "medium"] | None = None,
+    include_retired: bool = False,
 ) -> SearchResults:
     """Embed ``query`` then hybrid-search ``store`` then expand context.
 
@@ -172,6 +173,9 @@ def search_with_embedding(
             detect *off-topic* queries; an on-topic question about something
             never stored usually still passes. Not applied under
             ``retrieval_mode="fts_only"``, which has no vector distance to judge.
+        include_retired: Also return claims that were superseded, refuted
+            or are past their ``valid_until`` (each carries its ``status``).
+            Default ``False`` hides them.
 
     Returns:
         ``SearchResults`` (a ``list[SearchResult]`` ranked by relevance,
@@ -260,6 +264,7 @@ def search_with_embedding(
         dedup_threshold=dedup_threshold,
         exact_match=exact_match,
         exact_match_case_sensitive=exact_match_case_sensitive,
+        include_retired=include_retired,
         **extra_kwargs,
     )
     if prior_weights:

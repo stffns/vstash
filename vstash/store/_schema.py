@@ -53,7 +53,17 @@ class _SchemaManagerMixin:
                 content_hash TEXT,
                 char_count   INTEGER DEFAULT 0,
                 chunk_count  INTEGER DEFAULT 0,
-                added_at     TEXT NOT NULL
+                added_at     TEXT NOT NULL,
+                -- Claim fields (memoria confiable, 2026-11-10). A claim is a
+                -- fact or decision with a source and a state. charla is
+                -- narrative: status 'relato'. A claim with no source_ref is
+                -- stored as 'sin-fuente' instead of passing for knowledge.
+                status       TEXT,
+                source_ref   TEXT,
+                valid_from   TEXT,
+                valid_until  TEXT,
+                supersedes   TEXT,
+                confidence   REAL
             );
 
             -- Chunk text + position
@@ -399,6 +409,19 @@ class _SchemaManagerMixin:
             migrations.append("ALTER TABLE documents ADD COLUMN tags TEXT")
         if "content_hash" not in doc_columns:
             migrations.append("ALTER TABLE documents ADD COLUMN content_hash TEXT")
+        # Claim fields. Additive, so no SCHEMA_VERSION bump is needed, as
+        # with the columns above.
+        for _claim_column in (
+            "status",
+            "source_ref",
+            "valid_from",
+            "valid_until",
+            "supersedes",
+        ):
+            if _claim_column not in doc_columns:
+                migrations.append(f"ALTER TABLE documents ADD COLUMN {_claim_column} TEXT")
+        if "confidence" not in doc_columns:
+            migrations.append("ALTER TABLE documents ADD COLUMN confidence REAL")
 
         # miss_hint column on search_events (issue #157 part 3, 2026-04-21)
         event_columns = {
@@ -438,6 +461,18 @@ class _SchemaManagerMixin:
                             SELECT d.added_at FROM documents d WHERE d.id = chunks.doc_id
                         ) WHERE created_at IS NULL
                     """)
+                # Claim backfill, only in the call that ADDS the column.
+                # Rows written before this schema never had a source, so a
+                # legacy hecho/decision is 'sin-fuente', not 'vigente'; a
+                # charla is narrative.
+                if "status" not in doc_columns:
+                    conn.execute("""
+                        UPDATE documents SET status = CASE
+                            WHEN layer IN ('hecho', 'decision') THEN 'sin-fuente'
+                            ELSE 'relato'
+                        END
+                        WHERE status IS NULL
+                    """)
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -453,6 +488,10 @@ class _SchemaManagerMixin:
                 UPDATE chunks SET access_count = 0
                 WHERE access_count = 1 AND last_accessed_at IS NULL
             """)
+
+        # Search hides superseded/refuted claims on every query, so the
+        # status column is worth an index (idempotent on existing DBs).
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status)")
 
     # ------------------------------------------------------------------ #
     # Store metadata (key/value)                                            #
