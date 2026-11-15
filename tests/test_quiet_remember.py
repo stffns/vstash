@@ -41,14 +41,26 @@ class TestQuietRemember:
         assert "Embedding" not in capsys.readouterr().err
 
     def test_ingest_text_keeps_bar_by_default(self, tmp_path: Path, fake_embed, capsys) -> None:
+        # The bar is only drawn on a terminal (a pipe or a log gets nothing),
+        # so pretend stderr is one: the CLI default must still show it there.
+        from unittest.mock import PropertyMock
+
+        import vstash.ingest as ingest_mod
+
         store = VstashStore(str(tmp_path / "b.db"), embedding_dim=DIM)
         try:
-            ingest_text(
-                "un texto de prueba algo más largo para la memoria",
-                VstashConfig(),
-                store,
-                title="b",
-            )
+            with patch.object(
+                type(ingest_mod.console),
+                "is_terminal",
+                new_callable=PropertyMock,
+                return_value=True,
+            ):
+                ingest_text(
+                    "un texto de prueba algo más largo para la memoria",
+                    VstashConfig(),
+                    store,
+                    title="b",
+                )
         finally:
             store.close()
         assert "Embedding" in capsys.readouterr().err
