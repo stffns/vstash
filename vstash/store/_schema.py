@@ -34,6 +34,7 @@ class _SchemaManagerMixin:
     _write_lock: threading.Lock
     _fts_tokenizer: str
     _fts_tokenizer_requested: str | None
+    _fts_schema_cookie: int | None
 
     def _create_tables(self, conn: sqlite3.Connection) -> None:
         """Initialize database schema if not present."""
@@ -205,7 +206,7 @@ class _SchemaManagerMixin:
         self._check_schema_version(conn)
         self._adopt_fts_tokenizer(conn)
 
-    def _adopt_fts_tokenizer(self, conn: sqlite3.Connection) -> None:
+    def _adopt_fts_tokenizer(self, conn: sqlite3.Connection, *, warn: bool = True) -> bool:
         """Make ``self._fts_tokenizer`` the tokenizer ``fts_chunks`` really uses.
 
         ``CREATE VIRTUAL TABLE IF NOT EXISTS`` is a no-op on an existing
@@ -216,16 +217,23 @@ class _SchemaManagerMixin:
         lookup into a miss. Asking for a different tokenizer on an existing
         database is therefore not an error -- the store keeps working with
         the index it has and says how to switch.
+
+        Also records ``PRAGMA schema_version`` so :meth:`_sync_fts_tokenizer`
+        can tell when another connection changed the schema.
+
+        Returns:
+            ``True`` when ``self._fts_tokenizer`` changed.
         """
+        self._fts_schema_cookie = conn.execute("PRAGMA schema_version").fetchone()[0]
         row = conn.execute(
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'fts_chunks'"
         ).fetchone()
         found = re.search(r"tokenize\s*=\s*'([^']*)'", row[0] or "") if row else None
         if found is None:
-            return
+            return False
         actual = found.group(1)
         requested = self._fts_tokenizer_requested
-        if requested is not None and requested != actual:
+        if warn and requested is not None and requested != actual:
             logger.warning(
                 "fts_tokenizer=%r requested but %s was indexed with %r; keeping the "
                 "existing index. Call VstashStore.rebuild_fts(%r) to switch.",
@@ -234,7 +242,25 @@ class _SchemaManagerMixin:
                 actual,
                 requested,
             )
+        changed = actual != self._fts_tokenizer
         self._fts_tokenizer = actual
+        return changed
+
+    def _sync_fts_tokenizer(self) -> None:
+        """Re-read the index tokenizer if the schema changed under this store.
+
+        ``rebuild_fts`` run from another store or process replaces
+        ``fts_chunks``; this instance would otherwise keep stemming query
+        terms, building IDF and serving cached results for the old
+        tokenizer. ``PRAGMA schema_version`` is a header read, so the check
+        costs next to nothing when nothing changed.
+        """
+        cookie = self._conn.execute("PRAGMA schema_version").fetchone()[0]
+        if cookie == self._fts_schema_cookie:
+            return
+        if self._adopt_fts_tokenizer(self._conn, warn=False):
+            self._idf_cache = None
+            self._bump_cache_epoch()
 
     def rebuild_fts(self, tokenizer: str) -> None:
         """Rebuild the keyword index with another FTS5 tokenizer.
@@ -269,11 +295,12 @@ class _SchemaManagerMixin:
                 raise
         self._fts_tokenizer = tokenizer
         self._fts_tokenizer_requested = tokenizer
-        # Everything derived from the old tokenization is stale.
-        with self._stem_lock:
-            for stem_conn in self._stem_conns.values():
-                stem_conn.close()
-            self._stem_conns.clear()
+        self._fts_schema_cookie = self._conn.execute("PRAGMA schema_version").fetchone()[0]
+        # Everything derived from the old tokenization is stale. The
+        # per-thread stemming connections are not closed here: a search on
+        # another thread may be using its own right now. ``_stem_terms``
+        # notices the tokenizer change and replaces each one on its owner
+        # thread.
         self._idf_cache = None
         self._bump_cache_epoch()
 

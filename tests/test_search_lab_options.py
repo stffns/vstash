@@ -436,3 +436,100 @@ class TestNoIntraDocumentDedup:
             top_k=3, search_options={**opts, "mmr_lambda": None}, **kw
         )
         assert free.dropped_at == "top_k_cutoff"
+
+
+# ------------------------------------------------------------------ #
+# Review round on #526                                                 #
+# ------------------------------------------------------------------ #
+
+U61 = "porter unicode61 remove_diacritics 2"
+
+
+class TestRebuildFtsConcurrency:
+    def test_rebuild_does_not_close_a_stemming_connection_in_use(self, tmp_db_path: str) -> None:
+        """``_stem_terms`` uses its connection outside the lock; a rebuild on
+        another thread must not close it under the search."""
+        store = _store(tmp_db_path)
+        try:
+            _add(store, "/a", "La reunión con Ángel", _unit(0.0))
+            store._stem_terms(["reunion"])
+            in_use = next(iter(store._stem_conns.values()))
+            store.rebuild_fts(U61)
+            in_use.execute("SELECT 1").fetchone()  # still open
+            # The owner thread picks up the new tokenizer on its next call.
+            assert store._stem_terms(["¿Quién"]) == ["quien"]
+        finally:
+            store.close()
+
+    def test_other_store_follows_a_rebuild(self, tmp_db_path: str) -> None:
+        """A second open store (another process, in practice) must not keep
+        the old tokenizer, IDF or cached results after ``rebuild_fts``."""
+        writer = _store(tmp_db_path)
+        reader = _store(tmp_db_path, cache=CacheConfig(query_cache_size=16))
+        try:
+            _add(writer, "/a", "La reunión con Ángel fue el martes", _unit(0.0))
+            q = (_unit(0.5), "¿Reunion?")
+            assert reader.search(*q, top_k=5, retrieval_mode="fts_only") == []
+            reader._build_idf_cache()
+            writer.rebuild_fts(U61)
+            hits = reader.search(*q, top_k=5, retrieval_mode="fts_only")
+            assert [h.path for h in hits] == ["/a"]
+            assert reader._fts_tokenizer == U61
+            assert reader._idf_cache is None or "reunion" in reader._idf_cache[0]
+            assert reader._stem_terms(["¿Quién"]) == ["quien"]
+        finally:
+            reader.close()
+            writer.close()
+
+    def test_unrelated_schema_change_keeps_the_cache(self, tmp_db_path: str) -> None:
+        store = _store(tmp_db_path, cache=CacheConfig(query_cache_size=16))
+        try:
+            _add(store, "/a", "nota", _unit(0.0))
+            store.search(_unit(0.0), "nota", top_k=5)
+            epoch = store._cache_epoch
+            store._conn.execute("CREATE INDEX IF NOT EXISTS idx_test_tmp ON chunks(seq)")
+            store.search(_unit(0.0), "nota", top_k=5)
+            assert store._cache_epoch == epoch
+        finally:
+            store.close()
+
+
+class TestMinVecKeepPool:
+    def test_floor_larger_than_the_pool_fetches_enough_candidates(self, tmp_db_path: str) -> None:
+        store = _store(tmp_db_path)
+        try:
+            for i in range(60):
+                _add(store, f"/n{i:02d}", f"nota {i}", _unit(0.01 * (i + 1)))
+            # top_k=3 -> vector pool of 20; /n29 is vector rank 30.
+            query = _unit(0.0)
+            opts = {"retrieval_mode": "vec_only", "min_vec_keep": 40}
+            ma = store.miss_analysis(
+                query, "zzz", expected_path="/n29", top_k=3, search_options=opts
+            )
+            vec = next(v for v in ma.stage_verdicts if v.stage == "vector_search")
+            assert vec.passed, vec.detail
+            assert vec.rank == 29
+        finally:
+            store.close()
+
+    def test_floor_does_not_widen_the_keyword_pool(self, tmp_db_path: str) -> None:
+        store = _store(tmp_db_path)
+        try:
+            for i in range(60):
+                _add(store, f"/n{i:02d}", f"nota {i}", _unit(0.01 * (i + 1)))
+            base = store.search(_unit(0.0), "nota", top_k=3, retrieval_mode="fts_only")
+            floored = store.search(
+                _unit(0.0), "nota", top_k=3, retrieval_mode="fts_only", min_vec_keep=40
+            )
+            assert [r.path for r in floored] == [r.path for r in base]
+        finally:
+            store.close()
+
+    @pytest.mark.parametrize("bad", [-1, 1.5, True, "3"])
+    def test_invalid_floor_is_rejected(self, tmp_db_path: str, bad) -> None:
+        store = _store(tmp_db_path)
+        try:
+            with pytest.raises(ValueError, match="min_vec_keep"):
+                store.search(_unit(0.0), "nota", top_k=3, min_vec_keep=bad)
+        finally:
+            store.close()

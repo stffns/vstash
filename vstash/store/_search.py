@@ -52,6 +52,9 @@ from ._common import (
 
 logger = logging.getLogger(__name__)
 
+#: sqlite-vec rejects a KNN ``k`` above this value.
+_VEC_KNN_MAX_K = 4096
+
 
 def _gate_ramp(value: float, low: float, high: float) -> float:
     """0 below ``low``, 1 from ``high`` up, linear in between; a step when they coincide."""
@@ -554,6 +557,13 @@ class _SearchEngineMixin:
             fts_weight=fts_weight,
             dedup_threshold=dedup_threshold,
         )
+        if isinstance(min_vec_keep, bool) or not isinstance(min_vec_keep, int) or min_vec_keep < 0:
+            raise ValueError(f"min_vec_keep must be a non-negative int; got {min_vec_keep!r}")
+
+        # Another process may have rebuilt the keyword index with another
+        # tokenizer since this store opened; pick that up before anything
+        # (cache, IDF, stemming) relies on the old one.
+        self._sync_fts_tokenizer()
 
         # --- Query cache key ---
         # Skip the cache when an exact_match filter is ACTIVE (non-empty).
@@ -702,6 +712,13 @@ class _SearchEngineMixin:
             effective_k = top_k
             total_chunks = self._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
             candidate_pool = min(effective_k * 10, max(effective_k * 3, total_chunks // 3))
+            # The ``min_vec_keep`` floor can only keep candidates that were
+            # fetched, so the vector side asks for at least that many. The
+            # keyword side keeps the normal pool: the floor is a vector-side
+            # option and must not change which keyword hits are considered.
+            vec_pool = candidate_pool
+            if min_vec_keep > candidate_pool:
+                vec_pool = min(min_vec_keep, max(total_chunks, candidate_pool), _VEC_KNN_MAX_K)
 
             # --- Build metadata filter ---
             vec_clause, col_clause, filter_params = self._build_doc_filter(
@@ -762,7 +779,7 @@ class _SearchEngineMixin:
                 # assume (``[0, 2]``), even if an implementation
                 # quirk yields a value slightly outside ``[-1, 1]``.
                 vec_rows = self._snap_candidates(
-                    query_embedding, candidate_pool, vec_clause, filter_params
+                    query_embedding, vec_pool, vec_clause, filter_params
                 )
             else:
                 vec_rows = self._conn.execute(
@@ -777,7 +794,7 @@ class _SearchEngineMixin:
                       {vec_clause}
                     ORDER BY v.distance
                     """,
-                    [_serialize(query_embedding), candidate_pool, *filter_params],
+                    [_serialize(query_embedding), vec_pool, *filter_params],
                 ).fetchall()
 
             # --- Track: vector search stage ---
@@ -810,7 +827,7 @@ class _SearchEngineMixin:
                         rank=None,
                         score=None,
                         detail=(
-                            f"Not in vector candidate pool of size {candidate_pool}. "
+                            f"Not in vector candidate pool of size {vec_pool}. "
                             "The chunk's embedding is too far from the query embedding."
                         ),
                         counterfactual="Would need candidate_pool > current rank to appear",

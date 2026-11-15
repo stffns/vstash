@@ -173,7 +173,11 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         # otherwise stem conns created in worker threads (vstash serve,
         # MCP) would leak until process exit.
         self._stem_conns: dict[int, sqlite3.Connection] = {}
+        # Tokenizer each stemming connection was built with; a connection
+        # whose tokenizer is no longer the index's is rebuilt by its owner.
+        self._stem_conn_tokenizers: dict[int, str] = {}
         self._stem_lock = threading.Lock()
+        self._fts_schema_cookie: int | None = None
         self._conn = self._connect()
 
         # --- Adaptive RRF cache ---
@@ -1688,15 +1692,20 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         import time so the failure mode is loud, not silent.
         """
         tid = threading.get_ident()
+        tokenizer = self._fts_tokenizer
         with self._stem_lock:
             conn = self._stem_conns.get(tid)
+            if conn is not None and self._stem_conn_tokenizers.get(tid) != tokenizer:
+                # The index was rebuilt with another tokenizer. This is the
+                # owner thread, so nobody else is using ``conn``.
+                conn.close()
+                conn = None
             if conn is None:
                 conn = sqlite3.connect(":memory:", check_same_thread=False)
-                conn.execute(
-                    f"CREATE VIRTUAL TABLE _stem USING fts5(x, tokenize='{self._fts_tokenizer}')"
-                )
+                conn.execute(f"CREATE VIRTUAL TABLE _stem USING fts5(x, tokenize='{tokenizer}')")
                 conn.execute("CREATE VIRTUAL TABLE _stem_v USING fts5vocab(_stem, row)")
                 self._stem_conns[tid] = conn
+                self._stem_conn_tokenizers[tid] = tokenizer
         # Use the connection outside the lock — each thread only ever
         # touches its own connection (lookup by tid above), so no
         # cross-thread access happens here.
@@ -2693,4 +2702,5 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                 with contextlib.suppress(sqlite3.Error):
                     stem_conn.close()
             self._stem_conns.clear()
+            self._stem_conn_tokenizers.clear()
         self._conn.close()
