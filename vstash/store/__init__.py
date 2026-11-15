@@ -178,6 +178,10 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         self._stem_conn_tokenizers: dict[int, str] = {}
         self._stem_lock = threading.Lock()
         self._fts_schema_cookie: int | None = None
+        # Serializes the per-search schema-version check: threads sharing
+        # this store would otherwise run the same cached statement at once
+        # on ``self._conn`` and one of them reads no row.
+        self._fts_sync_lock = threading.Lock()
         self._conn = self._connect()
 
         # --- Adaptive RRF cache ---

@@ -35,6 +35,7 @@ class _SchemaManagerMixin:
     _fts_tokenizer: str
     _fts_tokenizer_requested: str | None
     _fts_schema_cookie: int | None
+    _fts_sync_lock: threading.Lock
 
     def _create_tables(self, conn: sqlite3.Connection) -> None:
         """Initialize database schema if not present."""
@@ -254,13 +255,18 @@ class _SchemaManagerMixin:
         terms, building IDF and serving cached results for the old
         tokenizer. ``PRAGMA schema_version`` is a header read, so the check
         costs next to nothing when nothing changed.
+
+        Runs on every search, cache hits included, so it is serialized:
+        concurrent searches on a shared store would otherwise execute the
+        same cached statement on ``self._conn`` at once.
         """
-        cookie = self._conn.execute("PRAGMA schema_version").fetchone()[0]
-        if cookie == self._fts_schema_cookie:
-            return
-        if self._adopt_fts_tokenizer(self._conn, warn=False):
-            self._idf_cache = None
-            self._bump_cache_epoch()
+        with self._fts_sync_lock:
+            cookie = self._conn.execute("PRAGMA schema_version").fetchone()[0]
+            if cookie == self._fts_schema_cookie:
+                return
+            if self._adopt_fts_tokenizer(self._conn, warn=False):
+                self._idf_cache = None
+                self._bump_cache_epoch()
 
     def rebuild_fts(self, tokenizer: str) -> None:
         """Rebuild the keyword index with another FTS5 tokenizer.
