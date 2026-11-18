@@ -45,7 +45,7 @@ sys.path.insert(0, str(AQUI.parent))
 from vstash.embed import embed_query, embed_texts, get_embedding_dim  # noqa: E402
 from vstash.store import VstashStore  # noqa: E402
 
-ROTTEN_LAB = Path(os.environ.get("LAB_ES_DATOS", "/Users/jaysonsteffens/code/rotten/memoria/lab"))
+ROTTEN_LAB = Path(os.environ.get("LAB_ES_DATOS", "~/code/rotten/memoria/lab")).expanduser()
 CACHE = AQUI / "data" / "lab_es"
 BASE = "defecto"  # contra quién se comparan las demás; se cambia con --base
 _SUELO_PALABRAS = __import__("vstash.store._common", fromlist=["x"])._LEXICAL_GATE_MIN_FTS_WEIGHT

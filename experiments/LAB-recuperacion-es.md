@@ -142,7 +142,7 @@ trabajo, comprobado con `vstash.__file__`), y MIRACL sale igual que en rotten (3
 
 ## 0. Que el híbrido no se pise a sí mismo (prioridad)
 
-Encargo añadido por Jay a mitad del lab: tratar como problema central que la mezcla de
+Encargo añadido por el autor a mitad del lab: tratar como problema central que la mezcla de
 vectores y palabras saque de la lista notas que uno de los dos lados tenía bien puestas.
 Detrás irá un reordenador, así que la primera etapa ya no necesita acertar el primer puesto:
 necesita que la buena esté entre las 50.
@@ -712,7 +712,7 @@ es una instalación **editable** que apunta a `~/code/vstash`, y esa copia está
 | herramienta instalada (`~/.local/share/uv/tools/vstash`) | 0.29.0 | no | el de `memoria-confiable`: usa `click_type` → falla |
 | este repositorio (develop) | 0.29.1 | no | usa `Enum` → funciona |
 
-**Arreglo para Jay** (no lo he hecho: es su instalación y su rama): traer develop a
+**Arreglo para el autor** (no lo he hecho: es su instalación y su rama): traer develop a
 `memoria-confiable` (`git merge develop` o `git rebase develop` en `~/code/vstash`). No hace
 falta reinstalar: al ser editable, la orden vuelve a funcionar en cuanto el archivo cambie.
 
@@ -733,7 +733,7 @@ palabra **que ya está en el texto**: no añade términos nuevos, que es justo l
 falta con consultas vagas, y FTS5 no sabe usar pesos por término. Además su cabeza dispersa
 (`sparse_linear.pt`) no está descargada en el equipo. Los modelos dispersos que sí expanden
 y no necesitan modelo en la consulta (por ejemplo la familia «doc-only» de OpenSearch,
-multilingüe) habría que descargarlos; no se hizo sin permiso de Jay. En su lugar se probó lo
+multilingüe) habría que descargarlos; no se hizo sin permiso del autor. En su lugar se probó lo
 mismo con un modelo de chat pequeño que ya estaba en el equipo,
 `mlx-community/gemma-4-e2b-it-4bit` (3,3 GB, sin modo de razonamiento), con una petición fija:
 doce palabras o expresiones cortas con las que alguien buscaría la nota sin recordar nombres
@@ -909,7 +909,7 @@ no salvan: MiniLM tampoco reconoce «Bela».
 
 ## 10. Los mecanismos de después de la fusión: deduplicación, reserva de candidatos y demás
 
-Encargo añadido por Jay. En todos los bancos anteriores cada nota es un documento de un solo
+Encargo añadido por el autor. En todos los bancos anteriores cada nota es un documento de un solo
 trozo, así que la deduplicación dentro del documento (MMR) **no había podido actuar**: no
 estaba medida. Se hizo antes que los experimentos 7 y 8 porque no necesita ningún modelo.
 
@@ -1079,7 +1079,7 @@ PyTorch, sin ONNX, así que no entra por FastEmbed ni por la vía ONNX de vstash
   afinados v2/v3. `R50` pierde «alguna buena entre 10» en NFCorpus; `R1` no pierde.
 - **El examen ya no es del todo limpio**: la compuerta de todo o nada se eligió mirándolo
   (apartado 0). MIRACL sí lo es para `R1` y `R50`. Convendría un tercer conjunto.
-- **Consultas reales de Jay y transcripciones reales**: todo son consultas escritas por un
+- **Consultas reales del autor y transcripciones reales**: todo son consultas escritas por un
   modelo; los nombres mal oídos salen de reglas.
 - **Experimentos 7 a 9 son prototipos del banco**, no código de vstash: el texto extra se
   metió en el trozo. El 7 y el 9 no se midieron en MIRACL ni en inglés; el 8 no se pasó por

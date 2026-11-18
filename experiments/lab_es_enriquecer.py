@@ -27,7 +27,7 @@ from pathlib import Path
 os.environ.setdefault("HF_HUB_OFFLINE", "1")  # nada de red: los modelos ya están en el equipo
 
 AQUI = Path(__file__).resolve().parent
-ROTTEN_LAB = Path(os.environ.get("LAB_ES_DATOS", "/Users/jaysonsteffens/code/rotten/memoria/lab"))
+ROTTEN_LAB = Path(os.environ.get("LAB_ES_DATOS", "~/code/rotten/memoria/lab")).expanduser()
 SALIDA = AQUI / "data" / "lab_es" / "enriquecido"
 CONJUNTOS = {"viejas": ROTTEN_LAB / "notas.json", "final": ROTTEN_LAB / "final" / "notas.json"}
 
