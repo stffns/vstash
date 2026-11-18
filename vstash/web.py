@@ -26,6 +26,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, StreamingResponse
 from starlette.routing import Route
 
+from .relevance import thresholds_for
 from ._store_open import open_store_for_config
 from .chat import stream as chat_stream
 from .config import VstashConfig, load_config
@@ -106,7 +107,7 @@ def _do_search(query: str, top_k: int, recency_boost: float) -> dict:
         expand_window=1,
     )
     best_distance = store.last_best_distance
-    relevance = relevance_tier(best_distance)
+    relevance = relevance_tier(best_distance, thresholds_for(cfg))
     data: dict[str, Any] = {
         "results": [r.model_dump(exclude_none=True) for r in results],
         "relevance": relevance,

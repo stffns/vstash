@@ -266,8 +266,8 @@ class ObservabilityConfig(BaseModel):
         description=(
             "Record a lightweight ``miss_hint`` JSON on search_events "
             "rows when a query returns zero results or a result set "
-            "entirely in the 'low' relevance tier (distance > 0.4802 "
-            "cosine; see ``RELEVANCE_TIER_MEDIUM_MAX`` in store.py). "
+            "entirely in the 'low' relevance tier (above the model's "
+            "``medium_max``; see ``vstash.relevance``). "
             "Set to false to skip the extra JSON column write per miss. "
             "The hint is consumed by ``vstash why --recent``. Added in "
             "issue #157 part 3."
@@ -293,6 +293,34 @@ class ObservabilityConfig(BaseModel):
             "``search_results`` rows). Older events are pruned on every "
             "insert."
         ),
+    )
+
+
+class RelevanceConfig(BaseModel):
+    """Overrides for the relevance-tier thresholds (``[relevance]``).
+
+    ``relevance_tier`` labels a search "high" / "medium" / "low" from the
+    best match's cosine distance. Thresholds are per embedding model (see
+    ``vstash.relevance.MODEL_RELEVANCE_THRESHOLDS``); unknown models use the
+    BGE-small defaults (0.4513 / 0.4802). Set these to calibrate for your own
+    corpus: ``high_max`` / ``medium_max`` are the upper distance bounds of the
+    "high" and "medium" tiers. The tiers detect off-topic queries, not
+    questions about things the store never recorded.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    high_max: float | None = Field(
+        default=None,
+        gt=0.0,
+        le=2.0,
+        description="Upper cosine distance of the 'high' tier (None = model default)",
+    )
+    medium_max: float | None = Field(
+        default=None,
+        gt=0.0,
+        le=2.0,
+        description="Upper cosine distance of the 'medium' tier (None = model default)",
     )
 
 
@@ -525,6 +553,33 @@ class VstashConfig(BaseModel):
     cache: CacheConfig = Field(default_factory=CacheConfig)
     judge: JudgeConfig = Field(default_factory=JudgeConfig)
     usage_prior: UsagePriorConfig = Field(default_factory=UsagePriorConfig)
+    relevance: RelevanceConfig = Field(default_factory=RelevanceConfig)
+
+    @model_validator(mode="after")
+    def _check_relevance_thresholds(self) -> VstashConfig:
+        # A [relevance] override is only checkable against the model's
+        # defaults (e.g. a lone high_max above the model's medium_max), so
+        # validate the resolved pair here, at load, instead of at search time.
+        self.relevance_thresholds()
+        return self
+
+    def relevance_thresholds(self):
+        """Relevance-tier thresholds for the configured embedding model.
+
+        Per-model calibrated values (``vstash.relevance``), with any
+        ``[relevance]`` override applied. Pass the result to
+        ``relevance_tier(distance, thresholds)``.
+
+        Raises:
+            ValueError: The overrides leave ``high_max > medium_max``.
+        """
+        from .relevance import relevance_thresholds
+
+        return relevance_thresholds(
+            self.embeddings.model,
+            high_max=self.relevance.high_max,
+            medium_max=self.relevance.medium_max,
+        )
 
     @property
     def cerebras_api_key(self) -> str:

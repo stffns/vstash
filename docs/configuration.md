@@ -245,6 +245,35 @@ Each returned result carries `usage_boost` (the multiplier applied; `1.0` = unto
 
 The prior reads the usage log, so it needs `observability.log_search_results` (each logged event stores its query vector, 1.5 KB at 384 dims, ~15 MB at the 10 000-event cap). `vstash reindex` clears stored query vectors, since they belong to the old model. Cost on a 5 000-chunk store with 10 000 logged events: about +0.1-0.8 ms when no similar past search exists (the past vectors are cached in memory); about +9 ms when one does, which is the price of ranking the 50-candidate pool instead of `top_k`.
 
+## `[relevance]`
+
+Every search is labelled `high` / `medium` / `low` from the best match's cosine
+distance (MCP `relevance`, the CLI warning, `min_relevance`, the usage log).
+Distances live on a different scale per embedding model, so the cutoffs are per
+model: BGE-small (and any model vstash has no calibration for) uses
+`0.4513` / `0.4802`; calibrated models use their own values from
+`vstash.relevance.MODEL_RELEVANCE_THRESHOLDS`. Override them for your corpus:
+
+```toml
+[relevance]
+high_max = 0.50     # best distance <= high_max  -> "high"
+medium_max = 0.58   # best distance <= medium_max -> "medium", above -> "low"
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `high_max` | float | model default | Upper cosine distance of the `high` tier |
+| `medium_max` | float | model default | Upper cosine distance of the `medium` tier |
+
+Either key may be set alone; the other keeps the model default. The resolved
+pair must satisfy `0 < high_max <= medium_max <= 2` or the config fails to load.
+
+**What the tiers detect.** They flag *off-topic* queries: `low` means the best
+match is about as far away as a question from an unrelated domain. They do not
+detect a question about something your store covers but never recorded; that
+usually still lands in `high`. See
+`experiments/results/relevance_tiers_calibration.md`.
+
 ## `[scoring]` (removed)
 
 The frequency+decay scoring pipeline was removed in v0.18.0 (replaced by the simpler `[recency]` boost in v0.19.0), and its config model was dropped entirely afterwards — all `[scoring]` parameters had been silently ignored since v0.18.0. A `[scoring]` section in an existing `vstash.toml` is now reported as an unknown section (warn-on-unknown), not an error, so old files still load. Use `mmr_lambda` per-call on `search()` for intra-document dedup tuning.

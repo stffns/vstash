@@ -49,7 +49,7 @@ Things to know before switching to Jina v5 nano:
 - **Asymmetric prompts are handled for you**: queries are embedded as `Query: ...`, stored chunks as `Document: ...` (also through the `vstash serve --warm` daemon).
 - **Runs on onnxruntime + tokenizers**, no torch and no `trust_remote_code`. First use downloads ~850 MB (pinned revision) to `~/.vstash/models/` (`VSTASH_MODELS_DIR` overrides).
 - **Hybrid does not help it**: on the Spanish set, adding FTS5 cost 0.012 NDCG@10, while it lifts the weaker models. Consider `retrieval_mode="vec_only"` if your own queries agree.
-- **Recalibrate relevance tiers**: `relevance_tier` / `min_relevance` thresholds are calibrated on BGE-small.
+- **Relevance tiers are calibrated for it** (`high_max` 0.803 / `medium_max` 0.857, from `experiments/calibrate_relevance_tiers.py`); override with `[relevance]` for your own corpus.
 
 For **general-purpose** multilingual corpora where ingest speed matters more than retrieval quality, `paraphrase-multilingual-MiniLM-L12-v2` keeps the 384 dimensions of the default model and embeds ~4x faster than it on long passages. On Spanish retrieval its dense NDCG@10 only matches the English default (0.255 vs 0.252) but its Recall@100 is clearly higher (0.738 vs 0.563), and through the hybrid pipeline it is ahead (0.316 vs 0.279).
 

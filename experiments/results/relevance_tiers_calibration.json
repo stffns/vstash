@@ -1,0 +1,223 @@
+{
+  "criterion": "t = m_ans + p * (m_off - m_ans) per model and corpus, with p taken from BGE's constants on SciFact (FiQA questions as off-domain)",
+  "p_high": 1.2279,
+  "p_medium": 1.3571,
+  "models": {
+    "BAAI/bge-small-en-v1.5": {
+      "scifact": {
+        "m_ans": 0.1766,
+        "m_off": 0.4003,
+        "high_max": 0.4513,
+        "medium_max": 0.4802,
+        "answerable_in_high": 1.0,
+        "answerable_in_high_or_medium": 1.0,
+        "off_domain_low": 0.017,
+        "answerable_p10_p50_p90": [
+          0.112,
+          0.1766,
+          0.2504
+        ],
+        "off_domain_p10_p50_p90": [
+          0.3513,
+          0.4003,
+          0.4439
+        ]
+      },
+      "scifact_holdout": {
+        "n_answerable": 255,
+        "n_unanswerable": 554,
+        "answerable_p10_p50_p90": [
+          0.1189,
+          0.1808,
+          0.2637
+        ],
+        "unanswerable_p10_p50_p90": [
+          0.1543,
+          0.2075,
+          0.2649
+        ]
+      },
+      "s2p": {
+        "m_ans": 0.202,
+        "m_off": 0.2764,
+        "high_max": 0.2933,
+        "medium_max": 0.3029,
+        "answerable_in_high": 0.982,
+        "answerable_in_high_or_medium": 0.982,
+        "off_domain_low": 0.257,
+        "answerable_p10_p50_p90": [
+          0.1508,
+          0.202,
+          0.2517
+        ],
+        "off_domain_p10_p50_p90": [
+          0.2126,
+          0.2764,
+          0.3375
+        ]
+      }
+    },
+    "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2": {
+      "scifact": {
+        "m_ans": 0.3349,
+        "m_off": 0.6736,
+        "high_max": 0.7508,
+        "medium_max": 0.7946,
+        "answerable_in_high": 1.0,
+        "answerable_in_high_or_medium": 1.0,
+        "off_domain_low": 0.01,
+        "answerable_p10_p50_p90": [
+          0.2136,
+          0.3349,
+          0.476
+        ],
+        "off_domain_p10_p50_p90": [
+          0.5924,
+          0.6736,
+          0.7442
+        ]
+      },
+      "scifact_holdout": {
+        "n_answerable": 255,
+        "n_unanswerable": 554,
+        "answerable_p10_p50_p90": [
+          0.2337,
+          0.3432,
+          0.4917
+        ],
+        "unanswerable_p10_p50_p90": [
+          0.2604,
+          0.3672,
+          0.4788
+        ]
+      },
+      "s2p": {
+        "m_ans": 0.2706,
+        "m_off": 0.6029,
+        "high_max": 0.6786,
+        "medium_max": 0.7216,
+        "answerable_in_high": 1.0,
+        "answerable_in_high_or_medium": 1.0,
+        "off_domain_low": 0.09,
+        "answerable_p10_p50_p90": [
+          0.1689,
+          0.2706,
+          0.3907
+        ],
+        "off_domain_p10_p50_p90": [
+          0.4304,
+          0.6029,
+          0.7176
+        ]
+      }
+    },
+    "jinaai/jina-embeddings-v5-text-nano-retrieval": {
+      "scifact": {
+        "m_ans": 0.3189,
+        "m_off": 0.7509,
+        "high_max": 0.8494,
+        "medium_max": 0.9052,
+        "answerable_in_high": 1.0,
+        "answerable_in_high_or_medium": 1.0,
+        "off_domain_low": 0.0,
+        "answerable_p10_p50_p90": [
+          0.1873,
+          0.3189,
+          0.4596
+        ],
+        "off_domain_p10_p50_p90": [
+          0.6895,
+          0.7509,
+          0.8046
+        ]
+      },
+      "scifact_holdout": {
+        "n_answerable": 255,
+        "n_unanswerable": 554,
+        "answerable_p10_p50_p90": [
+          0.2008,
+          0.3104,
+          0.4652
+        ],
+        "unanswerable_p10_p50_p90": [
+          0.289,
+          0.4045,
+          0.5009
+        ]
+      },
+      "s2p": {
+        "m_ans": 0.2895,
+        "m_off": 0.7078,
+        "high_max": 0.8031,
+        "medium_max": 0.8572,
+        "answerable_in_high": 1.0,
+        "answerable_in_high_or_medium": 1.0,
+        "off_domain_low": 0.0,
+        "answerable_p10_p50_p90": [
+          0.2059,
+          0.2895,
+          0.3647
+        ],
+        "off_domain_p10_p50_p90": [
+          0.5337,
+          0.7078,
+          0.7893
+        ]
+      }
+    },
+    "embeddinggemma-300m": {
+      "scifact": {
+        "m_ans": 0.418,
+        "m_off": 0.7128,
+        "high_max": 0.78,
+        "medium_max": 0.8181,
+        "answerable_in_high": 1.0,
+        "answerable_in_high_or_medium": 1.0,
+        "off_domain_low": 0.0,
+        "answerable_p10_p50_p90": [
+          0.3024,
+          0.418,
+          0.5281
+        ],
+        "off_domain_p10_p50_p90": [
+          0.6518,
+          0.7128,
+          0.7552
+        ]
+      },
+      "scifact_holdout": {
+        "n_answerable": 255,
+        "n_unanswerable": 554,
+        "answerable_p10_p50_p90": [
+          0.3171,
+          0.423,
+          0.5386
+        ],
+        "unanswerable_p10_p50_p90": [
+          0.3882,
+          0.4921,
+          0.5761
+        ]
+      },
+      "s2p": {
+        "m_ans": 0.3728,
+        "m_off": 0.7237,
+        "high_max": 0.8037,
+        "medium_max": 0.8491,
+        "answerable_in_high": 1.0,
+        "answerable_in_high_or_medium": 1.0,
+        "off_domain_low": 0.0,
+        "answerable_p10_p50_p90": [
+          0.3148,
+          0.3728,
+          0.4481
+        ],
+        "off_domain_p10_p50_p90": [
+          0.6001,
+          0.7237,
+          0.7858
+        ]
+      }
+    }
+  }
+}
