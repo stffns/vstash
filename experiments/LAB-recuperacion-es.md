@@ -1,0 +1,1108 @@
+# Lab: la primera búsqueda de vstash en español y con consultas vagas
+
+14 de noviembre de 2026 · rama `pelops/lab-recuperacion-es-ef71b8` · vstash 0.39.0 (develop, `bb6d5bc`)
+
+## Configuración recomendada
+
+**Primera etapa para un reordenador** (lo que importa es que la buena entre entre las 50):
+
+```python
+# rama pelops/lab-recuperacion-es-ef71b8; lexical_gate es nueva y está apagada por defecto
+almacen.search(
+    vector_de_la_consulta,
+    texto_de_la_consulta,
+    top_k=50,
+    adaptive_rrf=False,  # pesos fijos 0,6 vectores / 0,4 palabras
+    distance_cutoff=2.0,  # sin corte por distancia a efectos prácticos
+    lexical_gate=True,  # las palabras dejan de votar si no tienen ninguna evidencia
+    mmr_lambda=None,  # sin deduplicación dentro del documento: eso, después de reordenar
+)
+# por el SDK: Memory.search(consulta, top_k=50, vec_weight=0.6, fts_weight=0.4,
+#                           distance_cutoff=2.0, lexical_gate=True, mmr_lambda=None)
+```
+
+**Búsqueda sola, sin reordenador** (lo que importa es el orden; no pierde en ningún banco):
+la misma llamada sin `adaptive_rrf=False` y sin `mmr_lambda=None` (si la lista va directa al
+modelo, la diversidad dentro del documento sí conviene).
+
+`mmr_lambda=None` solo cambia algo cuando un documento tiene varios trozos (apartado 10): ahí
+la deduplicación por defecto cuesta de 2 a 9 puntos de «entre 50». Con un trozo por nota,
+como en la memoria de rotten hoy, da exactamente lo mismo.
+
+**¿Hace falta la rama?** Para la primera etapa de un reordenador con 50 candidatos y un
+trozo por nota, **no**: `adaptive_rrf=False, distance_cutoff=2.0` en vstash 0.39.0 da el mismo
+«entre 50» en el examen. La rama aporta la compuerta (primeros puestos de las consultas
+vagas, y «entre 20»: +3,5) y `mmr_lambda=None` (documentos de varios trozos).
+
+Las dos se llaman `R50` y `R1` en el banco. `drop_stopwords` ya **no** va en la
+recomendación (ver «El híbrido no se pisa»). Con vstash 0.39.0 sin esta rama:
+`adaptive_rrf=False, distance_cutoff=2.0`, que es `R50` sin la compuerta (pierde el primer
+puesto de las consultas vagas: 5,3 % frente a 11,9 %).
+
+<!-- T: defecto R1 R50 sin-adapt-corte2 -->
+| Configuración | siempre 1ª | siempre en 20 | vagas 1ª | vagas en 20 | vagas en 50 | MIRACL 1ª | MIRACL en 20 | SciFact NDCG@10 | NFCorpus NDCG@10 |
+|---|---|---|---|---|---|---|---|---|---|
+| `defecto` | 72,8 | 95,0 | 5,6 | 36,5 | 59,3 | 38,1 | 81,9 | 72,5 | 35,9 |
+| `R1` | 73,1 (+0,3) | 95,8 (+0,8) | 11,7 (+6,1 *) | 47,4 (+10,8 *) | 68,8 (+9,4 *) | 37,8 (-0,3) | 84,6 (+2,6 *) | 73,3 (+0,8 *) | 36,2 (+0,3) |
+| `R50` | 71,8 (-1,0) | 96,5 (+1,5 *) | 11,9 (+6,4 *) | 54,6 (+18,1 *) | 72,9 (+13,6 *) | 40,6 (+2,5) | 89,2 (+7,3 *) | 73,2 (+0,7) | 35,4 (-0,5) |
+| `sin-adapt-corte2` | 71,9 (-0,8) | 96,4 (+1,4 *) | 5,3 (-0,3) | 51,5 (+15,0 *) | 71,1 (+11,8 *) | 40,6 (+2,5) | 89,2 (+7,3 *) | 73,2 (+0,7) | 35,4 (-0,5) |
+<!-- /T -->
+
+El examen (840 notas nuevas de rotten; primera · entre 20 · entre 50 por tipo de consulta):
+
+<!-- T: --columnas=examen defecto R1 R50 sin-adapt-corte2 -->
+| Configuración | nombrada 1ª | nombrada en 20 | nombrada en 50 | media 1ª | media en 20 | media en 50 | vaga 1ª | vaga en 20 | vaga en 50 |
+|---|---|---|---|---|---|---|---|---|---|
+| `defecto` | 76,5 | 96,3 | 98,5 | 69,2 | 93,8 | 98,1 | 7,3 | 35,6 | 59,4 |
+| `R1` | 76,1 (-0,5) | 97,0 (+0,7) | 99,0 (+0,6 *) | 69,0 (-0,1) | 96,1 (+2,3 *) | 98,6 (+0,5) | 9,6 (+2,4 *) | 45,1 (+9,5 *) | 66,4 (+7,0 *) |
+| `R50` | 74,2 (-2,4 *) | 97,6 (+1,3 *) | 99,5 (+1,1 *) | 68,3 (-0,8) | 95,8 (+2,0 *) | 98,7 (+0,6) | 9,4 (+2,1) | 52,7 (+17,1 *) | 71,8 (+12,4 *) |
+| `sin-adapt-corte2` | 74,3 (-2,3 *) | 97,5 (+1,2 *) | 99,5 (+1,1 *) | 69,0 (-0,1) | 96,1 (+2,3 *) | 98,7 (+0,6) | 6,5 (-0,7) | 49,3 (+13,7 *) | 71,2 (+11,8 *) |
+<!-- /T -->
+
+Entre paréntesis, la diferencia con la configuración por defecto; el asterisco, que su
+intervalo del 95 % (remuestreo emparejado) no contiene el cero. `sin-adapt-corte2` es lo que
+se puede pedir a vstash 0.39.0 sin esta rama.
+
+**Lo que más mueve, por orden** (examen, consultas vagas, «entre 50»): arreglar la fusión
+59,4 % → 71,8 %; añadir al guardar términos escritos por un modelo local, → 78,1 %
+(experimento 7, prototipo). Con documentos de varios trozos, no deduplicar antes del
+reordenador vale otros 2 a 9 puntos (experimento 10). Con nombres mal oídos, una clave
+fonética recupera 3 puntos de «entre 50» (experimento 9, prototipo).
+
+**Tiempo de `search`** (sin vectorizar la consulta; el menor de cinco vueltas con la
+máquina libre): notas viejas 2,25 ms por defecto · 2,41 `R1` · 2,19 `R50`; SciFact 7,97 ·
+8,47 · 8,83. Las opciones nuevas no cuestan. En MIRACL (146.750 pasajes; una pasada, con la
+máquina compartida): 177–205 ms por defecto y 176 ms `R50`. Con documentos de varios
+trozos, quitar la MMR ahorra tiempo: 5,20 → 2,12 ms pidiendo 50. No hay que reindexar nada.
+
+**Lo que no arregla ninguna configuración**: con consultas vagas la buena entra en la lista
+pero es la primera solo el 9–15 % de las veces. Ese puesto es del reordenador.
+
+## Cómo se midió
+
+Banco: `experiments/lab_recuperacion_es.py`. Cinco conjuntos, siempre con índices temporales:
+
+| Banco | Qué es | Modelo del índice | Se piden | Medida principal |
+|---|---|---|---|---|
+| siempre | 720 notas inventadas en español (90 asuntos de 8 notas que se confunden); cada consulta comparte nombres y palabras con su nota | MiniLM multilingüe | 50 | buena la primera, entre 20 |
+| vagas | las mismas notas con consultas de 3 a 8 palabras sin nombres ni palabras de la nota (extremo artificial) | MiniLM multilingüe | 50 | entre 20 |
+| miracl | MIRACL-es (`mteb/MIRACLRetrievalHardNegatives`): 648 preguntas reales, relevancia juzgada por personas, 146.750 pasajes | MiniLM multilingüe | 20 | primera, entre 20 |
+| scifact | SciFact de BEIR, inglés, 300 consultas | bge-small-en | 10 | NDCG@10 |
+| nfcorpus | NFCorpus de BEIR, inglés, 323 consultas muy cortas (se añadió como segundo control) | bge-small-en | 10 | NDCG@10 |
+| final-nombrada / -media / -vaga | **el examen**: 840 notas nuevas de rotten con tres consultas cada una (con nombres, como se pregunta de verdad, y vaga). Llegaron a mitad del lab; no se ajustó nada con ellas | MiniLM multilingüe | 50 | entre 50, primera |
+| oido-* | las consultas de «siempre», «nombrada» y «media» que llevan nombres propios, con esos nombres mal transcritos por reglas (experimento 9) | MiniLM multilingüe | 50 | entre 50, primera |
+
+- Un trozo por documento, vectores calculados una vez y guardados; lo único que cambia entre
+  filas es la llamada a `search` (o el tokenizador del índice).
+- Entre paréntesis va la diferencia con la configuración por defecto y su intervalo del 95 %
+  por remuestreo **emparejado** (5.000 remuestreos; en las notas se sortean asuntos enteros,
+  porque van en racimos de 8; en el resto, consultas). Un asterisco marca los intervalos que
+  no contienen el cero.
+- «devuelve» es cuántos resultados da de media. Se vigila porque aflojar filtros cambia
+  recuerdo por ruido.
+- **Criterio de «no pierde»**: en la medida principal de cada banco, el intervalo de la
+  diferencia no queda entero por debajo de cero. Las reglas se ajustaron mirando solo las
+  notas; MIRACL y los dos de inglés se usaron de puerta, no para ajustar. El criterio se
+  escribió después de ver las notas y SciFact pero antes de tener MIRACL y NFCorpus.
+- Tiempos: milisegundos de `search` sin contar vectorizar la consulta; el menor de cinco
+  vueltas, con la máquina sin otro trabajo.
+
+## Línea de partida, reproducida
+
+Todas las cifras del encargo salen iguales con el banco nuevo (vstash 0.39.0 de la copia de
+trabajo, comprobado con `vstash.__file__`), y MIRACL sale igual que en rotten (38,1 % ·
+59,0 % en 3 · 81,9 % entre 20):
+
+<!-- T: defecto vec fts sin-adapt corte2 vec-corte2 sin-adapt-corte2 -->
+| Configuración | siempre 1ª | siempre en 20 | vagas 1ª | vagas en 20 | vagas en 50 | MIRACL 1ª | MIRACL en 20 | SciFact NDCG@10 | NFCorpus NDCG@10 |
+|---|---|---|---|---|---|---|---|---|---|
+| `defecto` | 72,8 | 95,0 | 5,6 | 36,5 | 59,3 | 38,1 | 81,9 | 72,5 | 35,9 |
+| `vec` | 55,6 (-17,2 *) | 89,2 (-5,8 *) | 16,0 (+10,4 *) | 52,2 (+15,7 *) | 62,5 (+3,2 *) | 32,9 (-5,2 *) | 69,0 (-13,0 *) | 69,6 (-2,9 *) | 30,7 (-5,2 *) |
+| `fts` | 70,6 (-2,2) | 91,2 (-3,8 *) | 2,2 (-3,3 *) | 9,2 (-27,4 *) | 15,7 (-43,6 *) | 21,0 (-17,1 *) | 69,4 (-12,5 *) | 68,3 (-4,2 *) | 31,4 (-4,5 *) |
+| `sin-adapt` | 71,8 (-1,0) | 95,0 (+0,0) | 7,1 (+1,5 *) | 51,7 (+15,1 *) | 65,0 (+5,7 *) | 40,7 (+2,6) | 82,6 (+0,6 *) | 72,4 (-0,1) | 35,2 (-0,7 *) |
+| `corte2` | 73,2 (+0,4) | 95,6 (+0,6) | 4,2 (-1,4 *) | 34,9 (-1,7) | 60,7 (+1,4) | 37,8 (-0,3) | 84,6 (+2,6 *) | 73,3 (+0,8 *) | 36,2 (+0,3) |
+| `vec-corte2` | 55,6 (-17,2 *) | 91,2 (-3,8 *) | 16,0 (+10,4 *) | 56,8 (+20,3 *) | 74,4 (+15,1 *) | 32,9 (-5,2 *) | 81,5 (-0,5) | 71,9 (-0,6) | 33,6 (-2,3 *) |
+| `sin-adapt-corte2` | 71,9 (-0,8) | 96,4 (+1,4 *) | 5,3 (-0,3) | 51,5 (+15,0 *) | 71,1 (+11,8 *) | 40,6 (+2,5) | 89,2 (+7,3 *) | 73,2 (+0,7) | 35,4 (-0,5) |
+<!-- /T -->
+
+- SciFact da NDCG@10 = 0,7250 y no 0,7263. No es el banco: el guion original
+  (`experiments/beir_benchmark.py --datasets scifact --no-chroma`) da 0,7251 en este mismo
+  entorno, y `experiments/results/beir_benchmark.json` tiene apuntado 0,7286 de otra tanda.
+  Son diferencias de entorno (versión de fastembed/onnxruntime) de una décima; todas las
+  comparaciones de este informe son contra el 0,7250 medido aquí.
+- El recuento de fallos de rotten también se reproduce, ya con la etiqueta arreglada
+  (experimento 5): de 461 fallos con consultas vagas pidiendo 20, 193 se caen en el corte por
+  distancia, 224 quedan por debajo del puesto 20 y 44 no aparecen; en 174 la buena estaba
+  entre las 20 primeras por vectores.
+- Lo que ya enseña esta tabla, antes de tocar nada: **quitar los pesos adaptativos también
+  mejora MIRACL** (+2,6 en primera, de 0,0 a +5,2; NDCG@10 +1,4, de +0,8 a +2,1), no solo las
+  consultas vagas. Y aflojar el corte mejora SciFact (+0,8, de +0,3 a +1,4) y MIRACL
+  (entre 20 +2,6). Los dos valores por defecto están costando recuerdo fuera de las notas
+  inventadas.
+
+## 0. Que el híbrido no se pise a sí mismo (prioridad)
+
+Encargo añadido por el autor a mitad del lab: tratar como problema central que la mezcla de
+vectores y palabras saque de la lista notas que uno de los dos lados tenía bien puestas.
+Detrás irá un reordenador, así que la primera etapa ya no necesita acertar el primer puesto:
+necesita que la buena esté entre las 50.
+
+### La cifra: el pisotón
+
+Una consulta está **pisada** a K si la nota buena estaba entre las K primeras de un lado
+solo (vectores sin corte por distancia, o solo palabras) y no está entre las K del híbrido.
+Se cuenta por separado quién la tenía. Orden `pisoton` del banco.
+
+<!-- PISOTON -->
+| Banco (consultas) | K | por defecto: pisadas (vectores + palabras) | R1 | R50 | la buena en K: defecto → R1 → R50 | mejor lado solo |
+|---|---|---|---|---|---|---|
+| siempre (720) | 20 | 20 (9 + 11) | 15 (11 + 4) | 9 (4 + 5) | 95,0 → 95,8 → 96,5 | 91,2 |
+| siempre (720) | 50 | 7 (3 + 4) | 5 (2 + 3) | 7 (1 + 6) | 97,6 → 97,9 → 97,8 | 95,1 |
+| vagas (720) | 20 | 175 (169 + 6) | 93 (83 + 10) | 42 (32 + 10) | 36,5 → 47,4 → 54,6 | 56,8 |
+| vagas (720) | 50 | 133 (127 + 8) | 67 (55 + 12) | 36 (22 + 14) | 59,3 → 68,8 → 72,9 | 74,4 |
+| final-nombrada (840) | 20 | 19 (11 + 9) | 16 (13 + 3) | 12 (4 + 8) | 96,3 → 97,0 → 97,6 | 92,5 |
+| final-nombrada (840) | 50 | 9 (7 + 2) | 4 (4 + 0) | 0 (0 + 0) | 98,5 → 99,0 → 99,5 | 96,3 |
+| final-media (840) | 20 | 38 (13 + 25) | 19 (6 + 13) | 21 (5 + 16) | 93,8 → 96,1 → 95,8 | 91,5 |
+| final-media (840) | 50 | 7 (4 + 3) | 4 (3 + 1) | 3 (0 + 3) | 98,1 → 98,6 → 98,7 | 95,2 |
+| final-vaga (840) | 20 | 197 (190 + 7) | 117 (105 + 12) | 55 (39 + 16) | 35,6 → 45,1 → 52,7 | 53,5 |
+| final-vaga (840) | 50 | 135 (131 + 8) | 76 (65 + 11) | 31 (19 + 12) | 59,4 → 66,4 → 71,8 | 70,7 |
+| miracl (648) | 20 | 63 (34 + 34) | 48 (3 + 46) | 27 (4 + 24) | 81,9 → 84,7 → 89,2 | 82,3 |
+| miracl (648) | 50 | 40 (27 + 16) | 41 (2 + 39) | 15 (4 + 11) | 90,7 → 90,6 → 94,9 | 88,6 |
+| scifact (300) | 20 | 15 (5 + 11) | 11 (0 + 11) | 8 (3 + 5) | 89,0 → 90,3 → 91,3 | 88,0 |
+| scifact (300) | 50 | 12 (7 + 5) | 9 (2 + 7) | 4 (2 + 2) | 93,0 → 94,0 → 96,0 | 93,0 |
+| nfcorpus (323) | 20 | 11 (7 + 5) | 8 (5 + 4) | 11 (6 + 5) | 76,8 → 77,7 → 76,8 | 76,2 |
+| nfcorpus (323) | 50 | 7 (4 + 3) | 4 (1 + 3) | 5 (3 + 2) | 81,4 → 82,7 → 82,0 | 80,5 |
+<!-- /PISOTON -->
+
+- **Con los valores por defecto el híbrido se pisa en casi una de cada cuatro consultas
+  vagas** (175 de 720 a K = 20; 197 de 840 en el examen), y casi siempre es la nota que los
+  vectores tenían bien. En las consultas con palabras de la nota el pisotón es pequeño
+  (1–3 %) y va en los dos sentidos.
+- **R50 lo baja a la quinta parte**: 133 → 36 en las vagas a K = 50, 135 → 31 en las vagas
+  del examen, 9 → 0 en las nombradas del examen y 12 → 4 en SciFact.
+- **En MIRACL el pisotón va por el otro lado**: por defecto se pierden 34 preguntas que las
+  palabras tenían entre las 20 (y otras 34 de los vectores), porque allí la regla adaptativa
+  deja a las palabras con 0,11 de peso. `R1` conserva esa regla y sigue pisando a las
+  palabras (46 a K = 20); `R50`, con pesos fijos, baja el total de 63 a 27.
+- **No llega a cero, ni puede**: con K plazas no caben las K de cada lado. Lo que sí se
+  puede pedir es que el híbrido no sea peor que su mejor lado, y eso R50 lo cumple en todos
+  los bancos menos uno: en las vagas se queda 1,5 puntos por debajo de buscar solo por
+  vectores a K = 50 (72,9 % frente a 74,4 %; en el examen, 71,8 % frente a 70,7 %, por
+  encima). Por defecto se quedaba 15 por debajo.
+- Lo que queda pisado en las vagas (22 por vectores a K = 50) son consultas en las que la
+  compuerta no cierra: el mejor acierto por palabras casa lo bastante para parecer evidencia
+  y no lo es.
+
+### De dónde sale el pisotón: tres causas, tres arreglos
+
+| Causa | Qué pasa | Arreglo | Efecto en las vagas (pisadas por vectores, K = 50) |
+|---|---|---|---|
+| El corte por distancia | tira candidatos de vectores (193 notas buenas a K = 20) y su hueco lo llenan las palabras | `distance_cutoff=2.0` | junto con el siguiente |
+| Los pesos adaptativos | dan a las palabras más peso que a los vectores en el 76 % de las consultas vagas: una nota que solo casa por palabras adelanta a una que solo casa por vectores en el mismo puesto | `adaptive_rrf=False` (0,6 / 0,4 fijos) | 127 → 46 |
+| La suma de RRF premia estar en las dos listas | una nota mediocre que es la 1.ª por palabras y la 6.ª por vectores adelanta a la mejor por vectores, aunque sus palabras no valgan nada | `lexical_gate=True`: sin evidencia léxica, las palabras no votan | 46 → 22 |
+
+### Fusiones probadas
+
+Todas se ajustaron con las 720 notas viejas. El examen son las 840 nuevas de rotten.
+
+**1. Plazas reservadas** (los n primeros de cada lado entran siempre; si alguno no estaba,
+sustituye por la cola a los peor puestos que no están reservados). Probado por fuera con
+tres búsquedas (`rec+sw+reservaN`, `defecto+reservaN`) y por dentro de `search`
+(`reserve_vec` / `reserve_keyword`, con un mínimo de fuerza BM25 para las de palabras).
+**Negativo.**
+- Sobre la configuración por defecto ayudan (vagas entre 50: 59,3 % → 66,4 % con 25 + 25),
+  pero menos que arreglar la causa (72,9 %).
+- Sobre una fusión ya arreglada no aportan nada o restan: reservar 10 plazas a las palabras
+  cuesta 1,4 puntos en las vagas (de −2,5 a −0,4), porque mete justo el ruido que la
+  compuerta acaba de quitar; reservar a los vectores no cambia nada (ya estaban dentro).
+- Reservar solo a las palabras «fuertes» (BM25 ≥ 1,5 ln N) no cambió **ni una consulta**: las
+  coincidencias fuertes ya estaban siempre entre las 50. Las que se pierden son las flojas,
+  que son indistinguibles del ruido. Se retiró el código.
+
+**2. Intercalar** (uno de vectores, uno de palabras, sin puntos). **Negativo**: garantiza K/2
+de cada lado y por eso mismo regala media lista a las palabras cuando no valen: vagas entre
+50 69,0 % (R50: 72,9 %), con 61 pisadas.
+
+**3. El peso de las palabras según lo fuerte que es la coincidencia de verdad**, no según lo
+raros que son los términos. Es la compuerta léxica del experimento 2, en dos versiones:
+- *Gradual* (la de la primera recomendación): baja el peso de las palabras poco a poco según
+  la fuerza y la cobertura. Mete bien las vagas, pero **en el examen pisa por el otro lado**:
+  sola, con consultas medias «entre 50» baja de 98,1 % a 96,7 % (−1,4, de −2,3 a −0,7) y
+  «entre 20» de 93,8 % a 92,5 % (−1,3, de −2,5 a −0,2); con consultas nombradas, entre 50
+  −0,5 (intervalo sin el cero). Con el resto de la primera recomendación (corte 2,0 y sin
+  palabras vacías) la pérdida en las medias se queda en −1,0 (de −2,3 a +0,2): ya no se
+  distingue del cero, pero sigue 1,6 puntos por debajo de `R50` (97,1 % frente a 98,7 %). En
+  las notas viejas la misma pérdida ya asomaba (−0,6, de −1,2 a 0,0). **Retirada.**
+- *De todo o nada* (la que queda): las palabras conservan su peso salvo que su mejor acierto
+  no case ni una palabra rara (fuerza < 1,0) ni una parte apreciable de la consulta
+  (cobertura < 0,4); entonces su peso es **0**, no 0,1. «Si no hay coincidencia, no resta; si
+  la hay, cuenta entera.» No pierde «entre 50» en ningún conjunto del examen.
+
+**4. Que la compuerta cerrada sea 0 y no 0,1.** Con 0,1 una nota que es la primera por
+palabras y la sexta por vectores todavía adelanta a la mejor por vectores
+(0,9/65 + 0,1/60 > 0,9/60). Pasar a 0 sube la primera de las vagas de 8,9 % a 14,0 % sin
+mover nada más (buscar solo por vectores: 16,0 %).
+
+**5. Quitar las palabras vacías**: ver 1c. En el examen cuesta recuerdo profundo (menos
+candidatos por palabras para rellenar la cola), así que sale de la recomendación.
+
+### ¿La mejor fusión para «primera» es la misma que para «entre 50»?
+
+**No.** Mismas piezas (corte 2,0 y compuerta), distinto reparto de pesos:
+
+<!-- T: defecto R1 R50 sin-adapt-corte2 rec+sw vec-corte25 -->
+| Configuración | siempre 1ª | siempre en 20 | vagas 1ª | vagas en 20 | vagas en 50 | MIRACL 1ª | MIRACL en 20 | SciFact NDCG@10 | NFCorpus NDCG@10 |
+|---|---|---|---|---|---|---|---|---|---|
+| `defecto` | 72,8 | 95,0 | 5,6 | 36,5 | 59,3 | 38,1 | 81,9 | 72,5 | 35,9 |
+| `R1` | 73,1 (+0,3) | 95,8 (+0,8) | 11,7 (+6,1 *) | 47,4 (+10,8 *) | 68,8 (+9,4 *) | 37,8 (-0,3) | 84,6 (+2,6 *) | 73,3 (+0,8 *) | 36,2 (+0,3) |
+| `R50` | 71,8 (-1,0) | 96,5 (+1,5 *) | 11,9 (+6,4 *) | 54,6 (+18,1 *) | 72,9 (+13,6 *) | 40,6 (+2,5) | 89,2 (+7,3 *) | 73,2 (+0,7) | 35,4 (-0,5) |
+| `sin-adapt-corte2` | 71,9 (-0,8) | 96,4 (+1,4 *) | 5,3 (-0,3) | 51,5 (+15,0 *) | 71,1 (+11,8 *) | 40,6 (+2,5) | 89,2 (+7,3 *) | 73,2 (+0,7) | 35,4 (-0,5) |
+| `rec+sw` | 75,0 (+2,2 *) | 96,4 (+1,4 *) | 8,9 (+3,3 *) | 55,3 (+18,8 *) | 74,0 (+14,7 *) | 39,7 (+1,5) | 87,8 (+5,9 *) | 73,1 (+0,6) | 36,1 (+0,2) |
+| `vec-corte25` | 55,6 (-17,2 *) | 91,2 (-3,8 *) | 16,0 (+10,4 *) | 56,8 (+20,3 *) | 74,4 (+15,1 *) | — | — | 72,0 (-0,5) | 33,7 (-2,2 *) |
+<!-- /T -->
+
+<!-- T: --columnas=examen defecto R1 R50 sin-adapt-corte2 rec+sw vec-corte25 -->
+| Configuración | nombrada 1ª | nombrada en 20 | nombrada en 50 | media 1ª | media en 20 | media en 50 | vaga 1ª | vaga en 20 | vaga en 50 |
+|---|---|---|---|---|---|---|---|---|---|
+| `defecto` | 76,5 | 96,3 | 98,5 | 69,2 | 93,8 | 98,1 | 7,3 | 35,6 | 59,4 |
+| `R1` | 76,1 (-0,5) | 97,0 (+0,7) | 99,0 (+0,6 *) | 69,0 (-0,1) | 96,1 (+2,3 *) | 98,6 (+0,5) | 9,6 (+2,4 *) | 45,1 (+9,5 *) | 66,4 (+7,0 *) |
+| `R50` | 74,2 (-2,4 *) | 97,6 (+1,3 *) | 99,5 (+1,1 *) | 68,3 (-0,8) | 95,8 (+2,0 *) | 98,7 (+0,6) | 9,4 (+2,1) | 52,7 (+17,1 *) | 71,8 (+12,4 *) |
+| `sin-adapt-corte2` | 74,3 (-2,3 *) | 97,5 (+1,2 *) | 99,5 (+1,1 *) | 69,0 (-0,1) | 96,1 (+2,3 *) | 98,7 (+0,6) | 6,5 (-0,7) | 49,3 (+13,7 *) | 71,2 (+11,8 *) |
+| `rec+sw` | 75,6 (-1,0) | 97,5 (+1,2 *) | 98,7 (+0,2) | 69,5 (+0,4) | 94,9 (+1,1) | 97,1 (-1,0) | 9,0 (+1,8) | 53,2 (+17,6 *) | 72,0 (+12,6 *) |
+| `vec-corte25` | 58,1 (-18,5 *) | 92,5 (-3,8 *) | 96,3 (-2,1 *) | 49,5 (-19,6 *) | 88,1 (-5,7 *) | 93,6 (-4,5 *) | 13,1 (+5,8 *) | 53,5 (+17,9 *) | 70,7 (+11,3 *) |
+<!-- /T -->
+
+- **`R50` (pesos fijos 0,6 / 0,4) es la mejor para que la buena entre**: en el examen, entre
+  50: 99,5 % · 98,7 % · 71,8 % (por defecto 98,5 · 98,1 · 59,4), y en MIRACL entre 20 sube de
+  81,9 % a 89,2 %. A cambio pierde el primer puesto en las consultas nombradas (−2,4, de −3,8
+  a −1,1) y, en inglés, NFCorpus pierde «alguna buena entre 10» (−3,1, de −5,6 a −0,9), aunque
+  no NDCG@10 (−0,5, de −1,3 a +0,2). Con un reordenador detrás lo primero no importa.
+- **`R1` (pesos adaptativos) es la mejor para ir sola**: no pierde en ninguna medida de
+  ningún banco (el peor intervalo es la primera de las nombradas, −0,5, de −1,7 a +0,6), pero
+  recupera la mitad en las vagas (examen entre 50: 66,4 % frente a 71,8 %).
+- Ninguna de las dos pone primera la buena en las vagas más del 12 %; solo vectores, 13–16 %.
+  Ese puesto es del reordenador.
+- `sin-adapt-corte2` es `R50` sin compuerta, lo que se puede hacer con vstash 0.39.0: mismo
+  «entre 50», pero la primera de las vagas se queda en 5–6 % en vez de 9–12 %.
+
+**Qué añade la compuerta dentro de `R50`** (contra `sin-adapt-corte2`, que es `R50` sin ella
+y se puede pedir a vstash 0.39.0 tal cual):
+
+| Conjunto | primera | entre 5 | entre 20 | entre 50 |
+|---|---|---|---|---|
+| vagas viejas | +6,7 (de +4,7 a +8,6) | +9,0 (de +5,7 a +12,4) | +3,1 (de +0,8 a +5,4) | +1,8 (de +0,3 a +3,3) |
+| examen, vagas | +2,9 (de +1,0 a +4,9) | +6,9 (de +4,5 a +9,4) | +3,5 (de +1,4 a +5,5) | +0,6 (de −0,6 a +1,9) |
+| examen, medias | −0,7 (de −1,7 a +0,2) | 0,0 | −0,2 (de −0,6 a 0,0) | 0,0 |
+| examen, nombradas | −0,1 | +0,1 | +0,1 | 0,0 |
+
+Dicho sin adornos: **si al reordenador le llegan 50 candidatos, la compuerta no se nota en el
+examen** («entre 50» +0,6, intervalo con el cero) y basta con `adaptive_rrf=False,
+distance_cutoff=2.0` en vstash 0.39.0. La compuerta se gana el sitio cuando se piden 20 o
+menos (+3,5 entre 20, +6,9 entre 5 en las vagas del examen) o cuando no hay reordenador, y
+no cuesta nada en las consultas con nombres.
+
+**Aviso sobre el examen.** La compuerta gradual se eligió con las notas viejas y el examen la
+tumbó; la de todo o nada se eligió entonces entre candidatas que en las notas viejas
+empataban (siempre entre 50: 97,8 % las dos; vagas: 74,0 % y 72,9 %), mirando el examen. Para
+esa decisión el examen ya no es limpio. Lo que sí es limpio: MIRACL, donde R50 y R1 se midieron
+una sola vez y al final, y el propio hecho de que la gradual falló.
+
+## 1. Tokenizador del índice de palabras, raíces en español y palabras vacías
+
+**Qué hace hoy.** `tokenize='porter ascii'`: raíces del inglés, y todo carácter que no sea
+ASCII cuenta como letra y no se pasa a minúscula. Comprobado: «¿Quién» se indexa como el
+término único `¿quién`, «REUNIÓN» como `reuniÓn` y «Ángel» como `Ángel`. Una pregunta que
+empieza por «¿» pierde su primera palabra, y una mayúscula acentuada no casa con su
+minúscula. Además `_build_fts_match_query` mete en la consulta todas las palabras de más de
+una letra, vacías incluidas.
+
+**Hipótesis.** (a) Un tokenizador que pliegue acentos y mayúsculas arregla esos casos sin
+tocar el inglés. (b) Raíces del español mejoran la parte de palabras. (c) Quitar palabras
+vacías de la consulta limpia la parte de palabras.
+
+**Cambios.** `VstashStore(fts_tokenizer=...)` con una lista cerrada de cuatro valores (va
+dentro del DDL, así que no es texto libre). Raíces: Snowball en Python aplicado en el banco
+al texto indexado y a la consulta (prototipo; ver «coste»). Palabras vacías:
+`search(drop_stopwords=True)`, lista corta de español e inglés: artículos, preposiciones,
+conjunciones, pronombres, interrogativos y formas auxiliares de ser/estar/haber. Se dejaron
+fuera a propósito las que también son palabras de contenido («estado», «era», «nada»,
+«will», «may», «who») y los acentos cuentan («te» se quita, «té» no). Una primera lista más
+ancha, que plegaba acentos, daba las mismas cifras (±0,3) en los cuatro bancos ligeros.
+
+### 1a. Tokenizador
+
+<!-- T: tok-porter-u61 tok-u61 tok-trigram fts tok-porter-u61/fts tok-u61/fts tok-trigram/fts -->
+| Configuración | siempre 1ª | siempre en 20 | vagas 1ª | vagas en 20 | vagas en 50 | MIRACL 1ª | MIRACL en 20 | SciFact NDCG@10 | NFCorpus NDCG@10 |
+|---|---|---|---|---|---|---|---|---|---|
+| `tok-porter-u61` | 72,1 (-0,7) | 94,6 (-0,4) | 5,6 (+0,0) | 36,8 (+0,3) | 60,0 (+0,7 *) | 39,0 (+0,9) | 83,3 (+1,4 *) | 72,5 (+0,0) | 35,8 (-0,1) |
+| `tok-u61` | 72,4 (-0,4) | 95,3 (+0,3) | 5,3 (-0,3) | 35,1 (-1,4) | 58,8 (-0,6) | — | — | 72,2 (-0,3) | 35,1 (-0,8 *) |
+| `tok-trigram` | 67,9 (-4,9 *) | 92,8 (-2,2 *) | 10,6 (+5,0 *) | 53,9 (+17,4 *) | 65,4 (+6,1 *) | — | — | 71,1 (-1,4 *) | 34,2 (-1,7 *) |
+| `fts` | 70,6 (-2,2) | 91,2 (-3,8 *) | 2,2 (-3,3 *) | 9,2 (-27,4 *) | 15,7 (-43,6 *) | 21,0 (-17,1 *) | 69,4 (-12,5 *) | 68,3 (-4,2 *) | 31,4 (-4,5 *) |
+| `tok-porter-u61/fts` | 68,6 (-4,2 *) | 91,0 (-4,0 *) | 2,5 (-3,1 *) | 9,9 (-26,7 *) | 16,1 (-43,2 *) | — | — | 68,4 (-4,1 *) | — |
+| `tok-u61/fts` | 68,8 (-4,0 *) | 91,0 (-4,0 *) | 2,2 (-3,3 *) | 8,9 (-27,6 *) | 15,4 (-43,9 *) | — | — | 65,5 (-7,0 *) | — |
+| `tok-trigram/fts` | 62,8 (-10,0 *) | 86,8 (-8,2 *) | 3,1 (-2,5 *) | 9,0 (-27,5 *) | 16,0 (-43,3 *) | — | — | 60,9 (-11,6 *) | — |
+<!-- /T -->
+
+(`…/fts` es buscar solo por palabras: aísla el efecto del tokenizador.)
+
+- **`porter unicode61 remove_diacritics 2`: positivo pequeño, y seguro para el inglés.**
+  SciFact da exactamente lo mismo que hoy (ni una consulta cambia) y NFCorpus −0,1 (de −0,4
+  a 0,0). En MIRACL, que es español real con acentos y preguntas con «¿», «entre 20» sube
+  +1,4 (de +0,3 a +2,5) y NDCG@10 +0,9 (de +0,4 a +1,5). **En las notas inventadas no se
+  nota** (primera −0,7, de −2,1 a +0,7): sus consultas son largas y perder la primera palabra
+  pesa poco. Es el único tokenizador que podría ser valor por defecto algún día.
+- **`unicode61` sin raíces: negativo.** Pierde las raíces del inglés: SciFact solo por
+  palabras baja de 68,3 a 65,5 y NFCorpus híbrido −0,8 (intervalo sin el cero). En español
+  no gana nada a cambio.
+- **Trigramas: negativo.** Solo por palabras pierde 8 puntos en las consultas de siempre y
+  7 en SciFact. La subida que muestra en las vagas con el híbrido es un artefacto: el
+  vocabulario pasa a ser de trigramas, la IDF media se desploma y los pesos adaptativos dan
+  casi todo a los vectores; es lo mismo que consigue la compuerta del experimento 2 sin
+  romper lo demás.
+
+### 1b. Raíces en español (Snowball)
+
+<!-- T: u61+snowball u61+snowball/fts rec+snowball rec+snowball+vacias -->
+| Configuración | siempre 1ª | siempre en 20 | vagas 1ª | vagas en 20 | vagas en 50 | MIRACL 1ª | MIRACL en 20 | SciFact NDCG@10 | NFCorpus NDCG@10 |
+|---|---|---|---|---|---|---|---|---|---|
+| `u61+snowball` | 73,3 (+0,6) | 95,4 (+0,4) | 8,2 (+2,6 *) | 40,8 (+4,3 *) | 61,5 (+2,2 *) | 38,6 (+0,5) | 84,0 (+2,0 *) | 72,1 (-0,4) | 35,2 (-0,7 *) |
+| `u61+snowball/fts` | 74,3 (+1,5) | 94,0 (-1,0) | 4,3 (-1,2) | 14,6 (-21,9 *) | 22,9 (-36,4 *) | — | — | 67,5 (-5,0 *) | — |
+| `rec+snowball` | 73,8 (+1,0) | 96,1 (+1,1) | 10,0 (+4,4 *) | 57,5 (+21,0 *) | 74,4 (+15,1 *) | 38,7 (+0,6) | 84,0 (+2,0) | 72,4 (-0,1) | 35,7 (-0,2) |
+| `rec+snowball+vacias` | 77,4 (+4,6 *) | 96,1 (+1,1) | 10,0 (+4,4 *) | 56,1 (+19,6 *) | 73,8 (+14,4 *) | 40,0 (+1,9) | 85,6 (+3,7 *) | 71,5 (-1,0) | 35,6 (-0,3) |
+<!-- /T -->
+
+- **En español, positivo pequeño.** Notas: solo por palabras sube de 70,6 % a 74,3 % en
+  primera y de 91,2 % a 94,0 % entre 20; en el híbrido, vagas entre 20 +4,3 (intervalo sin el
+  cero) y las de siempre sin cambio medible. MIRACL: entre 20 +2,0 (de +0,6 a +3,4), primera
+  +0,5 (de −1,4 a +2,3). Es decir, **más o menos lo que ya da `porter unicode61`** en MIRACL
+  (+1,4) sin hacer nada en Python.
+- **En inglés, negativo**, como era de esperar al pasar un texto inglés por raíces del
+  español: NFCorpus −0,7 (intervalo sin el cero), SciFact solo por palabras 67,5 frente a
+  68,3, y junto con palabras vacías SciFact pierde 3,0 puntos en primera.
+- **Cómo tendría que hacerse y por qué no compensa.** El índice de palabras es de contenido
+  externo (`content=chunks`): FTS5 vuelve a leer el texto del trozo al borrar, así que no se
+  puede indexar un texto distinto del guardado sin corromperlo. Haría falta una segunda
+  columna o tabla con el texto en raíces, detectar el idioma por documento y aplicar la misma
+  transformación a la consulta. Coste medido de Snowball en Python puro: 90.000 palabras por
+  segundo (0,37 ms por nota de 33 palabras; 0,19 ms por consulta). **Veredicto: no llevar**;
+  si se quiere algo para el español, el tokenizador de 1a da casi lo mismo gratis y la clave
+  fonética del experimento 9 hace además de raíz suave.
+
+### 1c. Palabras vacías fuera de la consulta
+
+<!-- T: sw vacias/fts compuerta-corte2 rec+sw -->
+| Configuración | siempre 1ª | siempre en 20 | vagas 1ª | vagas en 20 | vagas en 50 | MIRACL 1ª | MIRACL en 20 | SciFact NDCG@10 | NFCorpus NDCG@10 |
+|---|---|---|---|---|---|---|---|---|---|
+| `sw` | 74,4 (+1,7) | 95,3 (+0,3) | 3,9 (-1,7 *) | 36,0 (-0,6) | 59,6 (+0,3) | 40,1 (+2,0 *) | 84,6 (+2,6 *) | 72,6 (+0,1) | 35,9 (+0,0) |
+| `vacias/fts` | 69,4 (-3,3) | 91,1 (-3,9 *) | 1,8 (-3,8 *) | 6,1 (-30,4 *) | 7,1 (-52,2 *) | — | — | 68,1 (-4,4 *) | — |
+| `compuerta-corte2` | 73,9 (+1,1) | 96,1 (+1,1) | 9,0 (+3,5 *) | 56,4 (+19,9 *) | 74,2 (+14,9 *) | 38,0 (-0,2) | 84,4 (+2,5 *) | 73,1 (+0,6) | 36,3 (+0,4) |
+| `rec+sw` | 75,0 (+2,2 *) | 96,4 (+1,4 *) | 8,9 (+3,3 *) | 55,3 (+18,8 *) | 74,0 (+14,7 *) | 39,7 (+1,5) | 87,8 (+5,9 *) | 73,1 (+0,6) | 36,1 (+0,2) |
+<!-- /T -->
+
+- **Sola, con los pesos de hoy: mixto.** Mejora MIRACL (primera +2,0, de +0,2 a +3,9) y no
+  toca el inglés, pero **empeora las vagas** (entre 5: −7,6, de −10,7 a −4,9). El motivo está en el
+  experimento 2: sin palabras vacías la IDF media de la consulta sube, la regla adaptativa da
+  más peso a las palabras, y con consultas vagas eso es justo lo que no hay que hacer.
+- **Con la compuerta delante: positivo en las medidas de entonces.** `rec+sw` frente a
+  `compuerta-corte2`: siempre primera 73,9 → 75,0 (+1,1, de −0,8 a +3,1); MIRACL primera
+  38,0 → 39,7 y entre 20 84,4 → 87,8; vagas entre 20 56,4 → 55,3 (−1,1, de −2,1 a −0,1: una
+  pérdida pequeña pero real); inglés igual.
+- **Regalo:** la búsqueda por palabras deja de recorrer las listas enormes de «de», «la»,
+  «the»: en MIRACL el tiempo de `search` baja a la mitad (177 → 86 ms) y en las notas y
+  SciFact, un 25 % (2,25 → 1,71 ms; 7,97 → 5,84 ms).
+- **En el examen, negativo para «entre 50»** (medido después, apartado 0): con la misma
+  fusión, quitar las palabras vacías baja «entre 50» de 99,0 % a 98,0 % en las consultas
+  nombradas y de 98,6 % a 97,9 % en las medias. Menos términos en la consulta son menos
+  candidatos por palabras para rellenar la cola de la lista. Por eso **no está en la
+  recomendación**; queda como opción para quien busque sin reordenador y quiera velocidad.
+- Solo por palabras no ayuda (`vacias/fts`): la mejora viene de cómo cambia los pesos y de
+  no meter ruido en la fusión, no de que BM25 ordene mejor.
+
+**Convivencia con índices ya creados y con el inglés.**
+- El tokenizador solo se aplica al crear el índice (`CREATE … IF NOT EXISTS`). Para que no
+  haya desajustes, el almacén **lee del propio índice** qué tokenizador tiene y usa ese para
+  calcular las raíces de la consulta (antes estaba escrito a mano en dos sitios). Pedir otro
+  distinto sobre una base existente no rompe nada: avisa por el registro y sigue con el del
+  índice.
+- Para cambiarlo: `almacen.rebuild_fts("porter unicode61 remove_diacritics 2")`. Borra y
+  rehace solo el índice de palabras a partir de la tabla `chunks`, en una transacción, sin
+  tocar los vectores. No se midió el tiempo en una base grande; es una pasada por el texto.
+- Para el inglés `porter unicode61` es indistinguible de `porter ascii` en los dos bancos.
+- Las palabras vacías no tocan el índice: se puede activar y desactivar por llamada.
+
+**Coste.** Tokenizador: cero en consulta. Palabras vacías: negativo (más rápido). Snowball:
+ver 1b.
+
+## 2. Pesos adaptativos de la fusión
+
+> Nota de lectura: en las tablas de los experimentos 1 a 4, las filas `compuerta*` y `rec+*`
+> son de la **primera** versión de la compuerta (gradual), que el examen tumbó después. La
+> versión que queda en el código es la de todo o nada del apartado 0 (`R1`, `R50`). El
+> análisis de por qué fallan los pesos adaptativos y la señal que usa la compuerta no cambian.
+
+**Qué hacen hoy.** `_compute_adaptive_rrf_params` calcula la IDF media de los términos de la
+consulta y la pasa por una sigmoide centrada en ln(N)/2: palabras raras → hasta 0,6 de peso
+para las palabras; palabras corrientes → 0,1. Un término que **no está en el vocabulario**
+cuenta como rarísimo (IDF máxima).
+
+**Por qué hunden las consultas vagas.** Tres cosas medidas:
+
+| | siempre | vagas | SciFact | NFCorpus | MIRACL |
+|---|---|---|---|---|---|
+| Peso medio que reciben las palabras | 0,49 | 0,53 | 0,16 | 0,35 | 0,11 (mediana) |
+| Consultas con más peso para palabras que para vectores | 52 % | 76 % | 1 % | 35 % | ~0 % |
+| Términos de la consulta que no existen en el índice | 24 % | 31 % | 2 % | 7 % | 0,2 % |
+
+1. En un índice pequeño casi todo es «raro»: el 76 % de las consultas vagas recibe más peso
+   para las palabras que para los vectores, empujado además por ese 31 % de términos que no
+   existen (no pueden casar con nada y aun así suben el peso de las palabras).
+2. Con más de 0,5 para las palabras, **una nota que solo casa por palabras adelanta a una
+   que solo casa por vectores en el mismo puesto**. Con 0,56/0,44, la buena en el puesto 6
+   por vectores (0,44/65 = 0,0068) queda detrás de las 22 primeras notas por palabras. En el
+   tramo de peso > 0,5 las vagas tienen la buena entre 20 el 35,0 % con la regla adaptativa
+   y el 54,4 % con pesos fijos 0,6/0,4; en los demás tramos da igual.
+3. En las consultas de siempre y en SciFact la regla **no aporta nada medible** (siempre:
+   −1,0 en primera sin ella, de −2,1 a +0,1; SciFact −0,1). Donde sí aporta es en NFCorpus
+   (−0,7 sin ella, de −1,3 a −0,1): consultas de dos o tres palabras raras.
+
+Y un cuarto dato que no se buscaba: en MIRACL la regla falla **hacia el otro lado**. Con
+146.750 pasajes el umbral ln(N)/2 es 5,95, las palabras vacías de la pregunta («es», «de»,
+«la») tiran de la media hacia abajo y las palabras se quedan con 0,11 de peso; con pesos
+fijos 0,6/0,4 MIRACL gana +2,6 en primera.
+
+**Reglas probadas** (prototipos en el banco, pasando los pesos a mano; `regla-max` reproduce
+la de vstash al decimal, como control):
+
+<!-- T: sin-adapt fijo-0.1 fijo-0.3 fijo-0.5 regla-fuera regla-cero regla-max-cob regla-tope-0.45 regla-tope-0.4 compuerta -->
+| Configuración | siempre 1ª | siempre en 20 | vagas 1ª | vagas en 20 | vagas en 50 | MIRACL 1ª | MIRACL en 20 | SciFact NDCG@10 | NFCorpus NDCG@10 |
+|---|---|---|---|---|---|---|---|---|---|
+| `sin-adapt` | 71,8 (-1,0) | 95,0 (+0,0) | 7,1 (+1,5 *) | 51,7 (+15,1 *) | 65,0 (+5,7 *) | 40,7 (+2,6) | 82,6 (+0,6 *) | 72,4 (-0,1) | 35,2 (-0,7 *) |
+| `fijo-0.1` | 65,0 (-7,8 *) | 92,6 (-2,4 *) | 11,8 (+6,2 *) | 53,1 (+16,5 *) | 65,8 (+6,5 *) | — | — | 72,3 (-0,2) | 34,4 (-1,5 *) |
+| `fijo-0.3` | 71,0 (-1,8 *) | 94,9 (-0,1) | 8,3 (+2,8 *) | 53,3 (+16,8 *) | 65,4 (+6,1 *) | — | — | 73,0 (+0,5) | 35,2 (-0,7 *) |
+| `fijo-0.5` | 72,4 (-0,4) | 95,8 (+0,8) | 7,4 (+1,8 *) | 47,4 (+10,8 *) | 62,4 (+3,1 *) | — | — | 72,4 (-0,1) | 35,7 (-0,2) |
+| `regla-fuera` | 72,2 (-0,6) | 94,6 (-0,4) | 6,4 (+0,8) | 45,7 (+9,2 *) | 63,1 (+3,8 *) | — | — | 72,2 (-0,3) | 35,9 (-0,0) |
+| `regla-cero` | 67,9 (-4,9 *) | 93,6 (-1,4 *) | 9,0 (+3,5 *) | 51,7 (+15,1 *) | 64,9 (+5,6 *) | — | — | 72,2 (-0,3) | 35,9 (+0,0) |
+| `regla-max-cob` | 71,9 (-0,8) | 95,1 (+0,1) | 7,2 (+1,7 *) | 50,1 (+13,6 *) | 64,3 (+5,0 *) | — | — | 72,5 (-0,0) | 35,9 (+0,0) |
+| `regla-tope-0.45` | 72,1 (-0,7) | 95,3 (+0,3) | 7,1 (+1,5 *) | 50,6 (+14,0 *) | 63,5 (+4,2 *) | 38,1 (+0,0) | 81,9 (+0,0) | 72,5 (+0,0) | 35,3 (-0,6 *) |
+| `regla-tope-0.4` | 71,7 (-1,1) | 95,0 (+0,0) | 7,1 (+1,5 *) | 51,5 (+15,0 *) | 64,9 (+5,6 *) | — | — | 72,5 (+0,0) | 35,3 (-0,6 *) |
+| `compuerta` | 73,3 (+0,6) | 94,9 (-0,1) | 10,7 (+5,1 *) | 52,8 (+16,2 *) | 65,7 (+6,4 *) | 38,1 (+0,0) | 81,9 (+0,0) | 72,3 (-0,2) | 36,0 (+0,1) |
+<!-- /T -->
+
+- **Pesos fijos: no hay un valor bueno.** Las vagas quieren 0,1 para las palabras; las de
+  siempre, 0,5 (con 0,1 pierden 7,8 puntos en primera); NFCorpus pierde con cualquiera.
+- **Tratar distinto los términos ausentes** (`regla-fuera`: no cuentan; `regla-cero`:
+  cuentan como corrientes; `regla-max-cob`: escalar por la fracción presente): arreglan las
+  vagas a medias o del todo, pero a costa de las de siempre (`regla-cero` −4,9 en primera) o
+  sin llegar (`regla-fuera`, 45,7 %).
+- **Un tope de 0,45 o 0,4 a las palabras** (`regla-tope-*`): recupera las vagas (50,6 % y
+  51,5 %) sin daño significativo en las de siempre ni en SciFact, pero **pierde en NFCorpus**
+  (−0,6, de −1,1 a −0,2). Negativo como regla general.
+- **Negativo de fondo:** con las estadísticas del vocabulario no se distingue una consulta
+  vaga de una que no lo es. La fracción de la consulta que cubre el mejor acierto por
+  palabras es la misma en los dos casos (mediana 0,24 en las de siempre, 0,23 en las vagas),
+  porque las de siempre son largas (15,8 términos) y las vagas cortas (6,2).
+
+**La regla que sí funciona: mirar la evidencia, no el vocabulario** (`lexical_gate=True`).
+Lo que separa los dos tipos de consulta es el **BM25 del mejor acierto por palabras**, que
+FTS5 ya devuelve gratis en la primera fila:
+
+| Señal del mejor acierto por palabras (mediana; p10–p90) | siempre | vagas | SciFact | NFCorpus | MIRACL |
+|---|---|---|---|---|---|
+| Fuerza = BM25 / ln N («cuántas palabras raras casa») | 2,25 (1,33–4,26) | 0,99 (0,82–1,43) | 3,23 (1,90–6,03) | 1,42 (0,90–2,49) | 1,90 (1,46–2,56) |
+| Cobertura = BM25 / Σ IDF de la consulta («qué parte de lo pedido casa») | 0,23 (0,14–0,46) | 0,24 (0,17–0,36) | 0,91 (0,51–1,00) | 1,00 (0,52–1,00) | 0,80 (0,63–0,99) |
+
+La evidencia es floja solo cuando **las dos** son bajas: una consulta de varias palabras cuyo
+mejor acierto comparte una o dos palabras corrientes. Cada señal es una rampa (fuerza de 1,0
+a 2,0; cobertura de 0,4 a 0,6); la mayor de las dos escala el peso de las palabras entre 0,1
+y el que le hubiera dado la regla de siempre, y lo que se quita va a los vectores.
+
+- La primera versión solo miraba la fuerza. **Falló en NFCorpus** (−0,9, de −1,5 a −0,4):
+  una consulta de una sola palabra rara tiene fuerza baja por construcción aunque case
+  entera. Por eso se añadió la cobertura. Dicho claro: NFCorpus se usó para descubrir ese
+  fallo, así que para esta regla ya no es un control limpio; sí lo es MIRACL, que se midió
+  después y no participó en ningún ajuste.
+- Sensibilidad. Los límites de la fuerza se fijaron a ojo sobre las notas; desplazarlos
+  (1,25–1,75; 1,0–1,5; 1,5–2,5, medido con el prototipo de solo fuerza `regla-fuerza-*`) deja
+  las vagas entre 20 de 51,9 % a 53,1 % y la primera de las de siempre de 72,2 % a 73,3 %.
+  Los de la cobertura (0,4–0,6) se pusieron entre el p90 de las vagas (0,36) y el p10 de
+  NFCorpus (0,52), es decir, **después de ver NFCorpus**; con 0,3–0,5, 0,5–0,7 y 0,4–0,8 la
+  configuración recomendada no cambia más de 0,6 puntos en ninguno de los cuatro bancos
+  ligeros (NFCorpus 36,0–36,1; vagas entre 20 54,7–55,3). En MIRACL no se repitió.
+- Cuánto actúa: en el 99 % de las vagas (cierra del todo en el 53 %; peso medio de las
+  palabras de 0,53 a 0,15), en el 40 % de las de siempre pero poco (0,49 → 0,41), en el 12 %
+  de NFCorpus, el 7 % de SciFact y el 5 % de MIRACL.
+
+**Veredicto: positivo, detrás de una opción, pero no en esta forma gradual** (ver apartado 0:
+la definitiva es de todo o nada y cierra a 0). Con la gradual, sola (`compuerta`): vagas entre 20 de 36,5 %
+a 52,8 % y primera de 5,6 % a 10,7 %; siempre +0,6 en primera (de −0,4 a +1,7); MIRACL
+idéntico; SciFact −0,2 (de −0,7 a 0,0); NFCorpus +0,1. No pierde en ninguno.
+
+**Lo que no arregla.** En MIRACL la compuerta no hace nada porque allí el problema es el
+contrario (palabras con demasiado poco peso); eso lo mejora quitar las palabras vacías
+(experimento 1c), que sube la IDF media. Y con pesos fijos 0,6/0,4 más compuerta
+(`rec+sw/sin-adapt`) NFCorpus vuelve a perder «entre 10»: la regla adaptativa sigue haciendo
+falta para las consultas cortas de palabras raras.
+
+**Coste.** Ninguno medible: reutiliza la primera fila de la búsqueda por palabras y la IDF ya
+cacheada (2,80 ms con y sin compuerta en las notas; 8,1 frente a 8,3 ms en SciFact).
+
+## 3. Corte por distancia
+
+**Qué hace hoy.** Descarta los candidatos por vectores cuya distancia supera 1,3225 veces la
+del mejor. Con MiniLM deja pasar de media 19,7 de 50 en las consultas de siempre y 29,5 en
+las vagas. En el híbrido no reduce cuántos resultados se devuelven (las palabras rellenan
+hasta `top_k`): lo que hace es quitar candidatos buenos por vectores y dejar el hueco a
+candidatos por palabras.
+
+**Valores más flojos** (sobre la regla con tope, para aislar el corte; y solo vectores):
+
+<!-- T: corte2 tope45-corte1.3225 tope45-corte1.5 tope45-corte2 tope45-corte25 vec vec-corte1.5 vec-corte2 vec-corte25 -->
+| Configuración | siempre 1ª | siempre en 20 | vagas 1ª | vagas en 20 | vagas en 50 | MIRACL 1ª | MIRACL en 20 | SciFact NDCG@10 | NFCorpus NDCG@10 |
+|---|---|---|---|---|---|---|---|---|---|
+| `corte2` | 73,2 (+0,4) | 95,6 (+0,6) | 4,2 (-1,4 *) | 34,9 (-1,7) | 60,7 (+1,4) | 37,8 (-0,3) | 84,6 (+2,6 *) | 73,3 (+0,8 *) | 36,2 (+0,3) |
+| `tope45-corte1.3225` | 72,1 (-0,7) | 95,3 (+0,3) | 7,1 (+1,5 *) | 50,6 (+14,0 *) | 63,5 (+4,2 *) | — | — | 72,5 (+0,0) | — |
+| `tope45-corte1.5` | 72,6 (-0,1) | 96,0 (+1,0) | 5,7 (+0,1) | 49,9 (+13,3 *) | 68,1 (+8,8 *) | — | — | 73,0 (+0,5 *) | — |
+| `tope45-corte2` | 72,2 (-0,6) | 96,1 (+1,1 *) | 4,9 (-0,7) | 46,2 (+9,7 *) | 69,4 (+10,1 *) | — | — | 73,3 (+0,8 *) | 35,5 (-0,4) |
+| `tope45-corte25` | 72,2 (-0,6) | 96,1 (+1,1 *) | 4,7 (-0,8) | 46,0 (+9,4 *) | 69,4 (+10,1 *) | — | — | 73,4 (+0,9 *) | — |
+| `vec` | 55,6 (-17,2 *) | 89,2 (-5,8 *) | 16,0 (+10,4 *) | 52,2 (+15,7 *) | 62,5 (+3,2 *) | 32,9 (-5,2 *) | 69,0 (-13,0 *) | 69,6 (-2,9 *) | 30,7 (-5,2 *) |
+| `vec-corte1.5` | 55,6 (-17,2 *) | 91,1 (-3,9 *) | 16,0 (+10,4 *) | 55,8 (+19,3 *) | 71,7 (+12,4 *) | — | — | 71,1 (-1,4) | — |
+| `vec-corte2` | 55,6 (-17,2 *) | 91,2 (-3,8 *) | 16,0 (+10,4 *) | 56,8 (+20,3 *) | 74,4 (+15,1 *) | 32,9 (-5,2 *) | 81,5 (-0,5) | 71,9 (-0,6) | 33,6 (-2,3 *) |
+| `vec-corte25` | 55,6 (-17,2 *) | 91,2 (-3,8 *) | 16,0 (+10,4 *) | 56,8 (+20,3 *) | 74,4 (+15,1 *) | — | — | 72,0 (-0,5) | 33,7 (-2,2 *) |
+<!-- /T -->
+
+- **Aflojar el corte sube el recuerdo en todos los bancos**: «entre 50» en las vagas, «entre
+  20» en MIRACL (+2,6 solo con `distance_cutoff=2.0`) y NDCG@10 en SciFact (+0,8, de +0,3 a
+  +1,4). A partir de 2,0 ya no cambia nada (2,0, 3,0 y 25 dan lo mismo): con MiniLM y con
+  bge-small equivale a no cortar.
+- **Negativo, y es el hallazgo importante:** con los pesos de hoy, aflojar el corte
+  **empeora los primeros puestos de las vagas** (primera de 7,1 % a 4,9 %; entre 5 de 26,4 %
+  a 16,2 % sobre la regla con tope; con los pesos por defecto, `corte2` baja primera de 5,6
+  a 4,2). La fusión RRF premia estar en las dos listas: al dejar pasar más candidatos por
+  vectores, una nota mediocre que es la primera por palabras y la 45.ª por vectores suma
+  0,0075 + 0,0052 y adelanta a la buena, tercera por vectores y ausente por palabras
+  (0,0087). El corte estaba haciendo, de rebote, de freno a ese efecto.
+- Por eso el corte flojo **solo conviene junto con la compuerta**, que baja el peso de las
+  palabras cuando no son de fiar: `compuerta-corte2` da en las vagas primera 9,0 %, entre 20
+  56,4 % y entre 50 74,2 %.
+
+**Una versión que se adapta a la consulta: un suelo** (`min_vec_keep=N`: el corte nunca deja
+menos de N candidatos por vectores).
+
+<!-- T: suelo20 suelo compuerta-suelo20 compuerta-suelo compuerta-corte2 -->
+| Configuración | siempre 1ª | siempre en 20 | vagas 1ª | vagas en 20 | vagas en 50 | MIRACL 1ª | MIRACL en 20 | SciFact NDCG@10 | NFCorpus NDCG@10 |
+|---|---|---|---|---|---|---|---|---|---|
+| `suelo20` | 72,9 (+0,1) | 95,0 (+0,0) | 4,9 (-0,7) | 38,2 (+1,7 *) | 61,9 (+2,6 *) | 38,1 (+0,0) | 82,7 (+0,8) | 73,2 (+0,7 *) | 36,3 (+0,4) |
+| `suelo` | 73,2 (+0,4) | 95,1 (+0,1) | 4,3 (-1,2 *) | 37,2 (+0,7) | 64,9 (+5,6 *) | — | — | 73,4 (+0,9 *) | 36,2 (+0,3) |
+| `compuerta-suelo20` | 73,6 (+0,8) | 94,9 (-0,1) | 9,0 (+3,5 *) | 56,4 (+19,9 *) | 68,6 (+9,3 *) | — | — | 73,0 (+0,5) | 36,4 (+0,5 *) |
+| `compuerta-suelo` | 73,9 (+1,1) | 95,4 (+0,4) | 9,0 (+3,5 *) | 56,5 (+20,0 *) | 74,3 (+15,0 *) | — | — | 73,1 (+0,6) | 36,3 (+0,4) |
+| `compuerta-corte2` | 73,9 (+1,1) | 96,1 (+1,1) | 9,0 (+3,5 *) | 56,4 (+19,9 *) | 74,2 (+14,9 *) | 38,0 (-0,2) | 84,4 (+2,5 *) | 73,1 (+0,6) | 36,3 (+0,4) |
+<!-- /T -->
+
+- Funciona, pero **no mejora al corte flojo de toda la vida**: `compuerta-suelo` (suelo de
+  50) da lo mismo que `compuerta-corte2`, y con suelo de 20 se queda corto en «entre 50»
+  (68,6 % frente a 74,2 %). Veredicto: se queda como opción porque es barata y expresa mejor
+  la intención («dame al menos N»), pero la recomendación usa `distance_cutoff=2.0`.
+- No se probó un corte por distancia absoluta ni uno calibrado por modelo: el corte es una
+  proporción respecto al mejor y cada modelo tiene su escala; habría que ajustarlo por
+  modelo, y con los dos de aquí ya equivale a no cortar a partir de 2,0.
+
+**Recuento de fallos antes y después** (`miss_analysis` con `search_options`, pidiendo 20):
+
+| Consultas | Configuración | Fallos | Se cae en el corte | Por debajo del puesto 20 | No aparece | Estaba entre las 20 primeras por vectores |
+|---|---|---|---|---|---|---|
+| vagas | por defecto | 461 | 193 | 224 | 44 | 174 |
+| vagas | `R50` | 327 | 0 | 283 | 44 | 32 |
+| siempre | por defecto | 38 | 19 | 17 | 2 | 11 |
+| siempre | `R50` | 25 | 0 | 23 | 2 | 4 |
+
+Los 174 casos en que la fusión sacaba una nota que los vectores tenían entre las 20 primeras
+bajan a 32.
+
+**¿Y «solo cuando son relevantes»?** El corte es lo que hace que la búsqueda solo por
+vectores devuelva pocas notas (19,7 de 50). Aflojarlo quita ese filtro: con 2,0 devuelve 45,5.
+En el híbrido nunca filtró (devuelve 50 de 50 con cualquier valor). Para callar cuando no hay
+nada relevante hace falta otra señal (el `min_relevance` de #521 o el reordenador); el corte
+por distancia no es esa herramienta, y usarlo así cuesta recuerdo.
+
+**Coste.** Ninguno.
+
+## 4. Un modo de búsqueda «a fondo» (unir híbrido y solo vectores)
+
+**Hipótesis (de rotten).** Juntar los candidatos del híbrido y los de solo vectores con corte
+2,0 mete la nota buena más veces: 59,3 % → 76,9 % en las vagas con 50 + 50.
+
+**Medida.** Se reproduce: 76,9 %. Pero la comparación justa es a igual número de candidatos:
+
+| Consultas vagas | Candidatos | La buena entra | Primera · entre 20 | ms |
+|---|---|---|---|---|
+| Híbrido por defecto, 50 | 47,7 | 59,3 % | 5,6 · 36,5 | 1,4 |
+| Unión: híbrido 50 + vectores 50 | 75,2 | 76,9 % | 5,6 · 52,2 | 2,2 |
+| Híbrido por defecto, 100 | 89,9 | 69,7 % | 5,6 · 37,6 | 1,8 |
+| Híbrido con corte 2,0, 100 | 99,7 | 80,4 % | 4,2 · 35,7 | 1,9 |
+| **Compuerta + corte 2,0, 50** | 49,9 | **74,2 %** | 9,0 · 56,4 | 1,5 |
+| **Compuerta + corte 2,0, 100** | 99,7 | **85,7 %** | 8,9 · 56,0 | 1,8 |
+| Solo vectores con corte 2,0, 100 | 98,6 | 84,7 % | 16,0 · 56,8 | 1,0 |
+
+| Consultas de siempre | Candidatos | La buena entra | Primera · entre 20 |
+|---|---|---|---|
+| Híbrido por defecto, 50 | 50,0 | 97,6 % | 72,8 · 95,0 |
+| Unión: híbrido 50 + vectores 50 | 76,2 | 98,1 % | 72,8 · 95,4 |
+| Compuerta + corte 2,0, 50 | 50,0 | 97,5 % | 73,9 · 96,1 |
+| Compuerta + corte 2,0, 100 | 100,0 | 98,9 % | 73,9 · 96,0 |
+
+En MIRACL (pidiendo 20): la unión 20 + 20 mete alguna buena en el 86,9 % con 28,7 candidatos
+y desordena la cabeza (alguna buena entre 3: −1,9, de −3,5 a −0,3). `R50` con **20**
+candidatos y una sola búsqueda mete el 89,2 %.
+
+**Veredicto: no merece ser una opción de `search`.** Lo que aportaba la unión era el corte
+flojo de su segunda pata. Una sola búsqueda con compuerta y corte 2,0 mete la buena casi
+igual con 50 candidatos (74,2 % frente a 76,9 % con 75) y bastante más con 100 (85,7 %), y
+además deja la lista mejor ordenada (entre 20: 56,4 % frente a 52,2 %). La unión hecha con
+dos llamadas cuesta un 35–60 % más de tiempo (2,2 frente a 1,4 ms en las vagas; 11,1 frente
+a 8,1 ms en SciFact) y obliga a decidir fuera cómo intercalar las dos listas.
+
+**Si lo que se quiere es recuerdo para un reordenador**: pedir más (`top_k=100`) a la
+configuración recomendada. Es una búsqueda, cuesta 1,8 ms en vez de 1,5, y sube «la buena
+entra» de 74 % a 86 % en las vagas.
+
+## 5. La etiqueta de `miss_analysis` — arreglado
+
+**Qué pasaba.** `_mmr_dedup(ranked, top_k)` hace dos cosas: deduplica dentro del documento y
+recorta a `top_k`. El trazado miraba si el trozo seguía en la lista después de esa llamada y,
+si no, lo apuntaba como «eliminado por la deduplicación MMR». Con un trozo por documento la
+deduplicación no puede eliminar nada: lo que pasaba es que el trozo había quedado por debajo
+del puesto pedido. La rama `top_k_cutoff` con `passed=False` era inalcanzable.
+
+**Cambio** (`vstash/store/_search.py`). Solo cuando hay trazado, la deduplicación se ejecuta
+sin recortar y se recorta después. La selección es voraz y estable en su prefijo, así que los
+`top_k` primeros son exactamente los mismos. Con eso se distinguen tres casos:
+
+| Antes de MMR | Después de MMR (sin recortar) | Veredicto |
+|---|---|---|
+| por debajo de `top_k` | sigue por debajo | `top_k_cutoff` (MMR pasa) |
+| dentro de `top_k` | empujado fuera por la penalización de un hermano | `mmr_dedup` |
+| estaba | ya no está (deduplicación dura) | `mmr_dedup` |
+
+**Tests** (`tests/test_miss_analysis.py::TestBelowTopKIsNotMmr`): con un trozo por documento
+el veredicto es `top_k_cutoff` y la sugerencia no habla de MMR (falla sin el arreglo); el
+trazado devuelve los mismos resultados que `search`; un hermano casi idéntico sigue dando
+`mmr_dedup`.
+
+**Coste.** Ninguno en la búsqueda normal. En el trazado, la selección recorre toda la lista de
+candidatos en vez de `top_k`: es diagnóstico, no camino caliente.
+
+**Consecuencia para el diagnóstico de rotten.** Los 224 fallos «por debajo del puesto 20 tras
+la fusión» estaban bien contados (rotten ya los leía así); lo que cambia es que ahora vstash
+los llama por su nombre.
+
+## 6. La orden `vstash` que falla con `click_type` — es del entorno instalado
+
+**Causa.** typer 0.29 quitó el argumento `click_type` de `typer.Option`. El `_retrain.py`
+antiguo declaraba tres opciones con `click_type=click.Choice([...])`; como los decoradores se
+evalúan al importar `vstash.cli`, el `TypeError` tumbaba **todas** las órdenes, no solo
+`retrain`.
+
+**Dónde está.** En el repositorio ya está arreglado: `develop` lo corrigió en `095caad`
+(#521) cambiando esas opciones a `Enum`. La orden instalada falla porque la herramienta de uv
+es una instalación **editable** que apunta a `~/code/vstash`, y esa copia está en la rama
+`memoria-confiable`, que no contiene `095caad`; su entorno tiene typer 0.29.0.
+
+| | typer | ¿acepta `click_type`? | `_retrain.py` |
+|---|---|---|---|
+| herramienta instalada (`~/.local/share/uv/tools/vstash`) | 0.29.0 | no | el de `memoria-confiable`: usa `click_type` → falla |
+| este repositorio (develop) | 0.29.1 | no | usa `Enum` → funciona |
+
+**Arreglo para el autor** (no lo he hecho: es su instalación y su rama): traer develop a
+`memoria-confiable` (`git merge develop` o `git rebase develop` en `~/code/vstash`). No hace
+falta reinstalar: al ser editable, la orden vuelve a funcionar en cuanto el archivo cambie.
+
+**Lo que sí añadí.** El arreglo de #521 no traía test, y el pin `typer>=0.12.0` no tiene techo,
+así que puede volver a pasar con otra versión. `tests/test_cli_typer_compat.py` comprueba que
+todas las órdenes y subórdenes (31) construyen su `--help` con el typer instalado, que ningún módulo de la
+CLI pasa `click_type` cuando typer no lo acepta, y que las tres opciones de elección siguen
+rechazando valores desconocidos.
+
+## 7. Palabras decididas por un modelo al guardar
+
+**Idea.** Al guardar una nota, un modelo escribe términos por los que alguien la buscaría,
+incluidos términos que la nota no contiene; se indexan como palabras. Al consultar no hay
+ningún modelo.
+
+**Qué se usó y por qué no `BAAI/bge-m3`.** La salida dispersa de bge-m3 da un peso a cada
+palabra **que ya está en el texto**: no añade términos nuevos, que es justo lo que hace
+falta con consultas vagas, y FTS5 no sabe usar pesos por término. Además su cabeza dispersa
+(`sparse_linear.pt`) no está descargada en el equipo. Los modelos dispersos que sí expanden
+y no necesitan modelo en la consulta (por ejemplo la familia «doc-only» de OpenSearch,
+multilingüe) habría que descargarlos; no se hizo sin permiso del autor. En su lugar se probó lo
+mismo con un modelo de chat pequeño que ya estaba en el equipo,
+`mlx-community/gemma-4-e2b-it-4bit` (3,3 GB, sin modo de razonamiento), con una petición fija:
+doce palabras o expresiones cortas con las que alguien buscaría la nota sin recordar nombres
+ni cifras (`experiments/lab_es_enriquecer.py terminos`). Ejemplo:
+
+> Nota: «El 14 de marzo de 2025 el comité de arquitectura de Proyecto Lumen aprobó sustituir
+> MongoDB por PostgreSQL 16 para el registro de auditoría…»
+> Términos: «Sustitución de base de datos, cambio de sistema, decisión técnica, votación
+> minoritaria, consenso logrado, cambio de tecnología, aprobación del comité…»
+> Consulta vaga de esa nota: «reunión técnica cambio motor consistente».
+
+De media añade 16 palabras por nota, el 79 % nuevas. En el 40 % de las consultas vagas hay
+alguna palabra de la consulta que **solo** aportan los términos.
+
+**Medida.** Mismo índice y misma fusión; lo único que cambia es que el texto indexado por
+palabras es «nota + términos» (los vectores siguen saliendo de la nota sola). Diferencias
+contra la misma fusión sin términos.
+
+| Conjunto | Fusión | Sin términos: primera · entre 20 · entre 50 | Con términos | Diferencia entre 50 |
+|---|---|---|---|---|
+| vagas viejas (ajuste) | R50 | 11,9 · 54,6 · 72,9 | 14,3 · 62,5 · 79,0 | +6,1 (de +4,0 a +8,2) |
+| **examen, vagas** | R50 | 9,4 · 52,7 · 71,8 | **15,5 · 61,2 · 78,1** | **+6,3 (de +4,3 a +8,5)** |
+| examen, medias | R50 | 68,3 · 95,8 · 98,7 | 70,7 · 96,0 · 98,8 | +0,1 (de 0,0 a +0,4) |
+| examen, nombradas | R50 | 74,2 · 97,6 · 99,5 | 77,1 · 97,6 · 99,2 | −0,4 (de −1,0 a +0,1) |
+| de siempre (ajuste) | R50 | 71,8 · 96,5 · 97,8 | 74,7 · 97,4 · 98,6 | +0,8 (de +0,3 a +1,5) |
+| examen, vagas | solo palabras | 3,7 · 11,4 · 18,0 | 11,1 · 39,2 · 51,4 | +33,4 |
+| examen, vagas | R1 | 9,6 · 45,1 · 66,4 | 15,5 · 56,0 · 73,6 | +7,2 |
+
+- **Positivo, y es lo que más mueve las consultas vagas de todo el laboratorio después de
+  arreglar la fusión.** En el examen: entre 50 +6,3, entre 20 +8,5 y primera +6,1 (todos los
+  intervalos sin el cero). Buscando solo por palabras, las vagas pasan de 18 % a 51 % entre
+  50: el lado de las palabras deja de ser ciego a la paráfrasis.
+- **No estropea las consultas con nombres**: la primera incluso sube (+3,0 en nombradas,
+  +2,4 en medias, intervalos sin el cero) y «entre 50» no cambia.
+- **Coste al guardar: 0,41 s por nota** (1.560 notas en unos 11 minutos, un modelo de 3,3 GB
+  cargado). En consulta, cero: el índice de palabras crece unas 16 palabras por nota.
+- **Aviso sobre el tamaño del efecto.** La petición al modelo («cómo la buscaría alguien que
+  no recuerda nombres ni cifras, con una frase vaga») es casi la receta con la que otro
+  modelo escribió las consultas vagas del banco. Parte de los +6 puntos puede estar midiendo
+  que dos modelos siguen la misma instrucción, igual que en el experimento 9 las reglas del
+  error y las de la clave son de la misma familia. La mejora en las consultas medias y
+  nombradas (primera +2,4 y +3,0), que no se escribieron así, es la parte menos sospechosa.
+  Hay que repetirlo con consultas vagas de una persona.
+- **Límites.** (1) Un solo modelo y una sola petición, sin ajustar; no se probó uno más
+  pequeño ni uno disperso de verdad. (2) Los términos se añadieron al texto del trozo en el
+  banco; en vstash tendrían que ir a un campo propio del índice de palabras para no
+  aparecer en el texto que se devuelve. (3) No se midió en MIRACL ni en inglés. (4) Si el
+  modelo inventa un término engañoso, esa nota casará con consultas que no le tocan: no se
+  midió cuánto ruido mete en consultas de asuntos ausentes (`ausentes.json` de rotten).
+
+## 8. Campos extraídos al guardar (NuExtract)
+
+**Idea.** Que un extractor saque de cada nota nombres, fechas, cantidades y asunto, y que
+una coincidencia en esos campos pese más.
+
+**Qué se hizo.** `numind/NuExtract3-mlx-4bits` (2,8 GB, en local con `mlx-vlm`) con una
+ficha fija: `personas`, `organizaciones_y_proyectos`, `fechas`, `cantidades` (literales) y
+`asunto` (una frase). Extrae bien: 720 notas, ninguna ficha ilegible, 1,2 personas, 1,3
+organizaciones, 1,0 fechas y 1,3 cantidades por nota. Ejemplo:
+
+> `{"personas": ["Elena Castaño"], "organizaciones_y_proyectos": ["Proyecto Lumen"],
+> "fechas": ["14 de marzo de 2025"], "cantidades": ["5 a 2"], "asunto": "Aprobación de
+> sustitución de MongoDB por PostgreSQL 16 para el registro de auditoría en el Proyecto Lumen."}`
+
+Para que pesen más sin tocar el esquema, los campos literales se añadieron dos veces al
+texto indexado por palabras (`campos`), y el asunto una vez (`asunto`). Fusión `R50`, notas
+viejas (ajuste); diferencias contra `R50` sin campos.
+
+| Índice de palabras | De siempre: primera · entre 20 · entre 50 | Vagas: primera · entre 5 · entre 50 |
+|---|---|---|
+| nota (hoy) | 71,8 · 96,5 · 97,8 | 11,9 · 27,5 · 72,9 |
+| + nombres, fechas y cantidades | 72,5 (+0,7) · 96,5 · 97,8 | **6,8 (−5,1 \*)** · 21,9 (−5,6 \*) · 71,8 |
+| + asunto | 73,2 (+1,4) · 96,8 · 98,2 | 8,5 (−3,5 \*) · 22,1 (−5,4 \*) · 73,1 |
+| + los dos | 73,1 (+1,2) · 96,9 · 98,2 | 7,2 (−4,7 \*) · 19,7 (−7,8 \*) · 73,2 |
+| + términos del experimento 7 | 74,7 (+2,9 \*) · 97,4 · 98,6 | 14,3 (+2,4 \*) · 34,3 (+6,8 \*) · 79,0 |
+
+- **Negativo.** Con consultas que nombran, los nombres, fechas y cantidades ya estaban en la
+  nota y ya casaban: repetirlos no cambia nada medible (+0,7 en primera, dentro del ruido;
+  solo por palabras, 69,6 % frente a 70,6 %). Con consultas vagas **empeora los primeros
+  puestos** (primera de 11,9 % a 6,8 %): el texto repetido infla el BM25 de cualquier
+  coincidencia, la compuerta deja de cerrar y vuelve el pisotón.
+- El asunto, que es lo único que añade palabras nuevas, ayuda un poco a las de siempre y
+  tampoco arregla las vagas: es una frase que resume con las mismas palabras de la nota. Los
+  términos del experimento 7, pensados para la consulta y no para resumir, hacen lo que el
+  asunto no hace.
+- **Coste al guardar: 0,95 s por nota**, más del doble que el experimento 7.
+- **Lo que no se probó**, y por eso el «negativo» es de esta forma de usarlos y no de la idea:
+  un índice con los campos en columnas propias y pesos por columna (FTS5 lo permite, pero es
+  un cambio de esquema); usar los campos para filtrar («notas donde aparece Elena») en vez
+  de para puntuar; y el examen (se paró la extracción de las 840 notas nuevas al ver el
+  resultado en las de ajuste). Para filtrar por persona o fecha la extracción sí sirve tal
+  como sale; para ordenar, no.
+
+
+
+## 9. Tolerar lo mal oído
+
+**Problema.** Rotten busca con texto transcrito de voz y los nombres propios llegan con
+errores («Ferré» por «Ferrer»). El índice de palabras exige la palabra exacta.
+
+**El juego de consultas.** De las consultas que nombran a alguien o algo, se cambian los
+nombres propios (palabras con mayúscula que no abren frase y que la nota escribe igual) por
+una variante «tal como suena», con reglas y una semilla fija: b/v, s/z/c, ll/y, h muda, g/j,
+qu/c/k, r/rr, x/s, letra doble, tilde, y consonante final perdida. Una variante por nombre.
+Ejemplos reales del juego:
+
+| Consulta original | Mal oída |
+|---|---|
+| …del administrador de **Cauce** midió **Iker**? | …del administrador de **Kauce** midió **Iké**? |
+| ¿Qué acordamos con **Vela** sobre la duración y el sitio del piloto? | ¿Qué acordamos con **Bela** sobre…? |
+| ¿Qué hacemos si **NexoSalud** no manda la especificación de la clave? | ¿Qué hacemos si **Nexosalú** no manda…? |
+| ¿Se aplazó elegir entre **WebSocket** y sondeo…? | ¿Se aplazó elegir entre **Websoccet** y sondeo…? |
+| ¿Qué diferencia de coste hay entre **PushNova** y las alarmas locales? | …entre **Pushnoba** y las alarmas locales? |
+
+Salen 201 consultas de las notas viejas (ajuste) y 210 nombradas y 236 medias del examen.
+
+**Cuánto cuesta hoy.** Las mismas consultas, limpias y mal oídas, con `R50`:
+
+| Conjunto | Limpias: primera · entre 20 · entre 50 | Mal oídas | Solo palabras, mal oídas |
+|---|---|---|---|
+| notas viejas (201) | 85,1 · 98,0 · 98,5 | 76,1 · 94,5 · 98,0 | 70,1 · 90,5 · 93,0 |
+| examen, nombradas (210) | 92,4 · 99,5 · 100,0 | 81,0 · 96,2 · 98,6 | 74,3 · 89,0 · 91,0 |
+| examen, medias (236) | 69,9 · 97,5 · 100,0 | 55,9 · 90,7 · 96,2 | 52,5 · 81,4 · 87,3 |
+
+Un nombre mal oído cuesta de 9 a 14 puntos en primera y, en las consultas medias (cortas,
+donde el nombre es casi toda la pista), 4 puntos de «entre 50». Los vectores amortiguan pero
+no salvan: MiniLM tampoco reconoce «Bela».
+
+**Remedios probados**, todos con la fusión `R50` y cambiando solo el índice de palabras
+(diferencias contra `R50` sobre el índice de hoy):
+
+<!-- T: --columnas=oido --base=R50 R50 defecto R50@trigramas R50@fonetica R50@fonetica+ fts@fonetica -->
+| Configuración | siempre 1ª | siempre en 20 | siempre en 50 | nombrada 1ª | nombrada en 20 | nombrada en 50 | media 1ª | media en 20 | media en 50 |
+|---|---|---|---|---|---|---|---|---|---|
+| `R50` | 76,1 | 94,5 | 98,0 | 81,0 | 96,2 | 98,6 | 55,9 | 90,7 | 96,2 |
+| `defecto` | 72,6 (-3,5) | 94,5 (+0,0) | 96,5 (-1,5) | 81,0 (+0,0) | 94,8 (-1,4) | 97,1 (-1,4) | 55,5 (-0,4) | 89,0 (-1,7) | 95,3 (-0,8) |
+| `R50@trigramas` | 75,1 (-1,0) | 95,0 (+0,5) | 97,5 (-0,5) | 81,9 (+1,0) | 97,6 (+1,4) | 98,1 (-0,5) | 53,0 (-3,0) | 89,8 (-0,8) | 94,9 (-1,3) |
+| `R50@fonetica` | 78,6 (+2,5) | 96,5 (+2,0) | 98,0 (+0,0) | 85,7 (+4,8 *) | 99,0 (+2,9 *) | 99,5 (+1,0) | 61,0 (+5,1 *) | 96,6 (+5,9 *) | 99,2 (+3,0 *) |
+| `R50@fonetica+` | 76,6 (+0,5) | 96,5 (+2,0) | 98,0 (+0,0) | 85,2 (+4,3 *) | 98,6 (+2,4 *) | 99,5 (+1,0) | 60,2 (+4,2 *) | 96,6 (+5,9 *) | 98,7 (+2,5 *) |
+| `fts@fonetica` | 79,6 (+3,5) | 97,0 (+2,5) | 99,0 (+1,0) | 86,2 (+5,2 *) | 96,7 (+0,5) | 99,0 (+0,5) | 72,0 (+16,1 *) | 97,0 (+6,4 *) | 99,2 (+3,0 *) |
+<!-- /T -->
+
+- **Clave fonética para español: positiva.** Cada palabra se indexa y se busca por cómo
+  suena: sin tildes ni h, v→b, z y c suave→s, qu y c fuerte→k, ll→y, g suave→j, x→s, letras
+  dobles a una, y sin la consonante final débil (r, s, d, z). Con consultas medias mal oídas:
+  primera 55,9 % → 61,0 %, entre 20 90,7 % → 96,6 %, **entre 50 96,2 % → 99,2 %** (todos los
+  intervalos sin el cero); con las nombradas, primera +4,8 y entre 20 +2,9. Recupera casi
+  todo lo que se perdía en «entre 50».
+- **Y no rompe las consultas limpias**: con el examen completo, `R50` sobre la clave da
+  nombrada 74,5 · 97,1 · 99,4 (antes 74,2 · 97,6 · 99,5), media 68,5 · 96,5 · 98,7 (antes
+  68,3 · 95,8 · 98,7) y vaga 9,2 · 52,3 · 70,6 (antes 9,4 · 52,7 · 71,8; ese «entre 50» de
+  −1,2 es la única pérdida con intervalo sin el cero). La clave hace de paso de plegado de
+  acentos y de raíz suave (plural y singular coinciden).
+- **Trigramas: negativos.** No ayudan con lo mal oído (medias: primera −3,0, entre 50 −1,3) y
+  estropean las consultas limpias (examen, medias: primera −3,5 y entre 50 −1,7, intervalos
+  sin el cero). Un nombre de cinco letras con una cambiada comparte muy pocos trigramas, y a
+  cambio cada consulta casa con media memoria.
+- **Indexar el texto y además la clave** (`fonetica+`): igual de bien con lo mal oído, pero
+  rompe las vagas (primera 11,9 % → 5,8 %): cada palabra cuenta dos veces, el BM25 se dobla y
+  la compuerta deja de cerrar. Si se hace, que sea en un índice aparte y con su propio umbral.
+
+**Límites, y son serios.**
+- Los errores los generan reglas de la misma familia que la clave: el experimento mide que
+  la clave deshace esos errores, no que un reconocedor de voz real se equivoque así. Falta
+  medir con transcripciones reales de rotten.
+- La clave es para español. No se midió en inglés ni en MIRACL; en un índice mixto habría que
+  aplicarla por idioma.
+- Es un prototipo del banco: se indexó la clave **en lugar** del texto. En vstash haría falta
+  un segundo índice de palabras (por lo mismo que con Snowball: el índice es de contenido
+  externo), y `exact_match` y los fragmentos resaltados seguirían leyendo el texto original.
+- Coste: una pasada de expresiones regulares por palabra al guardar y al consultar (no se
+  cronometró; es del orden de Snowball, 0,2–0,4 ms por nota).
+
+## 10. Los mecanismos de después de la fusión: deduplicación, reserva de candidatos y demás
+
+Encargo añadido por el autor. En todos los bancos anteriores cada nota es un documento de un solo
+trozo, así que la deduplicación dentro del documento (MMR) **no había podido actuar**: no
+estaba medida. Se hizo antes que los experimentos 7 y 8 porque no necesita ningún modelo.
+
+### a) Un banco donde la deduplicación actúa
+
+Las mismas notas, pero cada asunto es **un documento de ocho trozos**: la nota buena es un
+trozo y sus siete hermanas, muy parecidas, están en el mismo documento. 90 documentos con
+las notas viejas (ajuste) y 105 con las del examen. Mismo contenido, mismos vectores, mismas
+consultas: lo único que cambia respecto a las tablas de siempre es que la MMR ahora tiene
+hermanos que penalizar. Control público: MIRACL con los pasajes agrupados por artículo de
+Wikipedia (91.583 documentos; 20.772 con más de un trozo).
+
+### b) Qué cuesta `mmr_lambda`
+
+Fusión `R50`. Diferencias contra no deduplicar, que da exactamente lo mismo que indexar un
+trozo por documento.
+
+| Conjunto | Sin deduplicar: 1ª · en 5 · en 20 · en 50 | `mmr_lambda=0.5` (por defecto) | `0.7` | `0.9` | `1.0` |
+|---|---|---|---|---|---|
+| de siempre (ajuste) | 71,8 · 90,6 · 96,5 · 97,8 | 71,8 · 87,4 · 93,2 · 95,7 | · 88,9 · 95,0 · 97,2 | · 89,9 · 96,2 · 97,8 | · 87,2 · 91,0 · 91,4 |
+| vagas (ajuste) | 11,9 · 27,5 · 54,6 · 72,9 | 11,9 · 26,1 · 48,9 · 64,7 | · 26,0 · 51,8 · 69,7 | · 26,7 · 54,0 · 72,5 | · 26,1 · 48,3 · 59,6 |
+| examen, nombradas | 74,2 · 92,1 · 97,6 · 99,5 | 74,2 · 89,9 · 94,3 · 97,3 | · 90,7 · 96,8 · 98,9 | · 92,1 · 97,6 · 99,2 | · 89,6 · 93,0 · 93,5 |
+| examen, medias | 68,3 · 87,9 · 95,8 · 98,7 | 68,3 · 83,1 · 89,4 · 94,6 | · 85,4 · 93,8 · 98,0 | · 87,1 · 95,5 · 98,8 | · 82,7 · 87,7 · 88,5 |
+| examen, vagas | 9,4 · 25,4 · 52,7 · 71,8 | 9,4 · 25,0 · 46,5 · 62,4 | · 25,0 · 49,8 · 68,8 | · 25,4 · 52,3 · 71,0 | · 25,0 · 46,5 · 56,9 |
+
+**Control público, MIRACL por artículos** (pidiendo 20, `R50`): sin deduplicar, primera
+40,6 % · alguna buena entre 3 63,7 % · entre 20 89,2 % · NDCG@10 39,0. Con `mmr_lambda=0.5`:
+40,6 · 60,6 · **83,8** · **32,7** (entre 20 −5,4, de −7,6 a −3,4; NDCG@10 −6,3, de −7,4 a
+−5,3). Con `0.9`: entre 20 igual y NDCG@10 −1,3. Con `1.0`: 83,3 y 32,5. Con la configuración
+por defecto de vstash, MIRACL por artículos da 79,2 % entre 20, frente a 81,9 % con un
+pasaje por documento. Aquí el efecto es doble: MIRACL tiene a menudo varios pasajes buenos
+del mismo artículo, y la MMR quita justo esos.
+
+Cuántas veces el trozo bueno estaba dentro de los K primeros sin MMR y fuera con ella
+(`R50`, `mmr_lambda=0.5`; siempre pidiendo 50: K = 5 y K = 20 son cortes de esa lista):
+
+| Conjunto | K = 5 | K = 20 | K = 50 |
+|---|---|---|---|
+| de siempre (720) | 25 (3,5 %) | 26 (3,6 %) | 16 (2,2 %) |
+| vagas (720) | 18 (2,5 %) | 66 (9,2 %) | 87 (12,1 %) |
+| examen, nombradas (840) | 22 (2,6 %) | 32 (3,8 %) | 19 (2,3 %) |
+| examen, medias (840) | 41 (4,9 %) | 62 (7,4 %) | 35 (4,2 %) |
+| examen, vagas (840) | 14 (1,7 %) | 79 (9,4 %) | 101 (12,0 %) |
+
+- **La MMR por defecto cuesta recuerdo, y bastante, cuando los trozos de un documento se
+  parecen**: en el examen, «entre 50» baja 2,3 puntos con consultas nombradas, 4,0 con las
+  medias y 9,4 con las vagas (todos los intervalos sin el cero); «entre 20», 3,3 · 6,4 · 6,2.
+  Es un pisotón del mismo tamaño que el de la fusión, y estaba sin medir.
+- **El primer puesto no se toca nunca**: el primero elegido es siempre el de mejor nota.
+- **`mmr_lambda=1.0` no apaga nada: es lo más agresivo.** Deja un solo trozo por documento
+  (deduplicación dura). Es la peor columna de la tabla (examen, medias, entre 50: 88,5 %). El
+  propio trazado de vstash recomendaba «`mmr_lambda=1.0` para desactivar la MMR»: estaba mal
+  y se ha corregido.
+- **Con 0,5 la MMR ya es casi una deduplicación dura**: de 20 resultados salen 19,7
+  documentos distintos (sin MMR, 15,2; con 1,0, 20,0). Con hermanos tan parecidos la
+  penalización se come casi siempre al segundo trozo.
+- **No había forma de desactivarla.** Se añade `mmr_lambda=None`: sin deduplicación dentro
+  del documento, cada trozo compite por su nota. Con tests; el valor por defecto no cambia.
+- `0.9` es un punto medio razonable: pierde menos de un punto y aún reparte algo (16,4
+  documentos distintos de 20).
+
+### c) ¿Para qué es la lista?
+
+- **Si detrás va un reordenador: `mmr_lambda=None`.** El reordenador necesita ver el trozo
+  bueno aunque se parezca a otro que ya está; la diversidad, si hace falta, la pone quien
+  monta el contexto después de reordenar. Es lo que recupera los 4 a 9 puntos de «entre 50».
+- **Si la lista va directa al modelo**, la diversidad sí importa (cinco trozos casi iguales
+  del mismo documento son un mal contexto), y ahí el valor por defecto hace lo que promete:
+  5,0 documentos distintos entre los 5 primeros frente a 4,2 sin MMR. El precio es que el
+  trozo bueno sale de los cinco primeros en el 2–5 % de las consultas.
+- **Conclusión: la MMR está en el sitio equivocado para un sistema con reordenador** (va
+  antes, y debería ir después) y bien para uno sin él. No es un valor por defecto que haya
+  que cambiar: es una opción que depende del uso, y faltaba el valor que la apaga.
+- En la memoria de rotten cada nota es hoy un documento de un trozo: ahí nada de esto actúa.
+  Actuará en cuanto se indexen documentos largos.
+
+### d) `dedup_threshold` (casi duplicados entre documentos)
+
+Medido en su caso natural, un documento por nota, con `R50` y umbrales de 0,98 a 0,80:
+**inocuo hasta 0,85** (ni una consulta cambia en las notas viejas ni en el examen) y a 0,80
+empieza a tirar alguna buena (−0,1 a −0,2 puntos). Las notas hermanas de un mismo asunto se
+parecen, pero no tanto: no llegan al 0,95 recomendado. Puede usarse sin miedo a ese valor.
+Lo que no se midió es su caso de uso real (el mismo contenido repetido en muchos documentos).
+
+### e) El resto de mecanismos que tocan el orden o recortan la lista
+
+| Mecanismo | ¿Puede costar resultados? | Medido |
+|---|---|---|
+| **Reserva de candidatos** (`candidate_pool`, depende de `top_k`) y la puerta que deja fuera los aciertos solo por palabras más allá del puesto 2·`top_k` | **Sí, con los valores por defecto**: pedir menos resultados da peores resultados. Vagas, «entre 5»: 12,9 % pidiendo 5 frente a 17,1 % pidiendo 50 y cortando (examen: 14,6 % frente a 18,0 %); la primera baja de 5,6 % a 4,7 %. | Con `R50` desaparece (27,6 % frente a 27,5 %): el efecto venía de combinarse con el corte por distancia y los pesos, no de la reserva en sí. |
+| Corte por distancia | Sí: experimento 3. | sí |
+| Pesos adaptativos | Sí: experimento 2 y apartado 0. | sí |
+| MMR dentro del documento | Sí, con documentos de varios trozos: este apartado. | sí |
+| `dedup_threshold` | No a 0,95; sí por debajo de 0,85. Apagado por defecto. | sí |
+| Impulso por recencia (`recency_boost`) | Apagado por defecto (0,0). Encendido multiplica la nota por la edad y reordena: puede hundir una nota buena y vieja. | no (en los bancos todas las notas tienen la misma fecha) |
+| Expansión de contexto (`expand_context`) | No toca el orden ni recorta: añade texto vecino al resultado ya elegido. Inocua para el recuerdo; alarga lo que lee el modelo. | no hace falta |
+| `min_relevance` (#521) | Apagado por defecto. Encendido devuelve lista vacía si el mejor vector cae por debajo de un umbral calibrado para bge-small; con otro modelo (MiniLM, mDenseOn) esos umbrales no valen y puede callar de más. | no |
+| `usage_prior` | Apagado por defecto; reordena por uso pasado. | no |
+| Regla de consultas largas (> 50 palabras) | Solo con pesos adaptativos; ninguna consulta de estos bancos llega. | no |
+| `exact_match` | Filtro posterior: solo si se pide. | no |
+
+## Qué llevar a vstash
+
+**De verdad (sin opción, no cambia resultados):**
+1. El arreglo de la etiqueta de `miss_analysis` y `search_options` (experimento 5).
+2. El test de compatibilidad de la CLI con typer (experimento 6).
+3. Que el almacén lea del índice su tokenizador en vez de tenerlo escrito en dos sitios.
+
+**Detrás de una opción, como están en la rama (apagadas por defecto):**
+4. `lexical_gate` (de todo o nada) — quita el pisotón del híbrido en la cabeza de la lista
+   con consultas vagas (primera y entre 20), sin coste y sin perder en ningún banco. A 50
+   candidatos no se distingue de no tenerla. Candidata a valor por defecto más adelante, pero antes
+   hay que pasarla por los cinco BEIR del artículo y por los modelos publicados v2/v3.
+5. `distance_cutoff=2.0` — ya existía. El valor por defecto (1,3225) cuesta recuerdo en
+   MIRACL, en el examen y en SciFact (0,8 puntos de NDCG@10); merece revisarse con el BEIR
+   completo, pero cambiarlo mueve los números publicados. Sin la compuerta empeora los
+   primeros puestos de las consultas vagas.
+6. `adaptive_rrf=False` — ya existía. Con 5 y 4 es la mejor primera etapa para un
+   reordenador (`R50`). La regla adaptativa solo se ganó el sitio en NFCorpus (consultas de
+   dos o tres palabras raras); en español no aporta y en MIRACL resta.
+7. `fts_tokenizer="porter unicode61 remove_diacritics 2"` y `rebuild_fts` — ganancia
+   pequeña y real en español (MIRACL entre 20 +1,4 frente al valor por defecto), cero efecto
+   en inglés. Sobre una fusión ya arreglada no se distingue (87,5 % frente a 87,8 %). Buen
+   candidato a valor por defecto para índices nuevos en una versión mayor, por corrección
+   más que por cifras («¿Quién» deja de ser `¿quién`).
+8. `drop_stopwords` — más rápida (la mitad de tiempo en un índice grande) y mejor en MIRACL,
+   pero cuesta recuerdo profundo en el examen. Solo para buscar sin reordenador.
+9. `mmr_lambda=None` — apaga la deduplicación dentro del documento, que antes no se podía
+   apagar. Para quien tenga un reordenador detrás. Y la corrección del consejo del trazado
+   (`1.0` no desactiva nada).
+10. `min_vec_keep` — funciona pero no mejora a `distance_cutoff=2.0`. Se puede quitar.
+
+**Merece una rama propia (prototipos del banco, no están en vstash):**
+- **Términos escritos por un modelo al guardar** (experimento 7): lo más prometedor del lab
+  para las consultas vagas, con el aviso de que el banco le es favorable por construcción. Pide un campo propio en el índice de palabras (que se busque y no
+  se devuelva) y un gancho al guardar; el modelo es de quien llama.
+- **Clave fonética para español** (experimento 9): segundo índice de palabras, por idioma.
+  Antes de construirlo, medir con transcripciones reales.
+
+**No llevar:**
+- El modo «a fondo» por unión, las plazas reservadas y el intercalado: redundantes o peores
+  que arreglar la fusión.
+- La compuerta gradual: pisa por el lado de las palabras.
+- Campos de NuExtract repetidos en el texto (experimento 8): no ayudan a ordenar y estropean
+  las vagas. La extracción en sí es buena; su sitio es filtrar, no puntuar.
+- Trigramas y `unicode61` sin raíces: pierden en inglés y no ganan en español, tampoco con
+  nombres mal oídos.
+- Topes o pesos adaptativos retocados: cada variante pierde en algún banco.
+- Raíces del español con Snowball: lo que dan ya lo da el tokenizador, y rompen el inglés.
+
+**Falta por cablear si se adopta:** `lexical_gate`, `drop_stopwords` y `min_vec_keep` están en
+`VstashStore.search`, `services.search_with_embedding` y `Memory.search` (que ahora también
+acepta `distance_cutoff`). No están en la CLI, MCP, LangChain, `federated_search`,
+`vstash.toml` ni `docs/`. `Memory.search` no tiene `adaptive_rrf`: `R50` se pide con
+`vec_weight=0.6, fts_weight=0.4` (hay test de que llega al almacén con `mmr_lambda=None`).
+MCP hace `float(mmr_lambda)` y no admite `None`. `miss_analysis` las acepta por `search_options`;
+`vstash why` no.
+
+**Dos trabas para llevar `lightonai/mDenseOn` a vstash como modelo del índice** (apuntadas a
+petición de la sesión de rotten; no se probó aquí): el mecanismo de codificadores propios
+(`register_encoder_resolver`) tiene una sola `encode(textos)` y no distingue consulta de
+documento, y mDenseOn necesita los prefijos «query: » y «document: »; y solo se publica en
+PyTorch, sin ONNX, así que no entra por FastEmbed ni por la vía ONNX de vstash.
+
+## Lo que quedó sin verificar
+
+- **Inglés:** solo SciFact y NFCorpus. FiQA, SciDocs y ArguAna no se pasaron, ni los modelos
+  afinados v2/v3. `R50` pierde «alguna buena entre 10» en NFCorpus; `R1` no pierde.
+- **El examen ya no es del todo limpio**: la compuerta de todo o nada se eligió mirándolo
+  (apartado 0). MIRACL sí lo es para `R1` y `R50`. Convendría un tercer conjunto.
+- **Consultas reales del autor y transcripciones reales**: todo son consultas escritas por un
+  modelo; los nombres mal oídos salen de reglas.
+- **Experimentos 7 a 9 son prototipos del banco**, no código de vstash: el texto extra se
+  metió en el trozo. El 7 y el 9 no se midieron en MIRACL ni en inglés; el 8 no se pasó por
+  el examen ni se probó con columnas con peso.
+- **Asuntos ausentes** (`ausentes.json` de rotten): no se midió si alguna opción hace que la
+  búsqueda traiga más ruido cuando no hay nada que traer. La compuerta cerrada devuelve el
+  orden de los vectores, que nunca es vacío.
+- **MMR**: medida con trozos que son notas hermanas y con MIRACL por artículos; no con
+  documentos largos troceados por vstash (trozos de 1.024 con solape), que es el caso real.
+- **Otros backends de vectores** (snapvec, IVFPQ), `recency_boost`, `min_relevance` y
+  `usage_prior`: no medidos.
+- `rebuild_fts` tiene tests de corrección pero no se midió su tiempo en una base grande.
+- La sensibilidad de los umbrales de la compuerta (fuerza 1,0; cobertura 0,4) se midió con la
+  versión gradual; con la de todo o nada solo se probaron 1,0 · 1,25 · 1,5 de fuerza en las
+  notas viejas (1,5 ya daña las de siempre: entre 5 −3,5).
+- Los intervalos son de remuestreo sobre las consultas de cada banco, sin corrección por
+  haber mirado muchas configuraciones (más de cien).
+
+## Coste del laboratorio
+
+Todo en local, sin API. Lo más caro: vectorizar MIRACL una vez (146.750 pasajes, unos 19
+minutos de reloj con nueve núcleos, 3,3 GB de memoria en el pico) y cada pasada de MIRACL
+(648 consultas, 1–3 minutos). Los dos modelos de los experimentos 7 y 8 se cargaron de uno
+en uno: gemma-4-e2b (3,3 GB) 11 minutos para 1.560 notas; NuExtract (2,8 GB) 11 minutos
+para 720. Vectores, índices, resultados por consulta y textos enriquecidos quedan en
+`experiments/data/lab_es/` (ignorado por git, ~2 GB; se puede borrar).

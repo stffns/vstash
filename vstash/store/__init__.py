@@ -40,6 +40,8 @@ from ..models import (
 )
 
 from ._common import (
+    DEFAULT_FTS_TOKENIZER,
+    FTS_TOKENIZERS,
     _ADAPTIVE_RRF_LONG_QUERY,
     _HAS_SNAPVEC,
     _LONG_QUERY_DISTANCE_CUTOFF,
@@ -139,7 +141,19 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         observability: ObservabilityConfig | None = None,
         limits: LimitsConfig | None = None,
         cache: CacheConfig | None = None,
+        fts_tokenizer: str | None = None,
     ) -> None:
+        if fts_tokenizer is not None and fts_tokenizer not in FTS_TOKENIZERS:
+            raise ValueError(
+                f"fts_tokenizer must be one of {sorted(FTS_TOKENIZERS)}; got {fts_tokenizer!r}"
+            )
+        # Set before ``_connect()``: the DDL reads it when the index does not
+        # exist yet. On an existing database ``_adopt_fts_tokenizer`` then
+        # replaces it with the tokenizer the index was really built with, so
+        # ``_stem_terms`` always agrees with the index. ``None`` means "the
+        # index's own tokenizer, or the default for a new database".
+        self._fts_tokenizer_requested = fts_tokenizer
+        self._fts_tokenizer = fts_tokenizer or DEFAULT_FTS_TOKENIZER
         self.db_path = Path(db_path).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.embedding_dim = embedding_dim
@@ -159,7 +173,15 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         # otherwise stem conns created in worker threads (vstash serve,
         # MCP) would leak until process exit.
         self._stem_conns: dict[int, sqlite3.Connection] = {}
+        # Tokenizer each stemming connection was built with; a connection
+        # whose tokenizer is no longer the index's is rebuilt by its owner.
+        self._stem_conn_tokenizers: dict[int, str] = {}
         self._stem_lock = threading.Lock()
+        self._fts_schema_cookie: int | None = None
+        # Serializes the per-search schema-version check: threads sharing
+        # this store would otherwise run the same cached statement at once
+        # on ``self._conn`` and one of them reads no row.
+        self._fts_sync_lock = threading.Lock()
         self._conn = self._connect()
 
         # --- Adaptive RRF cache ---
@@ -1674,13 +1696,20 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         import time so the failure mode is loud, not silent.
         """
         tid = threading.get_ident()
+        tokenizer = self._fts_tokenizer
         with self._stem_lock:
             conn = self._stem_conns.get(tid)
+            if conn is not None and self._stem_conn_tokenizers.get(tid) != tokenizer:
+                # The index was rebuilt with another tokenizer. This is the
+                # owner thread, so nobody else is using ``conn``.
+                conn.close()
+                conn = None
             if conn is None:
                 conn = sqlite3.connect(":memory:", check_same_thread=False)
-                conn.execute('CREATE VIRTUAL TABLE _stem USING fts5(x, tokenize="porter ascii")')
+                conn.execute(f"CREATE VIRTUAL TABLE _stem USING fts5(x, tokenize='{tokenizer}')")
                 conn.execute("CREATE VIRTUAL TABLE _stem_v USING fts5vocab(_stem, row)")
                 self._stem_conns[tid] = conn
+                self._stem_conn_tokenizers[tid] = tokenizer
         # Use the connection outside the lock — each thread only ever
         # touches its own connection (lookup by tid above), so no
         # cross-thread access happens here.
@@ -2677,4 +2706,5 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                 with contextlib.suppress(sqlite3.Error):
                     stem_conn.close()
             self._stem_conns.clear()
+            self._stem_conn_tokenizers.clear()
         self._conn.close()

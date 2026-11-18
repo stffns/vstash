@@ -10,13 +10,14 @@ is never instantiated on its own.
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
 from ..errors import SchemaVersionError
-from ._common import KNOWN_SCHEMA_VERSIONS, SCHEMA_VERSION
+from ._common import FTS_TOKENIZERS, KNOWN_SCHEMA_VERSIONS, SCHEMA_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,10 @@ class _SchemaManagerMixin:
     db_path: Path
     embedding_dim: int
     _write_lock: threading.Lock
+    _fts_tokenizer: str
+    _fts_tokenizer_requested: str | None
+    _fts_schema_cookie: int | None
+    _fts_sync_lock: threading.Lock
 
     def _create_tables(self, conn: sqlite3.Connection) -> None:
         """Initialize database schema if not present."""
@@ -85,7 +90,7 @@ class _SchemaManagerMixin:
             -- Full-text search index (FTS5)
             -- content= makes it a content table — no duplicate text stored
             CREATE VIRTUAL TABLE IF NOT EXISTS fts_chunks
-            USING fts5(text, content=chunks, content_rowid=id, tokenize='porter ascii');
+            USING fts5(text, content=chunks, content_rowid=id, tokenize='{self._fts_tokenizer}');
 
             -- FTS5 vocabulary table for IDF computation (adaptive RRF weights)
             CREATE VIRTUAL TABLE IF NOT EXISTS fts_chunks_vocab
@@ -200,6 +205,110 @@ class _SchemaManagerMixin:
         # the known set.  Legacy DBs created before this stamp existed
         # are treated as v1 — that's the only schema vstash has shipped.
         self._check_schema_version(conn)
+        self._adopt_fts_tokenizer(conn)
+
+    def _adopt_fts_tokenizer(self, conn: sqlite3.Connection, *, warn: bool = True) -> bool:
+        """Make ``self._fts_tokenizer`` the tokenizer ``fts_chunks`` really uses.
+
+        ``CREATE VIRTUAL TABLE IF NOT EXISTS`` is a no-op on an existing
+        database, so the constructor argument only takes effect when the
+        index is first created. The index's own DDL is the source of truth:
+        adaptive RRF stems query terms with ``_stem_terms`` and looks them up
+        in the index vocabulary, and a mismatch would silently turn every
+        lookup into a miss. Asking for a different tokenizer on an existing
+        database is therefore not an error -- the store keeps working with
+        the index it has and says how to switch.
+
+        Also records ``PRAGMA schema_version`` so :meth:`_sync_fts_tokenizer`
+        can tell when another connection changed the schema.
+
+        Returns:
+            ``True`` when ``self._fts_tokenizer`` changed.
+        """
+        self._fts_schema_cookie = conn.execute("PRAGMA schema_version").fetchone()[0]
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'fts_chunks'"
+        ).fetchone()
+        found = re.search(r"tokenize\s*=\s*'([^']*)'", row[0] or "") if row else None
+        if found is None:
+            return False
+        actual = found.group(1)
+        requested = self._fts_tokenizer_requested
+        if warn and requested is not None and requested != actual:
+            logger.warning(
+                "fts_tokenizer=%r requested but %s was indexed with %r; keeping the "
+                "existing index. Call VstashStore.rebuild_fts(%r) to switch.",
+                requested,
+                self.db_path,
+                actual,
+                requested,
+            )
+        changed = actual != self._fts_tokenizer
+        self._fts_tokenizer = actual
+        return changed
+
+    def _sync_fts_tokenizer(self) -> None:
+        """Re-read the index tokenizer if the schema changed under this store.
+
+        ``rebuild_fts`` run from another store or process replaces
+        ``fts_chunks``; this instance would otherwise keep stemming query
+        terms, building IDF and serving cached results for the old
+        tokenizer. ``PRAGMA schema_version`` is a header read, so the check
+        costs next to nothing when nothing changed.
+
+        Runs on every search, cache hits included, so it is serialized:
+        concurrent searches on a shared store would otherwise execute the
+        same cached statement on ``self._conn`` at once.
+        """
+        with self._fts_sync_lock:
+            cookie = self._conn.execute("PRAGMA schema_version").fetchone()[0]
+            if cookie == self._fts_schema_cookie:
+                return
+            if self._adopt_fts_tokenizer(self._conn, warn=False):
+                self._idf_cache = None
+                self._bump_cache_epoch()
+
+    def rebuild_fts(self, tokenizer: str) -> None:
+        """Rebuild the keyword index with another FTS5 tokenizer.
+
+        Drops ``fts_chunks`` and re-tokenizes every chunk from the
+        ``chunks`` table (the index is an external-content table, so no text
+        is lost). Atomic: a failure leaves the previous index in place. Vectors
+        are untouched -- no re-embedding. Cost is one pass over the chunk text.
+        """
+        if tokenizer not in FTS_TOKENIZERS:
+            raise ValueError(
+                f"tokenizer must be one of {sorted(FTS_TOKENIZERS)}; got {tokenizer!r}"
+            )
+        if self._batch_depth > 0:
+            raise RuntimeError("rebuild_fts() cannot run inside batch_mode()")
+        with self._write_lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._conn.execute("DROP TABLE IF EXISTS fts_chunks_vocab")
+                self._conn.execute("DROP TABLE IF EXISTS fts_chunks")
+                self._conn.execute(
+                    "CREATE VIRTUAL TABLE fts_chunks USING fts5("
+                    f"text, content=chunks, content_rowid=id, tokenize='{tokenizer}')"
+                )
+                self._conn.execute(
+                    "CREATE VIRTUAL TABLE fts_chunks_vocab USING fts5vocab(fts_chunks, row)"
+                )
+                self._conn.execute("INSERT INTO fts_chunks(fts_chunks) VALUES('rebuild')")
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+        self._fts_tokenizer = tokenizer
+        self._fts_tokenizer_requested = tokenizer
+        self._fts_schema_cookie = self._conn.execute("PRAGMA schema_version").fetchone()[0]
+        # Everything derived from the old tokenization is stale. The
+        # per-thread stemming connections are not closed here: a search on
+        # another thread may be using its own right now. ``_stem_terms``
+        # notices the tokenizer change and replaces each one on its owner
+        # thread.
+        self._idf_cache = None
+        self._bump_cache_epoch()
 
     def _check_schema_version(self, conn: sqlite3.Connection) -> None:
         """Read or stamp the schema version in ``store_meta``.

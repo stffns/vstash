@@ -87,7 +87,7 @@ def search_with_embedding(
     added_before: str | None = None,
     tags: str | list[str] | None = None,
     filters: dict | None = None,
-    mmr_lambda: float = 0.5,
+    mmr_lambda: float | None = 0.5,
     dedup_threshold: float | None = None,
     vec_weight: float | None = None,
     fts_weight: float | None = None,
@@ -95,6 +95,9 @@ def search_with_embedding(
     distance_cutoff: float | None = None,
     exact_match: str | None = None,
     exact_match_case_sensitive: bool = False,
+    lexical_gate: bool = False,
+    drop_stopwords: bool = False,
+    min_vec_keep: int = 0,
     log_usage: bool = True,
     usage_prior: bool | None = None,
     min_relevance: Literal["high", "medium"] | None = None,
@@ -130,7 +133,8 @@ def search_with_embedding(
             (``"alpha,beta"``) or a list (``["alpha", "beta"]``).
             Comma-anchored LIKE match so ``alpha`` does not false-match
             ``alphabet``.
-        mmr_lambda: MMR diversity coefficient (0.0 to 1.0).
+        mmr_lambda: MMR diversity coefficient (0.0 to 1.0). ``1.0`` is a hard
+            one-chunk-per-document cap; ``None`` disables intra-document dedup.
         dedup_threshold: Opt-in cross-document near-duplicate collapse.
             ``None`` (default) leaves ranking untouched. When set, a chunk
             is dropped if its cosine similarity to an already kept,
@@ -142,6 +146,10 @@ def search_with_embedding(
         fts_weight: Pin RRF FTS weight; None keeps adaptive RRF.
         retrieval_mode: ``"hybrid"`` (default), ``"vec_only"``, or
             ``"fts_only"``. None resolves to ``"hybrid"``.
+        lexical_gate / drop_stopwords / min_vec_keep: Opt-in retrieval
+            options forwarded to ``VstashStore.search`` (all off by
+            default; see its docstring). Measured in
+            ``experiments/LAB-recuperacion-es.md``.
         distance_cutoff: Override the store's default distance cutoff
             for this call. ``None`` (default) lets the store apply
             its built-in default. Validated against
@@ -263,6 +271,9 @@ def search_with_embedding(
         dedup_threshold=dedup_threshold,
         exact_match=exact_match,
         exact_match_case_sensitive=exact_match_case_sensitive,
+        lexical_gate=lexical_gate,
+        drop_stopwords=drop_stopwords,
+        min_vec_keep=min_vec_keep,
         include_retired=include_retired,
         **extra_kwargs,
     )
