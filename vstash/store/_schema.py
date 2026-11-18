@@ -10,13 +10,14 @@ is never instantiated on its own.
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
 from ..errors import SchemaVersionError
-from ._common import KNOWN_SCHEMA_VERSIONS, SCHEMA_VERSION
+from ._common import FTS_TOKENIZERS, KNOWN_SCHEMA_VERSIONS, SCHEMA_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,10 @@ class _SchemaManagerMixin:
     db_path: Path
     embedding_dim: int
     _write_lock: threading.Lock
+    _fts_tokenizer: str
+    _fts_tokenizer_requested: str | None
+    _fts_schema_cookie: int | None
+    _fts_sync_lock: threading.Lock
 
     def _create_tables(self, conn: sqlite3.Connection) -> None:
         """Initialize database schema if not present."""
@@ -53,7 +58,17 @@ class _SchemaManagerMixin:
                 content_hash TEXT,
                 char_count   INTEGER DEFAULT 0,
                 chunk_count  INTEGER DEFAULT 0,
-                added_at     TEXT NOT NULL
+                added_at     TEXT NOT NULL,
+                -- Claim fields (memoria confiable, 2026-11-10). A claim is a
+                -- fact or decision with a source and a state. charla is
+                -- narrative: status 'relato'. A claim with no source_ref is
+                -- stored as 'sin-fuente' instead of passing for knowledge.
+                status       TEXT,
+                source_ref   TEXT,
+                valid_from   TEXT,
+                valid_until  TEXT,
+                supersedes   TEXT,
+                confidence   REAL
             );
 
             -- Chunk text + position
@@ -75,7 +90,7 @@ class _SchemaManagerMixin:
             -- Full-text search index (FTS5)
             -- content= makes it a content table — no duplicate text stored
             CREATE VIRTUAL TABLE IF NOT EXISTS fts_chunks
-            USING fts5(text, content=chunks, content_rowid=id, tokenize='porter ascii');
+            USING fts5(text, content=chunks, content_rowid=id, tokenize='{self._fts_tokenizer}');
 
             -- FTS5 vocabulary table for IDF computation (adaptive RRF weights)
             CREATE VIRTUAL TABLE IF NOT EXISTS fts_chunks_vocab
@@ -110,7 +125,8 @@ class _SchemaManagerMixin:
                 result_count    INTEGER NOT NULL,
                 dismissed       INTEGER NOT NULL DEFAULT 0,
                 created_at      TEXT NOT NULL,
-                miss_hint       TEXT
+                miss_hint       TEXT,
+                query_embedding BLOB
             );
 
             -- Store metadata: key-value table for tracking what the
@@ -125,6 +141,40 @@ class _SchemaManagerMixin:
 
             CREATE INDEX IF NOT EXISTS idx_search_events_tier
             ON search_events(relevance_tier, created_at);
+
+            -- Usage log: the ranked chunks each search actually returned
+            -- to its caller, one row per (event, rank).  ``used`` flips
+            -- to 1 when the caller reports the result was consumed
+            -- (``mark_result_used``), which turns "returned and used" vs
+            -- "returned and ignored" into an implicit relevance label for
+            -- retrain.  Both FKs cascade: pruning search_events (rolling
+            -- cap, ``vstash compact``) or deleting a document (its chunks)
+            -- drops the matching rows, so labels never point at chunk
+            -- ids that no longer exist.  Additive table created with
+            -- IF NOT EXISTS, so no SCHEMA_VERSION bump: older builds
+            -- open the DB unchanged and newer builds add it on open.
+            CREATE TABLE IF NOT EXISTS search_results (
+                event_id  INTEGER NOT NULL
+                          REFERENCES search_events(id) ON DELETE CASCADE,
+                rank      INTEGER NOT NULL,
+                chunk_id  INTEGER NOT NULL
+                          REFERENCES chunks(id) ON DELETE CASCADE,
+                score     REAL NOT NULL,
+                used      INTEGER NOT NULL DEFAULT 0,
+                used_at   TEXT,
+                PRIMARY KEY (event_id, rank)
+            ) WITHOUT ROWID;
+
+            -- Child-side index for the chunks(id) cascade: without it every
+            -- chunk delete would scan search_results.
+            CREATE INDEX IF NOT EXISTS idx_search_results_chunk
+            ON search_results(chunk_id);
+
+            -- Partial index over the (few) used rows: the opt-in usage
+            -- prior looks up "events where something was used" on every
+            -- search, and without it that is a scan of every result row.
+            CREATE INDEX IF NOT EXISTS idx_search_results_used
+            ON search_results(event_id) WHERE used = 1;
 
             -- Auto-sync FTS5 when chunks are deleted directly
             CREATE TRIGGER IF NOT EXISTS trg_chunks_delete
@@ -155,6 +205,110 @@ class _SchemaManagerMixin:
         # the known set.  Legacy DBs created before this stamp existed
         # are treated as v1 — that's the only schema vstash has shipped.
         self._check_schema_version(conn)
+        self._adopt_fts_tokenizer(conn)
+
+    def _adopt_fts_tokenizer(self, conn: sqlite3.Connection, *, warn: bool = True) -> bool:
+        """Make ``self._fts_tokenizer`` the tokenizer ``fts_chunks`` really uses.
+
+        ``CREATE VIRTUAL TABLE IF NOT EXISTS`` is a no-op on an existing
+        database, so the constructor argument only takes effect when the
+        index is first created. The index's own DDL is the source of truth:
+        adaptive RRF stems query terms with ``_stem_terms`` and looks them up
+        in the index vocabulary, and a mismatch would silently turn every
+        lookup into a miss. Asking for a different tokenizer on an existing
+        database is therefore not an error -- the store keeps working with
+        the index it has and says how to switch.
+
+        Also records ``PRAGMA schema_version`` so :meth:`_sync_fts_tokenizer`
+        can tell when another connection changed the schema.
+
+        Returns:
+            ``True`` when ``self._fts_tokenizer`` changed.
+        """
+        self._fts_schema_cookie = conn.execute("PRAGMA schema_version").fetchone()[0]
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'fts_chunks'"
+        ).fetchone()
+        found = re.search(r"tokenize\s*=\s*'([^']*)'", row[0] or "") if row else None
+        if found is None:
+            return False
+        actual = found.group(1)
+        requested = self._fts_tokenizer_requested
+        if warn and requested is not None and requested != actual:
+            logger.warning(
+                "fts_tokenizer=%r requested but %s was indexed with %r; keeping the "
+                "existing index. Call VstashStore.rebuild_fts(%r) to switch.",
+                requested,
+                self.db_path,
+                actual,
+                requested,
+            )
+        changed = actual != self._fts_tokenizer
+        self._fts_tokenizer = actual
+        return changed
+
+    def _sync_fts_tokenizer(self) -> None:
+        """Re-read the index tokenizer if the schema changed under this store.
+
+        ``rebuild_fts`` run from another store or process replaces
+        ``fts_chunks``; this instance would otherwise keep stemming query
+        terms, building IDF and serving cached results for the old
+        tokenizer. ``PRAGMA schema_version`` is a header read, so the check
+        costs next to nothing when nothing changed.
+
+        Runs on every search, cache hits included, so it is serialized:
+        concurrent searches on a shared store would otherwise execute the
+        same cached statement on ``self._conn`` at once.
+        """
+        with self._fts_sync_lock:
+            cookie = self._conn.execute("PRAGMA schema_version").fetchone()[0]
+            if cookie == self._fts_schema_cookie:
+                return
+            if self._adopt_fts_tokenizer(self._conn, warn=False):
+                self._idf_cache = None
+                self._bump_cache_epoch()
+
+    def rebuild_fts(self, tokenizer: str) -> None:
+        """Rebuild the keyword index with another FTS5 tokenizer.
+
+        Drops ``fts_chunks`` and re-tokenizes every chunk from the
+        ``chunks`` table (the index is an external-content table, so no text
+        is lost). Atomic: a failure leaves the previous index in place. Vectors
+        are untouched -- no re-embedding. Cost is one pass over the chunk text.
+        """
+        if tokenizer not in FTS_TOKENIZERS:
+            raise ValueError(
+                f"tokenizer must be one of {sorted(FTS_TOKENIZERS)}; got {tokenizer!r}"
+            )
+        if self._batch_depth > 0:
+            raise RuntimeError("rebuild_fts() cannot run inside batch_mode()")
+        with self._write_lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._conn.execute("DROP TABLE IF EXISTS fts_chunks_vocab")
+                self._conn.execute("DROP TABLE IF EXISTS fts_chunks")
+                self._conn.execute(
+                    "CREATE VIRTUAL TABLE fts_chunks USING fts5("
+                    f"text, content=chunks, content_rowid=id, tokenize='{tokenizer}')"
+                )
+                self._conn.execute(
+                    "CREATE VIRTUAL TABLE fts_chunks_vocab USING fts5vocab(fts_chunks, row)"
+                )
+                self._conn.execute("INSERT INTO fts_chunks(fts_chunks) VALUES('rebuild')")
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+        self._fts_tokenizer = tokenizer
+        self._fts_tokenizer_requested = tokenizer
+        self._fts_schema_cookie = self._conn.execute("PRAGMA schema_version").fetchone()[0]
+        # Everything derived from the old tokenization is stale. The
+        # per-thread stemming connections are not closed here: a search on
+        # another thread may be using its own right now. ``_stem_terms``
+        # notices the tokenizer change and replaces each one on its owner
+        # thread.
+        self._idf_cache = None
+        self._bump_cache_epoch()
 
     def _check_schema_version(self, conn: sqlite3.Connection) -> None:
         """Read or stamp the schema version in ``store_meta``.
@@ -364,6 +518,19 @@ class _SchemaManagerMixin:
             migrations.append("ALTER TABLE documents ADD COLUMN tags TEXT")
         if "content_hash" not in doc_columns:
             migrations.append("ALTER TABLE documents ADD COLUMN content_hash TEXT")
+        # Claim fields. Additive, so no SCHEMA_VERSION bump is needed, as
+        # with the columns above.
+        for _claim_column in (
+            "status",
+            "source_ref",
+            "valid_from",
+            "valid_until",
+            "supersedes",
+        ):
+            if _claim_column not in doc_columns:
+                migrations.append(f"ALTER TABLE documents ADD COLUMN {_claim_column} TEXT")
+        if "confidence" not in doc_columns:
+            migrations.append("ALTER TABLE documents ADD COLUMN confidence REAL")
 
         # miss_hint column on search_events (issue #157 part 3, 2026-04-21)
         event_columns = {
@@ -371,6 +538,10 @@ class _SchemaManagerMixin:
         }
         if event_columns and "miss_hint" not in event_columns:
             migrations.append("ALTER TABLE search_events ADD COLUMN miss_hint TEXT")
+        # query_embedding on search_events: float32 bytes of the query vector,
+        # read by the opt-in query-conditioned usage prior.
+        if event_columns and "query_embedding" not in event_columns:
+            migrations.append("ALTER TABLE search_events ADD COLUMN query_embedding BLOB")
 
         # Frequency + decay scoring columns on chunks
         chunk_columns = {row[1] for row in conn.execute("PRAGMA table_info(chunks)").fetchall()}
@@ -399,6 +570,18 @@ class _SchemaManagerMixin:
                             SELECT d.added_at FROM documents d WHERE d.id = chunks.doc_id
                         ) WHERE created_at IS NULL
                     """)
+                # Claim backfill, only in the call that ADDS the column.
+                # Rows written before this schema never had a source, so a
+                # legacy hecho/decision is 'sin-fuente', not 'vigente'; a
+                # charla is narrative.
+                if "status" not in doc_columns:
+                    conn.execute("""
+                        UPDATE documents SET status = CASE
+                            WHEN layer IN ('hecho', 'decision') THEN 'sin-fuente'
+                            ELSE 'relato'
+                        END
+                        WHERE status IS NULL
+                    """)
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -414,6 +597,10 @@ class _SchemaManagerMixin:
                 UPDATE chunks SET access_count = 0
                 WHERE access_count = 1 AND last_accessed_at IS NULL
             """)
+
+        # Search hides superseded/refuted claims on every query, so the
+        # status column is worth an index (idempotent on existing DBs).
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status)")
 
     # ------------------------------------------------------------------ #
     # Store metadata (key/value)                                            #

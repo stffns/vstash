@@ -32,7 +32,7 @@ from .config import VstashConfig, load_config
 from .embed import embed_query
 from .ingest import ingest
 from .models import SearchResult
-from .services import search_with_embedding
+from .services import mark_used, search_with_embedding
 from .store import VstashStore, relevance_tier
 from .validation import LimitError
 
@@ -107,11 +107,20 @@ def _do_search(query: str, top_k: int, recency_boost: float) -> dict:
     )
     best_distance = store.last_best_distance
     relevance = relevance_tier(best_distance)
-    return {
+    data: dict[str, Any] = {
         "results": [r.model_dump(exclude_none=True) for r in results],
         "relevance": relevance,
         "best_distance": round(best_distance, 4),
     }
+    event_id = getattr(results, "event_id", None)
+    if event_id is not None:
+        # Report used results back via POST /api/search/used.
+        data["event_id"] = event_id
+    return data
+
+
+def _do_mark_used(event_id: int, chunk_ids: list[int]) -> dict:
+    return {"marked": mark_used(store=_get_store(), event_id=event_id, chunk_ids=chunk_ids)}
 
 
 def _do_documents() -> list:
@@ -292,6 +301,28 @@ async def api_search(request: Request) -> JSONResponse:
         # Validation now lives in the services layer; surface the
         # rejection as 400 instead of letting it bubble up as 500.
         return _json({"error": str(exc), "kind": type(exc).__name__}, 400)
+    return _json(data)
+
+
+async def api_search_used(request: Request) -> JSONResponse:
+    """POST /api/search/used — mark results of a search as used.
+
+    Body: ``{"event_id": int, "chunk_ids": [int, ...]}`` (``chunk_id``
+    accepted for a single id). Returns ``{"marked": N}``.
+    """
+    body = await request.json()
+    event_id = body.get("event_id")
+    chunk_ids = body.get("chunk_ids", body.get("chunk_id"))
+    if isinstance(chunk_ids, int) and not isinstance(chunk_ids, bool):
+        chunk_ids = [chunk_ids]
+    if (
+        not isinstance(event_id, int)
+        or isinstance(event_id, bool)
+        or not isinstance(chunk_ids, list)
+        or not all(isinstance(c, int) and not isinstance(c, bool) for c in chunk_ids)
+    ):
+        return _json({"error": "event_id (int) and chunk_ids (list of int) are required"}, 400)
+    data = await _run_sync(_do_mark_used, event_id, chunk_ids)
     return _json(data)
 
 
@@ -589,6 +620,7 @@ def create_app(debug: bool = False) -> Starlette:
         Route("/", index),
         Route("/api/embed", api_embed, methods=["POST"]),
         Route("/api/search", api_search, methods=["POST"]),
+        Route("/api/search/used", api_search_used, methods=["POST"]),
         Route("/api/chat", api_chat, methods=["POST"]),
         Route("/api/chat/reset", api_chat_reset, methods=["POST"]),
         Route("/api/documents", api_documents),

@@ -91,6 +91,8 @@ class EmbeddingsConfig(BaseModel):
       - ``sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`` (384 dims, 50+ languages)
       - ``sentence-transformers/paraphrase-multilingual-mpnet-base-v2`` (768 dims, 50+ languages)
       - ``intfloat/multilingual-e5-large`` (1024 dims, 100+ languages, highest quality)
+      - ``jinaai/jina-embeddings-v5-text-nano-retrieval`` (768 dims, multilingual,
+        best measured on Spanish retrieval; CC BY-NC 4.0)
 
     **Tip**: For multilingual corpora, set
     ``model = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"``
@@ -271,6 +273,82 @@ class ObservabilityConfig(BaseModel):
             "issue #157 part 3."
         ),
     )
+    log_search_results: bool = Field(
+        default=True,
+        description=(
+            "Usage log: record the ranked chunk ids every adapter-facing "
+            "search (SDK / MCP / web / CLI via ``vstash.services``) "
+            "returned, in the ``search_results`` table, and expose the "
+            "``event_id`` so callers can report which results they used "
+            "(``Memory.mark_used``). Feeds implicit relevance labels for "
+            "retrain. Costs one small write transaction per search; set "
+            "to false to opt out."
+        ),
+    )
+    search_log_max_events: int = Field(
+        default=10_000,
+        ge=1,
+        description=(
+            "Rolling cap on ``search_events`` rows (and, by cascade, their "
+            "``search_results`` rows). Older events are pruned on every "
+            "insert."
+        ),
+    )
+
+
+class UsagePriorConfig(BaseModel):
+    """Opt-in query-conditioned usage prior (``[usage_prior]``).
+
+    Boosts documents that past searches *similar to the current one*
+    marked as used (``Memory.mark_used``). For each search it finds the
+    (at most ``max_neighbors``) logged queries whose embedding cosine to
+    the current query is ``>= tau`` and in which a result was used, sums
+    ``similarity * uses`` per document, and rescales the candidates as
+    ``score * (1 + beta * log1p(uses))`` before the ``top_k`` cut. A
+    search with no similar past query is left exactly as it would be
+    with the prior off.
+
+    Measured in ``experiments/results/usage_prior_probe.md`` (#515): on
+    BEIR with a noisy simulated log, ``tau = 0.9`` / ``beta = 2.0`` --
+    picked on dev by a rule that caps each dataset's loss -- lifted
+    SciFact hybrid NDCG@10 0.727 -> 0.761 while queries whose answers
+    were never used moved by at most 0.001. A *global* (unconditioned)
+    popularity boost was rejected there: it trades unseen queries for
+    repeat ones. ``tau`` is the safety knob: lowering it to 0.8 cost
+    FiQA 0.026. Needs ``observability.log_search_results`` (the prior
+    reads the usage log) and is off by default.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    enabled: bool = Field(
+        default=False,
+        description="Apply the query-conditioned usage prior to adapter searches.",
+    )
+    tau: float = Field(
+        default=0.9,
+        gt=0.0,
+        le=1.0,
+        description="Minimum query-query cosine for a past search to count.",
+    )
+    beta: float = Field(
+        default=2.0,
+        ge=0.0,
+        description="Boost strength: score *= 1 + beta * log1p(weighted uses).",
+    )
+    max_neighbors: int = Field(
+        default=20,
+        ge=1,
+        description="Cap on similar past searches consulted per query.",
+    )
+    candidate_pool: int = Field(
+        default=50,
+        ge=1,
+        description=(
+            "Candidates re-scored when a similar past search exists "
+            "(clamped to limits.max_top_k, never below top_k)."
+        ),
+    )
 
 
 class LimitsConfig(BaseModel):
@@ -369,6 +447,39 @@ class CacheConfig(BaseModel):
     )
 
 
+class JudgeConfig(BaseModel):
+    """Local decision model that gates and verifies ``ask`` (see ``vstash.judge``).
+
+    Off by default; needs ``pip install vstash[judge]`` (PyTorch + transformers). The model is
+    Liquid AI's open d1 (``LiquidAI/d1-2B``), downloaded from Hugging Face on first use.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    enabled: bool = Field(default=False, description="Run the judge around every ask")
+    model: str = Field(default="LiquidAI/d1-2B", description="Hugging Face id of a d1 model")
+    device: str = Field(default="auto", description="auto | mps | cuda | cpu")
+    gate: bool = Field(
+        default=True, description="Skip the LLM when the context does not hold the answer"
+    )
+    gate_threshold: float = Field(
+        default=0.4,
+        ge=0.0,
+        le=1.0,
+        description="Below this P(answerable), reply 'not in memory' instead of calling the LLM",
+    )
+    verify: bool = Field(default=True, description="Check each claim of the reply")
+    claim_threshold: float = Field(
+        default=0.5, ge=0.0, le=1.0, description="Below this P(supported), a claim is flagged"
+    )
+    max_claims: int = Field(default=20, ge=1, le=200, description="Claims checked per reply")
+    verify_adapter: str | None = Field(
+        default=None,
+        description="Directory of a LoRA fact-checking adapter (lora.json + adapter.safetensors) "
+        "switched on only for claim checks; the gate always reads the base model",
+    )
+
+
 class VstashConfig(BaseModel):
     """Root configuration for vstash.
 
@@ -412,6 +523,8 @@ class VstashConfig(BaseModel):
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
     cache: CacheConfig = Field(default_factory=CacheConfig)
+    judge: JudgeConfig = Field(default_factory=JudgeConfig)
+    usage_prior: UsagePriorConfig = Field(default_factory=UsagePriorConfig)
 
     @property
     def cerebras_api_key(self) -> str:

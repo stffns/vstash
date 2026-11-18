@@ -28,8 +28,15 @@ from ..models import (
     StageVerdict,
 )
 from ..validation import validate_search_input
+from ._stopwords import drop_stopwords as _drop_stopwords
 from ._common import (
     _ADAPTIVE_RRF_LONG_QUERY,
+    _LEXICAL_GATE_CLOSED_FTS_WEIGHT,
+    _LEXICAL_GATE_COVERAGE_HIGH,
+    _LEXICAL_GATE_COVERAGE_LOW,
+    _LEXICAL_GATE_HIGH,
+    _LEXICAL_GATE_LOW,
+    _LEXICAL_GATE_MIN_FTS_WEIGHT,
     _DEDUP_SIM_EPS,
     _LONG_QUERY_DISTANCE_CUTOFF,
     _PipelineTracer,
@@ -44,6 +51,16 @@ from ._common import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: sqlite-vec rejects a KNN ``k`` above this value.
+_VEC_KNN_MAX_K = 4096
+
+
+def _gate_ramp(value: float, low: float, high: float) -> float:
+    """0 below ``low``, 1 from ``high`` up, linear in between; a step when they coincide."""
+    if high <= low:
+        return 1.0 if value >= low else 0.0
+    return min(1.0, max(0.0, (value - low) / (high - low)))
 
 
 class _SearchEngineMixin:
@@ -74,6 +91,10 @@ class _SearchEngineMixin:
         cache_epoch: int,
         filters: dict | None = None,
         dedup_threshold: float | None = None,
+        lexical_gate: bool = False,
+        min_vec_keep: int = 0,
+        drop_stopwords: bool = False,
+        include_retired: bool = False,
     ) -> int:
         """Build the search cache key from the full set of query parameters.
 
@@ -121,6 +142,10 @@ class _SearchEngineMixin:
                 # order stays significant, which only costs a cache miss.
                 None if filters is None else json.dumps(filters, sort_keys=True, default=str),
                 dedup_threshold,
+                lexical_gate,
+                min_vec_keep,
+                drop_stopwords,
+                include_retired,
                 cache_epoch,
             )
         )
@@ -237,6 +262,11 @@ class _SearchEngineMixin:
                 "collection": row["collection"],
                 "tags": row["tags"],
                 "layer": row["layer"],
+                "status": row["status"],
+                "source_ref": row["source_ref"],
+                "valid_from": row["valid_from"],
+                "valid_until": row["valid_until"],
+                "supersedes": row["supersedes"],
             }
             if explain:
                 explain_rrf_vec[chunk_id] = vec_contrib
@@ -266,6 +296,11 @@ class _SearchEngineMixin:
                     "collection": row["collection"],
                     "tags": row["tags"],
                     "layer": row["layer"],
+                    "status": row["status"],
+                    "source_ref": row["source_ref"],
+                    "valid_from": row["valid_from"],
+                    "valid_until": row["valid_until"],
+                    "supersedes": row["supersedes"],
                 }
                 if explain:
                     explain_rrf_fts[chunk_id] = fts_contribution
@@ -359,6 +394,11 @@ class _SearchEngineMixin:
                 collection=r.get("collection"),
                 tags=r.get("tags"),
                 layer=r.get("layer"),
+                status=r.get("status"),
+                source_ref=r.get("source_ref"),
+                valid_from=r.get("valid_from"),
+                valid_until=r.get("valid_until"),
+                supersedes=r.get("supersedes"),
             )
             for r in ranked
         ]
@@ -381,11 +421,15 @@ class _SearchEngineMixin:
         added_before: str | None = None,
         tags: str | list[str] | None = None,
         filters: dict | None = None,
-        mmr_lambda: float = 0.5,
+        mmr_lambda: float | None = 0.5,
         dedup_threshold: float | None = None,
         retrieval_mode: Literal["hybrid", "vec_only", "fts_only"] | None = None,
         exact_match: str | None = None,
         exact_match_case_sensitive: bool = False,
+        lexical_gate: bool = False,
+        min_vec_keep: int = 0,
+        drop_stopwords: bool = False,
+        include_retired: bool = False,
         _tracer: _PipelineTracer | None = None,
     ) -> list[SearchResult]:
         """Hybrid search: vector (semantic) + FTS5 (keyword) combined with RRF.
@@ -412,6 +456,16 @@ class _SearchEngineMixin:
             collection: If set, restrict search to documents in this collection.
             project: If set, restrict search to documents with this project tag.
             layer: If set, restrict search to documents with this layer tag.
+            mmr_lambda: Intra-document diversity (default ``0.5``). A chunk
+                is penalised by its similarity to chunks of the *same
+                document* already selected, so near-identical siblings do
+                not fill the list. Note the two ends: ``1.0`` is **not**
+                "no dedup" -- it is the strictest setting, a hard cap of
+                one chunk per document. Pass ``None`` to switch the
+                intra-document dedup off entirely and let every chunk
+                compete on score; that is what a caller wants when a
+                reranker (or its own context builder) sits behind the
+                search and should see all candidate chunks, similar or not.
             dedup_threshold: Opt-in cross-document near-duplicate collapse.
                 ``None`` (default) leaves the pipeline untouched. When set,
                 a chunk is dropped if its cosine similarity to an already
@@ -436,6 +490,30 @@ class _SearchEngineMixin:
             exact_match_case_sensitive: Toggle for the above. Default
                 ``False`` does a casefold comparison which matches
                 typical retrieval-filter UX expectations.
+            lexical_gate: Opt-in (default ``False`` = published pipeline).
+                Stops the keyword side from voting when it has no real
+                evidence for *this* query. The evidence is read off the BM25
+                score of the best FTS5 hit: how many rare terms it matches
+                (``bm25 / ln N``) and what share of the query it covers
+                (``bm25 / sum of the query terms' IDF``). When both are low
+                -- a vague or paraphrased query whose best keyword match
+                shares a common word or two out of several -- the FTS
+                weight drops to 0 and the ranking is the vector ranking,
+                with keyword-only hits appended after it. Any query that
+                matches rare terms, and any short query matched in full,
+                keeps exactly the weights it had. Hybrid mode only.
+            drop_stopwords: Opt-in (default ``False``). Remove Spanish and
+                English function words ("de", "la", "the", "of"...) from the
+                keyword side of the query: they are left out of the FTS5
+                MATCH expression and of the IDF average that drives adaptive
+                RRF. The vector side still sees the full query, and nothing
+                changes in the index. Queries over 50 words are left alone
+                so the long-query rule keeps its meaning.
+            min_vec_keep: Opt-in floor for the distance cutoff (default
+                ``0`` = no floor). The cutoff never leaves fewer than this
+                many vector candidates, however far they are from the
+                best one. Useful when the best match is unusually close
+                and the ratio cutoff would otherwise drop everything else.
             retrieval_mode: Which search branches to run (default
                 ``"hybrid"``). Three values:
 
@@ -479,6 +557,13 @@ class _SearchEngineMixin:
             fts_weight=fts_weight,
             dedup_threshold=dedup_threshold,
         )
+        if isinstance(min_vec_keep, bool) or not isinstance(min_vec_keep, int) or min_vec_keep < 0:
+            raise ValueError(f"min_vec_keep must be a non-negative int; got {min_vec_keep!r}")
+
+        # Another process may have rebuilt the keyword index with another
+        # tokenizer since this store opened; pick that up before anything
+        # (cache, IDF, stemming) relies on the old one.
+        self._sync_fts_tokenizer()
 
         # --- Query cache key ---
         # Skip the cache when an exact_match filter is ACTIVE (non-empty).
@@ -509,6 +594,10 @@ class _SearchEngineMixin:
                 cache_epoch=self._cache_epoch,
                 filters=filters,
                 dedup_threshold=dedup_threshold,
+                lexical_gate=lexical_gate,
+                min_vec_keep=min_vec_keep,
+                drop_stopwords=drop_stopwords,
+                include_retired=include_retired,
             )
 
         # Per-search miss-analysis tracker (#108).  The tracer is owned
@@ -544,8 +633,24 @@ class _SearchEngineMixin:
                 with self._cache_lock:
                     if _cache_key in self._query_cache:
                         self._query_cache.move_to_end(_cache_key)
-                        cached = list(self._query_cache[_cache_key])
+                        cached_results, cached_best = self._query_cache[_cache_key]
+                        # A cached list can outlive a claim's valid_until.
+                        # Dropping the expired rows would leave empty slots a
+                        # live runner-up should fill (and keep the expired
+                        # winner's distance), so treat it as a miss instead.
+                        _now = datetime.now(timezone.utc).isoformat()
+                        if not include_retired and any(
+                            r.valid_until and r.valid_until <= _now for r in cached_results
+                        ):
+                            del self._query_cache[_cache_key]
+                        else:
+                            cached = list(cached_results)
                 if cached is not None:
+                    # Restore the best distance this query produced when it
+                    # was cached: without it ``last_best_distance`` (and so
+                    # ``relevance_tier`` / ``min_relevance``) would report
+                    # whatever the previous, unrelated query left behind.
+                    self.last_best_distance = cached_best
                     _result_count = len(cached)
                     registry.counter_inc("query_cache_hits_total")
                     return cached
@@ -587,11 +692,19 @@ class _SearchEngineMixin:
                     distance_cutoff = _LONG_QUERY_DISTANCE_CUTOFF
                 adaptive_rrf = False
 
+            # Keyword-side view of the query. Identical to ``query_text``
+            # unless the caller opted into stopword removal.
+            keyword_text = query_text
+            if drop_stopwords:
+                raw_words = query_text.split()
+                if len(raw_words) <= _ADAPTIVE_RRF_LONG_QUERY:
+                    keyword_text = " ".join(_drop_stopwords(raw_words))
+
             # Adaptive RRF: compute weights from query characteristics (IDF + length)
             # Skip if caller provided explicit weights
             if adaptive_rrf and vec_weight is None and fts_weight is None:
                 vec_weight, fts_weight, distance_cutoff = self._compute_adaptive_rrf_params(
-                    query_text, default_cutoff=distance_cutoff
+                    keyword_text, default_cutoff=distance_cutoff
                 )
             vec_weight, fts_weight = self._resolve_rrf_weights(vec_weight, fts_weight)
 
@@ -599,6 +712,13 @@ class _SearchEngineMixin:
             effective_k = top_k
             total_chunks = self._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
             candidate_pool = min(effective_k * 10, max(effective_k * 3, total_chunks // 3))
+            # The ``min_vec_keep`` floor can only keep candidates that were
+            # fetched, so the vector side asks for at least that many. The
+            # keyword side keeps the normal pool: the floor is a vector-side
+            # option and must not change which keyword hits are considered.
+            vec_pool = candidate_pool
+            if min_vec_keep > candidate_pool:
+                vec_pool = min(min_vec_keep, max(total_chunks, candidate_pool), _VEC_KNN_MAX_K)
 
             # --- Build metadata filter ---
             vec_clause, col_clause, filter_params = self._build_doc_filter(
@@ -609,6 +729,7 @@ class _SearchEngineMixin:
                 added_after=added_after,
                 added_before=added_before,
                 filters=filters,
+                include_retired=include_retired,
             )
 
             # --- Vector search ---
@@ -657,45 +778,14 @@ class _SearchEngineMixin:
                 # ``last_best_distance`` and ``relevance_tier`` both
                 # assume (``[0, 2]``), even if an implementation
                 # quirk yields a value slightly outside ``[-1, 1]``.
-                snap_results = self._snap.search(
-                    np.array(query_embedding, dtype=np.float32), k=candidate_pool
+                vec_rows = self._snap_candidates(
+                    query_embedding, vec_pool, vec_clause, filter_params
                 )
-                snap_ids = [int(r[0]) for r in snap_results]
-                if self._vector_backend == "snapvec":
-                    snap_dists = {
-                        int(r[0]): min(2.0, max(0.0, 1.0 - float(r[1]))) for r in snap_results
-                    }
-                else:
-                    snap_dists = {int(r[0]): min(2.0, max(0.0, float(r[1]))) for r in snap_results}
-
-                if snap_ids:
-                    placeholders = ",".join("?" * len(snap_ids))
-                    # Build filter clause adapted for snapvec (no v.rowid)
-                    snap_filter = vec_clause.replace("v.rowid", "c.id") if vec_clause else ""
-                    rows = self._conn.execute(
-                        f"""
-                        SELECT c.id, c.text, d.title, d.path, c.seq, d.added_at, d.collection, d.tags, d.layer
-                        FROM chunks c
-                        JOIN documents d ON d.id = c.doc_id
-                        WHERE c.id IN ({placeholders})
-                          {snap_filter}
-                        """,
-                        [*snap_ids, *filter_params],
-                    ).fetchall()
-                    # Build dict for fast lookup, attach distance, preserve snap order
-                    row_by_id = {r["id"]: dict(r) for r in rows}
-                    vec_rows = []
-                    for sid in snap_ids:
-                        if sid in row_by_id:
-                            entry = row_by_id[sid]
-                            entry["distance"] = snap_dists.get(sid, 2.0)
-                            vec_rows.append(entry)
-                else:
-                    vec_rows = []
             else:
                 vec_rows = self._conn.execute(
                     f"""
-                    SELECT c.id, c.text, d.title, d.path, c.seq, v.distance, d.added_at, d.collection, d.tags, d.layer
+                    SELECT c.id, c.text, d.title, d.path, c.seq, v.distance, d.added_at, d.collection, d.tags, d.layer,
+                           d.status, d.source_ref, d.valid_from, d.valid_until, d.supersedes
                     FROM vec_chunks v
                     JOIN chunks c ON c.id = v.rowid
                     JOIN documents d ON d.id = c.doc_id
@@ -704,7 +794,7 @@ class _SearchEngineMixin:
                       {vec_clause}
                     ORDER BY v.distance
                     """,
-                    [_serialize(query_embedding), candidate_pool, *filter_params],
+                    [_serialize(query_embedding), vec_pool, *filter_params],
                 ).fetchall()
 
             # --- Track: vector search stage ---
@@ -737,7 +827,7 @@ class _SearchEngineMixin:
                         rank=None,
                         score=None,
                         detail=(
-                            f"Not in vector candidate pool of size {candidate_pool}. "
+                            f"Not in vector candidate pool of size {vec_pool}. "
                             "The chunk's embedding is too far from the query embedding."
                         ),
                         counterfactual="Would need candidate_pool > current rank to appear",
@@ -759,7 +849,10 @@ class _SearchEngineMixin:
                 threshold = best_distance * distance_cutoff
                 cutoff_applied = best_distance > 0
                 if cutoff_applied:
-                    vec_rows = [r for r in vec_rows if float(r["distance"]) <= threshold]
+                    kept = [r for r in vec_rows if float(r["distance"]) <= threshold]
+                    # ``vec_rows`` is sorted by distance, so the floor keeps
+                    # the closest ``min_vec_keep`` candidates.
+                    vec_rows = kept if len(kept) >= min_vec_keep else vec_rows[:min_vec_keep]
                 # Track distance cutoff verdict whenever we have a before-distance
                 # (i.e., the target was in vec_rows pre-filter)
                 if track_target is not None and target_dist_before is not None:
@@ -779,6 +872,19 @@ class _SearchEngineMixin:
                                 f"match exists). Target distance={target_dist_before:.4f}; "
                                 f"this would normally require cutoff ratio > "
                                 f"{target_dist_before * 100:.1f} to pass."
+                            ),
+                        )
+                    elif target_in_after and target_dist_before > threshold:
+                        # Past the ratio threshold, but inside the floor.
+                        _tracer.record(
+                            "distance_cutoff",
+                            passed=True,
+                            score=target_dist_before,
+                            detail=(
+                                f"Distance {target_dist_before:.4f} > threshold "
+                                f"{threshold:.4f} (best={best_distance:.4f} × "
+                                f"cutoff={distance_cutoff:.2f}), kept by "
+                                f"min_vec_keep={min_vec_keep}"
                             ),
                         )
                     elif target_in_after:
@@ -822,8 +928,8 @@ class _SearchEngineMixin:
                     _explain_vec[int(row["id"])] = (rank, float(row["distance"]))
 
             # --- FTS5 search ---
-            words = query_text.split()
-            safe_query, quoted_words = self._build_fts_match_query(query_text, words)
+            words = keyword_text.split()
+            safe_query, quoted_words = self._build_fts_match_query(keyword_text, words)
             if _vec_only:
                 # #275: caller asked to bypass keyword search entirely.
                 # Produce no FTS rows; downstream RRF scoring uses
@@ -843,7 +949,8 @@ class _SearchEngineMixin:
                     fts_rows = self._conn.execute(
                         f"""
                         SELECT c.id, c.text, d.title, d.path, c.seq,
-                               rank as fts_rank, d.added_at, d.collection, d.tags, d.layer
+                               rank as fts_rank, d.added_at, d.collection, d.tags, d.layer,
+                               d.status, d.source_ref, d.valid_from, d.valid_until, d.supersedes
                         FROM fts_chunks f
                         JOIN chunks c ON c.id = f.rowid
                         JOIN documents d ON d.id = c.doc_id
@@ -887,6 +994,41 @@ class _SearchEngineMixin:
                             ),
                             counterfactual="Would need a query containing words from the chunk's vocabulary",
                         )
+
+            # --- Lexical gate (opt-in) ---
+            # ``fts_rows`` is ordered by BM25 (``rank`` is negative, more
+            # negative = better), so the first row carries the strength of
+            # the best keyword match for free.
+            if lexical_gate and _mode == "hybrid" and fts_weight > _LEXICAL_GATE_MIN_FTS_WEIGHT:
+                ramp = 0.0
+                if fts_rows and total_chunks > 1:
+                    best_bm25 = -float(fts_rows[0]["fts_rank"])
+                    max_idf = math.log(total_chunks)
+                    strength = best_bm25 / max_idf
+                    idf_dict, _ = self._build_idf_cache()
+                    terms = self._stem_terms([w for w in words if len(w) > 1])
+                    asked = sum(idf_dict.get(t, max_idf) for t in terms)
+                    coverage = min(1.0, best_bm25 / asked) if asked > 0 else 0.0
+                    ramp = max(
+                        _gate_ramp(strength, _LEXICAL_GATE_LOW, _LEXICAL_GATE_HIGH),
+                        _gate_ramp(
+                            coverage, _LEXICAL_GATE_COVERAGE_LOW, _LEXICAL_GATE_COVERAGE_HIGH
+                        ),
+                    )
+                gated = (
+                    _LEXICAL_GATE_MIN_FTS_WEIGHT
+                    + (fts_weight - _LEXICAL_GATE_MIN_FTS_WEIGHT) * ramp
+                )
+                if ramp == 0.0:
+                    # No keyword evidence at all by either reading: the
+                    # keyword side stops voting instead of keeping a token
+                    # weight that still lets a both-lists hit leapfrog the
+                    # top vector hits.
+                    gated = min(gated, _LEXICAL_GATE_CLOSED_FTS_WEIGHT)
+                # Hand the removed weight to the vector side so the pair
+                # keeps its sum and scores stay on the same scale.
+                vec_weight += fts_weight - gated
+                fts_weight = gated
 
             # --- Adaptive fallback: vector pool empty (#156) ---
             # If the vector pool is empty — either the initial ANN scan
@@ -1019,7 +1161,23 @@ class _SearchEngineMixin:
             # same document only when they are semantically diverse (e.g. different
             # chapters of a book).  Chunks from different documents compete purely
             # on score — no cross-document penalty.
-            ranked = self._mmr_dedup(ranked, top_k, mmr_lambda=mmr_lambda, _explain=explain)
+            #
+            # ``_mmr_dedup`` both dedups and truncates to ``top_k``. When
+            # tracing, run it untruncated so the two can be told apart: the
+            # greedy selection is prefix-stable, so the first ``top_k`` picks
+            # are exactly what the truncated call returns.
+            if mmr_lambda is None:
+                # Caller opted out of intra-document dedup altogether: every
+                # chunk competes on score, siblings included. Only the cut
+                # to ``top_k`` remains (applied below when tracing).
+                if track_target is None:
+                    ranked = ranked[:top_k]
+            elif track_target is not None:
+                ranked = self._mmr_dedup(
+                    ranked, max(top_k, len(ranked)), mmr_lambda=mmr_lambda, _explain=explain
+                )
+            else:
+                ranked = self._mmr_dedup(ranked, top_k, mmr_lambda=mmr_lambda, _explain=explain)
 
             # --- Track: MMR + top_k cutoff ---
             if track_target is not None:
@@ -1028,8 +1186,34 @@ class _SearchEngineMixin:
                     if int(r["id"]) == track_target:
                         target_final_rank = i
                         break
-                # MMR verdict
-                if pre_mmr_rank_of_target is not None and target_final_rank is None:
+                ranked = ranked[:top_k]
+                # MMR verdict. Dedup is to blame only when it removed the
+                # chunk outright, or when its sibling penalty pushed a chunk
+                # that was inside top_k before MMR to outside it. A chunk that
+                # was already below top_k before MMR is a plain top_k miss.
+                mmr_demoted = (
+                    pre_mmr_rank_of_target is not None
+                    and target_final_rank is not None
+                    and pre_mmr_rank_of_target < top_k <= target_final_rank
+                )
+                if mmr_demoted:
+                    _tracer.record(
+                        "mmr_dedup",
+                        passed=False,
+                        rank=target_final_rank,
+                        detail=(
+                            f"Was rank {pre_mmr_rank_of_target + 1} pre-MMR (inside "
+                            f"top_k={top_k}) but the intra-document MMR penalty demoted it "
+                            f"to rank {target_final_rank + 1}. "
+                            f"Current mmr_lambda={mmr_lambda:.2f}."
+                        ),
+                        counterfactual=(
+                            f"Try a higher mmr_lambda (>{mmr_lambda:.2f}, below 1.0) for a "
+                            "weaker penalty, or mmr_lambda=None to switch intra-document "
+                            "dedup off (1.0 is a hard one-chunk-per-document cap)."
+                        ),
+                    )
+                elif pre_mmr_rank_of_target is not None and target_final_rank is None:
                     _tracer.record(
                         "mmr_dedup",
                         passed=False,
@@ -1041,8 +1225,9 @@ class _SearchEngineMixin:
                             f"Current mmr_lambda={mmr_lambda:.2f}."
                         ),
                         counterfactual=(
-                            f"Try a higher mmr_lambda (>{mmr_lambda:.2f}) for less "
-                            "aggressive dedup, or mmr_lambda=1.0 to disable MMR entirely."
+                            f"Try a higher mmr_lambda (>{mmr_lambda:.2f}, below 1.0) for a "
+                            "weaker penalty, or mmr_lambda=None to switch intra-document "
+                            "dedup off (1.0 is a hard one-chunk-per-document cap)."
                         ),
                     )
                 elif target_final_rank is not None:
@@ -1053,7 +1238,7 @@ class _SearchEngineMixin:
                         detail=f"Survived MMR dedup at rank {target_final_rank + 1}",
                     )
                 # top_k cutoff verdict
-                if target_final_rank is not None:
+                if target_final_rank is not None and not mmr_demoted:
                     if target_final_rank < top_k:
                         _tracer.record(
                             "top_k_cutoff",
@@ -1116,7 +1301,7 @@ class _SearchEngineMixin:
 
             if _cache_key is not None:
                 with self._cache_lock:
-                    self._query_cache[_cache_key] = list(results)
+                    self._query_cache[_cache_key] = (list(results), self.last_best_distance)
                     while len(self._query_cache) > _cache_max:
                         self._query_cache.popitem(last=False)
 
@@ -1159,6 +1344,7 @@ class _SearchEngineMixin:
         collection: str | None = None,
         project: str | None = None,
         layer: str | None = None,
+        search_options: dict | None = None,
     ) -> MissAnalysis:
         """Diagnose why an expected document did not appear in search results.
 
@@ -1177,6 +1363,10 @@ class _SearchEngineMixin:
                 a chunk id from a previous search.
             top_k: Number of results to evaluate (same as ``search()``).
             collection/project/layer: Same metadata filters as ``search()``.
+            search_options: Extra keyword arguments forwarded to ``search()``
+                (``distance_cutoff``, ``adaptive_rrf``, ``lexical_gate``,
+                ``retrieval_mode``...), so the trace describes the call the
+                caller actually makes instead of the default pipeline.
 
         Returns:
             ``MissAnalysis`` with stage verdicts, actual top-k, and
@@ -1311,6 +1501,7 @@ class _SearchEngineMixin:
             project=project,
             layer=layer,
             _tracer=tracer,
+            **(search_options or {}),
         )
 
         # Determine if the expected doc appeared in results
@@ -1874,6 +2065,70 @@ class _SearchEngineMixin:
                 params.extend(tree_params)
         return conditions, params
 
+    def _snap_candidates(
+        self,
+        query_embedding,
+        candidate_pool: int,
+        vec_clause: str,
+        filter_params: list,
+    ) -> list[dict]:
+        """Top ``candidate_pool`` snapvec rows that pass the metadata filter.
+
+        Snapvec filters AFTER its own KNN, so rows the filter drops (retired
+        claims, which are usually near-duplicates of their replacement and
+        sit at the top of exactly the queries that matter) would otherwise
+        empty the pool. Ask for ``candidate_pool`` first and double ``k``
+        only while too few rows survive, up to ``max(16 x pool, pool + 1024)``,
+        so a large retired history costs a bounded amount per query instead
+        of the whole index. ID lookups are batched under SQLite's variable limit and the
+        KNN order is preserved.
+
+        The two snapvec backends disagree on their return semantics and
+        this reconciles them to the cosine-distance contract (#289): flat
+        ``snapvec`` returns similarity in ``[-1, 1]`` (needs ``1 - sim``),
+        ``snapvec-ivfpq`` already returns ``1 - sim``. Both are clamped to
+        ``[0, 2]``.
+        """
+        q = np.array(query_embedding, dtype=np.float32)
+        snap_filter = vec_clause.replace("v.rowid", "c.id") if vec_clause else ""
+        total = len(self._snap)
+        # Bounded: a live match ranked below more than ~1000 hidden chunks is
+        # given up rather than scanning the whole index on every query.
+        k_max = min(total, max(candidate_pool * 16, candidate_pool + 1024))
+        k = min(candidate_pool, k_max)
+        while True:
+            snap_results = self._snap.search(q, k=k)
+            snap_ids = [int(r[0]) for r in snap_results]
+            if self._vector_backend == "snapvec":
+                dists = {int(r[0]): min(2.0, max(0.0, 1.0 - float(r[1]))) for r in snap_results}
+            else:
+                dists = {int(r[0]): min(2.0, max(0.0, float(r[1]))) for r in snap_results}
+            row_by_id: dict = {}
+            for i in range(0, len(snap_ids), _SQLITE_PARAM_BATCH):
+                batch = snap_ids[i : i + _SQLITE_PARAM_BATCH]
+                marks = ",".join("?" * len(batch))
+                for r in self._conn.execute(
+                    f"""
+                    SELECT c.id, c.text, d.title, d.path, c.seq, d.added_at, d.collection, d.tags, d.layer,
+                           d.status, d.source_ref, d.valid_from, d.valid_until, d.supersedes
+                    FROM chunks c
+                    JOIN documents d ON d.id = c.doc_id
+                    WHERE c.id IN ({marks})
+                      {snap_filter}
+                    """,
+                    [*batch, *filter_params],
+                ).fetchall():
+                    row_by_id[r["id"]] = dict(r)
+            rows = []
+            for sid in snap_ids:
+                if sid in row_by_id:
+                    entry = row_by_id[sid]
+                    entry["distance"] = dists.get(sid, 2.0)
+                    rows.append(entry)
+            if len(rows) >= candidate_pool or k >= k_max or not snap_ids:
+                return rows[:candidate_pool]
+            k = min(k * 2, k_max)
+
     @staticmethod
     def _build_doc_filter(
         *,
@@ -1884,6 +2139,7 @@ class _SearchEngineMixin:
         added_after: str | None = None,
         added_before: str | None = None,
         filters: dict | None = None,
+        include_retired: bool = False,
     ) -> tuple[str, str, list[str]]:
         """Build SQL filter clauses for document metadata.
 
@@ -1911,6 +2167,21 @@ class _SearchEngineMixin:
             filters=filters,
         )
 
+        # Claims already replaced or refuted are history: never return them
+        # as if they still held. NULL stays allowed for rows written before
+        # the claim schema appeared, so a re-opened old DB still searches.
+        # A claim past its valid_until no longer holds either, whatever its
+        # status says: nothing rewrites the status when the date goes by. The
+        # timestamp is generated here (never caller input), so it is inlined
+        # rather than bound, which keeps one params list valid for both clauses.
+        # ``include_retired`` skips both conditions (history view).
+        now_iso = datetime.now(timezone.utc).isoformat()
+        if not include_retired:
+            conditions_d2 = [
+                *conditions_d2,
+                "(d2.status IS NULL OR d2.status NOT IN ('superado', 'refutado'))",
+                f"(d2.valid_until IS NULL OR d2.valid_until = '' OR d2.valid_until > '{now_iso}')",
+            ]
         if not conditions_d2:
             return "", "", []
 
@@ -1934,5 +2205,11 @@ class _SearchEngineMixin:
             added_before=added_before,
             filters=filters,
         )
+        if not include_retired:
+            conditions_d = [
+                *conditions_d,
+                "(d.status IS NULL OR d.status NOT IN ('superado', 'refutado'))",
+                f"(d.valid_until IS NULL OR d.valid_until = '' OR d.valid_until > '{now_iso}')",
+            ]
         col_clause = "AND " + " AND ".join(conditions_d)
         return vec_clause, col_clause, params

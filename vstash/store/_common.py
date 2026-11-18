@@ -253,8 +253,88 @@ def relevance_tier(distance: float) -> str:
     return "low"
 
 
+#: Claim layers: a fact or a decision is knowledge only with a source.
+CLAIM_LAYERS = frozenset({"hecho", "decision"})
+#: Every status a claim can carry.
+VALID_CLAIM_STATUSES = frozenset({"vigente", "sin-fuente", "superado", "refutado", "relato"})
+#: Statuses that take a claim out of search (``include_retired`` shows them).
+RETIRED_STATUSES = ("superado", "refutado")
+
+
+def derive_claim_status(
+    layer: str | None, source_ref: str | None, status: str | None = None
+) -> str | None:
+    """Status a claim gets from its layer and source (shared by ingest and restore).
+
+    A ``hecho`` / ``decision`` without a source is ``sin-fuente``; with one it
+    is ``vigente`` unless ``status`` says otherwise; a ``charla`` is ``relato``.
+    Any other layer keeps ``status`` (possibly ``None``).
+    """
+    if layer in CLAIM_LAYERS:
+        if not source_ref:
+            return "sin-fuente"
+        return status or "vigente"
+    if status is None and layer == "charla":
+        return "relato"
+    return status
+
+
 # Standard RRF constant — balances precision vs recall
 RRF_K = 60
+
+# Lexical gate (opt-in ``lexical_gate=True`` on ``search``). Two readings of
+# how much keyword evidence the best FTS5 hit carries for this query, both
+# taken from its BM25 score:
+#
+#   strength  = bm25 / ln(N)            "how many rare terms does it match"
+#   coverage  = bm25 / sum(idf(query))  "what share of the query does it match"
+#
+# The gate closes -- the FTS weight becomes ``CLOSED`` and the keyword side
+# stops voting -- only when BOTH are below their ``LOW`` bound: a vague query
+# of several words whose best match shares one or two common ones. A one-word
+# query that matches its word exactly has low strength but full coverage and
+# is left alone; a long query that matches several names has low coverage
+# but high strength and is left alone too.
+#
+# ``HIGH == LOW`` makes each reading a step, which is the shipped behaviour.
+# Setting ``HIGH`` above ``LOW`` turns it into a linear ramp that scales the
+# weight between ``MIN`` and its normal value; that graded variant was
+# measured in experiments/LAB-recuperacion-es.md and rejected: it ranks the
+# vague queries slightly better but costs deep recall (top-50) on ordinary
+# ones, because a half-open gate still pushes keyword-only hits out of the
+# tail. Bounds come from the Spanish notes there (vague queries: strength
+# ~1.0, coverage p90 0.36; keyword-bearing queries: strength ~2.3).
+_LEXICAL_GATE_LOW = 1.0
+_LEXICAL_GATE_HIGH = 1.0
+_LEXICAL_GATE_COVERAGE_LOW = 0.4
+_LEXICAL_GATE_COVERAGE_HIGH = 0.4
+_LEXICAL_GATE_MIN_FTS_WEIGHT = 0.1
+# FTS weight when the gate is closed. Zero, not a token weight: with 0.1 a
+# note that is first by keywords and sixth by vectors still leapfrogs the
+# best vector hit (0.9/65 + 0.1/60 > 0.9/60).
+_LEXICAL_GATE_CLOSED_FTS_WEIGHT = 0.0
+
+# FTS5 tokenizers a store may be created with. The value is interpolated
+# into DDL, so it is an allowlist rather than free text.
+#   "porter ascii"   historical default: English stemming; non-ASCII
+#                    characters are token characters and are not case-folded
+#                    ("¿Quién" indexes as the single token "¿quién").
+#   "porter unicode61 remove_diacritics 2"
+#                    English stemming over Unicode-aware tokenisation with
+#                    case and accent folding.
+#   "unicode61 remove_diacritics 2"
+#                    Unicode tokenisation with folding, no stemming.
+#   "trigram remove_diacritics 1"
+#                    language-agnostic substring matching.
+DEFAULT_FTS_TOKENIZER = "porter ascii"
+FTS_TOKENIZERS = frozenset(
+    {
+        "porter ascii",
+        "porter unicode61 remove_diacritics 2",
+        "unicode61 remove_diacritics 2",
+        "trigram remove_diacritics 1",
+    }
+)
 
 # Adaptive RRF: query length threshold above which FTS weight is reduced.
 # ArguAna (194 avg words) showed -38.4% vs dense; queries >50 words are

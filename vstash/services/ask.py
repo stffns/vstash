@@ -118,4 +118,36 @@ def ask_with_context(
         exact_match=exact_match,
         exact_match_case_sensitive=exact_match_case_sensitive,
     )
-    return _chat_ask_full(query, chunks, cfg, history)
+    return judged_ask(query, chunks, cfg, history)
+
+
+def judged_ask(
+    query: str,
+    chunks: list[SearchResult],
+    cfg: VstashConfig,
+    history: list[dict[str, str]] | None = None,
+) -> AskResult:
+    """:func:`vstash.chat.ask_full` wrapped by the local judge when ``[judge] enabled``.
+
+    Gate first (no LLM call when the context does not hold the answer), then verify each claim of
+    the reply. With the judge off this is exactly ``chat.ask_full``.
+    """
+    if not cfg.judge.enabled:
+        return _chat_ask_full(query, chunks, cfg, history)
+    from .. import judge as judge_mod
+    from ..models import AskResult
+
+    jcfg = cfg.judge
+    judge = judge_mod.get_judge(jcfg)
+    judgment = judge_mod.gate(judge, query, chunks, jcfg)
+    if judgment.gated:
+        return AskResult(
+            content=judge_mod.NOT_IN_MEMORY.format(p=judgment.answerable),
+            # No LLM ran: backend/model stay unset (their domain is the inference backend);
+            # ``judgment.gated`` and ``judgment.model`` say the judge answered.
+            judgment=judgment,
+        )
+    result = _chat_ask_full(query, chunks, cfg, history)
+    if jcfg.verify:
+        judgment = judge_mod.verify(judge, judgment, result.content, chunks, jcfg)
+    return result.model_copy(update={"judgment": judgment})

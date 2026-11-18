@@ -1,0 +1,183 @@
+{
+  "setup": {
+    "dataset": "SQuAD 2.0 validation (all 35 articles ingested)",
+    "questions": 200,
+    "answerable": 100,
+    "unanswerable": 100,
+    "llm": "deepseek-flash",
+    "judge": "LiquidAI/d1-2B",
+    "verify_adapter": "jev",
+    "top_k": 5,
+    "gate_ms_per_question": 0
+  },
+  "retrieval_hit_on_answerable": 0.82,
+  "gate_auroc": 0.8297,
+  "gate_auroc_retrieved_only": 0.9080487804878049,
+  "thresholds": {
+    "0.05": {
+      "blocks_unanswerable": 0.17,
+      "blocks_answerable": 0.05,
+      "answerable": {
+        "CORRECT": 0.68,
+        "WRONG": 0.07,
+        "ABSTAIN": 0.25
+      },
+      "unanswerable": {
+        "CORRECT": 0.02,
+        "WRONG": 0.17,
+        "ABSTAIN": 0.81
+      }
+    },
+    "0.1": {
+      "blocks_unanswerable": 0.27,
+      "blocks_answerable": 0.08,
+      "answerable": {
+        "CORRECT": 0.68,
+        "WRONG": 0.07,
+        "ABSTAIN": 0.25
+      },
+      "unanswerable": {
+        "CORRECT": 0.01,
+        "WRONG": 0.17,
+        "ABSTAIN": 0.82
+      }
+    },
+    "0.15": {
+      "blocks_unanswerable": 0.38,
+      "blocks_answerable": 0.12,
+      "answerable": {
+        "CORRECT": 0.68,
+        "WRONG": 0.07,
+        "ABSTAIN": 0.25
+      },
+      "unanswerable": {
+        "CORRECT": 0.01,
+        "WRONG": 0.16,
+        "ABSTAIN": 0.83
+      }
+    },
+    "0.2": {
+      "blocks_unanswerable": 0.42,
+      "blocks_answerable": 0.15,
+      "answerable": {
+        "CORRECT": 0.68,
+        "WRONG": 0.07,
+        "ABSTAIN": 0.25
+      },
+      "unanswerable": {
+        "CORRECT": 0.01,
+        "WRONG": 0.16,
+        "ABSTAIN": 0.83
+      }
+    },
+    "0.3": {
+      "blocks_unanswerable": 0.57,
+      "blocks_answerable": 0.19,
+      "answerable": {
+        "CORRECT": 0.67,
+        "WRONG": 0.07,
+        "ABSTAIN": 0.26
+      },
+      "unanswerable": {
+        "CORRECT": 0.01,
+        "WRONG": 0.14,
+        "ABSTAIN": 0.85
+      }
+    },
+    "0.4": {
+      "blocks_unanswerable": 0.75,
+      "blocks_answerable": 0.2,
+      "answerable": {
+        "CORRECT": 0.67,
+        "WRONG": 0.07,
+        "ABSTAIN": 0.26
+      },
+      "unanswerable": {
+        "CORRECT": 0.01,
+        "WRONG": 0.08,
+        "ABSTAIN": 0.91
+      }
+    },
+    "0.5": {
+      "blocks_unanswerable": 0.78,
+      "blocks_answerable": 0.25,
+      "answerable": {
+        "CORRECT": 0.64,
+        "WRONG": 0.06,
+        "ABSTAIN": 0.3
+      },
+      "unanswerable": {
+        "CORRECT": 0.01,
+        "WRONG": 0.08,
+        "ABSTAIN": 0.91
+      }
+    }
+  },
+  "no_judge": {
+    "answerable": {
+      "CORRECT": 0.68,
+      "WRONG": 0.07,
+      "ABSTAIN": 0.25
+    },
+    "unanswerable": {
+      "CORRECT": 0.02,
+      "WRONG": 0.17,
+      "ABSTAIN": 0.81
+    }
+  },
+  "verify": {
+    "auroc_correct_vs_wrong": 0.5735119047619047,
+    "correct_answers": {
+      "n": 70,
+      "claims_flagged": 0.04878048780487805,
+      "answers_with_a_flag": 0.07142857142857142
+    },
+    "wrong_answers": {
+      "n": 24,
+      "claims_flagged": 0.057692307692307696,
+      "answers_with_a_flag": 0.125
+    }
+  },
+  "examples_wrong_unanswerable": [
+    {
+      "q": "What do studies on metamorphism through pressure help clarify?",
+      "p_answerable": 0.273,
+      "response": "Studies on metamorphism through pressure help clarify **pathways for metamorphism through pressure, temperature, space, and time**. This comes from the Geology document [Geology], which states that analog and numerical experiments of orogenic wedges \"can also give useful information about pathways f"
+    },
+    {
+      "q": "What connects the peripheral immune system to the neuroimmune system?",
+      "p_answerable": 0.604,
+      "response": "The **blood–brain barrier, blood–cerebrospinal fluid barrier, and similar fluid–brain barriers** separate the peripheral immune system from the neuroimmune system, which protects the brain [Immune system]."
+    },
+    {
+      "q": "Where is the eastern canal regulation of the Rhine?",
+      "p_answerable": 0.311,
+      "response": "The eastern canal regulation of the Rhine is at **Fußach** — the context describes \"a regulation of the Rhine... with an upper canal near Diepoldsau and a lower canal at Fußach\" [Rhine]."
+    },
+    {
+      "q": "What sector include utility distribution and refineries?",
+      "p_answerable": 0.637,
+      "response": "Based on the context, utility distribution and refineries fall under different sectors of construction:\n\n- **Utility distribution** is part of the **infrastructure** sector (often called heavy/highway, heavy civil, or heavy engineering), which includes large public works, dams, bridges, highways, wa"
+    },
+    {
+      "q": "What districts does downtown Santa Ana include?",
+      "p_answerable": 0.139,
+      "response": "Downtown Santa Ana is listed as one of the districts included in Orange County's business center, alongside the South Coast Metro and Newport Center districts. [Southern California]"
+    },
+    {
+      "q": "Who loved Warsaw so much that he kept putting it in his poems?",
+      "p_answerable": 0.363,
+      "response": "Isaac Bashevis Singer loved Warsaw and described it in many of his novels, saying: \"Warsaw has just now been destroyed. No one will ever see the Warsaw I knew. Let me just write about it. Let this Warsaw not disappear forever.\" [Warsaw]\n\nNote: The context says he described Warsaw in his **novels**, "
+    },
+    {
+      "q": "Though the name was correct, all these services were managed by who?",
+      "p_answerable": 0.363,
+      "response": "The context does not contain a sentence matching \"Though the name was correct, all these services were managed by who?\" The closest passage, from [Packet switching], says: \"Although this use of the name was incorrect all these services were managed by the same people within one department of KPN con"
+    },
+    {
+      "q": " What area was Kublai trying to capture by defending Xiangyang?",
+      "p_answerable": 0.906,
+      "response": "Kublai besieged Xiangyang between 1268 and 1273, which was described as \"the last obstacle in his way to capture the rich Yangzi River basin\" [Yuan dynasty]. So the area he was trying to capture was the Yangzi River basin."
+    }
+  ]
+}

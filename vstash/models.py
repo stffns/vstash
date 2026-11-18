@@ -15,6 +15,7 @@ poison every later hit for that query. Use
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -31,6 +32,20 @@ class IngestResult(BaseModel):
     title: str | None = Field(default=None, description="Derived document title")
     chunks: int = Field(default=0, description="Number of chunks generated")
     chars: int = Field(default=0, description="Total character count of source text")
+    claim_status: str | None = Field(
+        default=None,
+        description=(
+            "Status the claim schema gave the memory: vigente, sin-fuente, "
+            "relato, superado. None for layers that are not claims."
+        ),
+    )
+    superseded: bool | None = Field(
+        default=None,
+        description=(
+            "When supersedes was given: True if the old claim was retired by this "
+            "write, False if it had already been retired. None otherwise."
+        ),
+    )
     elapsed_s: float = Field(default=0.0, description="Ingestion time in seconds")
     error: str | None = Field(default=None, description="Error message if status is 'error'")
 
@@ -104,6 +119,54 @@ class SearchResult(BaseModel):
     collection: str | None = Field(default=None, description="Named collection")
     tags: str | None = Field(default=None, description="Comma-separated tags from frontmatter")
     layer: str | None = Field(default=None, description="Layer/category from frontmatter")
+    status: str | None = Field(
+        default=None,
+        description=(
+            "Claim status: vigente, sin-fuente, superado, refutado, relato. "
+            "None only for rows written before the claim schema."
+        ),
+    )
+    source_ref: str | None = Field(
+        default=None,
+        description="Where the claim comes from: session#turn, file:line, commit, URL+date",
+    )
+    valid_from: str | None = Field(default=None, description="ISO date from which the claim holds")
+    valid_until: str | None = Field(
+        default=None, description="ISO date from which the claim no longer holds"
+    )
+    supersedes: str | None = Field(default=None, description="Document id this claim replaces")
+    usage_boost: float | None = Field(
+        default=None,
+        description=(
+            "Multiplier the opt-in usage prior applied to ``score`` "
+            "(1.0 = candidate untouched). ``None`` when the prior did not "
+            "run for this search (off, or no similar past search)."
+        ),
+    )
+
+
+class SearchResults(list):  # list[SearchResult]
+    """A ``list[SearchResult]`` that also carries the usage-log ``event_id``.
+
+    Returned by :func:`vstash.services.search.search_with_embedding` (and
+    therefore ``Memory.search``). It is a plain ``list`` subclass, so every
+    existing caller that iterates, indexes or ``len()``s the results keeps
+    working. ``event_id`` is the ``search_events`` row the search was
+    logged under, to be passed back to ``Memory.mark_used`` /
+    ``services.search.mark_used`` when the caller consumes a result.
+    ``None`` when logging is disabled
+    (``observability.log_search_results = false``) or the log write
+    failed. Slicing returns a plain ``list`` and drops the attribute.
+    """
+
+    __slots__ = ("event_id",)
+
+    def __init__(self, items: Iterable[SearchResult] = (), event_id: int | None = None) -> None:
+        super().__init__(items)
+        self.event_id = event_id
+
+    def __repr__(self) -> str:
+        return f"SearchResults({list.__repr__(self)}, event_id={self.event_id!r})"
 
 
 class DocumentInfo(BaseModel):
@@ -121,6 +184,19 @@ class DocumentInfo(BaseModel):
     chunk_count: int = Field(description="Number of stored chunks")
     char_count: int = Field(description="Total character count")
     added_at: str = Field(description="ISO timestamp of ingestion")
+    id: str | None = Field(
+        default=None, description="Document id (accepted by supersedes / retire)"
+    )
+    status: str | None = Field(
+        default=None,
+        description="Claim status: vigente, sin-fuente, superado, refutado, relato. None if not a claim.",
+    )
+    source_ref: str | None = Field(default=None, description="Where the claim comes from")
+    valid_from: str | None = Field(default=None, description="ISO date from which the claim holds")
+    valid_until: str | None = Field(
+        default=None, description="ISO date from which the claim no longer holds"
+    )
+    supersedes: str | None = Field(default=None, description="Document id this claim replaces")
 
 
 class ChunkInfo(BaseModel):
@@ -296,6 +372,41 @@ class MissAnalysis(BaseModel):
     )
 
 
+class ClaimCheck(BaseModel):
+    """One statement of an LLM reply, checked against the context the LLM was given."""
+
+    model_config = ConfigDict(frozen=True)
+
+    text: str = Field(description="The claim as it appears in the reply")
+    supported: float = Field(description="P(the retrieved context supports it), from the judge")
+    flagged: bool = Field(description="supported < [judge] claim_threshold")
+
+
+class Judgment(BaseModel):
+    """What the local judge (``vstash.judge``) read around one ``ask``."""
+
+    model_config = ConfigDict(frozen=True)
+
+    answerable: float = Field(description="P(the retrieved context holds the answer)")
+    gated: bool = Field(
+        default=False,
+        description="True when answerable fell below the gate threshold and the LLM was skipped",
+    )
+    claims: list[ClaimCheck] = Field(default_factory=list, description="Per-claim support")
+    model: str | None = Field(default=None, description="Judge model used")
+
+    @property
+    def flagged(self) -> list[ClaimCheck]:
+        return [c for c in self.claims if c.flagged]
+
+    @property
+    def supported_share(self) -> float | None:
+        """Share of claims the context supports; None when there were none to check."""
+        if not self.claims:
+            return None
+        return sum(not c.flagged for c in self.claims) / len(self.claims)
+
+
 class AskResult(BaseModel):
     """Normalized result from a chat backend, returned by ``chat.ask_full()``.
 
@@ -332,3 +443,7 @@ class AskResult(BaseModel):
         description="Resolved backend ('cerebras' | 'ollama' | 'openai')",
     )
     model: str | None = Field(default=None, description="Resolved model name")
+    judgment: Judgment | None = Field(
+        default=None,
+        description="The local judge's reads ([judge] enabled): answerability gate + per-claim support",
+    )

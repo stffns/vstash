@@ -32,7 +32,7 @@ from ._store_open import open_store_for_config
 from .config import VstashConfig, load_config
 from .embed import embed_query, warmup
 from .models import DocumentInfo, IngestResult, SearchResult, StoreStats
-from .services import search_with_embedding
+from .services import mark_used, search_with_embedding
 from .store import VstashStore, relevance_tier
 
 logger = logging.getLogger(__name__)
@@ -422,6 +422,11 @@ def vstash_remember(
     project: str | None = None,
     layer: str | None = None,
     tags: str | None = None,
+    status: str | None = None,
+    source_ref: str | None = None,
+    valid_from: str | None = None,
+    valid_until: str | None = None,
+    supersedes: str | None = None,
 ) -> str:
     """Ingest text directly into vstash memory — no file needed.
 
@@ -438,6 +443,16 @@ def vstash_remember(
         project: Project tag for this document.
         layer: Layer/category for this document.
         tags: Comma-separated tags.
+        status: One of vigente, sin-fuente, superado, refutado, relato.
+            A hecho or decision without source_ref is stored as
+            'sin-fuente' whatever this says: unsourced is not knowledge.
+        source_ref: Where the claim comes from (session#turn, file:line,
+            commit, a URL plus the day it was read). Required for a fact
+            or decision to count as 'vigente'.
+        valid_from: ISO date from which the claim holds.
+        valid_until: ISO date from which it no longer holds.
+        supersedes: Path or document id of the claim this one replaces.
+            The old claim is kept and marked 'superado'.
 
     Returns:
         JSON string with ingestion result (chunks created, timing, etc.).
@@ -457,12 +472,66 @@ def vstash_remember(
             project=project,
             layer=layer,
             tags=tags,
+            status=status,
+            source_ref=source_ref,
+            valid_from=valid_from,
+            valid_until=valid_until,
+            supersedes=supersedes,
+            quiet=True,
         )
         return _ok(result)
 
+    except ValueError as exc:
+        # Claim validation (unknown / self / retired supersedes target, bad
+        # status or date): a caller mistake, not a server failure.
+        return _error(str(exc))
     except Exception as exc:
         logger.exception("vstash_remember failed")
         return _error(f"Ingestion failed: {exc}")
+
+
+@mcp_server.tool()
+def vstash_retire(
+    source: str,
+    refuted: bool = False,
+    restore: bool = False,
+    collection: str = "default",
+) -> str:
+    """Retire a stored claim without replacing it, or bring one back.
+
+    Use when a fact or decision stops holding and nothing replaces it
+    (to replace it, use ``vstash_remember(..., supersedes=...)``). The text
+    is kept; it only leaves search. ``vstash_search(include_retired=true)``
+    still shows it with its ``status``.
+
+    Args:
+        source: The claim's path (as search returns it in ``path``, e.g.
+            ``text://<title>``) or its 32-char id.
+        refuted: Mark it ``refutado`` (it was wrong) instead of ``superado``
+            (it stopped being true).
+        restore: Undo a retire or a supersede: the claim is searchable again
+            with its status re-derived from its layer and source.
+        collection: Collection the path lives in (ignored for an id).
+
+    Returns:
+        JSON ``{"retired": bool}`` or ``{"restored": bool}``.
+    """
+    try:
+        store = _get_store()
+        doc_id = (
+            source
+            if len(source) == 32 and ":" not in source
+            else store.doc_id_for(collection, source)
+        )
+        if restore:
+            return _ok({"restored": store.restore_claim(doc_id)})
+        status = "refutado" if refuted else "superado"
+        return _ok({"retired": store.supersede_claim(doc_id, status=status) > 0})
+    except FileNotFoundError:
+        return _error("vstash database not found. Ingest documents first with vstash_add.")
+    except Exception as exc:
+        logger.exception("vstash_retire failed")
+        return _error(f"Retire failed: {exc}")
 
 
 @mcp_server.tool()
@@ -572,15 +641,17 @@ def vstash_ask(
                 }
             )
 
-        # Record search telemetry (same as vstash_search)
-        best_distance = store.last_best_distance
-        tier = relevance_tier(best_distance)
-        store.record_search_event(
-            query=query,
-            best_distance=best_distance,
-            relevance_tier=tier,
-            result_count=len(chunks),
-        )
+        # Record search telemetry (same as vstash_search). The services
+        # layer already logged the event (plus its usage-log rows) unless
+        # ``observability.log_search_results`` is off; never write twice.
+        if getattr(chunks, "event_id", None) is None:
+            best_distance = store.last_best_distance
+            store.record_search_event(
+                query=query,
+                best_distance=best_distance,
+                relevance_tier=relevance_tier(best_distance),
+                result_count=len(chunks),
+            )
 
         # Get LLM answer via ask_full so the reasoning channel + token usage
         # the backend produces (Cerebras gpt-oss message.reasoning, Ollama
@@ -639,6 +710,8 @@ def vstash_search(
     vec_weight: float | None = None,
     fts_weight: float | None = None,
     retrieval_mode: str | None = None,
+    min_relevance: str | None = None,
+    include_retired: bool = False,
 ) -> str:
     """Search vstash memory without LLM — returns raw chunks with scores.
 
@@ -690,9 +763,21 @@ def vstash_search(
               signal is known to be unreliable.
             When a non-hybrid mode is set, vec_weight/fts_weight are
             ignored.
+        min_relevance: Opt-in "nothing found" gate: ``"medium"`` or
+            ``"high"``. When the best match is below that relevance tier
+            the call returns no chunks (``"relevance": "none"``) plus the
+            ``best_relevance`` / ``best_distance`` it saw, instead of the
+            closest off-topic chunks. None (default) always returns up to
+            top_k chunks. Not applied with retrieval_mode="fts_only".
+        include_retired: Also return claims that were superseded, refuted
+            or expired (each chunk carries its ``status``). Default false
+            hides them -- use it to see how a decision changed.
 
     Returns:
-        JSON object with chunks array and relevance hint.
+        JSON object with chunks array and relevance hint, plus an
+        ``event_id`` when the usage log is on. After you actually use a
+        returned chunk (quote it, act on it), call ``vstash_mark_used``
+        with that ``event_id`` and the chunk's ``chunk_id``.
     """
     try:
         top_k = int(top_k)
@@ -747,10 +832,21 @@ def vstash_search(
             vec_weight=vec_weight_coerced,
             fts_weight=fts_weight_coerced,
             retrieval_mode=resolved_mode,
+            min_relevance=min_relevance or None,
+            include_retired=bool(include_retired),
         )
 
         if not chunks:
-            return _ok({"chunks": [], "relevance": "none"})
+            empty: dict[str, Any] = {"chunks": [], "relevance": "none"}
+            if min_relevance:
+                # Tell the caller how close the store came, so it can tell
+                # "nothing stored" from "below the bar it asked for".
+                empty["best_relevance"] = relevance_tier(store.last_best_distance)
+                empty["best_distance"] = round(store.last_best_distance, 4)
+            empty_event_id = getattr(chunks, "event_id", None)
+            if isinstance(empty_event_id, int):
+                empty["event_id"] = empty_event_id
+            return _ok(empty)
 
         # Tiered relevance signal based on vector distance.
         best_distance = store.last_best_distance
@@ -762,21 +858,25 @@ def vstash_search(
         }
         hint = _hints[relevance]
 
-        store.record_search_event(
-            query=query,
-            best_distance=best_distance,
-            relevance_tier=relevance,
-            result_count=len(chunks),
-        )
+        event_id = getattr(chunks, "event_id", None)
+        if event_id is None:
+            store.record_search_event(
+                query=query,
+                best_distance=best_distance,
+                relevance_tier=relevance,
+                result_count=len(chunks),
+            )
 
-        return _ok(
-            {
-                "chunks": [c.model_dump(exclude_none=True) for c in chunks],
-                "relevance": relevance,
-                "hint": hint,
-                "best_distance": round(best_distance, 4),
-            }
-        )
+        payload: dict[str, Any] = {
+            "chunks": [c.model_dump(exclude_none=True) for c in chunks],
+            "relevance": relevance,
+            "hint": hint,
+            "best_distance": round(best_distance, 4),
+        }
+        if event_id is not None:
+            # Pass back to vstash_mark_used with the chunk_id(s) you used.
+            payload["event_id"] = event_id
+        return _ok(payload)
 
     except FileNotFoundError:
         return _error("vstash database not found. Ingest documents first with vstash_add.")
@@ -788,6 +888,43 @@ def vstash_search(
     except Exception as exc:
         logger.exception("vstash_search failed")
         return _error(f"Search failed: {exc}")
+
+
+@mcp_server.tool()
+def vstash_mark_used(event_id: int, chunk_ids: list[int] | int | str) -> str:
+    """Report which results of a previous ``vstash_search`` you actually used.
+
+    Call after relying on search results (quoting them, acting on them).
+    Builds the implicit relevance signal vstash uses to retrain its
+    retrieval: used results are positives, returned-but-unused ones of
+    the same search are negatives. Cheap; safe to call more than once.
+
+    Args:
+        event_id: The ``event_id`` field of the ``vstash_search`` response.
+        chunk_ids: ``chunk_id`` of each used result: a list, a single id,
+            or a comma-separated string (``"12,40"``).
+
+    Returns:
+        JSON object ``{"marked": N}`` with the number of results newly marked.
+    """
+    try:
+        eid = int(event_id)
+        if isinstance(chunk_ids, str):
+            ids = [int(p) for p in chunk_ids.split(",") if p.strip()]
+        elif isinstance(chunk_ids, int):
+            ids = [chunk_ids]
+        else:
+            ids = [int(c) for c in chunk_ids]
+    except (TypeError, ValueError):
+        return _error(f"event_id and chunk_ids must be integers, got {event_id!r}, {chunk_ids!r}")
+    try:
+        marked = mark_used(store=_get_store(), event_id=eid, chunk_ids=ids)
+        return _ok({"marked": marked})
+    except FileNotFoundError:
+        return _error("vstash database not found. Ingest documents first with vstash_add.")
+    except Exception as exc:
+        logger.exception("vstash_mark_used failed")
+        return _error(f"Mark used failed: {exc}")
 
 
 @mcp_server.tool()

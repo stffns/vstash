@@ -29,9 +29,10 @@ from .models import (
     DocumentInfo,
     IngestResult,
     MissAnalysis,
-    SearchResult,
+    SearchResults,
     StoreStats,
 )
+from .services import mark_used as _mark_used
 from .services import search_with_embedding
 
 # Sentinel for distinguishing "parameter not provided" from explicit None.
@@ -300,6 +301,11 @@ class Memory:
         project: object = _UNSET,
         layer: str | None = None,
         tags: str | None = None,
+        status: str | None = None,
+        source_ref: str | None = None,
+        valid_from: str | None = None,
+        valid_until: str | None = None,
+        supersedes: str | None = None,
         chunk_size: int | None = None,
         chunk_overlap: int | None = None,
     ) -> IngestResult:
@@ -343,8 +349,14 @@ class Memory:
             project=proj,
             layer=layer,
             tags=tags,
+            status=status,
+            source_ref=source_ref,
+            valid_from=valid_from,
+            valid_until=valid_until,
+            supersedes=supersedes,
             chunk_size=chunk_size if chunk_size is not None else self._chunk_size,
             chunk_overlap=chunk_overlap if chunk_overlap is not None else self._chunk_overlap,
+            quiet=True,
         )
 
     def search(
@@ -360,14 +372,21 @@ class Memory:
         added_before: str | None = None,
         tags: str | list[str] | None = None,
         filters: dict | None = None,
-        mmr_lambda: float = 0.5,
+        mmr_lambda: float | None = 0.5,
         dedup_threshold: float | None = None,
         vec_weight: float | None = None,
         fts_weight: float | None = None,
         retrieval_mode: Literal["hybrid", "vec_only", "fts_only"] | None = None,
         exact_match: str | None = None,
         exact_match_case_sensitive: bool = False,
-    ) -> list[SearchResult]:
+        distance_cutoff: float | None = None,
+        lexical_gate: bool = False,
+        drop_stopwords: bool = False,
+        min_vec_keep: int = 0,
+        usage_prior: bool | None = None,
+        min_relevance: Literal["high", "medium"] | None = None,
+        include_retired: bool = False,
+    ) -> SearchResults:
         """Semantic search without LLM inference.
 
         Returns ranked chunks from the most relevant documents.
@@ -408,6 +427,15 @@ class Memory:
                 try ``0.95`` when one answer is mirrored across many
                 documents (audit logs, re-ingested revisions) and floods
                 every result slot.
+            distance_cutoff: Override the store's distance cutoff for this
+                call (default ``None`` = the store default, 1.3225).
+            lexical_gate: Opt-in. Lower the keyword weight when the best
+                keyword match for this query is weak (vague or paraphrased
+                queries). See ``VstashStore.search``.
+            drop_stopwords: Opt-in. Leave Spanish / English function words
+                out of the keyword side of the query.
+            min_vec_keep: Opt-in. The distance cutoff never leaves fewer
+                than this many vector candidates.
             vec_weight: Pin the RRF vector weight for this single call,
                 overriding adaptive RRF. Valid range ``[0.0, 1.0]``.
                 Pass ``None`` (default) to keep adaptive per-query
@@ -445,9 +473,25 @@ class Memory:
                 pair like ``retrieval_mode="fts_only", vec_weight=1.5``
                 does not raise. The mode is a stronger statement of
                 intent than pinned weights.
+            usage_prior: Boost documents that similar past searches marked
+                used (:meth:`mark_used`). ``None`` (default) follows the
+                ``[usage_prior] enabled`` config (off by default). Results
+                re-scored by the prior carry ``usage_boost``.
+            min_relevance: Opt-in "nothing found" gate. ``None`` (default)
+                always returns up to ``top_k`` results. ``"medium"`` or
+                ``"high"`` returns an empty list when the best vector match
+                falls below that relevance tier, so a question the store
+                cannot answer yields nothing instead of the closest
+                off-topic chunks. Tiers are calibrated on BGE-small; not
+                applied with ``retrieval_mode="fts_only"``.
+
+            include_retired: Also return superseded / refuted / expired
+                claims (their ``status`` says which). Default ``False``.
 
         Returns:
-            Ranked list of SearchResult ordered by relevance.
+            Ranked ``SearchResults`` (a ``list[SearchResult]``) ordered by
+            relevance. Its ``event_id`` identifies this search in the usage
+            log; pass it to :meth:`mark_used` for the results you act on.
         """
         # Resolve the retrieval mode through the store helper first --
         # it handles legacy aliases (like ``fts_only=True`` bool that
@@ -478,6 +522,67 @@ class Memory:
             retrieval_mode=_mode,
             exact_match=exact_match,
             exact_match_case_sensitive=exact_match_case_sensitive,
+            distance_cutoff=distance_cutoff,
+            lexical_gate=lexical_gate,
+            drop_stopwords=drop_stopwords,
+            min_vec_keep=min_vec_keep,
+            usage_prior=usage_prior,
+            min_relevance=min_relevance,
+            include_retired=include_retired,
+        )
+
+    def mark_used(self, event_id: int, chunk_id: int | list[int]) -> int:
+        """Report that results of a previous :meth:`search` were used.
+
+        This is the implicit relevance signal: a result that was returned
+        and used is a positive for that query, results of the same search
+        that were returned but not used are implicit negatives (see
+        :meth:`export_usage`).
+
+        Example::
+
+            hits = mem.search("how do I rotate keys?")
+            mem.mark_used(hits.event_id, hits[0].chunk_id)
+
+        Args:
+            event_id: ``SearchResults.event_id`` of the search.
+            chunk_id: ``SearchResult.chunk_id`` of the result used (or a
+                list of them).
+
+        Returns:
+            Number of results newly marked (``0`` if the event was pruned,
+            the chunk was not returned by that search, or it was already
+            marked).
+        """
+        return _mark_used(store=self._store, event_id=event_id, chunk_ids=chunk_id)
+
+    def export_usage(
+        self,
+        *,
+        since: str | None = None,
+        feedback_only: bool = True,
+        include_text: bool = True,
+        limit: int | None = None,
+    ) -> list[dict]:
+        """Export usage-log rows as training labels.
+
+        One dict per (search, returned chunk): ``query``, ``chunk_id``,
+        ``rank``, ``score``, ``used`` plus the chunk ``text`` / ``path`` /
+        ``title``. See ``VstashStore.export_usage_labels``.
+
+        Args:
+            since: Age string (``"30d"``) or ISO date; only newer events.
+            feedback_only: Only events with at least one ``mark_used``
+                (default). Unreported events carry no "ignored" signal.
+            include_text: Include the chunk text.
+            limit: Cap on rows (most recent events win).
+        """
+        since_iso = _resolve_before(since) if since is not None else None
+        return self._store.export_usage_labels(
+            since_iso=since_iso,
+            feedback_only=feedback_only,
+            include_text=include_text,
+            limit=limit,
         )
 
     def miss_analysis(
@@ -677,6 +782,10 @@ class Memory:
             fts_weight=fts_weight,
             retrieval_mode=retrieval_mode,
         )
+        if self._cfg.judge.enabled:
+            from .services.ask import judged_ask
+
+            return judged_ask(query, chunks, self._cfg, history)
         return _chat_ask_full(query, chunks, self._cfg, history)
 
     def prune(
@@ -787,7 +896,12 @@ class Memory:
             ``Memory.prune`` returns, or ``None`` when ``before`` was
             not provided.
         """
-        report: dict = {"prune": None, "vacuum": False, "optimize_fts": False}
+        report: dict = {
+            "prune": None,
+            "search_events_pruned": 0,
+            "vacuum": False,
+            "optimize_fts": False,
+        }
         if before is not None:
             report["prune"] = self.prune(
                 before=before,
@@ -797,6 +911,13 @@ class Memory:
                 tags=tags,
                 dry_run=dry_run,
             )
+            if not dry_run:
+                # Usage-log events (and their search_results rows) older
+                # than the same cutoff go too. Not collection-scoped: an
+                # event spans whatever the query matched.
+                report["search_events_pruned"] = self._store.prune_search_events(
+                    before_iso=_resolve_before(before)
+                )
         if dry_run:
             return report
         if vacuum:
@@ -806,6 +927,59 @@ class Memory:
             self._store.optimize_fts()
             report["optimize_fts"] = True
         return report
+
+    def retire(
+        self,
+        source: str,
+        *,
+        refuted: bool = False,
+        collection: object = _UNSET,
+    ) -> bool:
+        """Retire a claim without replacing it: it stops holding from now on.
+
+        The row and its text are kept (use ``remove`` to delete them) but
+        leave search. Use ``remember(..., supersedes=...)`` instead when a
+        new claim takes its place.
+
+        Args:
+            source: The claim's path (``text://<title>``) or its 32-char id.
+            refuted: Mark it ``refutado`` (it was wrong) instead of
+                ``superado`` (it stopped being true).
+            collection: Collection the path lives in; ignored for an id.
+
+        Returns:
+            True if a claim was retired; False if there is no such document
+            or it was already retired.
+        """
+        col = self._collection if collection is _UNSET else collection
+        doc_id = (
+            source
+            if len(source) == 32 and ":" not in source
+            else self._store.doc_id_for(col or "default", source)
+        )
+        return self._store.supersede_claim(doc_id, status="refutado" if refuted else "superado") > 0
+
+    def restore(self, source: str, *, collection: object = _UNSET) -> bool:
+        """Undo :meth:`retire` or a ``supersedes``: the claim is searchable again.
+
+        Its status is re-derived from its layer and source (``vigente`` /
+        ``sin-fuente`` / ``relato``) and ``valid_until`` is cleared. Deleting
+        the replacing claim does NOT restore the old one by itself.
+
+        Args:
+            source: The claim's path (``text://<title>``) or its 32-char id.
+            collection: Collection the path lives in; ignored for an id.
+
+        Returns:
+            True if a retired claim was restored.
+        """
+        col = self._collection if collection is _UNSET else collection
+        doc_id = (
+            source
+            if len(source) == 32 and ":" not in source
+            else self._store.doc_id_for(col or "default", source)
+        )
+        return self._store.restore_claim(doc_id)
 
     def remove(self, source: str | Path) -> bool:
         """Remove a document from memory.
@@ -1024,6 +1198,7 @@ class Memory:
         collection: object = _UNSET,
         project: object = _UNSET,
         layer: str | None = None,
+        status: str | list[str] | None = None,
     ) -> list[DocumentInfo]:
         """List ingested documents.
 
@@ -1036,14 +1211,20 @@ class Memory:
             collection: Filter by collection. Pass None for no filter.
             project: Filter by project. Pass None for no filter.
             layer: Filter by layer tag.
+            status: Only claims with this status (or any of these), e.g.
+                ``"vigente"`` or ``["vigente", "sin-fuente"]``. Listing does
+                not hide retired or expired claims the way search does.
 
         Returns:
             List of DocumentInfo ordered by ingestion date (newest first).
+            Each carries its claim fields (``id``, ``status``, ``source_ref``,
+            ``valid_from``, ``valid_until``, ``supersedes``).
         """
         return self._store.list_documents(
             collection=self._resolve_collection(collection),
             project=self._resolve_project(project),
             layer=layer,
+            status=status,
         )
 
     def stats(self) -> StoreStats:

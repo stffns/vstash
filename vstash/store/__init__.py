@@ -17,7 +17,7 @@ import math
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from types import TracebackType
 from typing import Any, Literal
@@ -40,6 +40,8 @@ from ..models import (
 )
 
 from ._common import (
+    DEFAULT_FTS_TOKENIZER,
+    FTS_TOKENIZERS,
     _ADAPTIVE_RRF_LONG_QUERY,
     _HAS_SNAPVEC,
     _LONG_QUERY_DISTANCE_CUTOFF,
@@ -50,6 +52,8 @@ from ._common import (
     _deserialize,
     _normalize_tags,
     _serialize,
+    RETIRED_STATUSES,
+    derive_claim_status,
     KNOWN_SCHEMA_VERSIONS,
     RELEVANCE_TIER_HIGH_MAX,
     RELEVANCE_TIER_MEDIUM_MAX,
@@ -106,6 +110,9 @@ if sqlite3.threadsafety == 0:  # pragma: no cover
 
 logger = logging.getLogger(__name__)
 
+# store_meta key bumped by ``reindex`` to invalidate usage-prior caches.
+_USAGE_PRIOR_GENERATION_KEY = "usage_prior_generation"
+
 
 class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _SearchEngineMixin):
     """SQLite-backed vector + FTS5 hybrid store with RRF ranking.
@@ -134,10 +141,27 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         observability: ObservabilityConfig | None = None,
         limits: LimitsConfig | None = None,
         cache: CacheConfig | None = None,
+        fts_tokenizer: str | None = None,
     ) -> None:
+        if fts_tokenizer is not None and fts_tokenizer not in FTS_TOKENIZERS:
+            raise ValueError(
+                f"fts_tokenizer must be one of {sorted(FTS_TOKENIZERS)}; got {fts_tokenizer!r}"
+            )
+        # Set before ``_connect()``: the DDL reads it when the index does not
+        # exist yet. On an existing database ``_adopt_fts_tokenizer`` then
+        # replaces it with the tokenizer the index was really built with, so
+        # ``_stem_terms`` always agrees with the index. ``None`` means "the
+        # index's own tokenizer, or the default for a new database".
+        self._fts_tokenizer_requested = fts_tokenizer
+        self._fts_tokenizer = fts_tokenizer or DEFAULT_FTS_TOKENIZER
         self.db_path = Path(db_path).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.embedding_dim = embedding_dim
+        # (key, event ids, unit query vectors) for the usage prior; see
+        # ``_usage_prior_matrix``.
+        self._usage_prior_cache: tuple[tuple[int, int, int, str], np.ndarray, np.ndarray] | None = (
+            None
+        )
         self._write_lock = threading.Lock()
         # Per-thread state for the cosine distance of the best vector match.
         # Thread-local so concurrent searches on a shared instance don't race.
@@ -149,7 +173,15 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         # otherwise stem conns created in worker threads (vstash serve,
         # MCP) would leak until process exit.
         self._stem_conns: dict[int, sqlite3.Connection] = {}
+        # Tokenizer each stemming connection was built with; a connection
+        # whose tokenizer is no longer the index's is rebuilt by its owner.
+        self._stem_conn_tokenizers: dict[int, str] = {}
         self._stem_lock = threading.Lock()
+        self._fts_schema_cookie: int | None = None
+        # Serializes the per-search schema-version check: threads sharing
+        # this store would otherwise run the same cached statement at once
+        # on ``self._conn`` and one of them reads no row.
+        self._fts_sync_lock = threading.Lock()
         self._conn = self._connect()
 
         # --- Adaptive RRF cache ---
@@ -179,7 +211,8 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         # --- Query result cache (opt-in LRU) ---
         self._cache_config: CacheConfig = cache or CacheConfig()
         self._cache_epoch: int = 0
-        self._query_cache: OrderedDict[int, list[SearchResult]] = OrderedDict()
+        # Value: (results, last_best_distance) so a hit restores the tier signal.
+        self._query_cache: OrderedDict[int, tuple[list[SearchResult], float]] = OrderedDict()
         self._cache_lock = threading.Lock()
 
         # --- SnapVec backend (optional) ---
@@ -287,6 +320,79 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         row = self._conn.execute("SELECT 1 FROM documents WHERE path = ?", [path]).fetchone()
         return row is not None
 
+    @staticmethod
+    def doc_id_for(collection: str, path: str) -> str:
+        """Return the deterministic document id for a (collection, path)."""
+        return hashlib.sha256(f"{collection}:{path}".encode()).hexdigest()[:32]
+
+    def claim_exists(self, doc_id: str) -> bool:
+        """True when a document with this id is stored (whatever its status)."""
+        row = self._conn.execute("SELECT 1 FROM documents WHERE id = ?", [doc_id]).fetchone()
+        return row is not None
+
+    def supersede_claim(
+        self, old_id: str, new_doc_id: str | None = None, *, status: str = "superado"
+    ) -> int:
+        """Retire a claim: replaced by another (``superado``) or found wrong (``refutado``).
+
+        The old row keeps its text (nothing is deleted) and stops being
+        returned by search; a replacing row carries its supersedes field.
+        ``new_doc_id`` is optional: a claim can stop holding without a
+        replacement. Returns the number of rows updated (0 when the id does
+        not exist or the claim was already retired).
+        """
+        if status not in ("superado", "refutado"):
+            raise ValueError(f"status must be 'superado' or 'refutado', got {status!r}")
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._write_lock:
+            # ``IS NOT`` instead of ``!=``: a row written before the claim
+            # schema has NULL status, and ``NULL != 'x'`` is never true, so
+            # such a row could never be retired.
+            cur = self._conn.execute(
+                "UPDATE documents SET status = ?, valid_until = ? "
+                "WHERE id = ? AND status IS NOT 'superado' AND status IS NOT 'refutado'",
+                [status, now_iso, old_id],
+            )
+            self._conn.commit()
+        if cur.rowcount:
+            self._bump_cache_epoch()  # a cached search may still hold the retired claim
+        return cur.rowcount
+
+    def claim_status(self, doc_id: str) -> str | None:
+        """Current status of a document (``None`` if absent or never set)."""
+        row = self._conn.execute("SELECT status FROM documents WHERE id = ?", [doc_id]).fetchone()
+        return row[0] if row is not None else None
+
+    def claim_fields(self, doc_id: str) -> dict | None:
+        """Stored ``status`` / ``source_ref`` / ``valid_from`` / ``valid_until`` of a document."""
+        row = self._conn.execute(
+            "SELECT status, source_ref, valid_from, valid_until FROM documents WHERE id = ?",
+            [doc_id],
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def restore_claim(self, doc_id: str) -> bool:
+        """Bring a superseded / refuted claim back into search.
+
+        The status is re-derived from the claim's layer and source exactly
+        as ``ingest_text`` would (``vigente`` / ``sin-fuente`` / ``relato``)
+        and ``valid_until`` is cleared (retiring overwrote it). Returns
+        ``False`` when the id is absent or the claim is not retired.
+        """
+        with self._write_lock:
+            row = self._conn.execute(
+                "SELECT status, layer, source_ref FROM documents WHERE id = ?", [doc_id]
+            ).fetchone()
+            if row is None or row[0] not in RETIRED_STATUSES:
+                return False
+            self._conn.execute(
+                "UPDATE documents SET status = ?, valid_until = NULL WHERE id = ?",
+                [derive_claim_status(row[1], row[2]), doc_id],
+            )
+            self._conn.commit()
+        self._bump_cache_epoch()
+        return True
+
     def add_document(
         self,
         path: str,
@@ -299,6 +405,13 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         layer: str | None = None,
         tags: str | None = None,
         content_hash: str | None = None,
+        status: str | None = None,
+        source_ref: str | None = None,
+        valid_from: str | None = None,
+        valid_until: str | None = None,
+        supersedes: str | None = None,
+        confidence: float | None = None,
+        retire_id: str | None = None,
     ) -> str:
         """Add a document and its chunks to the store.
 
@@ -317,6 +430,9 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
             content_hash: SHA-256 hex of the raw ingested text, used for
                 Tier-0 write-time dedup (``ingest_text`` sets it; file
                 ingest leaves it None for now).
+            retire_id: Id of a claim this document replaces. It is marked
+                ``superado`` in the SAME transaction as the write, so a crash
+                cannot leave both the old and the new claim live.
 
         Returns:
             The generated document ID (32-char hex hash).
@@ -348,8 +464,31 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                     layer=layer,
                     tags=tags,
                     content_hash=content_hash,
+                    status=status,
+                    source_ref=source_ref,
+                    valid_from=valid_from,
+                    valid_until=valid_until,
+                    supersedes=supersedes,
+                    confidence=confidence,
                     now_iso=datetime.now(timezone.utc).isoformat(),
                 )
+                if retire_id is not None:
+                    # Re-check inside the write lock: another writer may have
+                    # deleted the target or retired this replacement between
+                    # ingest_text's checks and here. Raising rolls back.
+                    if retire_id == doc_id:
+                        raise ValueError("supersedes: a document cannot supersede itself")
+                    if not self.claim_exists(retire_id):
+                        raise ValueError(f"supersedes: target {retire_id!r} no longer exists")
+                    if self.claim_status(doc_id) in RETIRED_STATUSES:
+                        raise ValueError(
+                            "supersedes: the replacing document is retired; restore it first"
+                        )
+                    self._conn.execute(
+                        "UPDATE documents SET status = 'superado', valid_until = ? "
+                        "WHERE id = ? AND status IS NOT 'superado' AND status IS NOT 'refutado'",
+                        [datetime.now(timezone.utc).isoformat(), retire_id],
+                    )
 
                 # Add to snapvec in-memory (persisted after successful commit)
                 if self._snap is not None:
@@ -381,7 +520,13 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         layer: str | None,
         tags: str | None,
         content_hash: str | None,
-        now_iso: str,
+        status: str | None = None,
+        source_ref: str | None = None,
+        valid_from: str | None = None,
+        valid_until: str | None = None,
+        supersedes: str | None = None,
+        confidence: float | None = None,
+        now_iso: str = "",
     ) -> tuple[str, list[int], list[tuple[int, str]]]:
         """Replace-insert one document's rows inside the caller's OPEN
         transaction.
@@ -415,6 +560,25 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
 
         doc_id = hashlib.sha256(f"{collection}:{path}".encode()).hexdigest()[:32]
 
+        # The search filter compares valid_until lexically against a UTC
+        # timestamp, so every writer (not only ingest_text) must store UTC.
+        if valid_from:
+            valid_from = _canonicalize_added_filter(valid_from, label="valid_from")
+        if valid_until:
+            valid_until = _canonicalize_added_filter(valid_until, label="valid_until")
+
+        # Retirement is sticky: a content edit re-inserts the row, and must
+        # not bring a superseded / refuted claim back (only restore_claim
+        # does). The replacement pointer is kept unless the caller sets one.
+        prior = self._conn.execute(
+            "SELECT status, valid_until, supersedes FROM documents WHERE id = ?", [doc_id]
+        ).fetchone()
+        if prior is not None:
+            if prior[0] in RETIRED_STATUSES:
+                status, valid_until = prior[0], prior[1]
+            if supersedes is None:
+                supersedes = prior[2]
+
         # Remove existing version if re-ingesting
         self._delete_by_doc_id(doc_id)
 
@@ -422,8 +586,10 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
             """INSERT INTO documents
                (id, path, title, source_type, collection,
                 project, layer, tags, content_hash,
-                char_count, chunk_count, added_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                char_count, chunk_count, added_at,
+                status, source_ref, valid_from, valid_until,
+                supersedes, confidence)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 doc_id,
                 path,
@@ -437,6 +603,12 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                 sum(len(c) for c in chunks),
                 len(chunks),
                 now_iso,
+                status,
+                source_ref,
+                valid_from,
+                valid_until,
+                supersedes,
+                confidence,
             ],
         )
 
@@ -632,7 +804,8 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                 # the write lock on the DB, so this is the authoritative
                 # matched set for the replace below.
                 existing = self._conn.execute(
-                    "SELECT title, source_type, collection, project, layer, tags "
+                    "SELECT title, source_type, collection, project, layer, tags, "
+                    "status, source_ref, valid_from, valid_until, supersedes, confidence "
                     "FROM documents WHERE path = ?"
                     + (" AND collection = ?" if collection is not None else ""),
                     [path, collection] if collection is not None else [path],
@@ -654,6 +827,14 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                         layer=row["layer"],
                         tags=tags if tags is not None else row["tags"],
                         content_hash=content_hash,
+                        # A content edit keeps the claim's provenance, state
+                        # and validity window.
+                        status=row["status"],
+                        source_ref=row["source_ref"],
+                        valid_from=row["valid_from"],
+                        valid_until=row["valid_until"],
+                        supersedes=row["supersedes"],
+                        confidence=row["confidence"],
                         now_iso=now_iso,
                     )
                     if self._defer_fts:
@@ -1325,6 +1506,7 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         project: str | None = None,
         layer: str | None = None,
         added_after: str | None = None,
+        status: str | list[str] | None = None,
     ) -> list[DocumentInfo]:
         """List all ingested documents.
 
@@ -1333,6 +1515,9 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
             project: If set, filter to this project only.
             layer: If set, filter to this layer only.
             added_after: If set, only return documents added after this ISO timestamp.
+            status: If set, only claims with this status (or any of these).
+                Unlike search, listing does not hide ``superado`` / ``refutado``
+                rows or expired ones: it is how their history is read.
 
         Returns:
             List of DocumentInfo ordered by ingestion date (newest first).
@@ -1345,11 +1530,16 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         if added_after:
             conditions.append("added_at >= ?")
             filter_params.append(_canonicalize_added_filter(added_after, label="added_after"))
+        if status:
+            wanted = [status] if isinstance(status, str) else list(status)
+            conditions.append(f"status IN ({', '.join('?' * len(wanted))})")
+            filter_params.extend(wanted)
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
         rows = self._conn.execute(
-            f"""SELECT path, title, source_type, collection,
+            f"""SELECT id, path, title, source_type, collection,
                        project, layer, tags,
-                       chunk_count, char_count, added_at
+                       chunk_count, char_count, added_at,
+                       status, source_ref, valid_from, valid_until, supersedes
                 FROM documents {where}
                 ORDER BY added_at DESC""",
             filter_params,
@@ -1506,13 +1696,20 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         import time so the failure mode is loud, not silent.
         """
         tid = threading.get_ident()
+        tokenizer = self._fts_tokenizer
         with self._stem_lock:
             conn = self._stem_conns.get(tid)
+            if conn is not None and self._stem_conn_tokenizers.get(tid) != tokenizer:
+                # The index was rebuilt with another tokenizer. This is the
+                # owner thread, so nobody else is using ``conn``.
+                conn.close()
+                conn = None
             if conn is None:
                 conn = sqlite3.connect(":memory:", check_same_thread=False)
-                conn.execute('CREATE VIRTUAL TABLE _stem USING fts5(x, tokenize="porter ascii")')
+                conn.execute(f"CREATE VIRTUAL TABLE _stem USING fts5(x, tokenize='{tokenizer}')")
                 conn.execute("CREATE VIRTUAL TABLE _stem_v USING fts5vocab(_stem, row)")
                 self._stem_conns[tid] = conn
+                self._stem_conn_tokenizers[tid] = tokenizer
         # Use the connection outside the lock — each thread only ever
         # touches its own connection (lookup by tid above), so no
         # cross-thread access happens here.
@@ -1784,6 +1981,8 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
         relevance_tier: str,
         result_count: int,
         miss_hint: dict | None = None,
+        results: Sequence[SearchResult] | None = None,
+        query_embedding: np.ndarray | Sequence[float] | None = None,
     ) -> int:
         """Record a search event for discard telemetry.
 
@@ -1798,11 +1997,25 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                 ``{"reason": "empty" | "all_low", "best_distance": ...,
                 "tier": ..., "result_count": ..., "top_k_requested": ...}``.
                 Consumed by ``vstash why --recent``.
+            results: Optional ranked results the caller was handed. When
+                given, one ``search_results`` row per result (rank, chunk
+                id, score) is written in the same transaction as the
+                event, so ``mark_result_used`` / ``export_usage_labels``
+                can later turn them into implicit relevance labels.
+            query_embedding: Optional query vector, stored as float32
+                bytes so the opt-in usage prior
+                (:meth:`usage_prior_doc_weights`) can find past searches
+                similar to a new one.
 
         Returns the event ID so it can be marked as dismissed later.
         """
         now_iso = datetime.now(timezone.utc).isoformat()
         hint_json = json.dumps(miss_hint) if miss_hint is not None else None
+        emb_blob = (
+            np.asarray(query_embedding, dtype=np.float32).tobytes()
+            if query_embedding is not None
+            else None
+        )
         with self._write_lock:
             try:
                 # Autocommit mode: keep the INSERT + prune DELETE in one
@@ -1811,22 +2024,291 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                 self._conn.execute("BEGIN IMMEDIATE")
                 cursor = self._conn.execute(
                     "INSERT INTO search_events (query, best_distance, relevance_tier, "
-                    "result_count, dismissed, created_at, miss_hint) "
-                    "VALUES (?, ?, ?, ?, 0, ?, ?)",
-                    [query, best_distance, relevance_tier, result_count, now_iso, hint_json],
+                    "result_count, dismissed, created_at, miss_hint, query_embedding) "
+                    "VALUES (?, ?, ?, ?, 0, ?, ?, ?)",
+                    [
+                        query,
+                        best_distance,
+                        relevance_tier,
+                        result_count,
+                        now_iso,
+                        hint_json,
+                        emb_blob,
+                    ],
                 )
-                # Prune to keep only the last 1000 entries (cheap range delete;
-                # see record_spread). `NOT IN (subquery)` re-tested every row on
-                # every search.
+                event_id = int(cursor.lastrowid)  # type: ignore[arg-type]
+                if results:
+                    self._conn.executemany(
+                        "INSERT INTO search_results (event_id, rank, chunk_id, score) "
+                        "VALUES (?, ?, ?, ?)",
+                        [
+                            (event_id, rank, int(r.chunk_id), float(r.score))
+                            for rank, r in enumerate(results)
+                        ],
+                    )
+                # Rolling cap (``observability.search_log_max_events``).  ids
+                # are AUTOINCREMENT (monotonic, never reused), so "older than
+                # the newest N ids" is a single PK range delete -- O(log n)
+                # instead of the previous ORDER BY ... LIMIT subquery that
+                # walked the whole window on every search.  Gaps left by
+                # compact only make the kept set smaller, never larger.
+                # search_results rows go with their event (ON DELETE CASCADE).
                 self._conn.execute(
-                    "DELETE FROM search_events WHERE id < "
-                    "(SELECT MIN(id) FROM (SELECT id FROM search_events ORDER BY id DESC LIMIT 1000))"
+                    "DELETE FROM search_events WHERE id <= ?",
+                    [event_id - self._observability.search_log_max_events],
                 )
                 self._conn.commit()
             except Exception:
                 self._conn.rollback()
                 raise
-            return cursor.lastrowid  # type: ignore[return-value]
+            return event_id
+
+    def annotate_search_event(self, event_id: int, miss_hint: dict) -> None:
+        """Attach a ``miss_hint`` to an already-recorded search event.
+
+        Used by adapters whose search went through ``vstash.services``
+        (which records the event plus its usage-log rows) and that want
+        to add a miss diagnosis without writing a second event.
+        """
+        with self._write_lock:
+            self._conn.execute(
+                "UPDATE search_events SET miss_hint = ? WHERE id = ?",
+                [json.dumps(miss_hint), int(event_id)],
+            )
+
+    def mark_result_used(self, event_id: int, chunk_ids: int | Sequence[int]) -> int:
+        """Mark returned results of a search event as used by the caller.
+
+        Only chunks that event actually returned can be marked; anything
+        else is ignored (an unknown event id, or a chunk id that was not
+        in that result list, is not an error -- the label simply cannot
+        exist). Idempotent: re-marking keeps the first ``used_at``.
+
+        Args:
+            event_id: The ``event_id`` exposed on the search response.
+            chunk_ids: One chunk id or several.
+
+        Returns:
+            Number of result rows newly marked as used.
+        """
+        ids = [int(chunk_ids)] if isinstance(chunk_ids, int) else [int(c) for c in chunk_ids]
+        if not ids:
+            return 0
+        now_iso = datetime.now(timezone.utc).isoformat()
+        placeholders = ",".join("?" * len(ids))
+        with self._write_lock:
+            cursor = self._conn.execute(
+                "UPDATE search_results SET used = 1, used_at = ? "
+                f"WHERE event_id = ? AND used = 0 AND chunk_id IN ({placeholders})",
+                [now_iso, int(event_id), *ids],
+            )
+            return int(cursor.rowcount)
+
+    def usage_prior_doc_weights(
+        self,
+        query_embedding: np.ndarray | Sequence[float],
+        *,
+        tau: float,
+        max_neighbors: int,
+    ) -> dict[str, float]:
+        """Similarity-weighted use counts per document from similar past searches.
+
+        The query-conditioned usage prior: find the (at most
+        ``max_neighbors``) logged searches whose query embedding has cosine
+        ``>= tau`` to ``query_embedding`` and in which at least one result
+        was marked used, then credit each document with
+        ``sum(similarity * used chunks of that document)`` over those
+        searches. A query with no similar past search gets ``{}``.
+
+        Only events with a stored ``query_embedding`` of the current
+        dimension take part; vectors are compared as unit-normalised
+        float32 (cosine).
+
+        Args:
+            query_embedding: The current query vector.
+            tau: Minimum query-query cosine for a past search to count.
+            max_neighbors: Cap on past searches consulted.
+
+        Returns:
+            ``{doc_id: weight}`` for every document used by a neighbour.
+        """
+        q = np.asarray(query_embedding, dtype=np.float32).ravel()
+        q_norm = float(np.linalg.norm(q))
+        if q_norm == 0.0 or max_neighbors < 1:
+            return {}
+        ids, mat = self._usage_prior_matrix(q.size)
+        if ids.size == 0:
+            return {}
+        sims = (mat @ q) / q_norm
+        keep = np.flatnonzero(sims >= tau)
+        if keep.size == 0:
+            return {}
+        if keep.size > max_neighbors:
+            keep = keep[np.argsort(-sims[keep], kind="stable")[:max_neighbors]]
+        sim_by_event = {int(ids[i]): float(sims[i]) for i in keep}
+        placeholders = ",".join("?" * len(sim_by_event))
+        used = self._conn.execute(
+            "SELECT r.event_id, c.doc_id, COUNT(*) FROM search_results r "
+            "JOIN chunks c ON c.id = r.chunk_id "
+            f"WHERE r.used = 1 AND r.event_id IN ({placeholders}) "
+            "GROUP BY r.event_id, c.doc_id",
+            list(sim_by_event),
+        ).fetchall()
+        weights: dict[str, float] = {}
+        for event_id, doc_id, n in used:
+            weights[str(doc_id)] = weights.get(str(doc_id), 0.0) + sim_by_event[
+                int(event_id)
+            ] * int(n)
+        return weights
+
+    def _usage_prior_matrix(self, dim: int) -> tuple[np.ndarray, np.ndarray]:
+        """(event ids, unit-normalised query vectors) of every event with a use.
+
+        Cached in memory: re-reading up to ``search_log_max_events`` blobs on
+        every search cost ~15 ms at 10k used events. The cache key is the
+        count and id-sum of the used rows, read from the partial index
+        ``idx_search_results_used`` (covering, sub-millisecond), so a new
+        ``mark_used`` or a pruned event -- from this process or another one
+        sharing the file -- rebuilds it. A stale entry can only be an event
+        whose rows were since deleted, which the per-document join in
+        :meth:`usage_prior_doc_weights` then finds empty.
+
+        ``reindex`` nulls the stored query vectors without touching the used
+        rows, so it also bumps ``store_meta['usage_prior_generation']``,
+        which is part of the key: a reindex through *another* open store on
+        the same file still invalidates this store's warmed cache (one PK
+        lookup, cheaper than joining every used row to its event).
+        """
+        count, id_sum = self._conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(event_id), 0) FROM search_results WHERE used = 1"
+        ).fetchone()
+        generation = self.get_meta(_USAGE_PRIOR_GENERATION_KEY) or "0"
+        key = (int(count), int(id_sum), dim, generation)
+        cached = self._usage_prior_cache
+        if cached is not None and cached[0] == key:
+            return cached[1], cached[2]
+        rows = self._conn.execute(
+            "SELECT id, query_embedding FROM search_events "
+            "WHERE query_embedding IS NOT NULL AND id IN "
+            "(SELECT event_id FROM search_results WHERE used = 1)"
+        ).fetchall()
+        rows = [r for r in rows if len(r[1]) == dim * 4]
+        ids = np.fromiter((int(r[0]) for r in rows), dtype=np.int64, count=len(rows))
+        mat = np.frombuffer(b"".join(r[1] for r in rows), dtype=np.float32).reshape(len(rows), dim)
+        norms = np.linalg.norm(mat, axis=1, keepdims=True)
+        norms[norms == 0.0] = 1.0
+        mat = mat / norms
+        self._usage_prior_cache = (key, ids, mat)
+        return ids, mat
+
+    def chunk_doc_ids(self, chunk_ids: Sequence[int]) -> dict[int, str]:
+        """Map chunk ids to their document id (missing chunks are omitted)."""
+        ids = [int(c) for c in chunk_ids]
+        if not ids:
+            return {}
+        placeholders = ",".join("?" * len(ids))
+        rows = self._conn.execute(
+            f"SELECT id, doc_id FROM chunks WHERE id IN ({placeholders})", ids
+        ).fetchall()
+        return {int(r[0]): str(r[1]) for r in rows}
+
+    def export_usage_labels(
+        self,
+        *,
+        since_iso: str | None = None,
+        feedback_only: bool = True,
+        include_text: bool = True,
+        limit: int | None = None,
+    ) -> list[dict]:
+        """Export (query, chunk, rank, used) rows from the usage log.
+
+        One dict per returned result, oldest event first, ready to feed
+        a retrain miner: ``used=True`` rows are positives ("returned and
+        used"), ``used=False`` rows of the same event are implicit
+        negatives ("returned and ignored").
+
+        Args:
+            since_iso: Only events with ``created_at >= since_iso``.
+            feedback_only: Default ``True`` keeps only events where at
+                least one result was marked used. Events nobody reported
+                back on carry no signal -- an unmarked result there means
+                "unknown", not "ignored".
+            include_text: Join the chunk text (and document path/title).
+            limit: Cap on returned rows (newest events win when set).
+
+        Returns:
+            List of dicts with ``event_id``, ``query``, ``created_at``,
+            ``rank``, ``chunk_id``, ``score``, ``used``, ``used_at``,
+            ``path``, ``title`` and (when ``include_text``) ``text``.
+        """
+        if limit is not None and int(limit) < 1:
+            raise ValueError(f"limit must be >= 1, got {limit}")
+        where: list[str] = []
+        params: list[Any] = []
+        if since_iso is not None:
+            where.append("e.created_at >= ?")
+            params.append(_canonicalize_added_filter(since_iso, label="since_iso"))
+        if feedback_only:
+            where.append(
+                "EXISTS (SELECT 1 FROM search_results u WHERE u.event_id = e.id AND u.used = 1)"
+            )
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+        text_col = ", c.text AS text" if include_text else ""
+        sql = (
+            "SELECT e.id AS event_id, e.query, e.created_at, r.rank, r.chunk_id, "
+            "r.score, r.used, r.used_at, d.path, d.title"
+            f"{text_col} "
+            "FROM search_results r "
+            "JOIN search_events e ON e.id = r.event_id "
+            "JOIN chunks c ON c.id = r.chunk_id "
+            "JOIN documents d ON d.id = c.doc_id "
+            f"{where_sql} "
+            "ORDER BY e.id DESC, r.rank ASC"
+        )
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(int(limit))
+        rows = self._conn.execute(sql, params).fetchall()
+        out = [
+            {
+                "event_id": int(r["event_id"]),
+                "query": str(r["query"]),
+                "created_at": str(r["created_at"]),
+                "rank": int(r["rank"]),
+                "chunk_id": int(r["chunk_id"]),
+                "score": float(r["score"]),
+                "used": bool(r["used"]),
+                "used_at": r["used_at"],
+                "path": str(r["path"]),
+                "title": str(r["title"]),
+                **({"text": str(r["text"])} if include_text else {}),
+            }
+            for r in rows
+        ]
+        # Newest-first in SQL so LIMIT keeps the most recent events;
+        # flip events back to chronological order for the caller.
+        out.sort(key=lambda d: (d["event_id"], d["rank"]))
+        return out
+
+    def prune_search_events(self, *, before_iso: str) -> int:
+        """Delete search events (and their usage-log rows) older than ``before_iso``.
+
+        ``before_iso`` is canonicalised to UTC like ``prune_documents``
+        so the lexical ``created_at < ?`` compare matches chronological
+        order. Returns the number of events deleted.
+        """
+        cutoff = _canonicalize_added_filter(before_iso, label="before_iso")
+        with self._write_lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                cursor = self._conn.execute(
+                    "DELETE FROM search_events WHERE created_at < ?", [cutoff]
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+            return int(cursor.rowcount)
 
     def recent_miss_hints(self, limit: int = 10) -> list[dict]:
         """Return the N most recent search_events that carry a miss_hint,
@@ -1994,17 +2476,9 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                     parts.append(text)
 
             if parts:
-                expanded.append(
-                    SearchResult(
-                        chunk_id=r.chunk_id,
-                        text="\n".join(parts),
-                        title=r.title,
-                        path=r.path,
-                        chunk=r.chunk,
-                        score=r.score,
-                        explain=r.explain,
-                    )
-                )
+                # model_copy keeps every other field (metadata, explain,
+                # usage_boost); rebuilding the model dropped them.
+                expanded.append(r.model_copy(update={"text": "\n".join(parts)}))
             else:
                 expanded.append(r)
 
@@ -2063,6 +2537,25 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                 # silently wiping the vector index. Mirrors every other write
                 # path.
                 self._conn.execute("BEGIN IMMEDIATE")
+
+                # Past query vectors (usage prior) were embedded with the old
+                # model: comparing them against new-model queries is
+                # meaningless, so drop them with the index they belong to.
+                self._conn.execute(
+                    "UPDATE search_events SET query_embedding = NULL "
+                    "WHERE query_embedding IS NOT NULL"
+                )
+                # Invalidate the usage-prior cache of every store sharing
+                # this file, not just this one (see _usage_prior_matrix).
+                self._conn.execute(
+                    "INSERT INTO store_meta (key, value, updated_at) "
+                    "VALUES (?, '1', datetime('now')) "
+                    "ON CONFLICT(key) DO UPDATE SET "
+                    "value = CAST(CAST(value AS INTEGER) + 1 AS TEXT), "
+                    "updated_at = excluded.updated_at",
+                    [_USAGE_PRIOR_GENERATION_KEY],
+                )
+                self._usage_prior_cache = None
 
                 # Drop and recreate vec_chunks with new dimensions
                 self._conn.execute("DROP TABLE IF EXISTS vec_chunks")
@@ -2213,4 +2706,5 @@ class VstashStore(_IndexBackendMixin, _IntegrityMixin, _SchemaManagerMixin, _Sea
                 with contextlib.suppress(sqlite3.Error):
                     stem_conn.close()
             self._stem_conns.clear()
+            self._stem_conn_tokenizers.clear()
         self._conn.close()

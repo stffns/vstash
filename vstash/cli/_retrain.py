@@ -7,9 +7,9 @@ shared Typer ``app``.
 
 from __future__ import annotations
 
+from enum import Enum
 from pathlib import Path
 
-import click
 import typer
 from rich.table import Table
 
@@ -22,6 +22,22 @@ from ._app import (
     app,
     console,
 )
+
+
+# Choice options are Enums rather than ``click_type=click.Choice(...)``:
+# typer 0.29 removed the ``click_type`` keyword, and an Enum is how typer
+# declares choices on every supported version. Commands convert back to
+# the plain string with ``.value`` before calling into ``vstash.retrain``.
+class TrainingPairSource(str, Enum):
+    auto = "auto"
+    labeled = "labeled"
+    prefix = "prefix"
+
+
+class SamplingStrategy(str, Enum):
+    uniform = "uniform"
+    proportional = "proportional"
+    temperature = "temperature"
 
 
 @app.command()
@@ -112,14 +128,13 @@ def retrain(
         "annotations). Mutually exclusive with --no-eval. Ignores "
         "--eval-fraction (the held-out set is the file you provide).",
     ),
-    training_pair_source: str = typer.Option(
-        "auto",
+    training_pair_source: TrainingPairSource = typer.Option(
+        TrainingPairSource.auto,
         "--training-pair-source",
         help="Resolution policy when --training-queries is not set. "
         "'auto' (default, H-R8) reuses --eval-queries as training "
         "queries when present, falling back to chunk-prefix otherwise. "
         "'labeled' errors if no labels. 'prefix' forces chunk-prefix.",
-        click_type=click.Choice(["auto", "labeled", "prefix"]),
     ),
     bulk_mine: bool = typer.Option(
         False,
@@ -275,7 +290,7 @@ def retrain(
         synth_cache=synth_cache,
         synth_model=synth_model,
         training_queries=loaded_training_queries,
-        training_pair_source=training_pair_source,  # type: ignore[arg-type]
+        training_pair_source=TrainingPairSource(training_pair_source).value,  # type: ignore[arg-type]
         bulk_mine=bulk_mine,
         bulk_mine_device=bulk_mine_device,
         cfg=cfg,
@@ -359,11 +374,10 @@ def retrain_multi_cmd(
         "-o",
         help="Where to save the fine-tuned model",
     ),
-    sampling_strategy: str = typer.Option(
-        "temperature",
+    sampling_strategy: SamplingStrategy = typer.Option(
+        SamplingStrategy.temperature,
         "--sampling-strategy",
         help="Temperature (default) damps the largest corpus toward a more balanced triple budget.",
-        click_type=click.Choice(["uniform", "proportional", "temperature"]),
     ),
     sampling_temperature: float = typer.Option(
         0.5,
@@ -451,15 +465,14 @@ def retrain_multi_cmd(
         "corpus gets its own stable RNG, and then threaded into train_mnrl "
         "so DataLoader shuffles and torch dropout are reproducible.",
     ),
-    training_pair_source: str = typer.Option(
-        "auto",
+    training_pair_source: TrainingPairSource = typer.Option(
+        TrainingPairSource.auto,
         "--training-pair-source",
         help="Resolution policy for per-dataset training queries. "
         "'auto' (default, H-R1) reuses eval labels as training queries "
         "when present, falling back to chunk-prefix otherwise. "
         "'labeled' errors if any dataset lacks labels. "
         "'prefix' forces chunk-prefix even when eval labels exist.",
-        click_type=click.Choice(["auto", "labeled", "prefix"]),
     ),
 ) -> None:
     """Fine-tune the embedding model over multiple corpora with balanced sampling.
@@ -565,7 +578,7 @@ def retrain_multi_cmd(
             console.print(f"  {name}: {stats.documents} docs, {stats.chunks} chunks")
         console.print(f"  Base model:       {model_name}")
         console.print(
-            f"  Sampling:         {sampling_strategy} (temperature={sampling_temperature})"
+            f"  Sampling:         {SamplingStrategy(sampling_strategy).value} (temperature={sampling_temperature})"
         )
         console.print(f"  Total triples:    {total_triples}")
         if no_eval:
@@ -582,7 +595,7 @@ def retrain_multi_cmd(
             stores,
             base_model=model_name,
             output_path=output,
-            sampling=sampling_strategy,  # type: ignore[arg-type]
+            sampling=SamplingStrategy(sampling_strategy).value,  # type: ignore[arg-type]
             temperature=sampling_temperature,
             total_triples=total_triples,
             epochs=epochs,
@@ -599,7 +612,7 @@ def retrain_multi_cmd(
             bulk_mine=bulk_mine,
             bulk_mine_device=bulk_mine_device,
             bulk_eval=bulk_eval,
-            training_pair_source=training_pair_source,  # type: ignore[arg-type]
+            training_pair_source=TrainingPairSource(training_pair_source).value,  # type: ignore[arg-type]
             cfg=cfg,
         )
     finally:

@@ -16,6 +16,7 @@ from rich.table import Table
 from .. import chat as chat_module
 from ..embed import embed_query
 from ..services import search_with_embedding
+from ..services.search import apply_usage_prior, usage_prior_pool, usage_prior_weights
 from ..store import relevance_tier
 from ..validation import LimitError, validate_search_input
 from ._app import (
@@ -46,9 +47,16 @@ def ask(
     all_profiles: bool = typer.Option(
         False, "--all-profiles", "-A", help="Search across all profiles"
     ),
+    judge: bool | None = typer.Option(
+        None,
+        "--judge/--no-judge",
+        help="Gate and verify the answer with the local judge (default: [judge] enabled)",
+    ),
 ) -> None:
     """Ask a question about your documents."""
     cfg, store = _get_store(warm=True, profile=_profile_from_ctx(ctx))
+    if judge is not None:
+        cfg = cfg.model_copy(update={"judge": cfg.judge.model_copy(update={"enabled": judge})})
 
     with store:
         k = top_k or cfg.chunking.top_k
@@ -99,6 +107,7 @@ def ask(
                     tier="low",
                     result_count=0,
                     top_k_requested=k,
+                    event_id=getattr(chunks, "event_id", None),
                 )
             console.print(
                 "[yellow]No relevant documents found. "
@@ -117,6 +126,7 @@ def ask(
                 tier=tier,
                 result_count=len(chunks),
                 top_k_requested=k,
+                event_id=getattr(chunks, "event_id", None),
             )
             if tier == "low":
                 console.print(
@@ -131,6 +141,19 @@ def ask(
         if not all_profiles:
             chunks = store.expand_context(chunks, window=1)
 
+        judgment = None
+        if cfg.judge.enabled:
+            from .. import judge as judge_mod
+
+            with console.status("[dim]Checking memory...[/dim]", spinner="dots"):
+                judge_model = judge_mod.get_judge(cfg.judge)
+                judgment = judge_mod.gate(judge_model, query, chunks, cfg.judge)
+            if judgment.gated:
+                console.print(
+                    "[yellow]" + judge_mod.NOT_IN_MEMORY.format(p=judgment.answerable) + "[/yellow]"
+                )
+                raise typer.Exit()
+
         # Show sources
         if sources:
             source_list = list({c.title for c in chunks})
@@ -141,10 +164,13 @@ def ask(
         if stream:
             try:
                 token_count = 0
+                streamed: list[str] = []
                 for token in chat_module.stream(query, chunks, cfg):
                     print(token, end="", flush=True)
+                    streamed.append(token)
                     token_count += 1
                 print()  # newline after stream
+                response = "".join(streamed)
             except ConnectionError as exc:
                 if token_count > 0:
                     console.print(
@@ -166,6 +192,26 @@ def ask(
                         console.print(f"[dim]  Hint: {hint}[/dim]")
                     raise typer.Exit(1) from exc
             console.print(Markdown(response))
+
+        if judgment is not None and cfg.judge.verify:
+            with console.status("[dim]Verifying the answer...[/dim]", spinner="dots"):
+                judgment = judge_mod.verify(judge_model, judgment, response, chunks, cfg.judge)
+            _print_judgment(judgment)
+
+
+def _print_judgment(judgment) -> None:
+    """One line of support, then each claim the context does not back."""
+    share = judgment.supported_share
+    if share is None:
+        return
+    n = len(judgment.claims)
+    color = "green" if share == 1 else "yellow" if share >= 0.5 else "red"
+    console.print(
+        f"\n[{color}]✓ {n - len(judgment.flagged)}/{n} claims supported by your memory[/{color}]"
+        f" [dim](answerable {judgment.answerable:.0%})[/dim]"
+    )
+    for c in judgment.flagged:
+        console.print(f"[red]  ✗ {c.supported:.0%}[/red] [dim]{c.text}[/dim]")
 
 
 # ------------------------------------------------------------------ #
@@ -248,6 +294,12 @@ def search(
         False,
         "--exact-match-case-sensitive/--no-exact-match-case-sensitive",
         help="Toggle case sensitivity of --exact-match.",
+    ),
+    include_retired: bool = typer.Option(
+        False,
+        "--include-retired",
+        help="Also show claims that were superseded, refuted or expired "
+        "(their status is shown next to the text).",
     ),
 ) -> None:
     """Semantic search without LLM (free, local)."""
@@ -398,6 +450,7 @@ def search(
                     added_before=added_before,
                     expand_window=1,
                     dedup_threshold=dedup_threshold,
+                    include_retired=include_retired,
                 )
                 chunks = [r for _, r in tagged]
                 _search_tagged = tagged
@@ -417,10 +470,13 @@ def search(
                         ]
                     chunks = [r for _, r in _search_tagged]
             else:
+                prior_weights = usage_prior_weights(
+                    cfg=cfg, store=store, query_embedding=q_embedding
+                )
                 chunks = store.search(
                     q_embedding,
                     query,
-                    top_k=k,
+                    top_k=usage_prior_pool(cfg, k, prior_weights),
                     collection=collection,
                     project=project,
                     layer=layer,
@@ -431,7 +487,16 @@ def search(
                     dedup_threshold=dedup_threshold,
                     exact_match=exact_match,
                     exact_match_case_sensitive=exact_match_case_sensitive,
+                    include_retired=include_retired,
                 )
+                if prior_weights:
+                    chunks = apply_usage_prior(
+                        store=store,
+                        results=chunks,
+                        weights=prior_weights,
+                        beta=cfg.usage_prior.beta,
+                        top_k=k,
+                    )
 
         if not chunks:
             if not all_profiles:
@@ -469,6 +534,10 @@ def search(
                 tier=tier,
                 result_count=len(chunks),
                 top_k_requested=k,
+                # explain output is a debugging view, not a usage signal
+                # (same rule as the query cache).
+                results=None if explain else chunks,
+                query_embedding=None if explain else q_embedding,
             )
 
         if json_output:
@@ -506,6 +575,8 @@ def search(
             text_preview = c.text.replace("\n", " ").strip()
             if len(text_preview) > 120:
                 text_preview = text_preview[:120] + "..."
+            if c.status in ("superado", "refutado"):
+                text_preview = f"[{c.status}] {text_preview}"
             if all_profiles and _search_tagged:
                 profile_name = _search_tagged[i - 1][0] if i <= len(_search_tagged) else ""
                 table.add_row(
@@ -573,6 +644,15 @@ def search(
                     lines.append(f"  MMR:     -{ex.mmr_penalty:.2f} penalty (same-doc similarity)")
                 else:
                     lines.append("  MMR:     no penalty (unique document)")
+
+                # Usage prior (opt-in): only shown when it ran for this search
+                if c.usage_boost is not None:
+                    if c.usage_boost > 1.0:
+                        lines.append(
+                            f"  Usage:   x{c.usage_boost:.2f} (used by similar past searches)"
+                        )
+                    else:
+                        lines.append("  Usage:   no boost (not used by similar past searches)")
 
                 for line in lines:
                     console.print(f"[dim]{line}[/dim]")
@@ -664,12 +744,14 @@ def chat(
                 # MCP migration pattern -- semantically identical to
                 # the old pre-expand placement).
                 tier = relevance_tier(store.last_best_distance)
-                last_event_id = store.record_search_event(
-                    query=query,
-                    best_distance=store.last_best_distance,
-                    relevance_tier=tier,
-                    result_count=len(chunks),
-                )
+                last_event_id = getattr(chunks, "event_id", None)
+                if last_event_id is None:
+                    last_event_id = store.record_search_event(
+                        query=query,
+                        best_distance=store.last_best_distance,
+                        relevance_tier=tier,
+                        result_count=len(chunks),
+                    )
                 last_tier = tier
                 if tier == "low":
                     console.print("[dim]⚠ Low relevance — context may not match well.[/dim]")

@@ -29,7 +29,29 @@ vstash uses [FastEmbed](https://github.com/qdrant/fastembed) for local embedding
 | `sentence-transformers/paraphrase-multilingual-mpnet-base-v2` | 768 | 50+ | ~250 chunks/s | Excellent |
 | `intfloat/multilingual-e5-large` | 1024 | 100+ | ~100 chunks/s | Best |
 
-**Recommendation:** For **general-purpose** multilingual corpora (conversational text, news, encyclopedic content, cross-lingual search over everyday topics), use `paraphrase-multilingual-MiniLM-L12-v2`. Same 384 dimensions as the default model = zero latency impact on search. Cross-lingual query similarity improves ~40% over English-only models.
+| `jinaai/jina-embeddings-v5-text-nano-retrieval` | 768 | multilingual | ~10 passages/s (long passages) | **Best measured on Spanish** |
+| `embeddinggemma-300m` | 768 | 100+ | ~4 passages/s (long passages) | Excellent |
+
+**Recommendation:** For **retrieval over a non-English memory** (Spanish measured), use `jinaai/jina-embeddings-v5-text-nano-retrieval`. On MTEB `SpanishPassageRetrievalS2P` (10 037 passages, 167 queries) it roughly doubles the default model:
+
+| Model | dense NDCG@10 | hybrid NDCG@10 | dense Recall@100 | passages/s | query p50 |
+|---|---|---|---|---|---|
+| `BAAI/bge-small-en-v1.5` (default) | 0.252 | 0.279 | 0.563 | 31 | 2.8 ms |
+| `paraphrase-multilingual-MiniLM-L12-v2` | 0.255 | 0.316 | 0.738 | 135 | 2.4 ms |
+| `embeddinggemma-300m` | 0.424 | 0.472 | 0.930 | 3.7 | 5.8 ms |
+| **`jina-embeddings-v5-text-nano-retrieval`** | **0.517** | **0.505** | **0.952** | 9.5 | 4.7 ms |
+
+*Apple M5 Max CPU, `python -m experiments.probe_jina_v5_nano_es`; raw numbers in `experiments/results/jina_v5_nano_es.json`. The passages are long (hundreds of tokens), so passages/s understates throughput on short notes. vstash's Gemma backend does not add EmbeddingGemma's task prompts, which likely costs it some quality here.*
+
+Things to know before switching to Jina v5 nano:
+
+- **License: CC BY-NC 4.0** (non-commercial). Fine for personal memory; check before shipping it in a product.
+- **Asymmetric prompts are handled for you**: queries are embedded as `Query: ...`, stored chunks as `Document: ...` (also through the `vstash serve --warm` daemon).
+- **Runs on onnxruntime + tokenizers**, no torch and no `trust_remote_code`. First use downloads ~850 MB (pinned revision) to `~/.vstash/models/` (`VSTASH_MODELS_DIR` overrides).
+- **Hybrid does not help it**: on the Spanish set, adding FTS5 cost 0.012 NDCG@10, while it lifts the weaker models. Consider `retrieval_mode="vec_only"` if your own queries agree.
+- **Recalibrate relevance tiers**: `relevance_tier` / `min_relevance` thresholds are calibrated on BGE-small.
+
+For **general-purpose** multilingual corpora where ingest speed matters more than retrieval quality, `paraphrase-multilingual-MiniLM-L12-v2` keeps the 384 dimensions of the default model and embeds ~4x faster than it on long passages. On Spanish retrieval its dense NDCG@10 only matches the English default (0.255 vs 0.252) but its Recall@100 is clearly higher (0.738 vs 0.563), and through the hybrid pipeline it is ahead (0.316 vs 0.279).
 
 ---
 
