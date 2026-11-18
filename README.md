@@ -212,6 +212,16 @@ Adaptive RRF, self-supervised embedding refinement, a negative result on post-RR
 
 ---
 
+## What's New in v0.40
+
+- **Opt-in search options for a wider first stage** (v0.40) -- for callers that put a reranker behind the search and care that the right chunk is *in* the list more than where. `lexical_gate=True` stops the keyword side from voting when it has no real evidence for the query (vague or paraphrased queries); `mmr_lambda=None` switches the same-document diversity penalty off (`1.0` is a hard one-chunk-per-document cap, not "off"); `min_vec_keep` and `drop_stopwords` round it out. All off by default: default ranking is unchanged. On 840 held-out Spanish notes the right note is in the top 50 for 71.8 % of vague queries vs 59.4 % with defaults (#526).
+- **Configurable FTS5 tokenizer** (v0.40) -- `VstashStore(fts_tokenizer=...)` for new indexes and `rebuild_fts(tokenizer)` to switch an existing one without re-embedding. `porter unicode61 remove_diacritics 2` folds case and accents (the default `porter ascii` indexes "¿Quién" as the single token `¿quién`) and is identical to the default on English (#526).
+- **Claim status and validity on memories** (v0.40) -- documents carry `status`, `source_ref`, `valid_from` / `valid_until` and `supersedes`; a fact without a source is stored as `sin-fuente` instead of passing for knowledge, and superseded, refuted or expired claims are hidden from search but kept for history. `Memory.retire` / `Memory.restore`, `include_retired=True` (#525).
+- **Opt-in local judge around `ask`** (v0.40) -- `[judge] enabled = true` runs a small local decision model that skips the LLM call when the retrieved context does not hold the answer, and flags unsupported claims in the reply (#518).
+- **`min_relevance` "nothing found" gate** (v0.40) -- return an empty list instead of the closest off-topic chunks when the best vector match is weak (#521).
+- **Built-in `jina-embeddings-v5-text-nano-retrieval`** (v0.40) -- multilingual 768d backend on onnxruntime, no torch (#522).
+- **Search usage log and query-conditioned usage prior** (v0.40) -- searches record what they returned and callers report what they used; an opt-in prior boosts documents that similar past searches marked used.
+
 ## What's New in v0.39
 
 - **Cross-document near-duplicate collapse** (v0.39) -- MMR only penalises chunks of the *same* document, so a corpus holding many near-identical **documents** (audit logs, mirrored notes, a file ingested repeatedly) could fill every result slot with restatements of one answer. `dedup_threshold=0.95` drops a chunk whose cosine similarity to an already-kept, higher-ranked chunk is at or above the threshold, regardless of document. Opt-in: the default leaves ranking untouched. Available on `VstashStore.search`, `Memory.search`, MCP `vstash_search`, and CLI `vstash search --dedup 0.95` (#509).

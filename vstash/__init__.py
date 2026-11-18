@@ -1,6 +1,6 @@
 """vstash -- local document memory with instant semantic search."""
 
-__version__ = "0.39.0"
+__version__ = "0.40.0"
 
 from .errors import (
     BackendError,

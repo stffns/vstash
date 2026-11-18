@@ -8,7 +8,7 @@ should use::
     # or
     from vstash.vectorbackend.snapvec_ivfpq import IVFPQBackend
 
-This shim will be removed in v0.40.
+This shim will be removed in v0.41.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from .vectorbackend.snapvec_ivfpq import IVFPQBackend
 warnings.warn(
     "vstash._ivfpq_backend is deprecated; import IVFPQBackend from "
     "vstash.vectorbackend (or vstash.vectorbackend.snapvec_ivfpq). "
-    "This shim will be removed in v0.40.",
+    "This shim will be removed in v0.41.",
     DeprecationWarning,
     stacklevel=2,
 )
